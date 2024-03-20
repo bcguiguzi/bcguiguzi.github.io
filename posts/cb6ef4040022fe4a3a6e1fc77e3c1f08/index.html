@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Clickhouse与Doris的区别 - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="Clickhouse与Doris的区别" />
+<meta property="og:description" content="Doris使用较为简单，join功能更强大，运维更简单，灵活的扩容缩容，分布式更强，支持事务和幂等性导数
+Clickhouse性能更佳，导入性能和单表查询性能更好，同时可靠性更好，支持非常多的表引擎，更多类型和函数支持，更好的聚合函数以及庞大的优化参数选项
+那么两者之间如何选择呢？
+业务场景复杂数据规模巨大，希望投入研发力量做定制开发，选ClickHouse
+希望一站式的分析解决方案，少量投入研发资源，选择Doris
+另外， Doris源自在线广告系统，偏交易系统数据分析；ClickHouse起源于网站流量分析服务，偏互联网数据分析，但是这两类场景这两个引擎都可以覆盖。如果说两者不那么强的地方，ClickHouse的问题是使用门槛高、运维成本高和分布式能力太弱，需要较多的定制化和较深的技术实力，Doris的问题是性能差一些可靠性差一些，下面就深入分析两者的差异。
+1.上图是Doris的部署架构图，JDBC指接入协议，DNS是域名和请求分发系统。Managerment Panel是管控面。Frontend指前端模块简称FE，包含了SQL解析、查询计划、计划调度、元数据管理等功能，Backend指后端模块简称BE负责存储层、数据读取和写入，另外还有一个BrokerLoad导数组件最好是单独部署。所以，Doris一般只需要FE和BE两个组件。2. 右侧是ClickHouse的部署架构图，ClickHouse本身只有一个模块，就是ClickHouse Server，周边有两个模块，如ClickHouseProxy主要是转发请求、配额限制和容灾等，ZooKeeper这块负责分布式DDL和副本间数据同步，ClickHouseCopier负责集群和数据迁移，ClickHouse一般需要Server、ZooKeeper和CHProxy三个组件。3. 日常运维如更新版本、更改配置文件两者都需要依赖Ansible或者SaltStack来进行批量更新。两者都有部分配置文件可以热更新，不用重启节点，而且有Session相关参数可以设置可以覆盖配置文件。Doris有较多的SQL命令协助运维，比如增加节点，Doris中Add Backend即可，ClickHouse中需要更改配置文件并下发到各个节点上。
+多租户管理ClickHouse的权限和Quota的粒度更细，可以很方便的支持多租户使用共享集群。比如可以设置查询内存、查询线程数量、查询超时等，以便来限制查询的大小；同时结合查询并发和一定时间窗口内的查询数量，以便来控制查询数量。多租户的方案，对发展中的业务非常友好，因为使用共享集群资源，可以快速动态调整配额，如果是独占集群资源利用率不高、扩容相对麻烦
+扩容 扩容/缩容Doris支持集群的在线动态扩缩容，通过内置的SQL命令 alter system add/decomission backends 即可进行节点的扩缩容，数据均衡的粒度是tablet，每个tablet大概是数百兆，扩容后表的tablet会自动拷贝到新的BE节点，如果在线扩容，应该小批量去增加BE，避免过于剧烈导致集群不稳定。
+ClickHouse的扩容缩容复杂且繁琐，***目前做不到自动在线操作，需要自研工具支持。***扩容时需要部署新的节点，添加新分片和副本到配置文件中，并在新节点上创建元数据，如果是扩副本数据会自动均衡，如果是扩分片，需要手工去做均衡，或自研相关工具，让均衡自动进行。
+分布式： Doris组件的分布式能力主要包含在FE中，包含Berkeley JE HA组件，包含选举策略和数据同步，Doris的 FrontEnd可以部署3个Follwer &#43; n个Oberserver（n&gt;=0）的方式来实现元数据和访问连接的高可用
+ClickHouse目前版本是基于ZooKeeper来存储元数据，ClickHouse依赖Zookeeper来实现数据的高可用，Zookeeper带来额外的运维复杂性的同时也有性能问题。ClickHouse没有集中的元数据管理，每个节点分别管理，高可用一般依赖业务方来实现。ClickHouse中某个副本节点宕机，对查询和分布式表的导入没有影响，本地表导入要在导数程序中做灾备方案比如选择健康的副本，对DDL操作是有影响的，需要及时处理。
+在分布式能力这块，Doris在内核侧已经实现，使用的代价更低；而ClickHouse需要依赖于外部配套的措施去保障，使用成本较高。
+事务支持ACID指事务的原子性、一致性、隔离性和持久化，
+OLAP的事务体现在几个方面：
+一是导数，需要保证导数的原子性，同时也要保证明细数据和物化视图的数据一致性；
+二是元数据的变更，需要保证所有节点的元数据统一变更的强一致性；
+三是在节点间做数据均衡时，需要保证数据的一致性 Doris提供了导入的事务支持，可以保证导数的幂等性，比如数据导入的原子性，如果有其他错误会自动回滚，同时相同标签的数据不会重复导入。基于导入事务的功能，Doris还实现了Flink-connector这样的外部组件可以实现数据导入不丢不重。两者均不支持通用TP场景中的BEGIN/END/COMMIT语义的事务，很明显有事务支持的Doris比无事务支持的ClickHouse要节省很多开发成本，因为在ClickHouse中，这一切都需要外部导数程序来保证。ClickHouse不支持事务，需要在外部去做各种校验和检查，在导数这块能保证100万以内的原子性，但是不保证一致性，比如要更新某些字段或者更新物化视图，这个操作是后台异步的，需要显示指定关键字FINAL来查询最终数据，而且其他操作没有事务支持。DDL操作两者都是异步的，但是Doris能保证各个节点元数据的一致性，但ClickHouse中保证不了，会出现局部节点元数据和其他节点不一致的情况。" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/cb6ef4040022fe4a3a6e1fc77e3c1f08/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2022-10-30T16:47:45+08:00" />
+<meta property="article:modified_time" content="2022-10-30T16:47:45+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Clickhouse与Doris的区别</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p>Doris使用较为简单，join功能更强大，运维更简单，灵活的扩容缩容，<strong>分布式更强</strong>，<strong>支持事务和幂等性导数</strong></p> 
+<p>Clickhouse性能更佳，导入性能和单表查询性能更好，同时可靠性更好，支持非常多的表引擎，更多类型和函数支持，更好的聚合函数以及庞大的优化参数选项</p> 
+<p><strong>那么两者之间如何选择呢？<br> 业务场景复杂数据规模巨大，希望投入研发力量做定制开发，选ClickHouse<br> 希望一站式的分析解决方案，少量投入研发资源，选择Doris</strong></p> 
+<p>另外， <strong>Doris源自在线广告系统，偏交易系统数据分析；ClickHouse起源于网站流量分析服务，偏互联网数据分析</strong>，但是这两类场景这两个引擎都可以覆盖。如果说两者不那么强的地方，ClickHouse的问题是使用门槛高、运维成本高和分布式能力太弱，需要较多的定制化和较深的技术实力，Doris的问题是性能差一些可靠性差一些，下面就深入分析两者的差异。</p> 
+<p><img src="https://images2.imgbox.com/01/02/rbIWp7Vp_o.png" alt="在这里插入图片描述"><br> 1.上图是Doris的部署架构图，JDBC指接入协议，DNS是域名和请求分发系统。Managerment Panel是管控面。Frontend指前端模块简称FE，包含了SQL解析、查询计划、计划调度、元数据管理等功能，Backend指后端模块简称BE负责存储层、数据读取和写入，另外还有一个BrokerLoad导数组件最好是单独部署。所以，Doris一般只需要FE和BE两个组件。2. 右侧是ClickHouse的部署架构图，ClickHouse本身只有一个模块，就是ClickHouse Server，周边有两个模块，如ClickHouseProxy主要是转发请求、配额限制和容灾等，<strong>ZooKeeper这块负责分布式DDL和副本间数据同步，ClickHouseCopier负责集群和数据迁移</strong>，ClickHouse一般需要Server、ZooKeeper和CHProxy三个组件。3. 日常运维如更新版本、更改配置文件<strong>两者都需要依赖Ansible或者SaltStack来进行批量更新</strong>。两者都有部分配置文件可以热更新，不用重启节点，而且有Session相关参数可以设置可以覆盖配置文件。Doris有较多的SQL命令协助运维，比如增加节点，Doris中Add Backend即可，ClickHouse中需要更改配置文件并下发到各个节点上。</p> 
+<p><strong>多租户管理ClickHouse的权限和Quota的粒度更细，可以很方便的支持多租户使用共享集群。比如可以设置查询内存、查询线程数量、查询超时等，以便来限制查询的大小；同时结合查询并发和一定时间窗口内的查询数量，以便来控制查询数量。多租户的方案，对发展中的业务非常友好，因为使用共享集群资源，可以快速动态调整配额，如果是独占集群资源利用率不高、扩容相对麻烦</strong></p> 
+<h3><a id="_18"></a><strong>扩容</strong></h3> 
+<p>扩容/缩容<em><strong>Doris</strong></em>支持集群的在线动态扩缩容，通过内置的SQL命令 alter system add/decomission backends 即可进行节点的扩缩容，数据均衡的粒度是tablet，每个tablet大概是数百兆，扩容后表的tablet会自动拷贝到新的BE节点，如果在线扩容，应该小批量去增加BE，避免过于剧烈导致集群不稳定。</p> 
+<p><em><strong>ClickHouse</strong></em>的扩容缩容复杂且繁琐，***目前做不到自动在线操作，需要自研工具支持。***扩容时需要部署新的节点，添加新分片和副本到配置文件中，并在新节点上创建元数据，如果是扩副本数据会自动均衡，如果是扩分片，需要手工去做均衡，或自研相关工具，让均衡自动进行。</p> 
+<h3><a id="_24"></a><strong>分布式：</strong></h3> 
+<p><em><strong>Doris</strong></em>组件的分布式能力主要包含在FE中，包含Berkeley JE HA组件，包含选举策略和数据同步，Doris的 FrontEnd可以部署3个Follwer + n个Oberserver（n&gt;=0）的方式来实现元数据和访问连接的高可用</p> 
+<p><em><strong>ClickHouse</strong></em>目前版本是基于ZooKeeper来存储元数据，ClickHouse依赖Zookeeper来实现数据的高可用，Zookeeper带来额外的运维复杂性的同时也有性能问题。ClickHouse没有集中的元数据管理，每个节点分别管理，高可用一般依赖业务方来实现。ClickHouse中某个副本节点宕机，对查询和分布式表的导入没有影响，本地表导入要在导数程序中做灾备方案比如选择健康的副本，对DDL操作是有影响的，需要及时处理。</p> 
+<p>在分布式能力这块，Doris在内核侧已经实现，使用的代价更低；而ClickHouse需要依赖于外部配套的措施去保障，使用成本较高。</p> 
+<p>事务支持ACID指事务的原子性、一致性、隔离性和持久化，<br> OLAP的事务体现在几个方面：<br> 一是<strong>导数</strong>，需要保证导数的原子性，同时也要保证明细数据和物化视图的数据一致性；<br> 二是<strong>元数据的变更</strong>，需要保证所有节点的元数据统一变更的强一致性；<br> 三是<strong>在节点间做数据均衡时，需要保证数据的一致性</strong> Doris提供了导入的事务支持，可以保证导数的幂等性，比如数据导入的原子性，如果有其他错误会自动回滚，同时相同标签的数据不会重复导入。基于导入事务的功能，Doris还实现了Flink-connector这样的外部组件可以实现数据导入不丢不重。两者均不支持通用TP场景中的BEGIN/END/COMMIT语义的事务，很明显有事务支持的Doris比无事务支持的ClickHouse要节省很多开发成本，因为在ClickHouse中，这一切都需要外部导数程序来保证。ClickHouse不支持事务，需要在外部去做各种校验和检查，在导数这块能保证100万以内的原子性，但是不保证一致性，比如要更新某些字段或者更新物化视图，这个操作是后台异步的，需要显示指定关键字FINAL来查询最终数据，而且其他操作没有事务支持。DDL操作两者都是异步的，但是Doris能保证各个节点元数据的一致性，但ClickHouse中保证不了，会出现局部节点元数据和其他节点不一致的情况。</p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/fdb7ba0b0769d96dad321bfdfc725bda/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">vue3动态生成的watch不会自动清除</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/ef91286e483b81a6241d8796f4d5e24b/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">virtualbox安装centos7，共享文件夹及其正确的挂载，网络与IP设置完整教程</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

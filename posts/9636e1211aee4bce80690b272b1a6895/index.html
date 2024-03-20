@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>spring ioc源码详解 - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="spring ioc源码详解" />
+<meta property="og:description" content="IOC 是 spring 中最最最最核心的部分。
+IOC 即控制反转，就是说资源不由使用资源的双方管理，而由不使用资源的第三方（IOC容器）管理。对象不再由使用者来创建（比如 new）和管理。
+它主要有两个好处：
+资源集中管理，实现资源的可配置和易管理降低使用双方的依赖程度，也就是解耦 IOC 容器的最顶层接口是 BeanFactory，也就是说，只要实现了 BeanFactory 接口的类(比如ApplicationContext)，都可以看做是 ioc 容器！最常见的有 AbstractApplicationContext、DefaultListableBeanFactory 等等。源码中但凡看到 xxxApplicationContext、xxxBeanFactory 的，都是 ioc 容器。
+本文将详细讲解 bean 的实例化、初始化的源码，以及 spring 解决 bean 的循环依赖的问题的源码
+首先我们看一张 spring ioc 的大致流程图：
+大致流程说明：
+加载 bean 定义信息（BeanDefinition），来源可能是 XML、注解等等通过 BeanFactoryPostProcessor 对 BeanDefinition 做一些事情实例化 bean 对象在 bean 初始化前，通过 BeanPostProcessor 对 bean 对象做一些事情初始化 bean 对象在 bean 初始化后，通过 BeanPostProcessor 对 bean 对象做一些事情 以 springboot 启动为例，它会创建一个 ioc 容器，并实例化 bean ，由容器来管理。
+bean 的实例化 在上一篇文章《spring ioc源码讲解之加载BeanDefinition》中，已经详细讲了 BeanDefinition 是如何加载的。本文详细讲解 ioc 源码中的其它部分。" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/9636e1211aee4bce80690b272b1a6895/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2021-08-21T14:24:30+08:00" />
+<meta property="article:modified_time" content="2021-08-21T14:24:30+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">spring ioc源码详解</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p>IOC 是 spring 中最最最最核心的部分。</p> 
+<p>IOC 即控制反转，就是说<span style="color:#fe2c24;">资源不由使用资源的双方管理，而由不使用资源的第三方（IOC容器）管理</span>。对象不再由使用者来创建（比如 new）和管理。</p> 
+<p>它主要有两个好处：</p> 
+<ul><li>资源集中管理，实现资源的可配置和易管理</li><li>降低使用双方的依赖程度，也就是解耦</li></ul> 
+<p>IOC 容器的最顶层接口是 BeanFactory，也就是说，只要实现了 BeanFactory 接口的类(比如ApplicationContext)，都可以看做是 ioc 容器！最常见的有 AbstractApplicationContext、DefaultListableBeanFactory  等等。源码中但凡看到 xxxApplicationContext、xxxBeanFactory 的，都是 ioc 容器。</p> 
+<blockquote> 
+ <p>本文将详细讲解 bean 的实例化、初始化的源码，以及 spring 解决 bean 的循环依赖的问题的源码</p> 
+</blockquote> 
+<p>首先我们看一张 spring ioc 的大致流程图：</p> 
+<p><img alt="" height="479" src="https://images2.imgbox.com/91/78/qiWPD0bz_o.png" width="1012"></p> 
+<p>大致流程说明：</p> 
+<ol><li>加载 bean 定义信息（BeanDefinition），来源可能是 XML、注解等等</li><li>通过 BeanFactoryPostProcessor 对 BeanDefinition 做一些事情</li><li>实例化 bean 对象</li><li>在 bean 初始化前，通过 BeanPostProcessor 对 bean 对象做一些事情</li><li>初始化 bean 对象</li><li>在 bean 初始化后，通过 BeanPostProcessor 对 bean 对象做一些事情 </li></ol> 
+<p>以 springboot 启动为例，它会创建一个 ioc 容器，并实例化 bean ，由容器来管理。</p> 
+<h2 id="bean%C2%A0%E7%9A%84%E5%AE%9E%E4%BE%8B%E5%8C%96">bean 的实例化</h2> 
+<p>在上一篇文章《<a href="https://mp.csdn.net/mp_blog/creation/editor/119705692">spring ioc源码讲解之加载BeanDefinition</a>》中，已经详细讲了 BeanDefinition 是如何加载的。本文详细讲解 ioc 源码中的其它部分。</p> 
+<p>首先进入 refresh 方法</p> 
+<p><img alt="" height="798" src="https://images2.imgbox.com/dc/ab/01BaOBan_o.png" width="906"></p> 
+<p>invokeBeanFactoryPostProcessors 是加载 BeanDefinition 的地方；</p> 
+<p>initApplicationEventMulticaster 和 registerListeners 是初始化时间发布器和注册监听器的地方，是<span style="color:#fe2c24;">观察者模式</span>的的运用，具体源码在我前面的文章《<a href="https://mp.csdn.net/mp_blog/creation/editor/119351800">spring源码中设计模式的使用</a>》中也详细讲了，这里不再重复。</p> 
+<p>本文主要讲的是 finishBeanFactoryInitialization 方法，在这个方法里面，实例化并初始化了所有非懒加载的 bean。</p> 
+<p>进入 finishBeanFactoryInitialization 并往下看，进到 preInstantiateSingletons 方法中。可以看到在这个方法中，循环遍历了 beanDefinitionNames，并根据 beanName 进行了 getBean 操作。这个 beanDefinitionNames 就是前面在加载 BeanDefinition 时进行设置的，它跟 beanDefinitionMap 相对应。</p> 
+<p><img alt="" height="685" src="https://images2.imgbox.com/fe/62/Q1av18j3_o.png" width="983"></p> 
+<blockquote> 
+ <p>首先将下设定：</p> 
+ <p>UserServiceImpl 中 引入了 PaymentService，而 PaymentServiceImpl 中也引入了 UserService。这是为了后面讲解循环依赖的源码。</p> 
+</blockquote> 
+<p>选一个自己定义的 bean，由于 paymentSercieImpl 这个 bean 排在前面，所以已这个 bean 为例，来讲下整个 bean 创建并初始化的流程。</p> 
+<p>进入 getBean 方法，老规矩，继续往下看，进入 doGetBean 方法</p> 
+<p><img alt="" height="376" src="https://images2.imgbox.com/c5/94/RTPMDGlb_o.png" width="812"></p> 
+<p>这里面调用了 getSingleton 方法，看名字就知道这个方法会返回一个 bean 的单例。所以进入 getSingleton 方法。这个方法看起来很熟悉，就是单例模式的运用，只是复杂了点。</p> 
+<p><img alt="" height="703" src="https://images2.imgbox.com/de/2d/Q9JYo4gC_o.png" width="879"></p> 
+<p>这里有个很重要的东西，就是 <span style="color:#fe2c24;"><strong>spring 的三级缓存</strong></span>！搞这个三级缓存，是为了解决 bean 的循环依赖问题！</p> 
+<p><span style="color:#fe2c24;">一级缓存 singletonObjects 中存放完全初始化好的 bean 的实例。<br> 二级缓存 earlySingletonObjects 中存放早期对象（未完全初始化完成的 bean 实例）。<br> 三级缓存 singletonFactories 中存放 bean 工厂对象。</span></p> 
+<p>下面结合实例一起讲下。</p> 
+<p>一级缓存这个很好理解，存放完全初始化好的 bean 实例，就是说这个属性都设置完毕，可以直接用的 bean 了。由于 ioc 容器中可能 bean 非常多，而且有些 bean 创建起来很麻烦，所以将他们缓存起来，方法之后使用。</p> 
+<p>上图中，由于 paymentServiceImpl 这个 bean 尚未实例化，所以从 singletonObjects 中取不到。取不到的话应该就会去创建了吧？非也！</p> 
+<p><img alt="" height="417" src="https://images2.imgbox.com/d4/ff/d4U77RlU_o.png" width="814"></p> 
+<p>isSingletonCurrentlyInCreation 返回的是 false，这个是判断当前这个 paymentServiceImpl 单例是否在创建中，显然现在还没开始创建，所以放回的是 false。所以 getSingleton 方法直接就退出了，返回 null。怎么跟我们预想的不一样？别急，继续往下看。</p> 
+<p>回到刚才的 doGetBean 方法中，我们获得的 sharedInstance 是空。然后继续往下执行</p> 
+<p><img alt="" height="359" src="https://images2.imgbox.com/c8/bf/WBPB2yIT_o.png" width="946"></p> 
+<p>这里根据 beanName 获取到它对应的 BeanDefinition，然后判断它有没有依赖于其他 bean。如果有依赖于其它 bean 的话，需要先等依赖的 bean 实例化之后，我当前这个 bean 才能进行实例化。我当前这个 paymentServiceImpl 并没有依赖其他 bean，所以不会走这段。这里指的依赖跟前面讲的循环依赖不是一个概念。这里的依赖是要加 @DependsOn 注解的，表示必须先让依赖的 bean 先创建。而循环依赖只是指属性的循环依赖。</p> 
+<p>往下继续看，看到了又调用了一个 getSingleton 方法，从参数也可以看出来不是同一个方法。而且看到了传入了一个回调函数，里面有 createBean 方法。很显然，bean 就是在这里创建的！</p> 
+<p><img alt="" height="439" src="https://images2.imgbox.com/29/29/ewC6glCn_o.png" width="933"></p> 
+<p>进入 getSingleton 方法，首先还是从一级缓存中获取，这里依然是 null，那就走创建 bean 的流程。</p> 
+<p><img alt="" height="265" src="https://images2.imgbox.com/30/f4/akWXfXxg_o.png" width="916"></p> 
+<p>往下继续看。首先在创建单例之前做了点事情，然后调用了 singletonFactory.getObject()</p> 
+<p><img alt="" height="428" src="https://images2.imgbox.com/d9/01/5TxJ3VmU_o.png" width="1012"></p> 
+<p>F7 进入此方法，进入到了回调函数中，真正开始创建 bean。</p> 
+<p><img alt="" height="413" src="https://images2.imgbox.com/f0/42/RAxxypob_o.png" width="760"></p> 
+<p>进入 createBean 方法，往下执行，会看到一个非常重要的方法： resolveBeforeInstantiation。</p> 
+<p><img alt="" height="316" src="https://images2.imgbox.com/d8/ff/uihMwt3K_o.png" width="873"></p> 
+<p>从它上面的注释 "Give BeanPostProcessors a chance to return a proxy instead of the target bean instance." 可以知道，这个地方是 BeanPostProcessor 为对象创建代理对象的地方。什么时候会用到代理对象呢？就是我们非常熟悉的 AOP！AOP 源码放后面再讲，所以此处先跳过。</p> 
+<p>继续往下走，看到调用了 doCreateBean 方法，一看到 do 字眼，就知道是真正干活的地方。进入 doCreateBean 。</p> 
+<p><img alt="" height="342" src="https://images2.imgbox.com/c9/56/DgsvEPMf_o.png" width="1061"></p> 
+<p>只看关键的地方，最下面进入 instantiateBean 方法</p> 
+<p><img alt="" height="382" src="https://images2.imgbox.com/31/fd/pi2cq1Q9_o.png" width="909"></p> 
+<p>instantiate 方法里面，首先获取了当前这个类的构造器，然后通过 BeanUtils.instantiateClass(constructorToUse) 返回实例。instantiateClass 方法内部，通过调用构造器的 newInstance 方法返回实例。</p> 
+<p><img alt="" height="640" src="https://images2.imgbox.com/ee/8d/4vRzeSpJ_o.png" width="1088"></p> 
+<p>那到了这一步，paymentServiceImpl 的实例已经创建了。回到前面的 doCreateBean 方法中，可以看到 bean实例已经获取了，但是属性值还没有！尤其是我们着重关注的 userService，因为 userService 中也引用了 PaymentService。</p> 
+<p><img alt="" height="582" src="https://images2.imgbox.com/e4/ec/OL3M4smY_o.png" width="773"></p> 
+<h2 id="Bean%C2%A0%E7%9A%84%E5%88%9D%E5%A7%8B%E5%8C%96%E5%8F%8A%E5%BE%AA%E7%8E%AF%E4%BE%9D%E8%B5%96%E9%97%AE%E9%A2%98%E8%A7%A3%E5%86%B3">Bean 的初始化及循环依赖问题解决</h2> 
+<p>继续往下看，发现在 addSingletonFactory 方法中，将刚刚创建的 bean 加入到 spring 的第三级缓存中！这个就是讲早期的 bean 暴露出来。</p> 
+<p><img alt="" height="387" src="https://images2.imgbox.com/08/ae/iJIsxHld_o.png" width="1144"></p> 
+<p>再往下面就是非常重要的给 bean 设置属性的地方了！</p> 
+<p><img alt="" height="502" src="https://images2.imgbox.com/e6/83/o37kVPjA_o.png" width="863"></p> 
+<p>首先看一把现象，可以看到，刚才我们的 paymentServiceImpl 中的属性都是空，但是执行完 populateBean 方法之后，它里面的三个属性已经设置好了。尤其是 userService，它里面的 paymentService 属性也已经有了。</p> 
+<p>所以 populateBean 方法非常重要，进入 populateBean 方法查看具体的细节。</p> 
+<p><img alt="" height="258" src="https://images2.imgbox.com/14/42/P9Zqagx2_o.png" width="842"></p> 
+<p>这一段是给 BeanPostProcessors 一个机会，在 bean 属性被设置之前，修改 bean 的一些状态。这是 spring 中常用的开放式的设计，让用户可以进行一些自定义。</p> 
+<p>继续往下看，循环遍历 BeanPostProcessor，最后那个 AutowiredAnnotationBeanPostProcessor，就是处理我们 @Autowired 注解的类！</p> 
+<p><img alt="" height="675" src="https://images2.imgbox.com/54/9d/mIdeWTLd_o.png" width="1124"></p> 
+<p>进入它的 postProcessProperties 方法。可以看到，里面首先获取了当前类中以 @Autowried 注解的属性，此处是三个。然后开始注入。</p> 
+<p><img alt="" height="755" src="https://images2.imgbox.com/34/e5/9oj8eVw2_o.png" width="1200"></p> 
+<p>查看 inject 方法内部，循环遍历需要注入的属性</p> 
+<p><img alt="" height="469" src="https://images2.imgbox.com/37/5e/ht5O8qqg_o.png" width="1038"></p> 
+<p>以属性 userService 为例，获得此属性对于的 Field 对象，然后调用 resolveFieldValue 方法进行进一步处理。</p> 
+<p><img alt="" height="484" src="https://images2.imgbox.com/b5/7b/Ry40duHJ_o.png" width="885"></p> 
+<p>进入 resolveFieldValue，里面首先处理了依赖关系</p> 
+<p><img alt="" height="383" src="https://images2.imgbox.com/97/db/Da1MUB3k_o.png" width="860"></p> 
+<p>由于代码比较多，所以跳过了一些不重要的步骤，在 doResolveDependency 方法中，找到跟当前传入的 Descriptor(里面存放了 userService 对于的 Field 对象) 匹配的 bean，</p> 
+<p><img alt="" height="590" src="https://images2.imgbox.com/58/ec/PpUfJ7oM_o.png" width="1200"></p> 
+<p>然后调用 descriptor 的 resolveCandidate方法，对这个 "userServiceImpl" 候选 bean 进行解析。</p> 
+<p><img alt="" height="680" src="https://images2.imgbox.com/a5/1f/QHkI20pR_o.png" width="1146"></p> 
+<p>进入 resolveCandidate 方法，就看到了我们非常熟悉的方法了：<span style="color:#fe2c24;">beanFactory.getBean(beanName)</span>！</p> 
+<p>调用 getBean 方法，就表明，要开始实例化 userServiceImpl 这个 bean 了！</p> 
+<p><img alt="" height="549" src="https://images2.imgbox.com/5c/79/L9ppdPzz_o.png" width="1034"></p> 
+<p>所以我们发现，我们刚刚实例化了 paymentServiceImpl 这个 bean，在给它初始化的时候，读取到它有个属性是 userService，然后就开始实例化 userServiceImpl 这个 bean 了！</p> 
+<p>继续走一遍 getBean 的流程，一直走到 doCreateBean 方法中</p> 
+<p><img alt="" height="725" src="https://images2.imgbox.com/78/bf/ZkgfA5cg_o.png" width="966"></p> 
+<p>现在实例化了 userServiceImple 这个 bean，此时它的属性是空。继续往下走，调用 populateBean 方法进行属性的设置。然后跟前面一样，仍然进到 AutowiredAnnotationBeanPostProcessor 的 postProcessProperties 方法中。它里面有个属性是 paymentService。</p> 
+<p><img alt="" height="529" src="https://images2.imgbox.com/85/88/9bllAF8O_o.png" width="1200"></p> 
+<p>重复前面的流程一直往下看，最终进到 resolveCandidate 方法，看到在里面去 ioc 容器中获取 paymentServiceImpl 这个 bean！那此时我们根据 paymentServiceImpl 这个 beanName 去 ioc 容器中寻找的话，会获得什么呢？</p> 
+<p><img alt="" height="206" src="https://images2.imgbox.com/52/87/PMG0RhfF_o.png" width="880"></p> 
+<p>继续往下走，进到 setSingleton 方法，看到了吧，我们在创建 paymentServiceImpl 这个 bean 时，第一次进来的时候，由于当前 bean 不在创建中，所有无法往下执行！但是此时 isSingletonCurrentlyInCreation 是 true。所以会往下继续执行！</p> 
+<p><img alt="" height="488" src="https://images2.imgbox.com/20/8d/I1kQpuDj_o.png" width="1062"></p> 
+<p>真是不容易，饶了一大个圈子，终于又回到最初看的 getSingleton 方法了！</p> 
+<p><img alt="" height="564" src="https://images2.imgbox.com/f7/9e/Kn8qiFE8_o.png" width="1200"></p> 
+<p>往下执行时我们发现，它从第三级缓存 singletonFactories 中，获取 paymentServiceImpl。在前面的过程中，我们也看到了将 bean 放入 singletonFactories 的过程，也就是将未完成初始化的 paymentServiceImpl 暴露出去的过程。</p> 
+<p><img alt="" height="336" src="https://images2.imgbox.com/43/c5/wg8lq8ee_o.png" width="890"></p> 
+<p>这个 addSingletonFactory 就是暴露早期对象的地方，里面传了个回调函数，当我们调用 singletonFactory.getObject() 方法时，就会回调到这个函数，返回之前缓存的对象。此时里面的属性还是空的。然后将它存到二级缓存 earlySingletonObjects 中，并删除三级缓存中的当前 bean。</p> 
+<p><img alt="" height="431" src="https://images2.imgbox.com/b4/ff/kebu5YgO_o.png" width="693"></p> 
+<p>此时，回到 doGetBean 中，这次获取到的 sharedInstance 就不是空了！还记得第一次获取到的是 null 吧。接下去执行 getObjectForBeanInstance 方法。</p> 
+<p><img alt="" height="594" src="https://images2.imgbox.com/5f/ac/DtiJQy2g_o.png" width="1142"></p> 
+<p>如果不是 FactoryBean，这里面直接就返回当前实例了。后面也是直接返回。</p> 
+<p>然后，还记得吧，我们前面是在初始化 userServiceImpl ！在初始化的过程中，去 getBean 了 paymentServiceImpl 这个 bean，那现在就返回这个 bean 实例了！</p> 
+<p><img alt="" height="740" src="https://images2.imgbox.com/c2/94/QqvgxfmL_o.png" width="911"></p> 
+<p>之后将 paymentServiceImpl 这个属性缓存起来。</p> 
+<p><img alt="" height="689" src="https://images2.imgbox.com/38/f1/YswjThEJ_o.png" width="927"></p> 
+<p>然后继续往下走，会回到前面我们调用 AutowiredAnnotationBeanPostProcessor 的 postProcessProperties 方法的地方，现在发现 userServiceImpl 中的 属性已经设置好了，</p> 
+<p><img alt="" height="611" src="https://images2.imgbox.com/3c/58/YwfOgYpF_o.png" width="1120"></p> 
+<p>到这边为止，userServiceImpl 的 populateBean 就执行完毕了！然后调用 initializeBean 进行最后的初始化并暴露此 bean。</p> 
+<p><img alt="" height="189" src="https://images2.imgbox.com/89/25/yAFDh2aZ_o.png" width="673"></p> 
+<p>进入 initializeBean，里面的 applyBeanPostProcessorsBeforeInitialization 是在 bean 初始化之前做一些事情的地方。applyBeanPostProcessorsAfterInitialization 是在 bean 初始化之后做一些事情。</p> 
+<p><img alt="" height="514" src="https://images2.imgbox.com/5d/20/8LyR27F6_o.png" width="920"></p> 
+<p>中间的 invokeInitMethods 是调用初始化的方法。如果我们的 bean 实现了 InitializingBean，并且重写了 afterPropertiesSet 方法的话，就可以进行一些自定义！</p> 
+<p><img alt="" height="269" src="https://images2.imgbox.com/1f/36/TOms1H5S_o.png" width="876"></p> 
+<p>最后，返回已经初始化完成的 bean</p> 
+<p><img alt="" height="444" src="https://images2.imgbox.com/56/5a/zt5vtp1V_o.png" width="861"></p> 
+<p>然后，一层层退出，最终回到给最初的 paymentServiceImpl 设置属性的地方！</p> 
+<p>还记得吗，我们一开始是在给 paymentServiceImpl 设置属性！在设置属性的时候，实例化并且初始化了 userServiceImpl 这个 bean。现在 userServiceImpl 已经初始化完毕了，刚刚才返回。绕了很大一个圈子！</p> 
+<p><img alt="" height="757" src="https://images2.imgbox.com/3d/5c/YNE1MN7W_o.png" width="1200"></p> 
+<p> 跟前面一样，也将 paymentServiceImpl 中的 userService 属性缓存起来。</p> 
+<p><img alt="" height="556" src="https://images2.imgbox.com/1f/82/DvPKo0jC_o.png" width="1091"></p> 
+<p>返回了 userService 这个属性后，通过反射机制，调用 Field 的 set 方法，真正给 paymentService 中的 userService 属性设置值！</p> 
+<p><img alt="" height="655" src="https://images2.imgbox.com/5a/25/8Wte4Zmw_o.png" width="1098"></p> 
+<p>设置完成后，就返回了最初 paymentServiceImpl 的 populateBean 方法中，此时可以看到它的属性已经设置完毕。</p> 
+<p><img alt="" height="681" src="https://images2.imgbox.com/a9/59/dZN054uN_o.png" width="1181"></p> 
+<p>之后就是调用 initializeBean 方法对 paymentServiceImpl 这个 bean 进行初始化。然后一步步返回，一直返回到最初调用 getBean 的地方！</p> 
+<p><img alt="" height="724" src="https://images2.imgbox.com/7c/39/69ZfrLmD_o.png" width="1200"></p> 
+<p>到这个地方位置，才算是走完对 paymentServiceImpl 的 getBean 流程了。字都打得累死了！</p> 
+<p>接下来再进行 getBean("userServiceImpl") 的话，直接就返回了。因为前面在处理 paymentServiceImpl 的过程中，已经把 userServiceImpl 给实例化并且初始化完成了。后面再去获取的话，直接从一级缓存 singletonObjects 中就能获取了！</p> 
+<p><img alt="" height="720" src="https://images2.imgbox.com/3e/a7/DHvq2zY6_o.png" width="937"></p> 
+<p>还有一个重要的步骤前面忘记了，在那个有回到方法的 getSingleton 方法中，获取到完整的 bean 之后，会将此 bean 实例加入到一级缓存（这里我重新 debug 的，beanName 不一样，不过道理是一样的）</p> 
+<p><img alt="" height="259" src="https://images2.imgbox.com/b6/2e/8tEMMnGp_o.png" width="786"></p> 
+<p><img alt="" height="297" src="https://images2.imgbox.com/8e/b5/m5R6lqX3_o.png" width="879"></p> 
+<p>这也就是为什么上面在第二次获取 userServiceImpl 时，可以直接在缓存中获取到！</p> 
+<p>到此为止，总算 ioc 中，整个 bean 的实例化、初始化的流程，以及循环依赖的问题讲完了。下期讲 spring ioc 的源码。</p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/f54f33b9206c3b0c84ed8d2346182dd2/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">SSH 详解（实践及应用）</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/ef957a1c7390193d78b70b0294f84060/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">EI会议列表--IEEE主办的会议</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

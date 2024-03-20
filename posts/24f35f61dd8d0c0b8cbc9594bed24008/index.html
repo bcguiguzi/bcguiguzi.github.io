@@ -1,0 +1,331 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>SSH原理与使用 - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="SSH原理与使用" />
+<meta property="og:description" content="一、SSH介绍 SSH是Secure Shell Protocol的简写，用于加密两台计算机之间的通信，并且支持各种身份验证机制。SSH先对联机数据包通过加密技术进行加密处理，加密后在进行数据传输。确保了传递的数据安全。
+SSH是安全的加密协议，用于远程连接linux服务器。SSH默认端口是22，安全协议版本SSHv2，除了2之外还有SSHv1（有漏洞）。SSH服务端主要包含两个服务功能SSH远程连接和SFTP服务。Linux SSH客户端包含ssh远程连接命令，以及远程拷贝scp命令等。 而SSH 的软件架构是服务器-客户端模式（Server - Client）。在这个架构中，SSH 软件分成两个部分：向服务器发出请求的部分，称为客户端（client），OpenSSH 的实现为 ssh；接收客户端发出的请求的部分，称为服务器（server），OpenSSH 的实现为 sshd。
+二、SSH登录 1、基本用法 SSH主要用于远程登录。假定你要以用户名user，登录远程主机host，只要一条简单命令就可以了。
+# user指的是你远程主机的名字，host指的是ip或者局域网的主机名 ssh user@host # 如果本地用户名与远程用户名一致，登录时可以省略用户名。 ssh host #SSH的默认端口是22，你的登录请求会送进远程主机的22端口。使用p参数，可以修改这个端口，注意端口开放。 ssh -p 2222 user@hostSSH 2、口令登录 SSH之所以能够保证安全，原因在于它采用了公钥加密。整个过程是这样的：
+远程主机收到用户的登录请求，把自己的公钥发给用户。用户使用这个公钥，将登录密码加密后，发送回来。远程主机用自己的私钥，解密登录密码，如果密码正确，就同意用户登录。 这个过程本身是安全的，但是实施的时候存在一个风险：如果有人截获了登录请求，然后冒充远程主机，将伪造的公钥发给用户，那么用户很难辨别真伪。因为不像https协议，SSH协议的公钥是没有证书中心（CA）公证的，也就是说，都是自己签发的。可以设想，如果攻击者插在用户与远程主机之间（比如在公共的wifi区域），用伪造的公钥，获取用户的登录密码。再用这个密码登录远程主机，那么SSH的安全机制就荡然无存了。这种风险就是著名的&#34;中间人攻击&#34;（Man-in-the-middle attack）。
+ssh user@host 第一次登录对方主机，系统会出现一个警告提示，意思是无法确认远程主机的真实性，只知道它的公钥指纹，问你还想继续连接吗？经过用户的考虑后接受，之后进行口令的输入，如果密码正确，就可以登录了。当远程主机的公钥被接受以后，它就会被保存在文件$HOME/.ssh/known_hosts之中。下次再连接这台主机，系统就会认出它的公钥已经保存在本地了，从而跳过警告部分，直接提示输入密码。
+3、公钥登录 使用密码登录，每次都必须输入密码，非常麻烦。SSH还提供了公钥登录，可以省去输入密码的步骤。
+所谓&#34;公钥登录&#34;，原理很简单，就是用户将自己的公钥储存在远程主机上。登录的时候，远程主机会向用户发送一段随机字符串，用户用自己的私钥加密后，再发回来。远程主机用事先储存的公钥进行解密，如果成功，就证明用户是可信的，直接允许登录shell，不再要求密码。
+这种方法要求用户必须提供自己的公钥。如果没有现成的，可以直接用ssh-keygen生成一个：
+#程序会询问一系列问题，然后生成密钥，默认rsa算法 ssh-keygen #通常做法是使用-t参数，指定密钥的加密算法 ssh-keygen -t dsa 执行ssh-keygen命令以后，会出现第一个问题，询问密钥保存的文件名，默认是~/.ssh/id_rsa文件，这个是私钥的文件名，对应的公钥文件~/.ssh/id_rsa.pub是自动生成的。用户的密钥一般都放在主目录的.ssh目录里面。生成密钥以后，公钥必须上传到服务器，才能使用公钥登录。
+手动上传公钥
+OpenSSH 规定，用户公钥保存在服务器的~/.ssh/authorized_keys文件。你要以哪个用户的身份登录到服务器，密钥就必须保存在该用户主目录的~/.ssh/authorized_keys文件。只要把公钥添加到这个文件之中，就相当于公钥上传到服务器了。每个公钥占据一行。如果该文件不存在，可以手动创建。
+ssh-copy-id命令：自动上传公钥
+OpenSSH 自带一个ssh-copy-id命令，可以自动将公钥拷贝到远程服务器的~/.ssh/authorized_keys文件。如果~/.ssh/authorized_keys文件不存在，ssh-copy-id命令会自动创建该文件。
+#需要把工作目录切换到~/.ssh/下 ssh-copy-id -i id_rsa user@host 上面命令中，-i参数用来指定公钥文件，user是所要登录的账户名，host是服务器地址。如果省略用户名，默认为当前的本机用户名。执行完该命令，公钥就会拷贝到服务器。
+#SSH 就会自动采用密钥登录，不再提示输入密码。 ssh user@host 从此ssh登录，为了安全性就不需要密码登录了，具体方法就是打开服务器 sshd 的配置文件/etc/ssh/sshd_config，将PasswordAuthentication这一项设为no，最后重启sshd。" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/24f35f61dd8d0c0b8cbc9594bed24008/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2022-07-25T19:21:08+08:00" />
+<meta property="article:modified_time" content="2022-07-25T19:21:08+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">SSH原理与使用</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-light">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <h2><a id="SSH_1"></a>一、SSH介绍</h2> 
+<p>SSH是Secure Shell Protocol的简写，用于加密两台计算机之间的通信，并且支持各种身份验证机制。SSH先对联机数据包通过加密技术进行加密处理，加密后在进行数据传输。确保了传递的数据安全。</p> 
+<ul><li>SSH是安全的加密协议，用于远程连接linux服务器。</li><li>SSH默认端口是22，安全协议版本SSHv2，除了2之外还有SSHv1（有漏洞）。</li><li>SSH服务端主要包含两个服务功能SSH远程连接和SFTP服务。</li><li>Linux SSH客户端包含ssh远程连接命令，以及远程拷贝scp命令等。</li></ul> 
+<p>而SSH 的软件架构是服务器-客户端模式（Server - Client）。在这个架构中，SSH 软件分成两个部分：向服务器发出请求的部分，称为客户端（client），OpenSSH 的实现为 ssh；接收客户端发出的请求的部分，称为服务器（server），OpenSSH 的实现为 sshd。</p> 
+<h2><a id="SSH_12"></a>二、SSH登录</h2> 
+<h3><a id="1_14"></a>1、基本用法</h3> 
+<p>SSH主要用于远程登录。假定你要以用户名user，登录远程主机host，只要一条简单命令就可以了。</p> 
+<pre><code class="prism language-bash"><span class="token comment"># user指的是你远程主机的名字，host指的是ip或者局域网的主机名</span>
+<span class="token function">ssh</span> user@host
+<span class="token comment"># 如果本地用户名与远程用户名一致，登录时可以省略用户名。</span>
+<span class="token function">ssh</span> <span class="token function">host</span>
+<span class="token comment">#SSH的默认端口是22，你的登录请求会送进远程主机的22端口。使用p参数，可以修改这个端口，注意端口开放。</span>
+<span class="token function">ssh</span> -p <span class="token number">2222</span> user@hostSSH
+</code></pre> 
+<h3><a id="2_27"></a>2、口令登录</h3> 
+<p>SSH之所以能够保证安全，原因在于它采用了公钥加密。整个过程是这样的：</p> 
+<ol><li>远程主机收到用户的登录请求，把自己的公钥发给用户。</li><li>用户使用这个公钥，将登录密码加密后，发送回来。</li><li>远程主机用自己的私钥，解密登录密码，如果密码正确，就同意用户登录。</li></ol> 
+<p>这个过程本身是安全的，但是实施的时候存在一个风险：如果有人截获了登录请求，然后冒充远程主机，将伪造的公钥发给用户，那么用户很难辨别真伪。因为不像https协议，SSH协议的公钥是没有证书中心（CA）公证的，也就是说，都是自己签发的。可以设想，如果攻击者插在用户与远程主机之间（比如在公共的wifi区域），用伪造的公钥，获取用户的登录密码。再用这个密码登录远程主机，那么SSH的安全机制就荡然无存了。这种风险就是著名的<a href="https://baike.baidu.com/item/%E4%B8%AD%E9%97%B4%E4%BA%BA%E6%94%BB%E5%87%BB/1739730?fr=aladdin" rel="nofollow">"中间人攻击"</a>（Man-in-the-middle attack）。</p> 
+<pre><code class="prism language-bash"><span class="token function">ssh</span> user@host
+</code></pre> 
+<p>第一次登录对方主机，系统会出现一个警告提示，意思是无法确认远程主机的真实性，只知道它的公钥指纹，问你还想继续连接吗？经过用户的考虑后接受，之后进行口令的输入，如果密码正确，就可以登录了。当远程主机的公钥被接受以后，它就会被保存在文件<code>$HOME/.ssh/known_hosts</code>之中。下次再连接这台主机，系统就会认出它的公钥已经保存在本地了，从而跳过警告部分，直接提示输入密码。</p> 
+<h3><a id="3_43"></a>3、公钥登录</h3> 
+<p>使用密码登录，每次都必须输入密码，非常麻烦。SSH还提供了公钥登录，可以省去输入密码的步骤。</p> 
+<p>所谓"公钥登录"，原理很简单，就是用户将自己的公钥储存在远程主机上。登录的时候，远程主机会向用户发送一段随机字符串，用户用自己的私钥加密后，再发回来。远程主机用事先储存的公钥进行解密，如果成功，就证明用户是可信的，直接允许登录shell，不再要求密码。</p> 
+<p>这种方法要求用户必须提供自己的公钥。如果没有现成的，可以直接用ssh-keygen生成一个：</p> 
+<pre><code class="prism language-bash"><span class="token comment">#程序会询问一系列问题，然后生成密钥，默认rsa算法</span>
+ssh-keygen
+<span class="token comment">#通常做法是使用-t参数，指定密钥的加密算法</span>
+ssh-keygen -t dsa
+</code></pre> 
+<p>执行<code>ssh-keygen</code>命令以后，会出现第一个问题，询问密钥保存的文件名，默认是<code>~/.ssh/id_rsa</code>文件，这个是私钥的文件名，对应的公钥文件<code>~/.ssh/id_rsa.pub</code>是自动生成的。用户的密钥一般都放在主目录的<code>.ssh</code>目录里面。生成密钥以后，公钥必须上传到服务器，才能使用公钥登录。</p> 
+<p><strong>手动上传公钥</strong></p> 
+<p>OpenSSH 规定，用户公钥保存在服务器的<code>~/.ssh/authorized_keys</code>文件。你要以哪个用户的身份登录到服务器，密钥就必须保存在该用户主目录的<code>~/.ssh/authorized_keys</code>文件。只要把公钥添加到这个文件之中，就相当于公钥上传到服务器了。每个公钥占据一行。如果该文件不存在，可以手动创建。</p> 
+<p><code>ssh-copy-id</code>命令：<strong>自动上传公钥</strong></p> 
+<p>OpenSSH 自带一个<code>ssh-copy-id</code>命令，可以自动将公钥拷贝到远程服务器的<code>~/.ssh/authorized_keys</code>文件。如果<code>~/.ssh/authorized_keys</code>文件不存在，<code>ssh-copy-id</code>命令会自动创建该文件。</p> 
+<pre><code class="prism language-bash"><span class="token comment">#需要把工作目录切换到~/.ssh/下</span>
+ssh-copy-id -i id_rsa user@host
+</code></pre> 
+<p>上面命令中，<code>-i</code>参数用来指定公钥文件，<code>user</code>是所要登录的账户名，<code>host</code>是服务器地址。如果省略用户名，默认为当前的本机用户名。执行完该命令，公钥就会拷贝到服务器。</p> 
+<pre><code class="prism language-bash"><span class="token comment">#SSH 就会自动采用密钥登录，不再提示输入密码。</span>
+<span class="token function">ssh</span> user@host
+</code></pre> 
+<p>从此ssh登录，为了安全性就不需要密码登录了，具体方法就是打开服务器 sshd 的配置文件<code>/etc/ssh/sshd_config</code>，将<code>PasswordAuthentication</code>这一项设为<code>no</code>，最后重启sshd。</p> 
+<h2><a id="SSH_82"></a>三、SSH端口转发</h2> 
+<h3><a id="1_84"></a>1、动态转发</h3> 
+<p>SSH会建立一个socket，去监听本地的端口。一旦有数据传向那个端口，就自动把它转移到SSH连接上面，发往远程主机。可以想象，如果某个本地端口原来是一个不加密端口，现在将变成一个加密端口</p> 
+<pre><code class="prism language-bash"><span class="token function">ssh</span> -D local-port tunnel-host <span class="token punctuation">[</span>-N<span class="token punctuation">]</span>
+<span class="token comment">#举例</span>
+<span class="token function">ssh</span> -D <span class="token number">8080</span> user@host
+</code></pre> 
+<p>上面命令中，<code>-D</code>表示动态转发，<code>local-port</code>是本地端口，<code>tunnel-host</code>是 SSH 服务器，<code>-N</code>表示这个 SSH 连接只进行端口转发，不登录远程 Shell，不能执行远程命令，只能充当隧道。</p> 
+<h3><a id="2_96"></a>2、本地转发</h3> 
+<blockquote> 
+ <p>本地转发（local forwarding）指的是，SSH 服务器作为中介的跳板机，建立本地计算机与特定目标网站之间的加密连接。</p> 
+</blockquote> 
+<p>本地转发是在本地计算机的 SSH 客户端建立的转发规则。它会指定一个本地端口（local-port），所有发向那个端口的请求，都会转发到 SSH 跳板机（tunnel-host），然后 SSH 跳板机作为中介，将收到的请求发到目标服务器（target-host）的目标端口（target-port）。</p> 
+<pre><code class="prism language-bash"><span class="token function">ssh</span> -L local-port:target-host:target-port tunnel-host <span class="token punctuation">[</span>-N<span class="token punctuation">]</span> <span class="token punctuation">[</span>-f<span class="token punctuation">]</span>
+</code></pre> 
+<p>上面命令中，<code>-L</code>参数表示本地转发，<code>local-port</code>是本地端口，<code>target-host</code>是你想要访问的目标服务器，<code>target-port</code>是目标服务器的端口，<code>tunnel-host</code>是 SSH 跳板机。<code>-N</code>参数表示不在 SSH 跳板机执行远程命令，让 SSH 只充当隧道。另外还有一个<code>-f</code>参数表示 SSH 连接在后台运行。</p> 
+<p>举例来说，现在有一台 SSH 跳板机<code>root@10.16.22.123</code>，我们可以通过本地访问<code>http://localhost:16006</code>即可访问到跳板机的<code>127.0.0.1:6006</code>端口</p> 
+<pre><code class="prism language-bash"><span class="token comment">#本机运行</span>
+<span class="token function">ssh</span> -L <span class="token number">16006</span>:127.0.0.1:6006 root@10.16.22.123
+</code></pre> 
+<h3><a id="3_115"></a>3、远程端口转发</h3> 
+<blockquote> 
+ <p>远程端口指的是在远程 SSH 服务器建立的转发规则。</p> 
+</blockquote> 
+<p>这种场景比较特殊，主要针对内网的情况。本地计算机在外网，SSH 跳板机和目标服务器都在内网，而且本地计算机无法访问内网之中的 SSH 跳板机，但是 SSH 跳板机可以访问本机计算机。由于本机无法访问内网 SSH 跳板机，就无法从外网发起 SSH 隧道，建立端口转发。必须反过来，从 SSH 跳板机发起隧道，建立端口转发，这时就形成了远程端口转发。</p> 
+<pre><code class="prism language-bash"><span class="token function">ssh</span> -R local-port:target-host:target-port <span class="token builtin class-name">local</span> <span class="token punctuation">[</span>-N<span class="token punctuation">]</span> <span class="token punctuation">[</span>-f<span class="token punctuation">]</span>
+</code></pre> 
+<p>上面的命令，首先需要注意，不是在本机执行的，而是在 SSH 跳板机执行的，从跳板机去连接本地计算机。<code>-R</code>参数表示远程端口转发，<code>local-port</code>是本地计算机的端口，<code>target-host</code>和<code>target-port</code>是目标服务器(内网机器)及其端口，<code>local</code>是本地计算机。</p> 
+<p>举例来说，目标服务器在内网但可以访问外网，而跳板机不能直接访问内网，这时候就需要用远程端口转发，即可以直接使用跳板机访问内网</p> 
+<pre><code class="prism language-bash"><span class="token comment">#内网机器运行，将内网服务器的22端口转发到跳板机的2222端口</span>
+<span class="token function">ssh</span> -R <span class="token number">2222</span>:localhost:22 root@114.215.200.71 -N -f
+<span class="token comment">#在跳板机进行登录，即可访问内网目标服务器，注意端口开放，以及用户名的修改，localhost不变，其中若因为网络问题断线，可以下载autossh</span>
+<span class="token function">ssh</span> shawn@localhost -p <span class="token number">2222</span>
+</code></pre> 
+<h2><a id="SSH_136"></a>四、SSH其他命令</h2> 
+<h3><a id="1scp_138"></a>1、scp命令</h3> 
+<p><code>scp</code>是 SSH 提供的一个客户端程序，用来在两台主机之间加密传送文件（即复制文件）。<code>scp</code>主要用于以下三种复制操作：</p> 
+<ul><li>本地复制到远程。</li><li>远程复制到本地。</li><li>两个远程系统之间的复制。</li></ul> 
+<pre><code class="prism language-bash"><span class="token comment">#上传文件</span>
+<span class="token function">scp</span> <span class="token builtin class-name">source</span> destination
+<span class="token comment">#上传design.tar.gz到服务器/shawn目录下,也可以反过来</span>
+<span class="token function">scp</span> design.tar.gz root@114.215.200.70:/shawn
+<span class="token comment">#上传目录</span>
+<span class="token function">scp</span> -r 目录 用户名@ip:服务器绝对路径目录
+</code></pre> 
+<h3><a id="2sftp__155"></a>2、sftp 命令</h3> 
+<p><code>sftp</code>是 SSH 提供的一个客户端应用程序，主要用来安全地访问 FTP。因为 FTP 是不加密协议，很不安全，<code>sftp</code>就相当于将 FTP 放入了 SSH。</p> 
+<pre><code class="prism language-bash"><span class="token comment"># 连接</span>
+<span class="token function">sftp</span> username@hostname
+<span class="token comment"># 本地文件传输到远程主机。</span>
+put localfile
+<span class="token comment"># 远程文件传输到本地。</span>
+get remotefile
+</code></pre> 
+<h3><a id="3rsync__168"></a>3、rsync 命令</h3> 
+<p>rsync 是一个常用的 Linux 应用程序，用于文件同步。</p> 
+<h2><a id="_172"></a>五、其他</h2> 
+<h3><a id="1ssh_174"></a>1、ssh登录显示系统配置信息</h3> 
+<p>比如以下信息，显示登录的时间，显示当前进程数，IP，内存，硬盘等一些使用情况，还能知道上次登录的时间以及IP</p> 
+<pre><code class="prism language-bash">Welcome to Ubuntu <span class="token number">20.04</span>.4 LTS <span class="token punctuation">(</span>GNU/Linux <span class="token number">5.4</span>.0-47-generic x86_64<span class="token punctuation">)</span>
+  - Documentation:  <span class="token punctuation">[</span>https://help.ubuntu.com<span class="token punctuation">]</span><span class="token punctuation">(</span>https://help.ubuntu.com<span class="token punctuation">)</span>
+  - Management:     <span class="token punctuation">[</span>https://landscape.canonical.com<span class="token punctuation">]</span><span class="token punctuation">(</span>https://landscape.canonical.com<span class="token punctuation">)</span>
+  - Support:        <span class="token punctuation">[</span>https://ubuntu.com/advantage<span class="token punctuation">]</span><span class="token punctuation">(</span>https://ubuntu.com/advantage<span class="token punctuation">)</span>
+  
+      System information as of Wed <span class="token number">11</span> May <span class="token number">2022</span> <span class="token number">10</span>:12:28 AM CST
+      
+      System load:                      <span class="token number">0.29</span>
+      Usage of /:                       <span class="token number">32.2</span>% of <span class="token number">78</span>.62GB
+      Memory usage:                     <span class="token number">33</span>%
+      Swap usage:                       <span class="token number">0</span>%
+      Processes:                        <span class="token number">148</span>
+      Users logged in:                  <span class="token number">0</span>
+      IPv4 address <span class="token keyword">for</span> br-2aa214d6db7a: <span class="token number">172.27</span>.0.1
+      IPv4 address <span class="token keyword">for</span> br-3801d35d4bc6: <span class="token number">172.18</span>.0.1
+      IPv4 address <span class="token keyword">for</span> br-90313e36abad: <span class="token number">172.24</span>.0.1
+      IPv4 address <span class="token keyword">for</span> docker0:         <span class="token number">172.17</span>.0.1
+      IPv4 address <span class="token keyword">for</span> eth0:            <span class="token number">172.26</span>.4.1
+
+Welcome to Alibaba Cloud Elastic Compute Service <span class="token operator">!</span>
+
+Last login: Wed May <span class="token number">11</span> <span class="token number">10</span>:09:36 <span class="token number">2022</span> from <span class="token number">221.13</span>.170.101
+</code></pre> 
+<p>安装也很简单，执行命令即可，也可以进入<a href="https://pkgs.org/download/landscape-common" rel="nofollow">landscape-common下载页</a>手动安装</p> 
+<pre><code class="prism language-bash"><span class="token function">sudo</span> <span class="token function">apt-get</span> <span class="token function">install</span> landscape-common
+</code></pre> 
+<h2><a id="SSH_209"></a>六、SSH连接安全</h2> 
+<h3><a id="1_211"></a>1、介绍</h3> 
+<p>SSH 是一种广泛使用的协议，用于安全地访问 Linux 服务器。大多数用户使用默认设置的 SSH 连接来连接到远程服务器。但是，不安全的默认配置也会带来各种安全风险。下面介绍几种提高ssh连接安全的方法，这里使用Ubuntu</p> 
+<pre><code class="prism language-bash"><span class="token comment"># 安装ssh</span>
+<span class="token function">sudo</span> <span class="token function">apt</span> <span class="token function">install</span> openssh-server
+</code></pre> 
+<ul><li>禁用root用户登录</li><li>更改默认端口</li><li>禁止使用空白密码的用户访问</li><li>限制登录/访问尝试</li><li>使用 SSH 版本 2</li><li>关闭TCP端口转发和X11转发</li><li>使用 SSH 密钥连接</li><li>SSH 连接的 IP 限制</li></ul> 
+<h3><a id="2SSH_229"></a>2、八种保护SSH服务方法</h3> 
+<h4><a id="21root_231"></a>2.1<strong>禁用root用户登录</strong></h4> 
+<p>禁用 root 用户的 SSH 访问并创建一个具有 root 权限的新用户。关闭 root 用户的服务器访问是一种防御策略，可以防止攻击者实现入侵系统的目标</p> 
+<ul><li><strong>useradd</strong>创建一个新用户，并且**-m<strong>参数在您创建的用户的</strong>主**目录下创建一个文件夹</li><li><strong>passwd</strong>命令用于为新用户分配密码。请记住，您分配给用户的密码应该很复杂且难以猜测</li><li><strong>usermod -aG sudo</strong>将新创建的用户添加到管理员组</li></ul> 
+<pre><code class="prism language-bash"><span class="token function">useradd</span> -m exampleroot
+<span class="token function">passwd</span> exampleroot
+<span class="token function">usermod</span> -aG <span class="token function">sudo</span> exampleroot
+</code></pre> 
+<p>在用户创建过程之后，需要对<strong>sshd_config</strong>文件进行一些更改。<strong>可以在/etc/ssh/sshd_config</strong>找到此文件，<strong>PermitRootLogin</strong> 行将阻止 root 用户使用 SSH 获得远程访问。在<strong>AllowUsers</strong> 列表中包含 exampleroot 会向用户授予必要的权限。最后重启 SSH 服务：<code>systemctl restart sshd.service</code></p> 
+<pre><code class="prism language-bash"><span class="token comment"># Authentication: </span>
+<span class="token comment"># LoginGraceTime 2m </span>
+PermitRootLogin no 
+AllowUsers exampleroot
+</code></pre> 
+<h4><a id="22__254"></a>2.2 <strong>更改默认端口</strong></h4> 
+<p>默认的 SSH 连接端口是 22。当然，所有的攻击者都知道这一点，因此需要更改默认端口号以确保 SSH 安全。尽管攻击者可以通过 <strong>Nmap <strong>扫描轻松找到新的端口号，但这里的目标是让攻击者的工作更加困难。要更改端口号，请打开</strong>/etc/ssh/sshd_config</strong>并对文件进行以下更改：</p> 
+<pre><code class="prism language-bash">Include /etc/ssh/sshd_config.d/*.conf
+Port <span class="token number">22099</span>
+</code></pre> 
+<p>重启ssh服务，另外还需要进行必要的防火墙规则更改，这里ubuntu使用<code>sudo ufw allow 22099</code>，在运行<code>netstat -tlpn</code>命令时，可以发现ssh端口以及被修改</p> 
+<h4><a id="23__265"></a>2.3 <strong>禁止使用空白密码的用户访问</strong></h4> 
+<p>在您的系统上可能有您不小心创建的没有密码的用户。要防止此类用户访问服务器，您可以将<strong>sshd_config</strong>文件中的<strong>PermitEmptyPasswords</strong>行值设置为<strong>no</strong></p> 
+<pre><code class="prism language-bash">PermitEmptyPasswords no
+</code></pre> 
+<h4><a id="24__273"></a>2.4 <strong>限制登录/访问尝试</strong></h4> 
+<p>默认情况下，可以根据需要尝试多次输入密码来访问服务器。但是攻击者可以利用此漏洞对服务器进行暴力破解。通过指定允许的密码尝试次数以及尝试事件，我们可以在尝试一定次数后自动终止SSH 连接。为此，请更改<strong>sshd_config</strong>文件中的<strong>MaxAuthTries</strong>值和**LoginGraceTime **值</p> 
+<pre><code class="prism language-bash">LoginGraceTime 2m 
+MaxAuthTries <span class="token number">5</span>
+</code></pre> 
+<p>查看状态与解锁</p> 
+<pre><code class="prism language-bash"><span class="token comment"># 查看是否被锁定</span>
+<span class="token function">sudo</span> pam_tally2 --user<span class="token operator">=</span>root
+<span class="token function">sudo</span> pam_tally2 --user root
+<span class="token comment"># 解锁</span>
+<span class="token function">sudo</span> pam_tally2 -u root -r --reset
+</code></pre> 
+<h4><a id="25__SSH__2_292"></a>2.5 <strong>使用 SSH 版本 2</strong></h4> 
+<p>SSH 的第二个版本发布是因为第一个版本中存在许多漏洞。默认情况下，可以通过将<strong>Protocol</strong>参数添加到<strong>sshd_config</strong>文件来启用服务器使用第二个版本。这样未来的所有连接都将使用第二个版本的 SSH。</p> 
+<pre><code class="prism language-bash">Include /etc/ssh/sshd_config.d/*.conf 
+Protocol <span class="token number">2</span>
+</code></pre> 
+<h4><a id="26_TCPX11_301"></a>2.6 关闭TCP端口转发和X11转发</h4> 
+<p>攻击者可以尝试通过 SSH 连接的端口转发来访问您的其他系统。<strong>为了防止这种情况，可以在sshd_config</strong>文件中关闭<strong>AllowTcpForwarding</strong>和<strong>X11Forwarding</strong>功能</p> 
+<pre><code class="prism language-bash">X11Forwarding no 
+AllowTcpForwarding no
+</code></pre> 
+<h4><a id="27__SSH__310"></a>2.7 使用 SSH 密钥连接</h4> 
+<p>连接到服务器的最安全方法之一是使用 SSH 密钥。使用 SSH 密钥时，无需密码即可访问服务器。<strong>可以通过更改sshd_config</strong>文件中与密码相关的参数来完全关闭对服务器的密码访问</p> 
+<h4><a id="28_SSH__IP__314"></a>2.8 SSH 连接的 IP 限制</h4> 
+<p>大多数情况下，防火墙使用自己的标准框架阻止访问，旨在保护服务器。但是，这并不总是足够的，我们需要增加这种安全潜力。为此，请打开**/etc/hosts.allow<strong>文件。通过对该文件进行的添加，您可以限制 SSH 权限，允许特定 IP 块，或输入单个 IP 并使用拒绝命令阻止所有剩余的 IP 地址；当然也可以用</strong>/etc/hosts.deny**模块限制</p> 
+<pre><code class="prism language-bash">sshd:210.13.218.*:allow
+sshd:192.168.1.0/24:ALLOW
+</code></pre> 
+<h3><a id="3_323"></a>3、总结</h3> 
+<p>ssh配置文件在**/etc/ssh/sshd_config**，修改完后重启服务即可</p> 
+<pre><code class="prism language-bash"><span class="token comment"># 常见SSH服务器监听</span>
+Port <span class="token number">22</span> <span class="token comment">#监听的端口为22</span>
+Protocol <span class="token number">2</span> <span class="token comment">#使用SSH V2协议</span>
+ListenAdderss <span class="token number">0.0</span>.0.0 <span class="token comment">#监听的地址为所有地址</span>
+UseDNS no <span class="token comment">#禁止DNS反向解析</span>
+<span class="token comment">#常见用户登录控制</span>
+PermitRootLogin no <span class="token comment">#禁止root用户登录</span>
+PermitEmptyPasswords no <span class="token comment">#禁止空密码用户登录</span>
+LoginGraceTime 2m <span class="token comment">#登录验证时间为2分钟=</span>
+MaxAuthTries <span class="token number">6</span> <span class="token comment">#最大重试次数为6</span>
+AllowUsers user <span class="token comment">#只允许user用户登录，与DenyUsers选项相反</span>
+<span class="token comment">#常见登录验证方式</span>
+PasswordAuthentication <span class="token function">yes</span> <span class="token comment">#启用密码验证</span>
+PubkeyAuthentication <span class="token function">yes</span> <span class="token comment">#启用秘钥验证</span>
+AuthorsizedKeysFile .ssh/authorized_keys <span class="token comment">#指定公钥数据库文件</span>
+</code></pre> 
+<hr> 
+<p>参考文章:</p> 
+<p><a href="http://www.ruanyifeng.com/blog/2011/12/ssh_remote_login.html" rel="nofollow">http://www.ruanyifeng.com/blog/2011/12/ssh_remote_login.html</a></p> 
+<p><a href="https://wangdoc.com/ssh/port-forwarding.html" rel="nofollow">https://wangdoc.com/ssh/port-forwarding.html</a></p> 
+<p><a href="https://abcdabcd987.com/ssh/" rel="nofollow">https://abcdabcd987.com/ssh/</a></p> 
+<p><a href="https://blog.csdn.net/qq_42877824/article/details/119319811">ubuntu、debian等Linux系统ssh登陆显示系统信息</a></p> 
+<p><a href="https://mp.weixin.qq.com/s/wfyH4wrMrwp-zM4dOUdMSw" rel="nofollow">在 Linux 上保护 SSH 服务器连接的 8 种方法</a></p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/ecb8686e4cca5f8fe59265b8cf705892/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">0基础学MySQL数据库—从小白到大牛(18)Linux下MySQL的安装与使用</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/080cd8071c445bc555bd6a586de60413/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">Kafka核心概念、优势、应用场景与基本架构</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

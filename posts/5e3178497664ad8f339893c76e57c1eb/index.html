@@ -1,0 +1,590 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>《一个操作系统的实现》读书笔记--第三章---不同特权级代码段之间的跳转 - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="《一个操作系统的实现》读书笔记--第三章---不同特权级代码段之间的跳转" />
+<meta property="og:description" content="1、特权级
+2、一致代码段和非一致代码段
+3、DPL、RPL、CPL分别代表的含义，存储在什么位置，以及它们之间的关系
+4、不同特权级数据段之间的访问规则
+5、不同特权级代码段之间的转移
+6、代码段之间的转移对堆栈的影响
+7、结合pmtest5.asm来见证不同特权级代码段之间的跳转
+一、特权级 在IA32的分段机制下，特权级总共有4个特权级别，从高到低分别是0、1、2、3。数字越小表示的特权级越大。特权级如下图所示：
+较为核心的代码和数据，将被存放在特权级较高的层级中。处理器将用这样的机制来避免低特权级的任务在不被允许的情况下访问位于高特权级的段。
+二、一致代码段 和 非一致代码段
+系统要安全，必须保证内核与用户程序分离开，内核要安全，必须不能被用户来打扰。但是有的时候，用户程序也是需要访问内核中的部分数据，那怎么办？
+于是操作系统就将内核中的段分为共享的代码段和非共享的代码段两部分。
+其中一致代码段就是操作系统拿出来被共享的代码段，可以被低特权级的用户直接访问的代码。
+一致代码段的限制作用：
+(1)特权级高的代码段不允许访问特权级低的代码段：即内核态不允许调用用户态下的代码。
+(2)特权级低的代码段可以访问特权级高的代码段，但是当前的特权级不发生变化。即：用户态可以访问内核态的代码，但是用户态仍然是用户态。
+非一致代码段：为了避免低特权级的访问而被操作系统保护起来的系统代码，也就是非共享代码。
+非一致代码段的限制作用：
+(1)只允许同特权级间访问
+(2)绝对禁止不同级间访问，即：用户态不能访问内核态，内核态也不访问用户态。
+下图为一致码段与非一致码段的访问规则：
+三、CPL、DPL、RPL分别代表的含义，存储在什么位置，以及它们之间的关系
+1、CPL(Current Privilege Level)是当前执行的程序或任务的特权级。它被存储在CS和SS的第0位和第1位上。通常情况下，CPL等于代码的段的特权级。在遇到一致代码段时，一致代码段可以被相同或者更低特权级的代码访问。当处理器访问一个与CPL特权级不同的一致代码段时，CPL不会被改变。
+2、DPL(Descriptor Privilege Level)：DPL表示段或者门的特权级，它被存储在段描述符或者门描述符的DPL字段中。当当前代码段试图访问一个段或者门时，DPL将会和CPL以及段或门选择子的RPL相比较，根据段或者门类型的不同，DPL将会被区别对待，下面介绍一下各种类型的段或者门的情况。
+(1)数据段：DPL规定了可以访问此段的最低特权级。比如，一个数据段的DPL是1，那么只有运行在CPL为0或者1的程序才有权访问它。
+(2)非一致代码段（不使用调用门的情况下）：DPL规定访问此段的特权级。比如一个非一致代码段的特权级为0，那么只有CPL为0的程序才可以访问它。
+(3)调用门：DPL规定了当前执行的程序或任务可以访问此调用门的最低特权级（这与数据段的规则是一致的）。
+(4)一致代码段和通过调用门访问的非一致代码段：DPL规定了访问此段的最高特权级。比如，一个一致代码段的DPL是2，那么CPL为0和1的程序将无法访问此段。
+3、RPL（Requested Privilege Level）:RPL是通过选择子的第0位和第1位表现出来的。处理器通过检查RPL和CPL来确认一个访问请求是否合法。
+四、不同特权级数据段之间的访问规则 数据段中DPL规定了可以访问此段的最低特权级，因此，对数据的访问，只要CPL和RPL都小于被访问的数据段的DPL就可以了，即CPL&lt;=DPL和RPL&lt;=DPL。
+五、不同特权级代码段之间的转移
+使用jmp或call指令可以实现下列4种转移
+(1)目标操作数包含目标代码段的段选择子。
+(2)目标操作数指向一个包含目标代码段选择子的调用门描述符。
+(3)目标操作数指向一个包含目标代码段选择子的TSS。
+(4)目标操作数指向一个任务门，这个任务门指向一个包含目标代码段选择子的TSS。
+这4种方式可以看做是两大类，一类是通过jmp和call的直接转移（上述第一种），另一类是通过某个描述 符的间接转移（上述第2,3,4种）。
+1、通过jmp或call进行直接转移
+2、通过调用门进行转移
+(1)门描述符的结构
+调用门描述符里面保存着目标代码段的段选择子，偏移量，以及属性。
+(2)调用门的使用方式
+假设我们想由代码A转移到代码B，运用一个调用门G，即调用门G中的目标选择子指向代码B的段。实际上，这个问题主要涉及这几个元素：CPL、RPL、代码B的DPL（记做DPL_B），调用门G的DPL（记做DPL_G）。 调用门使用时特权级检验的规则如下：
+也就是说，通过调用门和call指令，可以实现从低特权级到高特权级的转移，无论目标代码段时一致的还是非一致的。 通过调用门和jmp指令，如果目标代码段是一致的，则可以实现从低特权级到高特权级的转移。如果目标代码段是非一致的，则只能实现相同特权级的转移。
+六、代码段之间的转移对堆栈的影响
+1、“长”跳转/调用 和 “短”跳转/调用
+如果一个调用或跳转指令时段间而不是段内进行的，那么我们称之为“长”的（Far jmp/call），反之，如果在段内则是“短”的(Near jmp/call)。
+那么长的和短的jmp或call有什么分别呢？
+对于jmp而言，仅仅是结果不同罢了，短跳转对应段内，长跳转对应段间。
+对于call来说，就比较复杂一些，因为call指令是会影响堆栈的，长调用和短调用对堆栈的影响是不同的。
+下面我们讨论短调用对堆栈的影响，call指令执行时下一条指令的eip压栈，到ret指令执行时，这个eip会被从堆栈中弹出，
+如下图所示：" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/5e3178497664ad8f339893c76e57c1eb/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2012-02-15T23:26:07+08:00" />
+<meta property="article:modified_time" content="2012-02-15T23:26:07+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">《一个操作系统的实现》读书笔记--第三章---不同特权级代码段之间的跳转</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p><span style="font-size:16px">1、特权级<br> 2、一致代码段和非一致代码段<br> 3、DPL、RPL、CPL分别代表的含义，存储在什么位置，以及它们之间的关系<br> 4、不同特权级数据段之间的访问规则<br> 5、不同特权级代码段之间的转移<br> 6、代码段之间的转移对堆栈的影响<br> 7、结合pmtest5.asm来见证不同特权级代码段之间的跳转<br> </span></p> 
+<p><span style="font-size:16px"><span style="line-height:19.984375px; font-family:Helvetica,Arial,'Droid Sans',sans-serif; font-size:14px"><strong>一、特权级</strong></span><br style="font-family:Helvetica,Arial,'Droid Sans',sans-serif; font-size:14px; line-height:19.984375px"> <span style="font-family:Helvetica,Arial,'Droid Sans',sans-serif; font-size:14px; line-height:19.984375px">在IA32的分段机制下，特权级总共有4个特权级别，从高到低分别是0、1、2、3。数字越小表示的特权级越大。特权级如下图所示：</span><br> </span></p> 
+<p><span style="font-size:16px"><span style="font-family:Helvetica,Arial,'Droid Sans',sans-serif; font-size:14px; line-height:19.984375px"><img src="https://images2.imgbox.com/b5/1c/H2vYCWLZ_o.gif" alt=""><br> </span></span></p> 
+<p><span style="font-size:16px"><span style="font-family:Helvetica,Arial,'Droid Sans',sans-serif; font-size:14px; line-height:19.984375px"><span style="font-family:Helvetica,Arial,'Droid Sans',sans-serif; font-size:14px; line-height:19.984375px">较为核心的代码和数据，将被存放在特权级较高的层级中。处理器将用这样的机制来避免低特权级的任务在不被允许的情况下访问位于高特权级的段。</span><br> </span></span></p> 
+<p><span style="font-size:16px"><span style="font-family:Helvetica,Arial,'Droid Sans',sans-serif; font-size:14px; line-height:19.984375px"><span style="font-family:Helvetica,Arial,'Droid Sans',sans-serif; font-size:14px; line-height:19.984375px"></span></span></span></p> 
+<p style="margin-top:0px; margin-bottom:0.714285em; padding-top:0px; padding-bottom:0px; border:0px; line-height:1.428571em; font-family:Helvetica,Arial,'Droid Sans',sans-serif; font-size:14px"> <span style="line-height:1.428571em"><strong>二、一致代码段 和 非一致代码段</strong></span><br> 系统要安全，必须保证内核与用户程序分离开，内核要安全，必须不能被用户来打扰。但是有的时候，用户程序也是需要访问内核中的部分数据，那怎么办？</p> 
+<p style="margin-top:0px; margin-bottom:0.714285em; padding-top:0px; padding-bottom:0px; border:0px; line-height:1.428571em; font-family:Helvetica,Arial,'Droid Sans',sans-serif; font-size:14px"> 于是操作系统就将内核中的段分为共享的代码段和非共享的代码段两部分。<br> 其中一致代码段就是操作系统拿出来被共享的代码段，可以被低特权级的用户直接访问的代码。<br> 一致代码段的限制作用：<br> (1)特权级高的代码段不允许访问特权级低的代码段：即内核态不允许调用用户态下的代码。<br> (2)特权级低的代码段可以访问特权级高的代码段，但是当前的特权级不发生变化。即：用户态可以访问内核态的代码，但是用户态仍然是用户态。</p> 
+<p style="margin-top:0px; margin-bottom:0.714285em; padding-top:0px; padding-bottom:0px; border:0px; line-height:1.428571em; font-family:Helvetica,Arial,'Droid Sans',sans-serif; font-size:14px"> 非一致代码段：为了避免低特权级的访问而被操作系统保护起来的系统代码，也就是非共享代码。<br> 非一致代码段的限制作用：<br> (1)只允许同特权级间访问<br> (2)绝对禁止不同级间访问，即：用户态不能访问内核态，内核态也不访问用户态。</p> 
+<p style="margin-top:0px; margin-bottom:0.714285em; padding-top:0px; padding-bottom:0px; border:0px; line-height:1.428571em; font-family:Helvetica,Arial,'Droid Sans',sans-serif; font-size:14px"> 下图为一致码段与非一致码段的访问规则：</p> 
+<p style="margin-top:0px; margin-bottom:0.714285em; padding-top:0px; padding-bottom:0px; border:0px; line-height:1.428571em; font-family:Helvetica,Arial,'Droid Sans',sans-serif; font-size:14px"> <img src="https://images2.imgbox.com/f8/0b/0jkAYbg6_o.gif" alt=""><br> </p> 
+<p style="margin-top:0px; margin-bottom:0.714285em; padding-top:0px; padding-bottom:0px; border:0px; line-height:1.428571em; font-family:Helvetica,Arial,'Droid Sans',sans-serif; font-size:14px"> </p> 
+<p style="margin-top:0px; margin-bottom:0.714285em; padding-top:0px; padding-bottom:0px; border:0px; line-height:1.428571em; font-family:Helvetica,Arial,'Droid Sans',sans-serif; font-size:14px"> <span style="line-height:1.428571em"><strong>三、CPL、DPL、RPL分别代表的含义，存储在什么位置，以及它们之间的关系</strong></span><br> <strong>1、CPL(Current Privilege Level)</strong>是当前执行的程序或任务的特权级。它被存储在CS和SS的第0位和第1位上。通常情况下，CPL等于代码的段的特权级。在遇到一致代码段时，一致代码段可以被相同或者更低特权级的代码访问。当处理器访问一个与CPL特权级不同的一致代码段时，CPL不会被改变。</p> 
+<p style="margin-top:0px; margin-bottom:0.714285em; padding-top:0px; padding-bottom:0px; border:0px; line-height:1.428571em; font-family:Helvetica,Arial,'Droid Sans',sans-serif; font-size:14px"> <strong>2、DPL(Descriptor Privilege Level)</strong>：DPL表示段或者门的特权级，它被存储在段描述符或者门描述符的DPL字段中。当当前代码段试图访问一个段或者门时，DPL将会和CPL以及段或门选择子的RPL相比较，根据段或者门类型的不同，DPL将会被区别对待，下面介绍一下各种类型的段或者门的情况。<br> (1)数据段：DPL规定了可以访问此段的最低特权级。比如，一个数据段的DPL是1，那么只有运行在CPL为0或者1的程序才有权访问它。<br> (2)非一致代码段（不使用调用门的情况下）：DPL规定访问此段的特权级。比如一个非一致代码段的特权级为0，那么只有CPL为0的程序才可以访问它。<br> (3)调用门：DPL规定了当前执行的程序或任务可以访问此调用门的最低特权级（这与数据段的规则是一致的）。<br> (4)一致代码段和通过调用门访问的非一致代码段：DPL规定了访问此段的最高特权级。比如，一个一致代码段的DPL是2，那么CPL为0和1的程序将无法访问此段。</p> 
+<p style="margin-top:0px; margin-bottom:0.714285em; padding-top:0px; padding-bottom:0px; border:0px; line-height:1.428571em; font-family:Helvetica,Arial,'Droid Sans',sans-serif; font-size:14px"> <strong>3、RPL（Requested Privilege Level）</strong>:RPL是通过选择子的第0位和第1位表现出来的。处理器通过检查RPL和CPL来确认一个访问请求是否合法。</p> 
+<p style="margin-top:0px; margin-bottom:0.714285em; padding-top:0px; padding-bottom:0px; border:0px; line-height:1.428571em; font-family:Helvetica,Arial,'Droid Sans',sans-serif; font-size:14px"> <span style="line-height:19.984375px; font-family:Helvetica,Arial,'Droid Sans',sans-serif; font-size:14px"><strong>四、<span style="line-height:1.428571em">不同特权级数据段之间的访问规则</span></strong></span><br style="font-family:Helvetica,Arial,'Droid Sans',sans-serif; font-size:14px; line-height:19.984375px"> <span style="font-family:Helvetica,Arial,'Droid Sans',sans-serif; font-size:14px; line-height:19.984375px">数据段中DPL规定了可以访问此段的最低特权级，因此，对数据的访问，只要CPL和RPL都小于被访问的数据段的DPL就可以了，即CPL&lt;=DPL和RPL&lt;=DPL。</span><br> </p> 
+<p style="margin-top:0px; margin-bottom:0.714285em; padding-top:0px; padding-bottom:0px; border:0px; line-height:1.428571em; font-family:Helvetica,Arial,'Droid Sans',sans-serif; font-size:14px"> <span style="font-family:Helvetica,Arial,'Droid Sans',sans-serif; font-size:14px; line-height:19.984375px"></span></p> 
+<p style="margin-top:0px; margin-bottom:0.714285em; padding-top:0px; padding-bottom:0px; border:0px; line-height:1.428571em; font-family:Helvetica,Arial,'Droid Sans',sans-serif; font-size:14px"> <span style="line-height:1.428571em"><strong>五、不同特权级代码段之间的转移</strong></span><br> 使用jmp或call指令可以实现下列4种转移<br> (1)目标操作数包含目标代码段的段选择子。<br> (2)目标操作数指向一个包含目标代码段选择子的调用门描述符。<br> (3)目标操作数指向一个包含目标代码段选择子的TSS。<br> (4)目标操作数指向一个任务门，这个任务门指向一个包含目标代码段选择子的TSS。<br> 这4种方式可以看做是两大类，一类是通过jmp和call的直接转移（上述第一种），另一类是通过某个描述 <br> 符的间接转移（上述第2,3,4种）。</p> 
+<p style="margin-top:0px; margin-bottom:0.714285em; padding-top:0px; padding-bottom:0px; border:0px; line-height:1.428571em; font-family:Helvetica,Arial,'Droid Sans',sans-serif; font-size:14px"> <strong>1、通过jmp或call进行直接转移</strong></p> 
+<img src="https://images2.imgbox.com/da/9f/O61VdnQY_o.gif" alt=""> 
+<br> 
+<p style="margin-top:0px; margin-bottom:0.714285em; padding-top:0px; padding-bottom:0px; border:0px; line-height:1.428571em; font-family:Helvetica,Arial,'Droid Sans',sans-serif; font-size:14px"> <span style="font-family:Helvetica,Arial,'Droid Sans',sans-serif; font-size:14px; line-height:19.984375px"></span></p> 
+<p style="margin-top:0px; margin-bottom:0.714285em; padding-top:0px; padding-bottom:0px; border:0px; line-height:1.428571em; font-family:Helvetica,Arial,'Droid Sans',sans-serif; font-size:14px"> <strong>2、通过调用门进行转移</strong><br> (1)门描述符的结构</p> 
+<p style="margin-top:0px; margin-bottom:0.714285em; padding-top:0px; padding-bottom:0px; border:0px; line-height:1.428571em; font-family:Helvetica,Arial,'Droid Sans',sans-serif; font-size:14px"> <span style="line-height:1.428571em">调用门描述符里面保存着目标代码段的段选择子，偏移量，以及属性。</span></p> 
+<p style="margin-top:0px; margin-bottom:0.714285em; padding-top:0px; padding-bottom:0px; border:0px; line-height:1.428571em; font-family:Helvetica,Arial,'Droid Sans',sans-serif; font-size:14px"> <span style="line-height:1.428571em"><img src="https://images2.imgbox.com/d1/74/wm66M9ql_o.gif" alt=""><br> </span></p> 
+<p style="margin-top:0px; margin-bottom:0.714285em; padding-top:0px; padding-bottom:0px; border:0px; line-height:1.428571em; font-family:Helvetica,Arial,'Droid Sans',sans-serif; font-size:14px"> <span style="line-height:1.428571em"><span style="font-family:Helvetica,Arial,'Droid Sans',sans-serif; font-size:14px; line-height:19.984375px">(2)调用门的使用方式</span><br> </span></p> 
+<img alt="" src="https://images2.imgbox.com/d7/07/3iROADuI_o.gif"> 
+<br> 
+<p style="margin-top:0px; margin-bottom:0.714285em; padding-top:0px; padding-bottom:0px; border:0px; line-height:1.428571em; font-family:Helvetica,Arial,'Droid Sans',sans-serif; font-size:14px"> <span style="font-family:Helvetica,Arial,'Droid Sans',sans-serif; font-size:14px; line-height:19.984375px"><span style="font-family:Helvetica,Arial,'Droid Sans',sans-serif; font-size:14px; line-height:19.984375px">假设我们想由代码A转移到代码B，运用一个调用门G，即调用门G中的目标选择子指向代码B的段。实际上，这个问题主要涉及这几个元素：CPL、RPL、代码B的DPL（记做DPL_B），调用门G的DPL（记做DPL_G）。</span><br style="font-family:Helvetica,Arial,'Droid Sans',sans-serif; font-size:14px; line-height:19.984375px"> <span style="font-family:Helvetica,Arial,'Droid Sans',sans-serif; font-size:14px; line-height:19.984375px">调用门使用时特权级检验的规则如下：</span><br> </span></p> 
+<img src="https://images2.imgbox.com/3d/0c/Y70hXMc0_o.gif" alt=""> 
+<br> 
+<p style="margin-top:0px; margin-bottom:0.714285em; padding-top:0px; padding-bottom:0px; border:0px; line-height:1.428571em; font-family:Helvetica,Arial,'Droid Sans',sans-serif; font-size:14px"> <span style="font-family:Helvetica,Arial,'Droid Sans',sans-serif; font-size:14px; line-height:19.984375px">也就是说，通过调用门和call指令，可以实现从低特权级到高特权级的转移，无论目标代码段时一致的还是非一致的。</span><br style="font-family:Helvetica,Arial,'Droid Sans',sans-serif; font-size:14px; line-height:19.984375px"> <span style="font-family:Helvetica,Arial,'Droid Sans',sans-serif; font-size:14px; line-height:19.984375px">通过调用门和jmp指令，如果目标代码段是一致的，则可以实现从低特权级到高特权级的转移。如果目标代码段是非一致的，则只能实现相同特权级的转移。</span><br> </p> 
+<p style="margin-top:0px; margin-bottom:0.714285em; padding-top:0px; padding-bottom:0px; border:0px; line-height:1.428571em; font-family:Helvetica,Arial,'Droid Sans',sans-serif; font-size:14px"> <span style="font-family:Helvetica,Arial,'Droid Sans',sans-serif; font-size:14px; line-height:19.984375px"></span></p> 
+<p style="margin-top:0px; margin-bottom:0.714285em; padding-top:0px; padding-bottom:0px; border:0px; line-height:1.428571em; font-family:Helvetica,Arial,'Droid Sans',sans-serif; font-size:14px"> <span style="line-height:1.428571em"><strong>六、代码段之间的转移对堆栈的影响</strong></span></p> 
+<p style="margin-top:0px; margin-bottom:0.714285em; padding-top:0px; padding-bottom:0px; border:0px; line-height:1.428571em; font-family:Helvetica,Arial,'Droid Sans',sans-serif; font-size:14px"> <strong>1、“长”跳转/调用 和 “短”跳转/调用</strong><br> 如果一个调用或跳转指令时段间而不是段内进行的，那么我们称之为“长”的（Far jmp/call），反之，如果在段内则是“短”的(Near jmp/call)。</p> 
+<p style="margin-top:0px; margin-bottom:0.714285em; padding-top:0px; padding-bottom:0px; border:0px; line-height:1.428571em; font-family:Helvetica,Arial,'Droid Sans',sans-serif; font-size:14px"> 那么长的和短的jmp或call有什么分别呢？<br> 对于jmp而言，仅仅是结果不同罢了，短跳转对应段内，长跳转对应段间。<br> 对于call来说，就比较复杂一些，因为call指令是会影响堆栈的，长调用和短调用对堆栈的影响是不同的。</p> 
+<p style="margin-top:0px; margin-bottom:0.714285em; padding-top:0px; padding-bottom:0px; border:0px; line-height:1.428571em; font-family:Helvetica,Arial,'Droid Sans',sans-serif; font-size:14px"> 下面我们讨论短调用对堆栈的影响，call指令执行时下一条指令的eip压栈，到ret指令执行时，这个eip会被从堆栈中弹出，<br> 如下图所示：</p> 
+<p style="margin-top:0px; margin-bottom:0.714285em; padding-top:0px; padding-bottom:0px; border:0px; line-height:1.428571em; font-family:Helvetica,Arial,'Droid Sans',sans-serif; font-size:14px"> <img alt="" src="https://images2.imgbox.com/aa/43/MdHhZ5Dg_o.gif"><br> </p> 
+<p style="margin-top:0px; margin-bottom:0.714285em; padding-top:0px; padding-bottom:0px; border:0px; line-height:1.428571em; font-family:Helvetica,Arial,'Droid Sans',sans-serif; font-size:14px"> </p> 
+<p style="margin-top:0px; margin-bottom:0.714285em; padding-top:0px; padding-bottom:0px; border:0px; line-height:1.428571em; font-family:Helvetica,Arial,'Droid Sans',sans-serif; font-size:14px"> 这是短调用的情况。</p> 
+<p style="margin-top:0px; margin-bottom:0.714285em; padding-top:0px; padding-bottom:0px; border:0px; line-height:1.428571em; font-family:Helvetica,Arial,'Droid Sans',sans-serif; font-size:14px"> 下面我们讨论长调用对堆栈的影响，call指令执行时会将调用者的cs和eip压栈，到ret指令执行时，这个eip和cs会被从堆栈中弹出，如下图所示：</p> 
+<img alt="" src="https://images2.imgbox.com/c0/9c/IUNrDTNX_o.gif"> 
+<br> 
+<p style="margin-top:0px; margin-bottom:0.714285em; padding-top:0px; padding-bottom:0px; border:0px; line-height:1.428571em; font-family:Helvetica,Arial,'Droid Sans',sans-serif; font-size:14px"> <span style="font-family:Helvetica,Arial,'Droid Sans',sans-serif; font-size:14px; line-height:19.984375px"><strong>2、有特权级变换的转移对堆栈的影响</strong></span><br style="font-family:Helvetica,Arial,'Droid Sans',sans-serif; font-size:14px; line-height:19.984375px"> <span style="font-family:Helvetica,Arial,'Droid Sans',sans-serif; font-size:14px; line-height:19.984375px">在不同特权级下的堆栈段不同，所以每一个任务最多可能在4个特权级间转移，所以，每个任务实际上需要4个堆栈。可是我们只有一个ss和一个esp，那么当发生堆栈切换，我们该从哪里获得其余堆栈的ss和esp呢？</span><br style="font-family:Helvetica,Arial,'Droid Sans',sans-serif; font-size:14px; line-height:19.984375px"> <span style="font-family:Helvetica,Arial,'Droid Sans',sans-serif; font-size:14px; line-height:19.984375px">解决这个问题，需要一个数据结构TSS（Task-State Stack），如图：</span><br> </p> 
+<p style="margin-top:0px; margin-bottom:0.714285em; padding-top:0px; padding-bottom:0px; border:0px; line-height:1.428571em; font-family:Helvetica,Arial,'Droid Sans',sans-serif; font-size:14px"> <span style="font-family:Helvetica,Arial,'Droid Sans',sans-serif; font-size:14px; line-height:19.984375px"><img alt="" src="https://images2.imgbox.com/9d/97/At8KBwqd_o.gif"><br> </span></p> 
+<p style="margin-top:0px; margin-bottom:0.714285em; padding-top:0px; padding-bottom:0px; border:0px; line-height:1.428571em; font-family:Helvetica,Arial,'Droid Sans',sans-serif; font-size:14px"> <span style="font-family:Helvetica,Arial,'Droid Sans',sans-serif; font-size:14px; line-height:19.984375px"><span style="font-family:Helvetica,Arial,'Droid Sans',sans-serif; font-size:14px; line-height:19.984375px">当堆栈发生切换时，内层的ss和esp就是从这里取得的，比如，我们当前所在的是ring3，当转移至ring1时，堆栈将被自动切换到由ss1和esp1指定的位置。由于只是在由外层转移到内层（低特权级到高特权级）切换时新堆栈才会从TSS中取得，所以TSS中没有位于最外层的ring3的堆栈信息。</span><br style="font-family:Helvetica,Arial,'Droid Sans',sans-serif; font-size:14px; line-height:19.984375px"> <span style="font-family:Helvetica,Arial,'Droid Sans',sans-serif; font-size:14px; line-height:19.984375px">下面让我们来看看整个的转移过程是怎么样的？</span><br> </span></p> 
+<p style="margin-top:0px; margin-bottom:0.714285em; padding-top:0px; padding-bottom:0px; border:0px; line-height:1.428571em; font-family:Helvetica,Arial,'Droid Sans',sans-serif; font-size:14px"> <span style="font-family:Helvetica,Arial,'Droid Sans',sans-serif; font-size:14px; line-height:19.984375px"><span style="font-family:Helvetica,Arial,'Droid Sans',sans-serif; font-size:14px; line-height:19.984375px"><span style="font-family:Helvetica,Arial,'Droid Sans',sans-serif; font-size:14px; line-height:19.984375px">执行call前后堆栈段的变化：</span><br> </span></span></p> 
+<img alt="" src="https://images2.imgbox.com/e1/79/aOxhJWbD_o.gif"> 
+<br> 
+<p style="margin-top:0px; margin-bottom:0.714285em; padding-top:0px; padding-bottom:0px; border:0px; line-height:1.428571em; font-family:Helvetica,Arial,'Droid Sans',sans-serif; font-size:14px"> <span style="font-family:Helvetica,Arial,'Droid Sans',sans-serif; font-size:14px; line-height:19.984375px"></span></p> 
+<p style="margin-top:0px; margin-bottom:0.714285em; padding-top:0px; padding-bottom:0px; border:0px; line-height:1.428571em; font-family:Helvetica,Arial,'Droid Sans',sans-serif; font-size:14px"> (1)根据目标代码段的DPL(新的CPL)从TSS中选择应该切换至哪个ss和esp<br> (2)从TSS中读取新的ss和esp。在这过程中如果发现ss、esp或者TSS界限错误都会导致无效TSS异常<br> (3)对ss描述符进行检验，如果发生错误，同样产生#TS异常<br> (4)暂时性地保存当前ss和esp的值<br> (5)加载新的ss和esp<br> (6)将刚刚保存起来的ss和esp的值压入新栈<br> (7)从调用者堆栈中将参数复制到被调用者堆栈（新堆栈）中，复制参数的数目由调用门中Param Count一项来决定。<br> (8)如果Param Count是零的话，将不会复制参数。<br> (9)将当前的cs和eip压栈<br> (10)加载调用门中指定的新的cs和eip，开始执行被调用者过程。</p> 
+<p style="margin-top:0px; margin-bottom:0.714285em; padding-top:0px; padding-bottom:0px; border:0px; line-height:1.428571em; font-family:Helvetica,Arial,'Droid Sans',sans-serif; font-size:14px"> 执行ret前后堆栈段的变化：</p> 
+<img alt="" src="https://images2.imgbox.com/0c/b9/7ho6NYJh_o.gif"> 
+<br> 
+<p style="margin-top:0px; margin-bottom:0.714285em; padding-top:0px; padding-bottom:0px; border:0px; line-height:1.428571em; font-family:Helvetica,Arial,'Droid Sans',sans-serif; font-size:14px"> <span style="font-family:Helvetica,Arial,'Droid Sans',sans-serif; font-size:14px; line-height:19.984375px"><span style="font-family:Helvetica,Arial,'Droid Sans',sans-serif; font-size:14px; line-height:19.984375px">(1)检查保存的cs中的RPL以判断返回时是否要变换特权级</span><br style="font-family:Helvetica,Arial,'Droid Sans',sans-serif; font-size:14px; line-height:19.984375px"> <span style="font-family:Helvetica,Arial,'Droid Sans',sans-serif; font-size:14px; line-height:19.984375px">(2)加载被调用者堆栈上的cs和eip（此时会进行代码段描述符和选择子类型和特权级检验）</span><br style="font-family:Helvetica,Arial,'Droid Sans',sans-serif; font-size:14px; line-height:19.984375px"> <span style="font-family:Helvetica,Arial,'Droid Sans',sans-serif; font-size:14px; line-height:19.984375px">(3)如果ret指令含有参数，则增加esp的值以跳过参数，然后esp将指向被保存过的调用者ss和esp。注意，ret的参数必须对应调用门中的Param Count的值</span><br style="font-family:Helvetica,Arial,'Droid Sans',sans-serif; font-size:14px; line-height:19.984375px"> <span style="font-family:Helvetica,Arial,'Droid Sans',sans-serif; font-size:14px; line-height:19.984375px">(4)加载ss和esp,切换到调用者堆栈，被调用者的ss和esp被丢弃。在这里将会进行ss描述符、esp、以及ss段描述符的检验</span><br style="font-family:Helvetica,Arial,'Droid Sans',sans-serif; font-size:14px; line-height:19.984375px"> <span style="font-family:Helvetica,Arial,'Droid Sans',sans-serif; font-size:14px; line-height:19.984375px">(5)如果ret指令含有参数，增加esp的值以跳过参数（此时已经在调用者堆栈中）</span><br style="font-family:Helvetica,Arial,'Droid Sans',sans-serif; font-size:14px; line-height:19.984375px"> <span style="font-family:Helvetica,Arial,'Droid Sans',sans-serif; font-size:14px; line-height:19.984375px">(6)检查ds、es、fs、gs的值，如果其中哪一个寄存器指向的段的DPL小于CPL（此规则不适合于一致代码段），那么一个空描述符会被加载到该寄存器中。</span><br style="font-family:Helvetica,Arial,'Droid Sans',sans-serif; font-size:14px; line-height:19.984375px"> <span style="font-family:Helvetica,Arial,'Droid Sans',sans-serif; font-size:14px; line-height:19.984375px">综上所述，使用调用门的过程实际上分为两部分，一部分是从低特权级到高特权级，通过调用门和call指令来实现；另一部分则是从高特权级到低特权级，通过ret指令来实现。</span><br> </span></p> 
+<p style="margin-top:0px; margin-bottom:0.714285em; padding-top:0px; padding-bottom:0px; border:0px; line-height:1.428571em; font-family:Helvetica,Arial,'Droid Sans',sans-serif; font-size:14px"> <span style="font-family:Helvetica,Arial,'Droid Sans',sans-serif; font-size:14px; line-height:19.984375px"><span style="font-family:Helvetica,Arial,'Droid Sans',sans-serif; font-size:14px; line-height:19.984375px"><strong>七、结合pmtest5.asm来见证不同特权级代码段之间的跳转</strong></span></span></p> 
+<pre><code class="language-html">; ==========================================
+; pmtest5.asm
+; 编译方法：nasm pmtest5.asm -o pmtest5.com
+; ==========================================
+
+%include	"pm.inc"	; 常量, 宏, 以及一些说明
+
+org	0100h
+	jmp	LABEL_BEGIN
+
+[SECTION .gdt]
+; GDT
+;                                         段基址,         段界限     , 属性
+LABEL_GDT:		Descriptor	       0,                   0, 0			; 空描述符
+LABEL_DESC_NORMAL:	Descriptor	       0,              0ffffh, DA_DRW			; Normal 描述符
+LABEL_DESC_CODE32:	Descriptor	       0,    SegCode32Len - 1, DA_C + DA_32		; 非一致代码段, 32
+LABEL_DESC_CODE16:	Descriptor	       0,              0ffffh, DA_C			; 非一致代码段, 16
+LABEL_DESC_CODE_DEST:	Descriptor	       0,  SegCodeDestLen - 1, DA_C + DA_32		; 非一致代码段, 32
+LABEL_DESC_CODE_RING3:	Descriptor	       0, SegCodeRing3Len - 1, DA_C + DA_32 + DA_DPL3	; 非一致代码段, 32
+LABEL_DESC_DATA:	Descriptor	       0,	  DataLen - 1, DA_DRW			; Data
+LABEL_DESC_STACK:	Descriptor	       0,          TopOfStack, DA_DRWA + DA_32		; Stack, 32 位
+LABEL_DESC_STACK3:	Descriptor	       0,         TopOfStack3, DA_DRWA + DA_32 + DA_DPL3; Stack, 32 位
+LABEL_DESC_TSS:		Descriptor	       0,          TSSLen - 1, DA_386TSS		; TSS
+LABEL_DESC_VIDEO:	Descriptor	 0B8000h,              0ffffh, DA_DRW + DA_DPL3		; 显存首地址
+
+; 门                                            目标选择子,       偏移, DCount, 属性
+LABEL_CALL_GATE_TEST:	Gate		  SelectorCodeDest,          0,      0, DA_386CGate + DA_DPL3
+; GDT 结束
+
+GdtLen		equ	$ - LABEL_GDT	; GDT长度
+GdtPtr		dw	GdtLen - 1	; GDT界限
+		dd	0		; GDT基地址
+
+; GDT 选择子
+SelectorNormal		equ	LABEL_DESC_NORMAL	- LABEL_GDT
+SelectorCode32		equ	LABEL_DESC_CODE32	- LABEL_GDT
+SelectorCode16		equ	LABEL_DESC_CODE16	- LABEL_GDT
+SelectorCodeDest	equ	LABEL_DESC_CODE_DEST	- LABEL_GDT
+SelectorCodeRing3	equ	LABEL_DESC_CODE_RING3	- LABEL_GDT + SA_RPL3
+SelectorData		equ	LABEL_DESC_DATA		- LABEL_GDT
+SelectorStack		equ	LABEL_DESC_STACK	- LABEL_GDT
+SelectorStack3		equ	LABEL_DESC_STACK3	- LABEL_GDT + SA_RPL3
+SelectorTSS		equ	LABEL_DESC_TSS		- LABEL_GDT
+SelectorVideo		equ	LABEL_DESC_VIDEO	- LABEL_GDT
+
+SelectorCallGateTest	equ	LABEL_CALL_GATE_TEST	- LABEL_GDT + SA_RPL3
+; END of [SECTION .gdt]
+
+[SECTION .data1]	 ; 数据段
+ALIGN	32
+[BITS	32]
+LABEL_DATA:
+SPValueInRealMode	dw	0
+; 字符串
+PMMessage:		db	"In Protect Mode now. ^-^", 0	; 进入保护模式后显示此字符串
+OffsetPMMessage		equ	PMMessage - $
+StrTest:		db	"ABCDEFGHIJKLMNOPQRSTUVWXYZ", 0
+OffsetStrTest		equ	StrTest - $
+DataLen			equ	$ - LABEL_DATA
+; END of [SECTION .data1]
+
+
+; 全局堆栈段
+[SECTION .gs]
+ALIGN	32
+[BITS	32]
+LABEL_STACK:
+	times 512 db 0
+TopOfStack	equ	$ - LABEL_STACK - 1
+; END of [SECTION .gs]
+
+
+; 堆栈段ring3
+[SECTION .s3]
+ALIGN	32
+[BITS	32]
+LABEL_STACK3:
+	times 512 db 0
+TopOfStack3	equ	$ - LABEL_STACK3 - 1
+; END of [SECTION .s3]
+
+
+; TSS ---------------------------------------------------------------------------------------------
+[SECTION .tss]
+ALIGN	32
+[BITS	32]
+LABEL_TSS:
+		DD	0			; Back
+		DD	TopOfStack		; 0 级堆栈
+		DD	SelectorStack		; 
+		DD	0			; 1 级堆栈
+		DD	0			; 
+		DD	0			; 2 级堆栈
+		DD	0			; 
+		DD	0			; CR3
+		DD	0			; EIP
+		DD	0			; EFLAGS
+		DD	0			; EAX
+		DD	0			; ECX
+		DD	0			; EDX
+		DD	0			; EBX
+		DD	0			; ESP
+		DD	0			; EBP
+		DD	0			; ESI
+		DD	0			; EDI
+		DD	0			; ES
+		DD	0			; CS
+		DD	0			; SS
+		DD	0			; DS
+		DD	0			; FS
+		DD	0			; GS
+		DD	0			; LDT
+		DW	0			; 调试陷阱标志
+		DW	$ - LABEL_TSS + 2	; I/O位图基址
+		DB	0ffh			; I/O位图结束标志
+TSSLen		equ	$ - LABEL_TSS
+; TSS ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+
+[SECTION .s16]
+[BITS	16]
+LABEL_BEGIN:
+	mov	ax, cs
+	mov	ds, ax
+	mov	es, ax
+	mov	ss, ax
+	mov	sp, 0100h
+
+	mov	[LABEL_GO_BACK_TO_REAL+3], ax
+	mov	[SPValueInRealMode], sp
+
+	; 初始化 16 位代码段描述符
+	mov	ax, cs
+	movzx	eax, ax
+	shl	eax, 4
+	add	eax, LABEL_SEG_CODE16
+	mov	word [LABEL_DESC_CODE16 + 2], ax
+	shr	eax, 16
+	mov	byte [LABEL_DESC_CODE16 + 4], al
+	mov	byte [LABEL_DESC_CODE16 + 7], ah
+
+	; 初始化 32 位代码段描述符
+	xor	eax, eax
+	mov	ax, cs
+	shl	eax, 4
+	add	eax, LABEL_SEG_CODE32
+	mov	word [LABEL_DESC_CODE32 + 2], ax
+	shr	eax, 16
+	mov	byte [LABEL_DESC_CODE32 + 4], al
+	mov	byte [LABEL_DESC_CODE32 + 7], ah
+
+	; 初始化测试调用门的代码段描述符
+	xor	eax, eax
+	mov	ax, cs
+	shl	eax, 4
+	add	eax, LABEL_SEG_CODE_DEST
+	mov	word [LABEL_DESC_CODE_DEST + 2], ax
+	shr	eax, 16
+	mov	byte [LABEL_DESC_CODE_DEST + 4], al
+	mov	byte [LABEL_DESC_CODE_DEST + 7], ah
+
+	; 初始化数据段描述符
+	xor	eax, eax
+	mov	ax, ds
+	shl	eax, 4
+	add	eax, LABEL_DATA
+	mov	word [LABEL_DESC_DATA + 2], ax
+	shr	eax, 16
+	mov	byte [LABEL_DESC_DATA + 4], al
+	mov	byte [LABEL_DESC_DATA + 7], ah
+
+	; 初始化堆栈段描述符
+	xor	eax, eax
+	mov	ax, ds
+	shl	eax, 4
+	add	eax, LABEL_STACK
+	mov	word [LABEL_DESC_STACK + 2], ax
+	shr	eax, 16
+	mov	byte [LABEL_DESC_STACK + 4], al
+	mov	byte [LABEL_DESC_STACK + 7], ah
+
+	; 初始化堆栈段描述符(ring3)
+	xor	eax, eax
+	mov	ax, ds
+	shl	eax, 4
+	add	eax, LABEL_STACK3
+	mov	word [LABEL_DESC_STACK3 + 2], ax
+	shr	eax, 16
+	mov	byte [LABEL_DESC_STACK3 + 4], al
+	mov	byte [LABEL_DESC_STACK3 + 7], ah
+
+	; 初始化Ring3描述符
+	xor	eax, eax
+	mov	ax, ds
+	shl	eax, 4
+	add	eax, LABEL_CODE_RING3
+	mov	word [LABEL_DESC_CODE_RING3 + 2], ax
+	shr	eax, 16
+	mov	byte [LABEL_DESC_CODE_RING3 + 4], al
+	mov	byte [LABEL_DESC_CODE_RING3 + 7], ah
+
+	; 初始化 TSS 描述符
+	xor	eax, eax
+	mov	ax, ds
+	shl	eax, 4
+	add	eax, LABEL_TSS
+	mov	word [LABEL_DESC_TSS + 2], ax
+	shr	eax, 16
+	mov	byte [LABEL_DESC_TSS + 4], al
+	mov	byte [LABEL_DESC_TSS + 7], ah
+
+	; 为加载 GDTR 作准备
+	xor	eax, eax
+	mov	ax, ds
+	shl	eax, 4
+	add	eax, LABEL_GDT		; eax &lt;- gdt 基地址
+	mov	dword [GdtPtr + 2], eax	; [GdtPtr + 2] &lt;- gdt 基地址
+
+	; 加载 GDTR
+	lgdt	[GdtPtr]
+
+	; 关中断
+	cli
+
+	; 打开地址线A20
+	in	al, 92h
+	or	al, 00000010b
+	out	92h, al
+
+	; 准备切换到保护模式
+	mov	eax, cr0
+	or	eax, 1
+	mov	cr0, eax
+
+	; 真正进入保护模式
+	jmp	dword SelectorCode32:0	; 执行这一句会把 SelectorCode32 装入 cs, 并跳转到 Code32Selector:0  处
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+LABEL_REAL_ENTRY:		; 从保护模式跳回到实模式就到了这里
+	mov	ax, cs
+	mov	ds, ax
+	mov	es, ax
+	mov	ss, ax
+
+	mov	sp, [SPValueInRealMode]
+
+	in	al, 92h		; ┓
+	and	al, 11111101b	; ┣ 关闭 A20 地址线
+	out	92h, al		; ┛
+
+	sti			; 开中断
+
+	mov	ax, 4c00h	; ┓
+	int	21h		; ┛回到 DOS
+; END of [SECTION .s16]
+
+
+[SECTION .s32]; 32 位代码段. 由实模式跳入.
+[BITS	32]
+
+LABEL_SEG_CODE32:
+	mov	ax, SelectorData
+	mov	ds, ax			; 数据段选择子
+	mov	ax, SelectorVideo
+	mov	gs, ax			; 视频段选择子
+
+	mov	ax, SelectorStack
+	mov	ss, ax			; 堆栈段选择子
+
+	mov	esp, TopOfStack
+
+
+	; 下面显示一个字符串
+	mov	ah, 0Ch			; 0000: 黑底    1100: 红字
+	xor	esi, esi
+	xor	edi, edi
+	mov	esi, OffsetPMMessage	; 源数据偏移
+	mov	edi, (80 * 10 + 0) * 2	; 目的数据偏移。屏幕第 10 行, 第 0 列。
+	cld
+.1:
+	lodsb
+	test	al, al
+	jz	.2
+	mov	[gs:edi], ax
+	add	edi, 2
+	jmp	.1
+.2:	; 显示完毕
+
+	call	DispReturn
+
+	; Load TSS
+	mov	ax, SelectorTSS
+	ltr	ax	; 在任务内发生特权级变换时要切换堆栈，而内层堆栈的指针存放在当前任务的TSS中，所以要设置任务状态段寄存器 TR。
+
+	push	SelectorStack3
+	push	TopOfStack3
+	push	SelectorCodeRing3
+	push	0
+	retf				; Ring0 -&gt; Ring3，历史性转移！将打印数字 '3'。
+
+; ------------------------------------------------------------------------
+DispReturn:
+	push	eax
+	push	ebx
+	mov	eax, edi
+	mov	bl, 160
+	div	bl
+	and	eax, 0FFh
+	inc	eax
+	mov	bl, 160
+	mul	bl
+	mov	edi, eax
+	pop	ebx
+	pop	eax
+
+	ret
+; DispReturn 结束---------------------------------------------------------
+
+SegCode32Len	equ	$ - LABEL_SEG_CODE32
+; END of [SECTION .s32]
+
+
+[SECTION .sdest]; 调用门目标段
+[BITS	32]
+
+LABEL_SEG_CODE_DEST:
+	mov	ax, SelectorVideo
+	mov	gs, ax			; 视频段选择子(目的)
+
+	mov	edi, (80 * 12 + 0) * 2	; 屏幕第 12 行, 第 0 列。
+	mov	ah, 0Ch			; 0000: 黑底    1100: 红字
+	mov	al, 'C'
+	mov	[gs:edi], ax
+
+	retf
+SegCodeDestLen	equ	$ - LABEL_SEG_CODE_DEST
+; END of [SECTION .sdest]
+
+
+; 16 位代码段. 由 32 位代码段跳入, 跳出后到实模式
+[SECTION .s16code]
+ALIGN	32
+[BITS	16]
+LABEL_SEG_CODE16:
+	; 跳回实模式:
+	mov	ax, SelectorNormal
+	mov	ds, ax
+	mov	es, ax
+	mov	fs, ax
+	mov	gs, ax
+	mov	ss, ax
+
+	mov	eax, cr0
+	and	al, 11111110b
+	mov	cr0, eax
+
+LABEL_GO_BACK_TO_REAL:
+	jmp	0:LABEL_REAL_ENTRY	; 段地址会在程序开始处被设置成正确的值
+
+Code16Len	equ	$ - LABEL_SEG_CODE16
+
+; END of [SECTION .s16code]
+
+; CodeRing3
+[SECTION .ring3]
+ALIGN	32
+[BITS	32]
+LABEL_CODE_RING3:
+	mov	ax, SelectorVideo
+	mov	gs, ax			; 视频段选择子(目的)
+
+	mov	edi, (80 * 14 + 0) * 2	; 屏幕第 14 行, 第 0 列。
+	mov	ah, 0Ch			; 0000: 黑底    1100: 红字
+	mov	al, '3'
+	mov	[gs:edi], ax
+
+	call	SelectorCallGateTest:0	; 测试调用门（有特权级变换），将打印字母 'C'。
+	jmp	$
+SegCodeRing3Len	equ	$ - LABEL_CODE_RING3
+; END of [SECTION .ring3]
+</code></pre> 
+<p><br> </p> 
+<p>83—117初始化任务状态堆栈段（TSS）<br> 292—300 通过使用retf完成从Ring0--&gt;Ring3的跳转，即高特权级跳转到低特权级，跳转到LABEL_CODE_RING3。<br> 380—380 通过调用门，完成从Ring3--&gt;Ring0的跳转，即低特权级跳转到高特权级，跳转到LABEL_SEG_CODE_DEST<br> 336—336 通过retf，完成从Ring0--&gt;Ring3的跳转，即高特权级跳转到低特权级，跳转到379。<br> 到目前为止，我们已经实现了两次从高特权级到低特权级以及一次从低特权级到高特权级的转移，最终在低特权级的代码中让程序停住。<br> </p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/a58b99fbeecd9fc57c6c42c33fe41f6b/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">产品创新的秘诀</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/3b0948608394b1541e1aa1356fe2fc76/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">在Ubuntu下编译Android系统问题汇总</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

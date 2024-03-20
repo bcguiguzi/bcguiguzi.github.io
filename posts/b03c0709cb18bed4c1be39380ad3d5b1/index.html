@@ -1,0 +1,614 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Android性能优化（一）App启动原理分析及启动时间优化 - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="Android性能优化（一）App启动原理分析及启动时间优化" />
+<meta property="og:description" content="一、启动原理解析 Android是基于Linux内核的，当手机启动，加载完Linux内核后，会由Linux系统的init祖先进程fork出Zygote进程，所有的Android应用程序进程以及系统服务进程都是这个Zygote的子进程（由它fork出来的）。其中最重要的一个就是SystemServer，在ZygoteInit类的main方法中，会调用startSystemServer方法开启系统里面重要的服务，包括ActivityManagerService（Activity管理器，简称AMS，可以理解为一个服务进程，负责Activity的生命周期管理）、PackageManagerService（包管理器）、WindowManagerService（窗口管理器）、PowerManagerService（电量管理器）等等，这个过程中还会创建系统上下文。
+public final class SystemServer { //zygote的主入口 public static void main(String[] args) { new SystemServer().run(); } public SystemServer() { // Check for factory test mode. mFactoryTestMode = FactoryTest.getMode(); } private void run() { ...ignore some code... //加载本地系统服务库，并进行初始化 System.loadLibrary(&#34;android_servers&#34;); nativeInit(); // 创建系统上下文 createSystemContext(); //初始化SystemServiceManager对象，下面的系统服务开启都需要调用SystemServiceManager.startService(Class&lt;T&gt;)，这个方法通过反射来启动对应的服务 mSystemServiceManager = new SystemServiceManager(mSystemContext); //开启服务 try { startBootstrapServices(); startCoreServices(); startOtherServices(); } catch (Throwable ex) { Slog.e(&#34;System&#34;, &#34;******************************************&#34;); Slog.e(&#34;System&#34;, &#34;************ Failure starting system services&#34;, ex); throw ex; } ." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/b03c0709cb18bed4c1be39380ad3d5b1/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2018-01-06T00:13:54+08:00" />
+<meta property="article:modified_time" content="2018-01-06T00:13:54+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Android性能优化（一）App启动原理分析及启动时间优化</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <h4><strong>一、启动原理解析</strong></h4> 
+<p>Android是基于Linux内核的，当手机启动，加载完Linux内核后，会由Linux系统的init祖先进程fork出Zygote进程，所有的Android应用程序进程以及系统服务进程都是这个Zygote的子进程（由它fork出来的）。其中最重要的一个就是SystemServer，在ZygoteInit类的main方法中，会调用startSystemServer方法开启系统里面重要的服务，包括ActivityManagerService（Activity管理器，简称AMS，可以理解为一个服务进程，负责Activity的生命周期管理）、PackageManagerService（包管理器）、WindowManagerService（窗口管理器）、PowerManagerService（电量管理器）等等，这个过程中还会创建系统上下文。</p> 
+<p> </p> 
+<pre class="has"><code class="language-java">public final class SystemServer {
+
+    //zygote的主入口
+    public static void main(String[] args) {
+        new SystemServer().run();
+    }
+
+    public SystemServer() {
+        // Check for factory test mode.
+        mFactoryTestMode = FactoryTest.getMode();
+    }
+    
+    private void run() {
+        
+        ...ignore some code...
+        
+        //加载本地系统服务库，并进行初始化 
+        System.loadLibrary("android_servers");
+        nativeInit();
+        
+        // 创建系统上下文
+        createSystemContext();
+        
+        //初始化SystemServiceManager对象，下面的系统服务开启都需要调用SystemServiceManager.startService(Class&lt;T&gt;)，这个方法通过反射来启动对应的服务
+        mSystemServiceManager = new SystemServiceManager(mSystemContext);
+        
+        //开启服务
+        try {
+            startBootstrapServices();
+            startCoreServices();
+            startOtherServices();
+        } catch (Throwable ex) {
+            Slog.e("System", "******************************************");
+            Slog.e("System", "************ Failure starting system services", ex);
+            throw ex;
+        }
+       
+        ...ignore some code...
+    
+    }
+
+    //初始化系统上下文对象mSystemContext，并设置默认的主题,mSystemContext实际上是一个ContextImpl对象。调用ActivityThread.systemMain()的时候，会调用ActivityThread.attach(true)，而在attach()里面，则创建了Application对象，并调用了Application.onCreate()。
+    private void createSystemContext() {
+        ActivityThread activityThread = ActivityThread.systemMain();
+        mSystemContext = activityThread.getSystemContext();
+        mSystemContext.setTheme(android.R.style.Theme_DeviceDefault_Light_DarkActionBar);
+    }
+
+    //在这里开启了几个核心的服务，因为这些服务之间相互依赖，所以都放在了这个方法里面。
+    private void startBootstrapServices() {
+        
+        ...ignore some code...
+        
+        //初始化ActivityManagerService
+        mActivityManagerService = mSystemServiceManager.startService(
+                ActivityManagerService.Lifecycle.class).getService();
+        mActivityManagerService.setSystemServiceManager(mSystemServiceManager);
+        
+        //初始化PowerManagerService，因为其他服务需要依赖这个Service，因此需要尽快的初始化
+        mPowerManagerService = mSystemServiceManager.startService(PowerManagerService.class);
+
+        // 现在电源管理已经开启，ActivityManagerService负责电源管理功能
+        mActivityManagerService.initPowerManagement();
+
+        // 初始化DisplayManagerService
+        mDisplayManagerService = mSystemServiceManager.startService(DisplayManagerService.class);
+    
+    //初始化PackageManagerService
+    mPackageManagerService = PackageManagerService.main(mSystemContext, mInstaller,
+       mFactoryTestMode != FactoryTest.FACTORY_TEST_OFF, mOnlyCore);
+    
+    ...ignore some code...
+    
+    }
+
+}</code></pre> 
+<p> </p> 
+<p>注意一个很重要的地方</p> 
+<pre class="has"><code class="language-java"> private void createSystemContext() {
+        ActivityThread activityThread = ActivityThread.systemMain();
+        mSystemContext = activityThread.getSystemContext();
+                  mSystemContext.setTheme(android.R.style.Theme_DeviceDefault_Light_DarkActionBar);
+    }</code></pre> 
+<p>这里干了三件事，一个是创建ActivityThread，这个ActivityThread就是我们常说的“主线程”,也就是所谓的UI线程，APP的主入口。ActivityThread随后会创建一个mainLooper来开启消息循环，这也就是为什么在"主线程"中我们使用Handler不需要手动创建Looper的原因。第二件事是获得了系统的上下文，第三件事是设置了默认的主题。如果想要启动新的应用，ActivityManagerService会通过socket进程间通信（IPC）机制来通知Zygote进程fork出新的进程。</p> 
+<p> </p> 
+<p> </p> 
+<h4>二、当我们点击了一个APP图标时发生了什么</h4> 
+<p> </p> 
+<p>系统第一个启动的APP是Lancher，也就是我们手机的主界面，继承自Activity，实现了点击事件、触摸、长按等接口，在android源码Lancher.java中，我们可以看到onclick方法</p> 
+<p> </p> 
+<pre class="has"><code class="language-java">public void onClick(View v) {
+    
+          ...ignore some code...
+            
+         Object tag = v.getTag();
+        if (tag instanceof ShortcutInfo) {
+            // Open shortcut
+            final Intent intent = ((ShortcutInfo) tag).intent;
+            int[] pos = new int[2];
+            v.getLocationOnScreen(pos);
+            intent.setSourceBounds(new Rect(pos[0], pos[1],
+                    pos[0] + v.getWidth(), pos[1] + v.getHeight()));
+        //开始开启Activity
+            boolean success = startActivitySafely(v, intent, tag);
+
+            if (success &amp;&amp; v instanceof BubbleTextView) {
+                mWaitingForResume = (BubbleTextView) v;
+                mWaitingForResume.setStayPressed(true);
+            }
+        } else if (tag instanceof FolderInfo) {
+            //如果点击的是图标文件夹，就打开文件夹
+            if (v instanceof FolderIcon) {
+                FolderIcon fi = (FolderIcon) v;
+                handleFolderClick(fi);
+            }
+        } else if (v == mAllAppsButton) {
+        ...ignore some code...
+        }
+    }</code></pre> 
+<p>可以看出我们点击了主界面上的应用图标后调用的就是startActivitySafely这个方法，继续深入进去，然后再往下走，我们发现调用的是startActivity方法，最后会调用<span style="color:#2f2f2f;">Instrumentation.</span><span style="color:#2f2f2f;">execStartActivity()，</span><span style="color:#2f2f2f;">Instrumentation</span><span style="color:#2f2f2f;">这个类就是完成对Application和Activity初始化和生命周期的工具类，然后</span><span style="color:#2f2f2f;">Instrumentation会通过ActivityManagerService的远程接口向AMS发消息，让他启动一个Activity。<span style="color:#2f2f2f;"> 也就是说<span style="color:#2f2f2f;">调用startActivity(Intent)以后, 会通过Binder IPC机制, 最终调用到ActivityManagerService。AMS<span style="color:#2f2f2f;">会通过socket通道传递参数给Zygote进程。Zygote孵化自身, 并调用ZygoteInit.main()方法来实例化ActivityThread对象并最终返回新进程的pid。<span style="color:#2f2f2f;">ActivityThread随后依次调用Looper.prepareLoop()和Looper.loop()来开启消息循环。在<span style="color:#2f2f2f;">ActivityThread会创建并绑定Application，这个时候才会<span style="color:#2f2f2f;">realStartActivity()，并且AMS会将生成的Activity加到ActivityTask的栈顶，并通知ActivityThread暂停当前Activity（暂停Lancher，进入我们自己的APP）。</span></span></span></span></span></span></span></p> 
+<p><span style="color:#2f2f2f;"><span style="color:#2f2f2f;"><span style="color:#2f2f2f;"><span style="color:#2f2f2f;"><span style="color:#2f2f2f;"><span style="color:#2f2f2f;"><span style="color:#2f2f2f;"><img alt="" src="https://images2.imgbox.com/3f/47/jQQkePHk_o.jpg"></span></span></span></span></span></span></span></p> 
+<h4><span style="color:#2f2f2f;">三、Application在何处初始化</span></h4> 
+<div> 
+ <span style="color:#2f2f2f;">在<span style="color:#2f2f2f;">ActivityThread.main()中，有一句话是thread.attach(false)，在这个attach方法中，有一句比较重要的地方</span></span> 
+</div> 
+<div> 
+ <div>
+     
+ </div> 
+ <pre class="has"><code class="language-java">mgr.attachApplication(mAppThread)</code></pre> 
+ <span style="color:#2f2f2f;">这个就会通过Binder调用到AMS里面对应的方法,继续研究源码，在handleBindApplication中，完成了Application的创建<br><span style="color:#2f2f2f;">在makeApplication方法中，最后调用的是instrumentation.callApplicationOnCreate(app);</span><br><span style="color:#2f2f2f;">这个方法里面的onCreate就是调用了我们Application的OnCreate方法。</span></span> 
+</div> 
+<div> 
+ <pre class="has"><code class="language-java">public Application makeApplication(boolean forceDefaultAppClass,
+            Instrumentation instrumentation) {
+        if (mApplication != null) {
+            return mApplication;
+        }
+
+        Application app = null;
+
+        String appClass = mApplicationInfo.className;
+        if (forceDefaultAppClass || (appClass == null)) {
+            appClass = "android.app.Application";
+        }
+
+        try {
+            java.lang.ClassLoader cl = getClassLoader();
+            if (!mPackageName.equals("android")) {
+                initializeJavaContextClassLoader();
+            }
+            ContextImpl appContext = ContextImpl.createAppContext(mActivityThread, this);
+            app = mActivityThread.mInstrumentation.newApplication(
+                    cl, appClass, appContext);
+            appContext.setOuterContext(app);
+        } catch (Exception e) {        }
+        mActivityThread.mAllApplications.add(app);
+        mApplication = app;
+
+    //传进来的是null，所以这里不会执行，onCreate在上一层执行
+        if (instrumentation != null) {
+            try {
+                instrumentation.callApplicationOnCreate(app);
+            } catch (Exception e) {
+               
+            }
+        }
+        ...ignore some code... 
+              
+       }
+
+        return app;
+    }</code></pre> 上面的三点，用一张图来改概括，就是 
+</div> 
+<div> 
+ <br> 
+ <span style="color:#2f2f2f;"><span style="color:#2f2f2f;"><span style="color:#2f2f2f;"><span style="color:#2f2f2f;"><img alt="" src="https://images2.imgbox.com/35/25/kIOMHyi1_o.png"></span></span></span></span> 
+</div> 
+<h4><span style="color:#2f2f2f;"><span style="color:#2f2f2f;">四、什么地方我们可以进行优化</span></span></h4> 
+<div> 
+ <span style="color:#2f2f2f;"><span style="color:#2f2f2f;">首先需要明确的是，在Application的onCreate之前，这个时间都是无法进行优化的，因为这部分是系统替我们完成的，开发者无能为力。所以我们能做的，就是从<span style="color:#2f2f2f;">Application的onCreate方法开始，到lauyout_main.xml第一次布局绘制完成之前，来进行启动时间的优化。</span></span></span> 
+</div> 
+<div>
+    
+</div> 
+<h4><span style="color:#2f2f2f;"><span style="color:#2f2f2f;"><span style="color:#2f2f2f;">五、冷启动与热启动的区别</span></span></span></h4> 
+<div> 
+ <span style="color:#2f2f2f;"><span style="color:#2f2f2f;"><span style="color:#2f2f2f;">1冷启动：当启动应用时，后台没有该应用的进程，这时系统会重新创建一个新的进程分配给该应用，这个启动方式就是冷启动。冷启动因为系统会重新创建一个新的进程分配给它，所以会先创建和初始化 Application 类，再创建和初始化 MainActivity 类，最后显示在界面上。<br><br><br> 2  热启动：当启动应用时，后台已有该应用的进程（例：按back键、home键，应用虽然会退出，但是该应用的进程是依然会保留在后台，可进入任务列表查看），所以在已有进程的情况下，这种启动会从已有的进程中来启动应用，这个方式叫热启动。热启动因为会从已有的进程中来启动，所以热启动就不会走 Application 这步了，而是直接走 MainActivity，所以热启动的过程不必创建和初始化 Application，因为一个应用从新进程的创建到进程的销毁，Application 只会初始化一次。</span></span></span> 
+</div> 
+<div>
+    
+</div> 
+<h4><span style="color:#2f2f2f;"><span style="color:#2f2f2f;"><span style="color:#2f2f2f;">六、时间定义</span></span></span></h4> 
+<div> 
+ <span style="color:#2f2f2f;"><span style="color:#2f2f2f;"><span style="color:#2f2f2f;">由于冷启动过程中，系统和APP的许多工作都要重新开始，所以一般而言这种启动方式是最慢且最具有挑战性的。除了创建和初始化Application和MainActivity之外，冷启动还要加载主题样式Theme，<span style="color:#2f2f2f;">inflate布局，setContentView ，测量、布局、绘制以后显示，我们才看到了屏幕的第一帧。</span></span></span></span> 
+</div> 
+<div>
+    
+</div> 
+<div> 
+ <span style="color:#2f2f2f;"><span style="color:#2f2f2f;"><span style="color:#2f2f2f;"><span style="color:#2f2f2f;"><strong>1.DisplayTime</strong></span></span></span></span> 
+</div> 
+<div> 
+ <span style="color:#2f2f2f;">API19以后，Android在系统Log中增加了Display的Log信息，</span> 
+ <span style="color:#2f2f2f;">在Android Studio中运行我们的App后，我们可以在Logcat中过滤ActivityManager以及Display这两个关键字，可以看到</span> 
+</div> 
+<div> 
+ <span style="color:#2f2f2f;"><span style="color:#2f2f2f;"><span style="color:#2f2f2f;"><span style="color:#2f2f2f;"><img alt="" src="https://images2.imgbox.com/ce/21/wadOCrQr_o.png"></span></span></span></span> 
+</div> 
+<div> 
+ <span style="color:#2f2f2f;">这个</span> 
+ <span style="color:#2f2f2f;">DisplayTime的Log</span> 
+ <span style="color:#2f2f2f;">信息在activity 窗口完成所有的启动事件之后，第一次绘制的时候输出。</span> 
+ <strong><span style="color:#2f2f2f;">这个时间包括了从Activity启动到Layout全部显示的过程</span></strong> 
+ <span style="color:#2f2f2f;">。这基本上就是你需要优化的主要时间。它不包含用户点击app图标然后系统开始准备启动activity的时间，因为作为一个开发者你无法影响这个时间，所以没有必要去测量它。</span> 
+</div> 
+<div>
+    
+</div> 
+<div> 
+ <span style="color:#2f2f2f;"><strong>2.reportFullyDrawn</strong></span> 
+</div> 
+<div>
+    
+</div> 
+<div> 
+ <span style="color:#2f2f2f;">系统日志中的Display Time只是布局的显示时间，并不包括数据的加载，因为很多App在加载时会使用懒加载模式，即数据拉取后，再刷新默认的UI。所以，系统给我们定义了一个类似的『自定义上报时间』——reportFullyDrawn。</span> 
+</div> 
+<div>
+    
+</div> 
+<div>
+  如下图: 
+</div> 
+<div> 
+ <img alt="" src="https://images2.imgbox.com/0b/38/fdLwxfhO_o.png"> 
+</div> 
+<div>
+    
+</div> 
+<div> 
+ <strong>3.三个time</strong> 
+</div> 
+<div>
+    
+</div> 
+<div>
+  在cmd中输入 
+ <strong>adb shell am start -W [包名]/[全类名]</strong>，即通过adb启动我们的Activity或Service，控制台也会输出我们的启动时间 
+</div> 
+<div>
+    
+</div> 
+<div> 
+ <img alt="" src="https://images2.imgbox.com/4a/28/Qc7KKV6m_o.png"> 
+</div> 
+<div>
+    
+</div> 
+<div> 
+ <span style="color:#2f2f2f;">此法获取的启动时间非常精准，可精确到毫秒。那么这三个Thistime,TotalTime,WaitTime分别代表什么呢？</span> 
+</div> 
+<div> 
+ <ul><li><span style="color:#2f2f2f;">ThisTime: 最后一个启动的Activity的启动耗时</span></li><li><span style="color:#2f2f2f;">自己的所有Activity的启动耗时</span></li><li><span style="color:#2f2f2f;">WaitTime: ActivityManagerService启动App的Activity时的总时间（包括当前Activity的onPause()和自己Activity的启动）</span></li></ul> 
+</div> 
+<div> 
+ <span style="color:#2f2f2f;"><span style="color:#2f2f2f;"><span style="color:#2f2f2f;">这三个时间不是很好理解，我们可以把整个过程分解<br><br> 1.上一个Activity的onPause()——2.系统调用AMS耗时——3.第一个Activity（也许是闪屏页）启动耗时——4.第一个Activity的onPause()耗时——5.第二个Activity启动耗时</span></span></span> 
+</div> 
+<div> 
+ <br> 
+ <span style="color:#2f2f2f;"><span style="color:#2f2f2f;"><span style="color:#2f2f2f;">那么，ThisTime表示5（最后一个Activity的启动耗时）。TotalTime表示3.4.5总共的耗时（如果启动时只有一个Activity，那么ThisTime与TotalTime就是一样的）。WaitTime则表示所有的操作耗时，即1.2.3.4.5所有的耗时。</span></span></span> 
+</div> 
+<div>
+    
+</div> 
+<div> 
+ <span style="color:#2f2f2f;"><span style="color:#2f2f2f;"><span style="color:#2f2f2f;">如果还是没有理解，可以查看framework层ActivityRecord源码，其中有这几个time的计算方法，</span></span></span> 
+</div> 
+<div> 
+ <span style="color:#2f2f2f;"><span style="color:#2f2f2f;"><span style="color:#2f2f2f;">最关键的几行代码</span></span></span> 
+</div> 
+<div> 
+ <pre class="has"><code class="language-java"> public void reportFullyDrawnLocked() {
+        final long curTime = SystemClock.uptimeMillis();
+        if (displayStartTime != 0) {
+            reportLaunchTimeLocked(curTime);
+        }
+        final ActivityStack stack = task.stack;
+        if (fullyDrawnStartTime != 0 &amp;&amp; stack != null) {
+            final long thisTime = curTime - fullyDrawnStartTime;
+            final long totalTime = stack.mFullyDrawnStartTime != 0
+                    ? (curTime - stack.mFullyDrawnStartTime) : thisTime;
+}</code></pre> 逻辑如下图 
+</div> 
+<div> 
+ <br> 
+ <span style="color:#2f2f2f;"><span style="color:#2f2f2f;"><span style="color:#2f2f2f;"><img alt="" src="https://images2.imgbox.com/4d/6d/7mhRiFjj_o.png"></span></span></span> 
+</div> 
+<h4><span style="color:#2f2f2f;"><span style="color:#2f2f2f;"><span style="color:#2f2f2f;">七、为什么启动时会出现短暂黑屏或白屏的现象</span></span></span></h4> 
+<div> 
+ <span style="color:#2f2f2f;"><span style="color:#2f2f2f;"><span style="color:#2f2f2f;">系统进程在创建Application的过程中会产生一个BackgroudWindow，等到App完成了第一次绘制，系统进程才会用MainActivity的界面替换掉原来的<span style="color:#2f2f2f;">BackgroudWindow，见下图</span></span></span></span> 
+</div> 
+<div>
+    
+</div> 
+<div> 
+ <span style="color:#2f2f2f;"><span style="color:#2f2f2f;"><span style="color:#2f2f2f;"><span style="color:#2f2f2f;"><img alt="" src="https://images2.imgbox.com/f7/2a/CBuaDWx6_o.png"></span></span></span></span> 
+</div> 
+<div> 
+ <span style="color:#2f2f2f;"><span style="color:#2f2f2f;"><span style="color:#2f2f2f;"><span style="color:#2f2f2f;">也就是说当用户点击你的app那一刻到系统调用Activity.onCreate()之间的这个时间段内，WindowManager会先加载app主题样式中的windowBackground做为app的预览元素，然后再真正去加载activity的layout布局。</span></span></span></span> 
+</div> 
+<div> 
+ <span style="color:#2f2f2f;"><span style="color:#2f2f2f;"><span style="color:#2f2f2f;"><span style="color:#2f2f2f;">很显然，如果你的application或activity启动的过程太慢，导致系统的BackgroundWindow没有及时被替换，就会出现启动时白屏或黑屏的情况（取决于你的主题是Dark还是Light）。</span></span></span></span> 
+</div> 
+<h4><span style="color:#2f2f2f;"><span style="color:#2f2f2f;"><span style="color:#2f2f2f;"><span style="color:#2f2f2f;">八、冷启动优化</span></span></span></span></h4> 
+<div> 
+ <span style="color:#2f2f2f;"><span style="color:#2f2f2f;"><span style="color:#2f2f2f;"><span style="color:#2f2f2f;">1.主题替换</span></span></span></span> 
+</div> 
+<div> 
+ <span style="color:#2f2f2f;"><span style="color:#2f2f2f;"><span style="color:#2f2f2f;"><span style="color:#2f2f2f;">我们在style中自定义一个样式Lancher，在其中放一张背景图片，或是广告图片之类的</span></span></span></span> 
+</div> 
+<div>
+    
+</div> 
+<div> 
+ <pre class="has"><code class="language-java">&lt;style name="AppTheme.Launcher"&gt;
+        &lt;item name="android:windowBackground"&gt;@drawable/bg&lt;/item&gt;
+    &lt;/style&gt;</code></pre> 把这个样式设置给启动的Activity 
+ <br>   
+ <pre class="has"><code class="language-html">&lt;activity
+            android:name=".activity.SplashActivity"
+            android:screenOrientation="portrait"
+            android:theme="@style/AppTheme.Launcher"
+            &gt;</code></pre> 然后在Activity的onCreate方法，把Activity设置回原来的主题 
+</div> 
+<div>
+    
+</div> 
+<pre class="has"><code class="language-html">@Override
+    protected void onCreate(Bundle savedInstanceState) {
+        //替换为原来的主题，在onCreate之前调用
+        setTheme(R.style.AppTheme);
+        super.onCreate(savedInstanceState);
+    }</code></pre> 
+<p> </p> 
+<p>这样在启动时就通过给用户看一张图片或是广告来防止黑白屏的尴尬。</p> 
+<p> </p> 
+<div>
+    
+</div> 
+<div> 
+ <span style="color:#2f2f2f;"><span style="color:#2f2f2f;"><span style="color:#2f2f2f;"><span style="color:#2f2f2f;">还一种方式，就是把windowBackground属性设为null，这样在启动时，backgroundWindow的背景就会变成透明的，给人的感觉就是点了应用图标以后，延迟了一会儿然后加载第一个activity的界面。</span></span></span></span> 
+</div> 
+<div> 
+ <pre class="has"><code class="language-html">&lt;style name="AppTheme.Launcher"&gt;
+        &lt;item name="android:windowBackground"&gt;@null&lt;/item&gt;
+    &lt;/style&gt;</code></pre> 
+</div> 
+<div> 
+ <span style="color:#2f2f2f;"><span style="color:#2f2f2f;"><span style="color:#2f2f2f;"><span style="color:#2f2f2f;">2.优化Application和MainActivity</span></span></span></span> 
+</div> 
+<div>
+    
+</div> 
+<div> 
+ <span style="color:#2f2f2f;"><span style="color:#2f2f2f;"><span style="color:#2f2f2f;"><span style="color:#2f2f2f;">上面所说的改变主题实际上是一种伪优化，因为它实质上并没有真正减少App启动的时间。</span></span></span></span> 
+</div> 
+<div>
+    
+</div> 
+<div> 
+ <span style="color:#2f2f2f;"><span style="color:#2f2f2f;"><span style="color:#2f2f2f;"><span style="color:#2f2f2f;">Application是程序的主入口，特别是很多第三方SDK都会需要在Application的onCreate里面做很多初始化操作，不得不说，各种第三方SDK，都特别喜欢这个『兵家必争之地』，再加上自己的一些库的初始化，会让整个Application不堪重负。</span></span></span></span> 
+ <span style="color:#2f2f2f;">优化的方法，无非是通过以下几个方面：</span> 
+</div> 
+<div> 
+ <ul><li><span style="color:#2f2f2f;">延迟初始化</span></li><li><span style="color:#2f2f2f;">后台任务</span></li><li><span style="color:#2f2f2f;">界面预加载</span></li></ul> 
+</div> 
+<div>
+    
+</div> 
+<div> 
+ <span style="color:#2f2f2f;"><span style="color:#2f2f2f;"><span style="color:#2f2f2f;"><span style="color:#2f2f2f;">在Application的构造器方法、attachBaseContext()、onCreate()方法中不要进行耗时操作的初始化，一些数据预取放在异步线程中。</span></span></span></span> 
+</div> 
+<div>
+    
+</div> 
+<div> 
+ <span style="color:#2f2f2f;"><span style="color:#2f2f2f;"><span style="color:#2f2f2f;"><span style="color:#2f2f2f;">数据库，IO操作，密集网络请求不要放在Application的构造方法中，能使用工作线程的尽量使用工作线程，不要在Application的onCreate中创建线程池，因为那样会有比较大的开销，可以考虑延后再创建。</span></span></span></span> 
+</div> 
+<div> 
+ <span style="color:#2f2f2f;"><span style="color:#2f2f2f;"><span style="color:#2f2f2f;"><span style="color:#2f2f2f;">第三方SDK如果主线程中没有立即使用，可以考虑延迟几秒再初始化，总之一句话，尽早让用户看到应用的界面，其他操作都可以先让路。</span></span></span></span> 
+</div> 
+<div>
+    
+</div> 
+<div> 
+ <span style="color:#2f2f2f;"><span style="color:#2f2f2f;"><span style="color:#2f2f2f;"><span style="color:#2f2f2f;">对于MainActivity，由于在获取到第一帧前，需要对contentView进行测量布局绘制操作，尽量减少布局的层次，考虑StubView的延迟加载策略，当然在onCreate、onStart、onResume方法中避免做耗时操作。</span></span></span></span> 
+</div> 
+<div>
+    
+</div> 
+<div> 
+ <span style="color:#2f2f2f;"><span style="color:#2f2f2f;"><span style="color:#2f2f2f;"><span style="color:#2f2f2f;">对于sharedPreferences的初始化，因为<span style="color:#2f2f2f;">sharedPreferences</span>的特性在初始化时候会对数据全部读出来存在内存中，所以这个初始化放在主线程中不合适，反而会延迟应用的启动速度，对于这个还是需要放在异步线程中处理。 </span></span></span></span> 
+</div> 
+<div>
+    
+</div> 
+<div> 
+ <span style="color:#2f2f2f;"><span style="color:#2f2f2f;"><span style="color:#2f2f2f;"><span style="color:#2f2f2f;">例子</span></span></span></span> 
+</div> 
+<div> 
+ <pre class="has"><code class="language-java">new Thread(){
+            @Override
+            public void run() {
+                initNim();
+                initImagePicker();
+                initOkHttp();
+            }
+        }.start();</code></pre> 
+ <p> </p> 
+ <h4><span style="color:#2f2f2f;"><span style="color:#2f2f2f;"><span style="color:#2f2f2f;"><span style="color:#2f2f2f;">九、优化启动时间的一个很好用的工具 TraceView</span></span></span></span></h4> 
+</div> 
+<div> 
+ <span style="color:#2f2f2f;"><span style="color:#2f2f2f;"><span style="color:#2f2f2f;"><span style="color:#2f2f2f;">TraceView 是 Android SDK 中内置的一个工具，它可以加载 trace 文件，用图形的形式展示代码的执行时间、次数及调用栈，便于我们分析。</span></span></span></span> 
+</div> 
+<div>
+    
+</div> 
+<div> 
+ <span style="color:#2f2f2f;">用法很简单，在你想要测试花费时间的代码之前，调用Debug.startMethodTracing(filename)，</span> 
+ <span style="color:#2f2f2f;">系统会生产 trace 文件，并且产生追踪数据，在结束处调用代码<span style="color:#2f2f2f;">Debug.stopMethodTracing()</span>时，会将追踪数据写入到 trace 文件中。以下代码在sd卡中生成trace文件</span> 
+</div> 
+<div>
+    
+</div> 
+<div> 
+ <pre class="has"><code class="language-java">File file = new File(Environment.getExternalStorageDirectory(), "app7");
+       Log.i(TAG, "onCreate: " + file.getAbsolutePath());
+       Debug.startMethodTracing(file.getAbsolutePath());
+        //对全局属性赋值
+        mContext = getApplicationContext();
+        mMainThread = Thread.currentThread();
+        mMainThreadId = android.os.Process.myTid();
+        mMainLooper = getMainLooper();
+        mHandler = new Handler();
+        initNim();
+        initImagePicker();
+        initOkHttp();
+        Debug.stopMethodTracing();</code></pre> 如果你用的是模拟器，就可以使用下面的控制台命令将trace文件拉出到桌面上 
+</div> 
+<div> 
+ <pre class="has"><code class="language-java">cd Desktop
+adb pull /storage/sdcard/app7.trace</code></pre> 然后将这个trace文件拖入android studio 就可以了，可以看到这样的界面 
+</div> 
+<div> 
+ <br> 
+ <br> 
+ <span style="color:#2f2f2f;"><img alt="" src="https://images2.imgbox.com/72/19/fIrrnJpn_o.png"></span> 
+</div> 
+<div> 
+ <span style="color:#2f2f2f;"><span style="color:#2f2f2f;"><span style="color:#2f2f2f;"><span style="color:#2f2f2f;">具体各个部分的信息如下</span></span></span></span> 
+</div> 
+<div> 
+ <span style="color:#2f2f2f;"><span style="color:#2f2f2f;"><span style="color:#2f2f2f;"><span style="color:#2f2f2f;">   <img alt="" src="https://images2.imgbox.com/5a/30/IPA06I2q_o.jpg"></span></span></span></span> 
+</div> 
+<div> 
+ <span style="color:#2f2f2f;">从上半部分可以清晰的看出方法之间的调用关系和运行时间，从下半部分可以具体看出那几个方法耗时较长</span> 
+</div> 
+<div> 
+ <span style="color:#2f2f2f;"><img alt="" src="https://images2.imgbox.com/59/dc/lkMFa0J7_o.png"></span> 
+</div> 
+<div> 
+ <span style="color:#2f2f2f;">有了这样方便的工具，启动优化时对症下药就很方便了</span> 
+</div> 
+<div>
+    
+</div> 
+<div> 
+ <strong>也欢迎关注个人公众号，移动开发，音视频，图形图像，大厂内推，不定时更新</strong> 
+</div> 
+<div> 
+ <p style="text-align:center;"><img alt="" height="258" src="https://images2.imgbox.com/01/51/VTUbU3xC_o.jpg" width="258"></p> 
+</div> 
+<div>
+    
+</div> 
+<div> 
+ <span style="color:#2f2f2f;"><strong>参考博客</strong></span> 
+</div> 
+<div> 
+ <span style="color:#2f2f2f;"><strong><a href="http://www.ituring.com.cn/article/273967" rel="nofollow">Android 性能优化：使用 TraceView 找到卡顿的元凶</a></strong></span> 
+</div> 
+<div>
+    
+</div> 
+<div> 
+ <span style="color:#2f2f2f;"><strong><a href="https://www.jianshu.com/p/f5514b1a826c" rel="nofollow">Android性能优化（一）之启动加速35%</a></strong></span> 
+</div> 
+<div>
+    
+</div> 
+<div> 
+ <a href="https://www.jianshu.com/p/6037f6fda285" rel="nofollow">【凯子哥带你学Framework】Activity启动过程全解析</a> 
+</div> 
+<div>
+    
+</div> 
+<div>
+    
+</div>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/b3c95e231fd49421f892dd7329009307/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">在VMware中配置CentOS 7.2网络</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/9abd0de1f7853450a12a9b0f0294d95b/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">codeforces 913C Party Lemonade</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

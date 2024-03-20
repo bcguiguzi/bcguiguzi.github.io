@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>基于Redis商品库存扣减方案 - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="基于Redis商品库存扣减方案" />
+<meta property="og:description" content="前言 电商业务场景下，对于库存的处理是比较重要的，表面上看只是对商品库存数做一个扣减操作，但是要做到不超卖、不少卖，同时还要保证高性能，却是一件非常困难的事。
+传统解决方案 库存扣减的传统解决方案是完全基于关系型数据库来做的，以 MySQL 为例，假设有如下sku表：
+CREATE TABLE `sku` ( `id` BIGINT(20) NOT NULL AUTO_INCREMENT COMMENT &#39;skuID&#39;, `product_id` BIGINT(20) NOT NULL COMMENT &#39;商品ID&#39;, `stock` INT(11) UNSIGNED DEFAULT &#39;0&#39; COMMENT &#39;库存数&#39;, PRIMARY KEY (`id`) ) ENGINE = InnoDB COMMENT =&#39;商品sku表&#39;; 用户下单时，先执行如下SQL扣减库存，库存扣减成功才创建订单。任一商品库存不足时，扣减就会失败，此时可以回滚事务，并给用户一个友好的提示。
+UPDATE sku SET stock=stock-#{num} WHERE id=#{id} AND stock&gt;=#{num} 这种方案可以保证不超卖，它依赖的是MySQL事务一致性和行锁，上一个请求扣减库存会持有对应sku的行锁直到事务提交，后续请求抢锁失败会阻塞，相当于库存扣减在MySQL层面被串行化了。缺点也很明显，如果系统并发较高，或者遇到大促就会存在热点问题，大量用户购买同一商品，就会导致大量线程都在竞争锁，进而导致MySQL TPS降低，RT线性上升，最终甚至引发系统雪崩。MySQL针对单行update的tps大概也就在500左右，为了避免MySQL成为瓶颈，建议把库存扣减操作转移到上层执行。
+基于Redis扣减库存 Redis 高效的读写性能，是所有关系型数据库望尘莫及的，单台实例轻轻松松就能达到10W tps，高出MySQL几个数量级，基于Redis的库存扣减方案可以满足绝大多数企业。
+在主流程上，用户可能一次下单多个商品，我们可以通过执行lua脚本的方式来扣减库存，并对脚本执行结果做处理。库存扣减可能有三种结果：
+1：库存扣减成功0：库存不足，扣减失败-1：库存不存在，还未load到Redis @Slf4j public class StockService { private final RedisClient redisClient = RedisClient.getClient(); public void reduce(List&lt;SkuDTO&gt; skuDTOList) { // lua脚本扣减库存 int result = doReduce(skuDTOList); if (result == -1) { // 初始化库存 initStock(skuDTOList); result = doReduce(skuDTOList); } if (result == 0) { throw new BizException(&#34;" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/49aabae30cc06a8891fd64e3d6cb74d7/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2024-02-22T17:10:23+08:00" />
+<meta property="article:modified_time" content="2024-02-22T17:10:23+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">基于Redis商品库存扣减方案</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <h2><a id="_0"></a>前言</h2> 
+<p>电商业务场景下，对于库存的处理是比较重要的，表面上看只是对商品库存数做一个扣减操作，但是要做到不超卖、不少卖，同时还要保证高性能，却是一件非常困难的事。</p> 
+<h2><a id="_2"></a>传统解决方案</h2> 
+<p>库存扣减的传统解决方案是完全基于关系型数据库来做的，以 MySQL 为例，假设有如下sku表：</p> 
+<pre><code class="prism language-sql"><span class="token keyword">CREATE</span> <span class="token keyword">TABLE</span> <span class="token identifier"><span class="token punctuation">`</span>sku<span class="token punctuation">`</span></span>
+<span class="token punctuation">(</span>
+    <span class="token identifier"><span class="token punctuation">`</span>id<span class="token punctuation">`</span></span>         <span class="token keyword">BIGINT</span><span class="token punctuation">(</span><span class="token number">20</span><span class="token punctuation">)</span> <span class="token operator">NOT</span> <span class="token boolean">NULL</span> <span class="token keyword">AUTO_INCREMENT</span> <span class="token keyword">COMMENT</span> <span class="token string">'skuID'</span><span class="token punctuation">,</span>
+    <span class="token identifier"><span class="token punctuation">`</span>product_id<span class="token punctuation">`</span></span> <span class="token keyword">BIGINT</span><span class="token punctuation">(</span><span class="token number">20</span><span class="token punctuation">)</span> <span class="token operator">NOT</span> <span class="token boolean">NULL</span> <span class="token keyword">COMMENT</span> <span class="token string">'商品ID'</span><span class="token punctuation">,</span>
+    <span class="token identifier"><span class="token punctuation">`</span>stock<span class="token punctuation">`</span></span>      <span class="token keyword">INT</span><span class="token punctuation">(</span><span class="token number">11</span><span class="token punctuation">)</span> <span class="token keyword">UNSIGNED</span> <span class="token keyword">DEFAULT</span> <span class="token string">'0'</span> <span class="token keyword">COMMENT</span> <span class="token string">'库存数'</span><span class="token punctuation">,</span>
+    <span class="token keyword">PRIMARY</span> <span class="token keyword">KEY</span> <span class="token punctuation">(</span><span class="token identifier"><span class="token punctuation">`</span>id<span class="token punctuation">`</span></span><span class="token punctuation">)</span>
+<span class="token punctuation">)</span> <span class="token keyword">ENGINE</span> <span class="token operator">=</span> <span class="token keyword">InnoDB</span> <span class="token keyword">COMMENT</span> <span class="token operator">=</span><span class="token string">'商品sku表'</span><span class="token punctuation">;</span>
+</code></pre> 
+<p>用户下单时，先执行如下SQL扣减库存，库存扣减成功才创建订单。任一商品库存不足时，扣减就会失败，此时可以回滚事务，并给用户一个友好的提示。</p> 
+<pre><code class="prism language-sql"><span class="token keyword">UPDATE</span> sku <span class="token keyword">SET</span> stock<span class="token operator">=</span>stock<span class="token operator">-</span><span class="token comment">#{num} WHERE id=#{id} AND stock&gt;=#{num}</span>
+</code></pre> 
+<p>这种方案可以保证不超卖，它依赖的是MySQL事务一致性和行锁，上一个请求扣减库存会持有对应sku的行锁直到事务提交，后续请求抢锁失败会阻塞，相当于库存扣减在MySQL层面被串行化了。缺点也很明显，如果系统并发较高，或者遇到大促就会存在热点问题，大量用户购买同一商品，就会导致大量线程都在竞争锁，进而导致MySQL TPS降低，RT线性上升，最终甚至引发系统雪崩。MySQL针对单行update的tps大概也就在500左右，为了避免MySQL成为瓶颈，建议把库存扣减操作转移到上层执行。</p> 
+<h2><a id="Redis_19"></a>基于Redis扣减库存</h2> 
+<p>Redis 高效的读写性能，是所有关系型数据库望尘莫及的，单台实例轻轻松松就能达到10W tps，高出MySQL几个数量级，基于Redis的库存扣减方案可以满足绝大多数企业。</p> 
+<p>在主流程上，用户可能一次下单多个商品，我们可以通过执行lua脚本的方式来扣减库存，并对脚本执行结果做处理。库存扣减可能有三种结果：</p> 
+<ul><li>1：库存扣减成功</li><li>0：库存不足，扣减失败</li><li>-1：库存不存在，还未load到Redis</li></ul> 
+<pre><code class="prism language-java"><span class="token annotation punctuation">@Slf4j</span>
+<span class="token keyword">public</span> <span class="token keyword">class</span> <span class="token class-name">StockService</span> <span class="token punctuation">{<!-- --></span>
+
+    <span class="token keyword">private</span> <span class="token keyword">final</span> <span class="token class-name">RedisClient</span> redisClient <span class="token operator">=</span> <span class="token class-name">RedisClient</span><span class="token punctuation">.</span><span class="token function">getClient</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token function">reduce</span><span class="token punctuation">(</span><span class="token class-name">List</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">SkuDTO</span><span class="token punctuation">&gt;</span></span> skuDTOList<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token comment">// lua脚本扣减库存</span>
+        <span class="token keyword">int</span> result <span class="token operator">=</span> <span class="token function">doReduce</span><span class="token punctuation">(</span>skuDTOList<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>result <span class="token operator">==</span> <span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token comment">// 初始化库存</span>
+            <span class="token function">initStock</span><span class="token punctuation">(</span>skuDTOList<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            result <span class="token operator">=</span> <span class="token function">doReduce</span><span class="token punctuation">(</span>skuDTOList<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>result <span class="token operator">==</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">throw</span> <span class="token keyword">new</span> <span class="token class-name">BizException</span><span class="token punctuation">(</span><span class="token string">"库存不足"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token keyword">if</span> <span class="token punctuation">(</span>result <span class="token operator">==</span> <span class="token number">1</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            log<span class="token punctuation">.</span><span class="token function">info</span><span class="token punctuation">(</span><span class="token string">"库存扣减成功"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">throw</span> <span class="token keyword">new</span> <span class="token class-name">BizException</span><span class="token punctuation">(</span><span class="token string">"处理失败，请重试"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>库存扣减的脚本如下，KEYS是要扣减的sku对应的库存key，ARGV是要扣减的库存数，均是数组。<br> 脚本会先校验，确保库存key和扣减数长度一致。然后遍历KEYS，任一库存key不存在，都会直接返回-1，提醒客户端初始化库存。如果库存key存在就判断库存数是否充足，任一库存数不足都会直接返回0，提醒客户端库存扣减失败。当库存key全都存在，且库存数都足够时，进行KEYS第二次遍历，依次扣减库存并最终返回1。</p> 
+<pre><code class="prism language-java"><span class="token keyword">private</span> <span class="token keyword">int</span> <span class="token function">doReduce</span><span class="token punctuation">(</span><span class="token class-name">List</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">SkuDTO</span><span class="token punctuation">&gt;</span></span> skuDTOList<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token class-name">List</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">String</span><span class="token punctuation">&gt;</span></span> keys <span class="token operator">=</span> skuDTOList<span class="token punctuation">.</span><span class="token function">stream</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">map</span><span class="token punctuation">(</span>s <span class="token operator">-&gt;</span> <span class="token class-name">String</span><span class="token punctuation">.</span><span class="token function">format</span><span class="token punctuation">(</span><span class="token class-name">CacheKey</span><span class="token punctuation">.</span><span class="token constant">STOCK_KEY</span><span class="token punctuation">,</span> s<span class="token punctuation">.</span><span class="token function">getSkuId</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">collect</span><span class="token punctuation">(</span><span class="token class-name">Collectors</span><span class="token punctuation">.</span><span class="token function">toList</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token class-name">List</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">String</span><span class="token punctuation">&gt;</span></span> args <span class="token operator">=</span> skuDTOList<span class="token punctuation">.</span><span class="token function">stream</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">map</span><span class="token punctuation">(</span><span class="token class-name">SkuDTO</span><span class="token operator">::</span><span class="token function">getNumber</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">map</span><span class="token punctuation">(</span><span class="token class-name">String</span><span class="token operator">::</span><span class="token function">valueOf</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">collect</span><span class="token punctuation">(</span><span class="token class-name">Collectors</span><span class="token punctuation">.</span><span class="token function">toList</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token class-name">Object</span> result <span class="token operator">=</span> redisClient<span class="token punctuation">.</span><span class="token function">eval</span><span class="token punctuation">(</span><span class="token string">"if(#KEYS~=#ARGV)\n"</span> <span class="token operator">+</span>
+            <span class="token string">"then\n"</span> <span class="token operator">+</span>
+            <span class="token string">"  return nil\n"</span> <span class="token operator">+</span>
+            <span class="token string">"end\n"</span> <span class="token operator">+</span>
+            <span class="token string">"for i,key in ipairs(KEYS)\n"</span> <span class="token operator">+</span>
+            <span class="token string">"do\n"</span> <span class="token operator">+</span>
+            <span class="token string">" if(redis.call('EXISTS',key)==0)\n"</span> <span class="token operator">+</span>
+            <span class="token string">" then\n"</span> <span class="token operator">+</span>
+            <span class="token string">"   return -1\n"</span> <span class="token operator">+</span>
+            <span class="token string">" elseif(tonumber(redis.call('GET',key))&lt;tonumber(ARGV[i]))\n"</span> <span class="token operator">+</span>
+            <span class="token string">" then\n"</span> <span class="token operator">+</span>
+            <span class="token string">"   return 0\n"</span> <span class="token operator">+</span>
+            <span class="token string">" end\n"</span> <span class="token operator">+</span>
+            <span class="token string">"end\n"</span> <span class="token operator">+</span>
+            <span class="token string">"for i,key in ipairs(KEYS)\n"</span> <span class="token operator">+</span>
+            <span class="token string">"do\n"</span> <span class="token operator">+</span>
+            <span class="token string">"  redis.call('DECRBY',key,tonumber(ARGV[i]))\n"</span> <span class="token operator">+</span>
+            <span class="token string">"end\n"</span> <span class="token operator">+</span>
+            <span class="token string">"return 1"</span><span class="token punctuation">,</span> keys<span class="token punctuation">,</span> args<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">return</span> <span class="token class-name">Integer</span><span class="token punctuation">.</span><span class="token function">valueOf</span><span class="token punctuation">(</span>result<span class="token punctuation">.</span><span class="token function">toString</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>这里解释下为什么要遍历两次，第一次遍历是为了确保所有sku库存充足，第二次遍历是为了扣减库存。如果在第一次遍历时就扣减库存，后面遇到库存不足的sku扣减失败，Redis是不支持回滚操作的，在业务上去回滚就变得非常复杂了。</p> 
+<p>如果库存key不存在，则要先把库存数从MySQL load 到Redis。首先通过lua脚本判断哪些库存key不存在，然后查询数据库库存并写入到Redis。</p> 
+<blockquote> 
+ <p>注意：可能有多个线程发现缓存key不存在，写缓存必须用<code>setnx</code> 命令，否则会导致库存数不一致。</p> 
+</blockquote> 
+<pre><code class="prism language-java"><span class="token keyword">private</span> <span class="token keyword">void</span> <span class="token function">initStock</span><span class="token punctuation">(</span><span class="token class-name">List</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">SkuDTO</span><span class="token punctuation">&gt;</span></span> skuDTOList<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token class-name">List</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">String</span><span class="token punctuation">&gt;</span></span> keys <span class="token operator">=</span> skuDTOList<span class="token punctuation">.</span><span class="token function">stream</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">map</span><span class="token punctuation">(</span>s <span class="token operator">-&gt;</span> <span class="token class-name">String</span><span class="token punctuation">.</span><span class="token function">format</span><span class="token punctuation">(</span><span class="token class-name">CacheKey</span><span class="token punctuation">.</span><span class="token constant">STOCK_KEY</span><span class="token punctuation">,</span> s<span class="token punctuation">.</span><span class="token function">getSkuId</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">collect</span><span class="token punctuation">(</span><span class="token class-name">Collectors</span><span class="token punctuation">.</span><span class="token function">toList</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token class-name">Object</span> result <span class="token operator">=</span> redisClient<span class="token punctuation">.</span><span class="token function">eval</span><span class="token punctuation">(</span><span class="token string">"local keys = {}\n"</span> <span class="token operator">+</span>
+            <span class="token string">"for i,key in ipairs(KEYS)\n"</span> <span class="token operator">+</span>
+            <span class="token string">"do\n"</span> <span class="token operator">+</span>
+            <span class="token string">"  if(redis.call('EXISTS',key)==0)\n"</span> <span class="token operator">+</span>
+            <span class="token string">"  then\n"</span> <span class="token operator">+</span>
+            <span class="token string">"    keys[#keys+1]=key\n"</span> <span class="token operator">+</span>
+            <span class="token string">"  end\n"</span> <span class="token operator">+</span>
+            <span class="token string">"end\n"</span> <span class="token operator">+</span>
+            <span class="token string">"return keys"</span><span class="token punctuation">,</span> keys<span class="token punctuation">,</span> <span class="token class-name">Collections</span><span class="token punctuation">.</span><span class="token function">emptyList</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>result <span class="token operator">!=</span> <span class="token keyword">null</span> <span class="token operator">&amp;&amp;</span> result <span class="token keyword">instanceof</span> <span class="token class-name">Collection</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">for</span> <span class="token punctuation">(</span><span class="token class-name">Object</span> key <span class="token operator">:</span> <span class="token punctuation">(</span><span class="token punctuation">(</span><span class="token class-name">Collection</span><span class="token punctuation">)</span> result<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token class-name">Integer</span> skuId <span class="token operator">=</span> <span class="token class-name">Integer</span><span class="token punctuation">.</span><span class="token function">valueOf</span><span class="token punctuation">(</span>key<span class="token punctuation">.</span><span class="token function">toString</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">split</span><span class="token punctuation">(</span><span class="token string">":"</span><span class="token punctuation">)</span><span class="token punctuation">[</span><span class="token number">1</span><span class="token punctuation">]</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token keyword">int</span> stock <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span><span class="token comment">// mock</span>
+            redisClient<span class="token punctuation">.</span><span class="token function">setnx</span><span class="token punctuation">(</span><span class="token class-name">String</span><span class="token punctuation">.</span><span class="token function">format</span><span class="token punctuation">(</span><span class="token class-name">CacheKey</span><span class="token punctuation">.</span><span class="token constant">STOCK_KEY</span><span class="token punctuation">,</span> skuId<span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token class-name">String</span><span class="token punctuation">.</span><span class="token function">valueOf</span><span class="token punctuation">(</span>stock<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>至此，基于Redis扣减库存的流程就结束了。在整个流程中，初始化库存开销是比较大的，因为要查询数据库。所以系统上可以再优化一下，针对秒杀商品或者运营可预见的热点商品，可以在上架时就提前写入Redis，以降低用户下单的延时。<br> 最后就是Redis库存数同步到MySQL了，Redis层只负责库存数扣减拦截，实际的存储还得靠关系型数据库。实现上，可以在下单事务提交后，发送一个MQ消息，利用消息队列来削峰，确保写入数据库的流量是可控的。</p> 
+<h2><a id="_109"></a>尾巴</h2> 
+<p>商品库存扣减的目标是：不超卖、不少卖和高性能。传统基于关系型数据库事务的解决方案实现简单，但是存在热点写问题，数据库沦为性能瓶颈。在高并发场景下更推荐用Redis来做库存扣减，核心是先把库存数从数据库load到Redis，再通过lua脚本来批量扣减库存，细节上要注意先确保所有商品的库存数都充足再统一扣减，否则回滚会非常麻烦。对于可预见的热点商品，可以提前预热，避免用户下单时再初始化缓存，增加下单延时。最后是Redis数据同步到数据库，可以通过消息队列来削峰，确保流量的可控。<br> 用上Redis并不意味着就高枕无忧了，极端情况下仍然会出现数据不一致的情况。因为Redis主从集群复制是异步且有延迟的，如果Master扣减库存后还没同步到Slave就宕机了，此时Slave升级为Master，就会导致库存扣减丢失出现超卖的情况，没办法百分百解决，只能尽可能的在业务低峰期修正缓存里的数据。</p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/0477f039a5c72ce06c76e60753db6fee/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">js对象的赋值，浅拷贝，深拷贝区分和使用场景</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/f20dab6ee200195dc0a50e017c3759f6/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">Android源码之init.rc文件详解</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

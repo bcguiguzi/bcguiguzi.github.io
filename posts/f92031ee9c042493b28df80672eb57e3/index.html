@@ -1,0 +1,542 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>MySql进阶索引篇01——深度讲解索引的数据结构：B&#43;树 - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="MySql进阶索引篇01——深度讲解索引的数据结构：B&#43;树" />
+<meta property="og:description" content="深度讲解索引的数据结构：B&#43;树 1.索引介绍1.1 为什么使用索引1.2 索引的优缺点 2.从零开始设计索引2.1没有索引时怎么查询数据2.2 基于页的目录项的简单索引2.3 InnoDB索引设计方案2.3.1 迭代1：目录项的数据页(目录页)2.3.2 迭代2：多个目录页2.3.3 迭代3：目录页的目录页 3.索引类型3.1.聚簇索引3.2 二级索引3.3 联合索引3.4.InnoDB的B&#43;树注意事项3.4.1 根页面位置万年不动3.4.2 内节点中目录项记录具有唯一性3.4.3 一个页面最少要存储两条记录 4.MyISam的索引方案4.1 不同存储引擎索引的区别4.2 MyISam索引的原理4.3 MyISam与InnoDB索引方案的对比4.4 索引方案与索引优化的关系 5.索引的代价6.B&#43;树与常见的查找数据结构对比6.1 Hash结构6.2 二叉搜索树6.3 AVL树6.4 B树6.6 B&#43;树6.7 R树 1.索引介绍 1.1 为什么使用索引 索引是存储引擎中一种用于快速找到数据的存储结构，他就像《新华字典》的目录，可以使我们查每个字的速度大大提升。
+下面将
+结合计算机的存储带大家深入理解索引的优点。下图左边使一个磁盘，在这个磁盘中存放数据是随机的，如果要查找某条数据，需要在整个磁盘空间进行扫描，十分耗时。下图右边(表格部分)改进了这一做法，在磁盘中开辟了一块连续的存储空间，数据也是连续存储，如果我们需要找第六条数据，只需要进行顺序访问，时间复杂度是O(n).
+还可以改进吗？当然可以，结合我们熟悉的二分查找算法，我们可以使用二叉搜索树来优化。如下图，只要构造一颗二叉树，让左子树的值比右子树的小即可。同样是要查找之前的第六条数据，也就是89，只需要查找2次就可以了。其时间复杂度为 O ( l o g 2 n ) O(log_2n) O(log2​n)
+实际上，MySQL数据库的索引就是建立了一棵B&#43;树(其它存储引擎不一定)，比上面的二叉搜索树更加复杂一点。左图转为右图就与索引的创建过程类似，它的创建有利于减少查找数据时的磁盘I/O次数,提高查找速度。注意，这里提到的磁盘I/O其实是很耗时的。因此它的减少会大大提升我们的时间性能。
+1.2 索引的优缺点 (1)优点
+减少磁盘I/O,提升数据查找速度(主要原因)创建数据的唯一约束，会自动创建该数据的唯一索引，保证数据库中每一行数据的唯一性对有依赖关系的子表与父表进行联合查找时，可以加快表与表连接(通过主键关联)，提升查找速度(后面将讲解)在建立分组(group by)与排序(order by)时，可以减少减少查询中分组与排序的时间，降低cpu的消耗 (2)缺点
+创建与维护索引需要时间，并且随着索引中数据字段的增减，所耗费时间也会增加索引需要占用磁盘空间进行存储降低了更新数据表的速度(增、删、改都需要动态的维护索引) 注：在实际的生产中，如果需要批量的删除、增加、修改数据，可以先把索引删除，完成操作后再重新的建立索引。
+2.从零开始设计索引 从Mysql5.5之后使用的存储引擎默认为InnoDB，因此我们以InnoDB为例，从0开始设计、迭代索引。
+2.1没有索引时怎么查询数据 如果查询一条数据，我们可以使用如下查询语句：
+select [列名] from [表名] where [过滤条件] (1)在同一个页进行查询
+如果数据量不是很多，可以在一个页存储完(16kb)，查询有两种情况：
+按照主键查找，因为主键是有序的，可以使用二分法查找，时间复杂度为 O ( l o g 2 n ) O(log_2n) O(log2​n)" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/f92031ee9c042493b28df80672eb57e3/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2022-05-01T18:26:10+08:00" />
+<meta property="article:modified_time" content="2022-05-01T18:26:10+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">MySql进阶索引篇01——深度讲解索引的数据结构：B&#43;树</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atelier-sulphurpool-light">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p></p> 
+<div class="toc"> 
+ <h4>深度讲解索引的数据结构：B+树</h4> 
+ <ul><li><ul><li><ul><li><ul><li><a href="#1_2" rel="nofollow">1.索引介绍</a></li><li><ul><li><a href="#11__4" rel="nofollow">1.1 为什么使用索引</a></li><li><a href="#12__19" rel="nofollow">1.2 索引的优缺点</a></li></ul> 
+     </li><li><a href="#2_37" rel="nofollow">2.从零开始设计索引</a></li><li><ul><li><a href="#21_41" rel="nofollow">2.1没有索引时怎么查询数据</a></li><li><a href="#22__68" rel="nofollow">2.2 基于页的目录项的简单索引</a></li><li><a href="#23_InnoDB_127" rel="nofollow">2.3 InnoDB索引设计方案</a></li><li><ul><li><a href="#231_1_131" rel="nofollow">2.3.1 迭代1：目录项的数据页(目录页)</a></li><li><a href="#232_2_147" rel="nofollow">2.3.2 迭代2：多个目录页</a></li><li><a href="#233_3_155" rel="nofollow">2.3.3 迭代3：目录页的目录页</a></li></ul> 
+     </li></ul> 
+     </li><li><a href="#3_167" rel="nofollow">3.索引类型</a></li><li><ul><li><a href="#31_169" rel="nofollow">3.1.聚簇索引</a></li><li><a href="#32__196" rel="nofollow">3.2 二级索引</a></li><li><a href="#33__214" rel="nofollow">3.3 联合索引</a></li><li><a href="#34InnoDBB_226" rel="nofollow">3.4.InnoDB的B+树注意事项</a></li><li><ul><li><a href="#341__228" rel="nofollow">3.4.1 根页面位置万年不动</a></li><li><a href="#342__239" rel="nofollow">3.4.2 内节点中目录项记录具有唯一性</a></li><li><a href="#343__259" rel="nofollow">3.4.3 一个页面最少要存储两条记录</a></li></ul> 
+     </li></ul> 
+     </li><li><a href="#4MyISam_263" rel="nofollow">4.MyISam的索引方案</a></li><li><ul><li><a href="#41__265" rel="nofollow">4.1 不同存储引擎索引的区别</a></li><li><a href="#42_MyISam_275" rel="nofollow">4.2 MyISam索引的原理</a></li><li><a href="#43_MyISamInnoDB_289" rel="nofollow">4.3 MyISam与InnoDB索引方案的对比</a></li><li><a href="#44__296" rel="nofollow">4.4 索引方案与索引优化的关系</a></li></ul> 
+     </li><li><a href="#5_310" rel="nofollow">5.索引的代价</a></li><li><a href="#6B_319" rel="nofollow">6.B+树与常见的查找数据结构对比</a></li><li><ul><li><a href="#61_Hash_322" rel="nofollow">6.1 Hash结构</a></li><li><a href="#62__393" rel="nofollow">6.2 二叉搜索树</a></li><li><a href="#63_AVL_407" rel="nofollow">6.3 AVL树</a></li><li><a href="#64_B_419" rel="nofollow">6.4 B树</a></li><li><a href="#66_B_436" rel="nofollow">6.6 B+树</a></li><li><a href="#67_R_453" rel="nofollow">6.7 R树</a></li></ul> 
+    </li></ul> 
+   </li></ul> 
+  </li></ul> 
+ </li></ul> 
+</div> 
+<p></p> 
+<h5><a id="1_2"></a>1.索引介绍</h5> 
+<h6><a id="11__4"></a>1.1 为什么使用索引</h6> 
+<p>索引是存储引擎中一种用于快速找到数据的存储结构，他就像《新华字典》的目录，可以使我们查每个字的速度大大提升。</p> 
+<p>下面将<br> 结合计算机的存储带大家深入理解索引的优点。下图左边使一个磁盘，在这个磁盘中存放数据是随机的，如果要查找某条数据，需要在整个磁盘空间进行扫描，十分耗时。下图右边(表格部分)改进了这一做法，在磁盘中开辟了一块连续的存储空间，数据也是连续存储，如果我们需要找第六条数据，只需要进行<strong>顺序访问</strong>，时间复杂度是O(n).</p> 
+<p><img src="https://images2.imgbox.com/1d/18/JZdQVPyc_o.png" alt="image-20220430105710061"></p> 
+<p>还可以改进吗？当然可以，结合我们熟悉的二分查找算法，我们可以使用二叉搜索树来优化。如下图，只要构造一颗二叉树，让左子树的值比右子树的小即可。同样是要查找之前的第六条数据，也就是89，只需要查找2次就可以了。其时间复杂度为<span class="katex--display"><span class="katex-display"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          O 
+         
+        
+          ( 
+         
+        
+          l 
+         
+        
+          o 
+         
+         
+         
+           g 
+          
+         
+           2 
+          
+         
+        
+          n 
+         
+        
+          ) 
+         
+        
+       
+         O(log_2n) 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span style="margin-right: 0.02778em;" class="mord mathdefault">O</span><span class="mopen">(</span><span style="margin-right: 0.01968em;" class="mord mathdefault">l</span><span class="mord mathdefault">o</span><span class="mord"><span style="margin-right: 0.03588em;" class="mord mathdefault">g</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.301108em;"><span class="" style="top: -2.55em; margin-left: -0.03588em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight">2</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mord mathdefault">n</span><span class="mclose">)</span></span></span></span></span></span></p> 
+<p><img src="https://images2.imgbox.com/51/2d/VNuYQKLK_o.png" alt="image-20220430112757325"></p> 
+<p>实际上，MySQL数据库的索引就是建立了一棵<code>B+</code>树(其它存储引擎不一定)，比上面的二叉搜索树更加复杂一点。左图转为右图就与索引的创建过程类似，它的创建有利于减少查找数据时的<code>磁盘I/O</code>次数,提高查找速度。注意，这里提到的磁盘I/O其实是很耗时的。因此它的减少会大大提升我们的时间性能。</p> 
+<h6><a id="12__19"></a>1.2 索引的优缺点</h6> 
+<p>(1)优点</p> 
+<ul><li>减少磁盘I/O,提升数据查找速度(主要原因)</li><li>创建数据的唯一约束，会自动创建该数据的唯一索引，保证数据库中每一行数据的唯一性</li><li>对有依赖关系的子表与父表进行联合查找时，可以加快表与表连接(通过主键关联)，提升查找速度(后面将讲解)</li><li>在建立分组(group by)与排序(order by)时，可以减少减少查询中分组与排序的时间，降低cpu的消耗</li></ul> 
+<p>(2)缺点</p> 
+<ul><li>创建与维护索引需要时间，并且随着索引中数据字段的增减，所耗费时间也会增加</li><li>索引需要占用磁盘空间进行存储</li><li>降低了更新数据表的速度(增、删、改都需要动态的维护索引)</li></ul> 
+<p>注：在实际的生产中，如果需要批量的删除、增加、修改数据，可以先把索引删除，完成操作后再重新的建立索引。</p> 
+<h5><a id="2_37"></a>2.从零开始设计索引</h5> 
+<p>从Mysql5.5之后使用的存储引擎默认为<code>InnoDB</code>，因此我们以InnoDB为例，从0开始设计、迭代索引。</p> 
+<h6><a id="21_41"></a>2.1没有索引时怎么查询数据</h6> 
+<p>如果查询一条数据，我们可以使用如下查询语句：</p> 
+<pre><code class="prism language-sql"><span class="token keyword">select</span> <span class="token punctuation">[</span>列名<span class="token punctuation">]</span> <span class="token keyword">from</span> <span class="token punctuation">[</span>表名<span class="token punctuation">]</span> <span class="token keyword">where</span> <span class="token punctuation">[</span>过滤条件<span class="token punctuation">]</span>
+</code></pre> 
+<p>(1)在同一个页进行查询</p> 
+<p>如果数据量不是很多，可以在一个页存储完(16kb)，查询有两种情况：</p> 
+<ul><li> <p>按照主键查找，因为主键是有序的，可以使用二分法查找，时间复杂度为<span class="katex--display"><span class="katex-display"><span class="katex"><span class="katex-mathml"> 
+        
+         
+          
+          
+            O 
+           
+          
+            ( 
+           
+          
+            l 
+           
+          
+            o 
+           
+           
+           
+             g 
+            
+           
+             2 
+            
+           
+          
+            n 
+           
+          
+            ) 
+           
+          
+         
+           O(log_2n) 
+          
+         
+       </span><span class="katex-html"><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span style="margin-right: 0.02778em;" class="mord mathdefault">O</span><span class="mopen">(</span><span style="margin-right: 0.01968em;" class="mord mathdefault">l</span><span class="mord mathdefault">o</span><span class="mord"><span style="margin-right: 0.03588em;" class="mord mathdefault">g</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.301108em;"><span class="" style="top: -2.55em; margin-left: -0.03588em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight">2</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mord mathdefault">n</span><span class="mclose">)</span></span></span></span></span></span></p> </li><li> <p>按照其它列查找，需要遍历单链表(数据库的元素实际上是单链表形式实现逻辑上连续的)，时间复杂度为O(n)</p> </li></ul> 
+<p>(2)在多个页存储</p> 
+<p>如果数据多到一个页存储不下了，需要在多个页中进行查询，需要</p> 
+<ul><li>定位到数据所在的页</li><li>从所在的页中查找记录</li></ul> 
+<p>因为数据页之间数据没有关联(并不是数据页2的数据的主键就比数据1中存储的数据主键大，数据页之间是相对对立的)，因此需要遍历数据页，然后在每个数据页再对数据进行查找。除了遍历数据页外，我们还需要把这些数据页从物理磁盘加载到内存中，这个过程也是十分消耗时间的。成百上千的页加载、遍历消耗的时间无法忍受，于是索引运势而生。</p> 
+<p><img src="https://images2.imgbox.com/95/8d/RsmTkq6m_o.png" alt="image-20220430130420545"></p> 
+<h6><a id="22__68"></a>2.2 基于页的目录项的简单索引</h6> 
+<p>建立一张表</p> 
+<pre><code class="prism language-sql"><span class="token keyword">CREATE</span> <span class="token keyword">TABLE</span> index_demo<span class="token punctuation">(</span>
+	c1 <span class="token keyword">INT</span><span class="token punctuation">,</span>
+	c2 <span class="token keyword">INT</span><span class="token punctuation">,</span>
+	c3 <span class="token keyword">CHAR</span><span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">,</span>
+	<span class="token keyword">PRIMARY</span> <span class="token keyword">KEY</span><span class="token punctuation">(</span>c1<span class="token punctuation">)</span>
+<span class="token punctuation">)</span> ROW_FORMAT<span class="token operator">=</span> Compact<span class="token punctuation">;</span>
+</code></pre> 
+<p><code>compact</code>是一种记录的存储格式，后面将详细介绍，这里简单介绍如下。</p> 
+<p><img src="https://images2.imgbox.com/1b/e0/5nrhcNEz_o.png" alt="image-20220430130705774"></p> 
+<p>其中<code>record_type</code>表示 记录类型，0表示普通记录，2表示最小记录，3表示最大记录，1暂未使用。</p> 
+<p>一个基本的数据页模型就长这样。</p> 
+<p><img src="https://images2.imgbox.com/56/3c/tj7KzOGC_o.png" alt="image-20220430131431932"></p> 
+<p>假设每页可以存储三条记录(实际上远远不止)。在表中插入三条记录。</p> 
+<pre><code class="prism language-sql"><span class="token keyword">INSERT</span> <span class="token keyword">INTO</span> index_demo <span class="token keyword">VALUES</span> <span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">,</span><span class="token number">4</span><span class="token punctuation">,</span><span class="token string">'u'</span><span class="token punctuation">)</span><span class="token punctuation">,</span><span class="token punctuation">(</span><span class="token number">3</span><span class="token punctuation">,</span><span class="token number">9</span><span class="token punctuation">,</span><span class="token string">'d'</span><span class="token punctuation">)</span><span class="token punctuation">,</span><span class="token punctuation">(</span><span class="token number">5</span><span class="token punctuation">,</span><span class="token number">3</span><span class="token punctuation">,</span><span class="token string">'y'</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+</code></pre> 
+<p>这样他们就串联成为如下图所示的单链表了。</p> 
+<p><img src="https://images2.imgbox.com/c4/90/7ZG1Q596_o.png" alt="image-20220430133613564"></p> 
+<p>此时我们再插入一条记录。</p> 
+<pre><code class="prism language-sql"><span class="token keyword">INSERT</span> <span class="token keyword">INTO</span> index_demo <span class="token keyword">VALUES</span> <span class="token punctuation">(</span><span class="token number">4</span><span class="token punctuation">,</span><span class="token number">4</span><span class="token punctuation">,</span><span class="token string">'a'</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+</code></pre> 
+<p>由于一个页只能存放三条数据，我们必须分配一个新的页(页28的28是随便写的，实际上应该是页地址)。</p> 
+<p><img src="https://images2.imgbox.com/12/7f/VzCS5eXe_o.png" alt="image-20220430134103334"></p> 
+<p>上图是不是合理的呢？似乎主键值为不是顺序递增了，我们下面将给主键建立索引。先把主键为5的记录与主键为4的记录交换下位置，这个过程称为<strong>记录移动</strong>。</p> 
+<p><img src="https://images2.imgbox.com/cb/11/BLUc1MgC_o.png" alt="image-20220430134649822"></p> 
+<p>在数据记录进行增删改时，我们必须通过记录移动保证记录的主键值始终保持递增排列，这个过程我们称之为<code>页分裂</code>。</p> 
+<p>在插入许多数据以后，数据存储可能是这样的。</p> 
+<p><img src="https://images2.imgbox.com/64/a2/t8NIsiAg_o.png" alt="image-20220430135317200"></p> 
+<p>由于数据页的编号并不是连续的，我们如果需要查询一个数据，我们需要依次在各个数据页中进行查找，这样老费劲了。因此，我们可以考虑开辟一个连续存储空间，用于存放一个给所有数据页建立的<strong>目录项</strong>。如下图，目录项中key为页的首个记录主键值，page_no为页号。</p> 
+<p><img src="https://images2.imgbox.com/42/f9/zzzpuUba_o.png" alt="image-20220430135746309"></p> 
+<p>比如我们需要查找一个主键值为20的记录，目录项1的key为1，目录项的key为2，由此可知目录项1所在的page10肯定没有我们的目标记录。同样的道理，目录项2的页28，目录项4的page20都没有我们的记录，我们只需要在目录项3所在的page9使用二分法去查找就可以了。实际上，在对于目录项过滤时同样页可以用二分法，而不用逐个目录项进行比较、判断。</p> 
+<h6><a id="23_InnoDB_127"></a>2.3 InnoDB索引设计方案</h6> 
+<p>下面对于2.2中所提到的索引设计方案进行迭代，一步步解密InnoDB索引设计方案。</p> 
+<h6><a id="231_1_131"></a>2.3.1 迭代1：目录项的数据页(目录页)</h6> 
+<p>上面提到，如果目录项在存储空间是顺序存储的，我们可以可以使用二分法来判断目录项是否有我们需要查询的数据。实际上，这个方案存在许多问题，我们不妨思考以下几个问题。</p> 
+<ul><li>如果目录项的数量特别多，我们还可以在物理存储空间中为它开辟这么一大块连续的存储空间来存储目录项吗？</li><li>如果需要删除中间某一个目录项的数据，其它目录项的位置都需要依次向前移动。</li><li>如果我们在中间插入了3个主键连续数据(与之前假定的每页记录数一样)，相当于在目录项中间新增了一个目录项，后面的目录项都需要移动位置。</li></ul> 
+<p>我们于是考虑，不能使用顺序存储的方式来存储目录项，而应该使用单项链表形式来存储目录项，使他们在逻辑上连续。</p> 
+<p>因此我们就可以把目录项也放到一个数据页中，其<code>record_type</code>中为1，如下图所示。</p> 
+<p><img src="https://images2.imgbox.com/05/75/Ovl9kjHc_o.png" alt="image-20220430151112751"></p> 
+<p>目录项的数据页与普通数据页都会建立一个页目录，这样在查找记录时就可以使用二分法加快查询速度,这也解决了链表不能够二分查找的问题，后面我们将详细的介绍页目录的知识。</p> 
+<h6><a id="232_2_147"></a>2.3.2 迭代2：多个目录页</h6> 
+<p>试想下，如果数据页的数量较多，一个目录页不够用了，那怎么办呢？我们其实可以如法炮制：增加目录页。</p> 
+<p><img src="https://images2.imgbox.com/41/97/2zFskpvU_o.png" alt="image-20220430152548807"></p> 
+<p>这时候如果我们需要查询一个数据，就首先需要判断数据是在页30中还是在页32中了。是不是熟悉的配方，熟悉的味道。</p> 
+<h6><a id="233_3_155"></a>2.3.3 迭代3：目录页的目录页</h6> 
+<p>为了解决多个目录页需要遍历查找的问题，我们可以再套一层娃：给目录页增加一个目录页。</p> 
+<p><img src="https://images2.imgbox.com/39/91/DCkkPxGi_o.png" alt="image-20220430153658627"></p> 
+<p>随着表中记录数的增加，层数可能还会增加。我们将上图简化如下。这其实就是传说中的<code>B+</code>树了。</p> 
+<p><img src="https://images2.imgbox.com/0b/71/FnkeD1Ag_o.png" alt="image-20220430153902927"></p> 
+<p>实际上，一般实际开发中，<code>B+</code>树几乎不会出现超过四层的情况，因为我们知道，一个数据页有16KB，即使假设每个记录需要160字节，一个数据页页可以存放100条数据，而目录页需要存放的数据大小更小，假设一个目录页可以存放1000个数据。那么四层B+数可以存放的记录数就是：100 * 1000 * 1000 * 1000 = 1000，0000，0000 。1000亿条记录！！！这就意味着，我们查找一次数据，最多需要4次磁盘I/O操作(加载4个数据页)。</p> 
+<h5><a id="3_167"></a>3.索引类型</h5> 
+<h6><a id="31_169"></a>3.1.聚簇索引</h6> 
+<p>聚簇索引：基于主键构建的索引称之为聚簇索引。非聚簇索引:基于非主键构建的索引称之为非聚簇索引。</p> 
+<p>实际上，聚簇索引并不是一种单独的索引类型，而是一种数据的底层存储方式，它的叶子节点会存储完整的数据记录。数据即索引，索引即数据。前面我们创建的实际上就是聚簇索引(如下图)。而非聚簇索引的叶子节点中并不会存储我们完整的数据记录。</p> 
+<p><img src="https://images2.imgbox.com/8a/76/1yN4ugul_o.png" alt="image-20220430153658627"></p> 
+<p>聚簇索引并不需要我们显示的用<code>index</code>去创建，mysql的InnoDB引擎会自动的帮我们创建聚簇索引。</p> 
+<p>它的优点有：</p> 
+<ul><li>查询速度更快。聚簇索引把索引和数据保存在同一个B+树中，相比非聚簇索引查询速度更快。</li><li>聚簇索引对于主键的排序查找和范围查找很快。</li><li>降低了磁盘I/O操作的次数，提升了查找效率(索引的优点)</li></ul> 
+<p>缺点有：</p> 
+<ul><li>插入性能依赖于插入顺序，如果我们按照主键进行升序插入，那么插入数据的效率肯定是最高的，否则可能会出现页分裂，严重影响性能。因此，对于InnoDB引擎，我们一般会定义一个自增的列为主键。</li><li>更新主键的代价很高。更新主键将导致被更新的行移动，我们一般定义,在InnoDB引擎中，主键不可更新。</li><li>二级索引(后面介绍)要经过两次索引查找，一次找到主键值，第二次根据主键值找到行数据。</li></ul> 
+<p>聚簇索引有以下几点需要注意：</p> 
+<ul><li>对于Mysql数据库，MyISAM搜索引擎一般没有聚簇索引，InnoDB支持聚簇索引。</li><li>由于数据的物理存储方式只能有一种，一个表只能有一个聚簇索引，一般就是使用主键；如果没有指定主键，InnoDB会自动选择一个非空唯一索引构建聚簇索引；如果没有合适的字段，InnoDB会隐式的创建主键构建聚簇索引。</li></ul> 
+<h6><a id="32__196"></a>3.2 二级索引</h6> 
+<p>二级索引又称为非聚簇索引，辅助索引。一个表中只允许有一个聚簇索引，但是允许有多个二级索引。如果我们需要依赖非主键进行查找，就需要二级索引了。</p> 
+<p>如下图，二级索引的叶子节点并不会存储完整的数据，只是存储了建立索引的列的值与主键值。</p> 
+<p><img src="https://images2.imgbox.com/3f/35/wsxbcYm7_o.png" alt="image-20220430165135053"></p> 
+<p>我们如果需要进行如下查找:</p> 
+<pre><code class="prism language-sql"><span class="token keyword">select</span> <span class="token operator">*</span> form index_demo <span class="token keyword">where</span> c2 <span class="token operator">=</span> <span class="token number">4</span>
+</code></pre> 
+<p>需要先在二级索引中查找到对应的数据项，也就是主键为1，4，10的记录，再到聚簇索引中去查找对应主键值的数据，这个过程我们称之为<strong>回表</strong>。</p> 
+<p>对于聚簇索引，数据的查询效率更高(不用回表)。但是对于非聚簇索引，更新数据的效率更高，比如我们更新一个记录的c3列的值，对应的聚簇索引的值也需要进行更新，但是c2的二级索引并没有存储c3的数据，因此不用更新。</p> 
+<h6><a id="33__214"></a>3.3 联合索引</h6> 
+<p>严格来说，联合索引属于非聚簇索引。设想如下场景。</p> 
+<p>（1）对于数据基于c2排序</p> 
+<p>（2）如果c2数据相同则基于c3排序</p> 
+<p>这种场景就可以建立联合索引。</p> 
+<p><img src="https://images2.imgbox.com/de/a0/iqEpxteU_o.png" alt="image-20220430171241621"></p> 
+<h6><a id="34InnoDBB_226"></a>3.4.InnoDB的B+树注意事项</h6> 
+<h6><a id="341__228"></a>3.4.1 根页面位置万年不动</h6> 
+<p>前面我们在介绍时，为了方便大家的理解，先把叶子节点构建了出来，然后往上增加层次。实际上，B+树的形成过程是这样的。</p> 
+<ul><li>当我们创建一个新的索引时(或者主键自动生成新的索引时)，初始时将会创建一个节点作为根节点，此时根节点中没有用户记录，也没有数据项记录。</li><li>当插入记录时，记录会被插入到根节点。</li><li>当根节点的记录满了，会分配一个新的数据页，比如数据页A，将根节点的数据全部拷贝到数据页A中，然后数据页进行页分裂操作得到页B，此时插入数据时再根据键值大小(主键值大小或者索引列值大小)决定插入到数据页B中还是数据页A中。</li><li>根节点会晋升为目录页。</li></ul> 
+<p>根节点万年不动的原则保证InnoDB数据需要使用某个索引时可以在固定位置取出根节点的页号，从而来访问这个索引。</p> 
+<h6><a id="342__239"></a>3.4.2 内节点中目录项记录具有唯一性</h6> 
+<p>我们知道B+树的目录页中存储的记录为页号+索引列数据，这样的描述其实并不严谨。</p> 
+<p>假设<code>index_demo</code>表中的数据如下表。</p> 
+<p><img src="https://images2.imgbox.com/4b/d4/D3F4pDZO_o.png" alt="image-20220430180318545"></p> 
+<p>此时建立的二级索引B+树如下图。</p> 
+<p><img src="https://images2.imgbox.com/e5/1b/zpB95tEj_o.png" alt="image-20220430180457629"></p> 
+<p>如果我们需要增加一个记录(9,1,‘c’)，我们是应该把这个记录添加到页4还是页5呢？</p> 
+<p>因此我们必须要求内节点(非叶子节点)的记录(除页号)是唯一的。如何能够实现呢？我们可以自然联想到主键是唯一的。因此下图才是我们实际上真正构建的二级索引的B+树。</p> 
+<p><img src="https://images2.imgbox.com/fa/af/OZZphih6_o.png" alt="image-20220430181247272"></p> 
+<p>此时添加记录(9，1，‘c’)就不迷惑了。我们先判断c2一样，再判断主键值，可以确定应该在页5中添加数据。</p> 
+<h6><a id="343__259"></a>3.4.3 一个页面最少要存储两条记录</h6> 
+<p>如果一个页面的记录数少于两条，甚至都无法分为二叉树，只是简单的单向连接。</p> 
+<h5><a id="4MyISam_263"></a>4.MyISam的索引方案</h5> 
+<h6><a id="41__265"></a>4.1 不同存储引擎索引的区别</h6> 
+<p>B+树适用的存储引擎如下所示。</p> 
+<p><img src="https://images2.imgbox.com/9d/41/lxQKwiu8_o.png" alt="image-20220430182340700"></p> 
+<p>注：MySql官方中写的<code>B-Tree</code>就是我们所理解的B+树。</p> 
+<p>InnoDBheMyISAM默认索引都是<code>B-Tree</code>，不过MyISAM中叶子节点<code>data</code>域中存放的是数据记录的地址。而<code>Memory</code>支持的默认索引是<code>Hash</code>索引。</p> 
+<h6><a id="42_MyISam_275"></a>4.2 MyISam索引的原理</h6> 
+<p>下面我们将介绍MyISam的索引原理。MyISam使用<code>myd</code>文件存储数据，用<code>myi</code>文件存储索引，MyISam的存储原理与InnoDB的聚簇索引的存储原理显然不同(索引即数据，数据即索引)。实际上，<code>MyISam</code>中根本不存在聚集索引的概念，它的索引都相当于二级索引。</p> 
+<p>其索引存储示例如下。</p> 
+<p><img src="https://images2.imgbox.com/46/b8/7M6aSeVl_o.png" alt="image-20220430183601407"></p> 
+<p>上图的<code>col1</code>是主键，一般我们都是按照主键递增来增加数据的 ，但如果我们增加一条主键为3的数据，还需要进行重新排序吗？答案是否，它会被直接添加到表格后，不进行排序。</p> 
+<p>实际上如果针对<code>col2</code>建立索引，与基于主键构建索引在结构上并没有什么不同。</p> 
+<p><img src="https://images2.imgbox.com/ae/32/3NFvmLai_o.png" alt=""></p> 
+<h6><a id="43_MyISamInnoDB_289"></a>4.3 MyISam与InnoDB索引方案的对比</h6> 
+<ul><li>MyISam的索引不存储记录的数据值(或主键值)，只存储数据地址，一定需要进行回表操作。</li><li>InnoDB的数据文件与索引文件是同一个，MyISam的数据文件与索引文件是分离的。</li><li>MyISam回表操作十分快速，因为是拿着地址的偏移量直接到文件中取数据。</li><li>InnoDB必须要有主键(如果没有会隐式指定)，MyISam没有聚簇索引与二级索引的说法，不需要在二级索引中查找到主键值后再去聚簇索引中查询回表，因此并不是必须需要有主键。当然，我们为了查询方便，也会对该存储引擎的表设置索引。</li></ul> 
+<h6><a id="44__296"></a>4.4 索引方案与索引优化的关系</h6> 
+<p>了解不同存储引擎的存储方案有利于我们进行索引优化。</p> 
+<p>例1：</p> 
+<p><code>InnoDB</code>搜索引擎的主键值就不宜设置的过长，因为在所有二级索引中都需要对主键值进行存储。</p> 
+<p>例2：</p> 
+<p>用非单调(递增、减)字段在InnoDB存储引擎的表中做主键不合适。因为InnoDB的数据文件本身就是一棵B+树，会基于主键建立聚簇索引。导致我们在插入数据时频繁的发生页分裂。</p> 
+<p><img src="https://images2.imgbox.com/33/8e/LHv5JPdp_o.png" alt="image-20220430190821361"></p> 
+<h5><a id="5_310"></a>5.索引的代价</h5> 
+<p>索引的代价主要是空间与时间代价。</p> 
+<ul><li>空间上：创建索引需要存储空间。一个数据页的存储空间是16kb，如果一棵B+树有很多数据页，将会消耗较大的存储空间。</li><li>时间上：进行数据的增删改操作，同时需要对索引进行维护。主要是<strong>页面移动</strong>、<strong>页面回收</strong>、<strong>页分裂</strong>等代价。</li></ul> 
+<p>后面的博客中，我们也将一起学习在哪些字段上适合创建索引。</p> 
+<h5><a id="6B_319"></a>6.B+树与常见的查找数据结构对比</h5> 
+<p>Mysql索引的作用就是减少<code>I/O</code>次数，从而实现数据查找速度的提升。因此我们将以这个作为目标深入对比<code>Hash</code>索引,<code>ALV树</code>，<code>B树</code>和<code>B+</code>树，从而剖析为什么要选择B+树作为Mysql的索引底层数据结构。</p> 
+<h6><a id="61_Hash_322"></a>6.1 Hash结构</h6> 
+<p>一般提到要加快查找的速度，我们都会考虑两种数据结构：树和哈希。哈希算法的查找效率很高，可以很快的定位到数据的具体位置,通常1次检索，时间复杂度平均为<span class="katex--display"><span class="katex-display"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          O 
+         
+        
+          ( 
+         
+        
+          l 
+         
+        
+          o 
+         
+         
+         
+           g 
+          
+         
+           2 
+          
+         
+        
+          n 
+         
+        
+          ) 
+         
+        
+       
+         O(log_2n) 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span style="margin-right: 0.02778em;" class="mord mathdefault">O</span><span class="mopen">(</span><span style="margin-right: 0.01968em;" class="mord mathdefault">l</span><span class="mord mathdefault">o</span><span class="mord"><span style="margin-right: 0.03588em;" class="mord mathdefault">g</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.301108em;"><span class="" style="top: -2.55em; margin-left: -0.03588em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight">2</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mord mathdefault">n</span><span class="mclose">)</span></span></span></span></span></span><br> 而B+树还需要多次I/O,时间复杂度为<span class="katex--display"><span class="katex-display"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          O 
+         
+        
+          ( 
+         
+        
+          n 
+         
+        
+          ) 
+         
+        
+       
+         O(n) 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span style="margin-right: 0.02778em;" class="mord mathdefault">O</span><span class="mopen">(</span><span class="mord mathdefault">n</span><span class="mclose">)</span></span></span></span></span></span><br> <code>HashMap</code>就是典型的<code>Hash</code>算法应用实例，下图展示了HashMap的数据结构。<br> <img src="https://images2.imgbox.com/83/06/v4y5M7eg_o.png" alt="在这里插入图片描述">哈希算法可以通过计算使一个<code>key</code>对应唯一<code>value</code>。这样我们就可以通过哈希算法计算数据应该存储的地址，把一个数据映射到一个地址。<br> <img src="https://images2.imgbox.com/98/db/SHHguqaQ_o.png" alt="在这里插入图片描述">但有时候，可能会出现两个<code>key</code>计算得到的地址相同的情况，我们称之为<strong>碰撞</strong>。这时我们<br> 可以通过<strong>链接法</strong>解决。</p> 
+<p><img src="https://images2.imgbox.com/94/15/NRIm6TkL_o.png" alt="在这里插入图片描述">如下Demo01是采用普通算法进行搜索，输出时间是<code>1604</code>ms.</p> 
+<pre><code class="prism language-java"><span class="token keyword">public</span> <span class="token keyword">class</span> <span class="token class-name">Demo01</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">public</span> <span class="token keyword">static</span> <span class="token keyword">void</span> <span class="token function">main</span><span class="token punctuation">(</span><span class="token class-name">String</span><span class="token punctuation">[</span><span class="token punctuation">]</span> args<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">int</span> <span class="token punctuation">[</span><span class="token punctuation">]</span> arr <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token keyword">int</span> <span class="token punctuation">[</span><span class="token number">100000</span><span class="token punctuation">]</span><span class="token punctuation">;</span>
+       <span class="token keyword">for</span> <span class="token punctuation">(</span><span class="token keyword">int</span> i <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span> i <span class="token operator">&lt;</span> <span class="token number">100000</span><span class="token punctuation">;</span> i<span class="token operator">++</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            arr<span class="token punctuation">[</span>i<span class="token punctuation">]</span> <span class="token operator">=</span> i <span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+
+        <span class="token keyword">long</span> start <span class="token operator">=</span> <span class="token class-name">System</span><span class="token punctuation">.</span><span class="token function">currentTimeMillis</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">for</span> <span class="token punctuation">(</span><span class="token keyword">int</span> i <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span> i <span class="token operator">&lt;</span> <span class="token number">100000</span><span class="token punctuation">;</span> i<span class="token operator">++</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span> <span class="token comment">// search 10000 times</span>
+            <span class="token keyword">int</span> temp <span class="token operator">=</span> i<span class="token punctuation">;</span>
+            <span class="token keyword">for</span> <span class="token punctuation">(</span><span class="token keyword">int</span> j <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span> j <span class="token operator">&lt;</span> arr<span class="token punctuation">.</span>length<span class="token punctuation">;</span> j<span class="token operator">++</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                <span class="token keyword">if</span><span class="token punctuation">(</span>temp <span class="token operator">==</span>  arr<span class="token punctuation">[</span>j<span class="token punctuation">]</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                    <span class="token keyword">break</span><span class="token punctuation">;</span>
+                <span class="token punctuation">}</span>
+            <span class="token punctuation">}</span>
+        <span class="token punctuation">}</span>
+        <span class="token keyword">long</span> end <span class="token operator">=</span> <span class="token class-name">System</span><span class="token punctuation">.</span><span class="token function">currentTimeMillis</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token class-name">System</span><span class="token punctuation">.</span>out<span class="token punctuation">.</span><span class="token function">println</span><span class="token punctuation">(</span><span class="token string">"cost "</span> <span class="token operator">+</span><span class="token punctuation">(</span>end <span class="token operator">-</span> start<span class="token punctuation">)</span> <span class="token operator">+</span> <span class="token string">" ms."</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+
+</code></pre> 
+<p>下面算法则花费时间9ms,显然hash算法的查找效率比全表扫描快很多。</p> 
+<pre><code class="prism language-java"><span class="token keyword">public</span> <span class="token keyword">class</span> <span class="token class-name">Demo02</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">public</span> <span class="token keyword">static</span> <span class="token keyword">void</span> <span class="token function">main</span><span class="token punctuation">(</span><span class="token class-name">String</span><span class="token punctuation">[</span><span class="token punctuation">]</span> args<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token class-name">HashSet</span> set <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">HashSet</span><span class="token punctuation">(</span><span class="token number">100000</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">int</span> <span class="token punctuation">[</span><span class="token punctuation">]</span> arr <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token keyword">int</span> <span class="token punctuation">[</span><span class="token number">100000</span><span class="token punctuation">]</span><span class="token punctuation">;</span>
+        <span class="token keyword">for</span> <span class="token punctuation">(</span><span class="token keyword">int</span> i <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span> i <span class="token operator">&lt;</span> <span class="token number">100000</span><span class="token punctuation">;</span> i<span class="token operator">++</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            set<span class="token punctuation">.</span><span class="token function">add</span><span class="token punctuation">(</span>i<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+
+        <span class="token keyword">long</span> start <span class="token operator">=</span> <span class="token class-name">System</span><span class="token punctuation">.</span><span class="token function">currentTimeMillis</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">for</span> <span class="token punctuation">(</span><span class="token keyword">int</span> i <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span> i <span class="token operator">&lt;</span> <span class="token number">100000</span><span class="token punctuation">;</span> i<span class="token operator">++</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span> <span class="token comment">// search 10000 times</span>
+            <span class="token keyword">int</span> temp <span class="token operator">=</span> i<span class="token punctuation">;</span>
+            set<span class="token punctuation">.</span><span class="token function">contains</span><span class="token punctuation">(</span>temp<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+        <span class="token keyword">long</span> end <span class="token operator">=</span> <span class="token class-name">System</span><span class="token punctuation">.</span><span class="token function">currentTimeMillis</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token class-name">System</span><span class="token punctuation">.</span>out<span class="token punctuation">.</span><span class="token function">println</span><span class="token punctuation">(</span><span class="token string">"cost "</span> <span class="token operator">+</span><span class="token punctuation">(</span>end <span class="token operator">-</span> start<span class="token punctuation">)</span> <span class="token operator">+</span> <span class="token string">" ms."</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+
+</code></pre> 
+<p>既然hash算法的查询效率这么高，为什么InnoDB、MyISam的索引结构要设计成为树型解构呢？</p> 
+<ul><li>hash算法主要适用于<strong>等值判断</strong>(==，In查询)，对于<strong>范围查询</strong>，还是只能通过全表扫描来完成，时间复杂度将会退化为<code>O(n)</code>.</li><li>Hash算法存储元素是<strong>无序</strong>的，如果需要进行<code>OrderBy</code>等操作无法完成。</li><li>Hash算法不适合进行<strong>联合索引</strong>的查询。</li><li>当索引列重复元素较多时(比如性别)，会造成大量的<strong>哈希冲突</strong>,解决哈希冲突将导致效率较低，查找效率也会变低。</li></ul> 
+<p>总结来说，索引操作并不是只进行等值判断，或者重复元素较多的列，不适合使用hash索引。</p> 
+<p>索引引擎对于hash索引的支持情况如下图。<br> <img src="https://images2.imgbox.com/56/af/RXuFrzrp_o.png" alt="在这里插入图片描述">hash结构的索引适用于<code>key-value</code>型的数据库，<code>Redis</code>是现在很火的非关系型数据库，它的底层核心就是hash索引。Mysql中如果需要频繁的对索引进行等值判断，可以考虑使用<code>Memory</code>引擎。</p> 
+<p>另外，<code>InnoDB</code>虽然不支持Hash结构的索引，但是它提供了<strong>自适应哈希索引</strong>(Adapter Hash Index).如果某个数据页经常被访问，其地址就会被存储到哈希表中，这样下次访问时就可以直接找到这个页面的位置，这也使B+树具备了hash索引的优点。其过程可以参考下图理解。<br> <img src="https://images2.imgbox.com/43/65/VEE5cR7y_o.png" alt="在这里插入图片描述">可以通过如下命令查看数据库中是否开启了自适应hash索引。<br> <img src="https://images2.imgbox.com/2c/40/mCWtMInB_o.png" alt="在这里插入图片描述"></p> 
+<h6><a id="62__393"></a>6.2 二叉搜索树</h6> 
+<p>二叉搜索树具有如下特点：</p> 
+<ul><li>一个节点最多有两个子节点，也就是节点的度不能超过2</li><li>每个节点左子结点&lt;本节点&lt;右子节点。</li></ul> 
+<p>其结构可以参考下图。<br> <img src="https://images2.imgbox.com/5b/7f/bTgNlC72_o.png" alt="在这里插入图片描述"><br> 二叉搜索树的查找很简单，从根节点开始查找，如果查找元素比当前节点小，则在左子树中查找，如果查找元素比当前节点大，则去右子树中找。如果相等，则返回当前节点。二分查找就是利用二叉搜索树实现的。其平均时间复杂度也是<span class="katex--display"><span class="katex-display"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          O 
+         
+        
+          ( 
+         
+        
+          l 
+         
+        
+          o 
+         
+         
+         
+           g 
+          
+         
+           2 
+          
+         
+        
+          n 
+         
+        
+          ) 
+         
+        
+       
+         O(log_2n) 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span style="margin-right: 0.02778em;" class="mord mathdefault">O</span><span class="mopen">(</span><span style="margin-right: 0.01968em;" class="mord mathdefault">l</span><span class="mord mathdefault">o</span><span class="mord"><span style="margin-right: 0.03588em;" class="mord mathdefault">g</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.301108em;"><span class="" style="top: -2.55em; margin-left: -0.03588em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight">2</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mord mathdefault">n</span><span class="mclose">)</span></span></span></span></span></span><br> 但是二叉搜索树的最大时间复杂度也是<span class="katex--display"><span class="katex-display"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          O 
+         
+        
+          ( 
+         
+        
+          n 
+         
+        
+          ) 
+         
+        
+       
+         O(n) 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span style="margin-right: 0.02778em;" class="mord mathdefault">O</span><span class="mopen">(</span><span class="mord mathdefault">n</span><span class="mclose">)</span></span></span></span></span></span><br> 因为当数据是有序时，构建的二叉搜索树会退化为线型结构哦。</p> 
+<p><img src="https://images2.imgbox.com/7c/43/QJm7L7jt_o.png" alt="在这里插入图片描述">为了避免出现上面的情况，我们需要对二叉搜索树的深度进行限制，AVL树就做到了这一点。</p> 
+<h6><a id="63_AVL_407"></a>6.3 AVL树</h6> 
+<p>AVL树即<strong>平衡二叉搜索树</strong>。AVL树可以是空树，除了这种特殊情况外，它要求：</p> 
+<ul><li>左、右子树的高度差不能超过1</li><li>左、右子树也都是一棵平衡二叉树</li></ul> 
+<p><img src="https://images2.imgbox.com/ec/12/oNxqWmpX_o.png" alt="在这里插入图片描述">上面的平衡二叉树查找一个元素最多需要五次I/O操作，有没有办法让其查找效率更高呢？</p> 
+<p>我们可以把二叉树变成<strong>m叉树</strong>，比如同样多数量的节点，在下图的三叉树中只需要四次I/O操作就可以查找到一个元素了。</p> 
+<p><img src="https://images2.imgbox.com/3a/50/wUiu6GK1_o.png" alt="在这里插入图片描述">基于这种把树变矮胖，从而减少树的层数的思想，我们设计了B树。</p> 
+<h6><a id="64_B_419"></a>6.4 B树</h6> 
+<p>B树的英文是<code>Blance Tree</code>，又称为<strong>多路平衡查找树</strong>。B树的结构如下图。<br> <img src="https://images2.imgbox.com/d7/35/jqqo3yMk_o.png" alt="在这里插入图片描述"><br> 我们可以观察下它的特点。上面磁盘块1中有两个元素，分别是17和35，磁盘块2的元素都小于17，磁盘块3的元素位于17与35之间，磁盘块4的元素都大于35.</p> 
+<p>在一棵B树中，子结点数量的最大值称为<strong>阶</strong>，上图中B树的阶为3.</p> 
+<p>我们不妨回顾下B+树，然后看看B树与B+树有何不同。</p> 
+<p><img src="https://images2.imgbox.com/53/ab/u2u4lKzN_o.png" alt="image-20220430153658627">我们看到，页30的节点中存储了index和page_no,而它的子结点页10则存储了具体的记录数据。但B树的叶子节点与非叶子节点存储的信息都完全独立。换句话说，B树的节点不存在上下级关系。如果使用B树作为索引的数据结构，我们需要在每个节点中存储完整的记录信息。</p> 
+<p>B树具有如下特性。</p> 
+<ul><li>如果插入数据、删除数据导致树不平衡，会自动调整至平衡。</li><li>关键字集合在整个树中，即叶子节点与非叶子节点都存放数据，搜索可能在叶子节点中结束。</li></ul> 
+<p><img src="https://images2.imgbox.com/38/cd/ps6FQJ23_o.png" alt="在这里插入图片描述"></p> 
+<h6><a id="66_B_436"></a>6.6 B+树</h6> 
+<p>B+树其实是在B树的基础上进行的改进。B+树更加适合文件索引的系统。现在总结下B树与B+树的区别。<br> <img src="https://images2.imgbox.com/bf/2f/yMoeNSzl_o.png" alt="image-20220430153658627"></p> 
+<p><img src="https://images2.imgbox.com/8b/52/CwurArVz_o.png" alt="在这里插入图片描述"></p> 
+<ul><li>在B+树中，一个节点有k个孩子(子结点)就有k个关键字(data)，而在B树中，一个节点的孩子树=关键字数+1。</li><li>B+树非叶子节点只用于索引，不存储数据.而B树中各个节点存储的都独立存储数据。</li><li>B+树所有关键字都在叶子节点出现，并且叶子节点之间通过双向链表来彼此链接，叶子节点内的数据按照顺序使用单链表连接。</li></ul> 
+<p>上面我们提到了B+树的中间节点只用于索引，不存储数据，这有什么好处呢？</p> 
+<ul><li>B+树的查询效率更加稳定。每次查找的<code>I/O</code>次数更少。</li><li>B+树的查询时I/O次数更少，查询效率更快。因为B+树的非叶子节点只用于索引，不存储数据的信息，就可以有更多的子树，这会使其更加矮胖，也就是<strong>阶数更低</strong>，查询时I/O次数更少。</li><li>B+树的<strong>范围查询</strong>效率更高，由于B+树的叶子节点存储了所有的记录信息，并且是按照顺序排列，我们在查找时通过链表指针就可以快速进行范围查询了。</li></ul> 
+<h6><a id="67_R_453"></a>6.7 R树</h6> 
+<p>另外对于地图等高维搜索空间问题一般使用R树作为索引的数据结构，MySQL不支持使用R树作为索引。</p> 
+<p><img src="https://images2.imgbox.com/a2/43/RTaaNVn9_o.png" alt="在这里插入图片描述"></p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/fc80edb55565b81faa1ba9efa83d9edb/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">vsCode注释快捷键</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/aaa0e0e8eafeff7bd9e9da1732647852/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">用矩阵快速幂计算斐波那契数列</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

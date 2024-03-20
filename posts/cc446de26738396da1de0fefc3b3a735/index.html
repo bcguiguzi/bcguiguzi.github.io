@@ -1,0 +1,393 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>SQL 优化实践：关于增强 OceanBase本地索引性能的案例 - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="SQL 优化实践：关于增强 OceanBase本地索引性能的案例" />
+<meta property="og:description" content="本文通过一个案例，帮用户了解在Oracle迁移Oceanbase时，应该如何选择全局索引和本地索引以带来更好的SQL性能。
+作者：胡呈清，爱可生的DBA团队成员，擅长故障分析和性能优化。本文约 5000 字，预计阅读需要 15 分钟。 数据库版本：OceanBase V3.2.3.3 案例的问题描述 在进行 Oracle 到 OceanBase的迁移过程中，有张表无法关闭 row movement 功能，导致无法使用 OMS直接迁移数据。为了解决这个问题，在割接窗口期之前，采用 dbcat 工具单独迁移该表结构，在窗口期内，通过数据导入的方式特别处理了这张表。
+这是一张分区表，在 Oracle 数据库中，其主键约束并未包含分区键。然而OceanBase数据库要求主键必须包含分区键。因此，在进行Oracle数据迁移至 OceanBase 的过程中，我们有两种不同的处理方式：
+OMS 工具：迁移时会将主键转成 全局唯一索引 &#43;NOT NULL 约束，等价 Oracle 的主键约束。表没有显示主键，但会有一个隐式主键（分区键&#43;隐藏自增列）；dbcat 工具：迁移时会把分区键加入到主键中，这是个本地索引。 这里最主要的区别是：Oracle 上的主键是全局索引，用 dbcat 迁移到 OB 时会变成本地索引，用 OMS 迁移则还是全局索引。然后以下 SQL 做 nested-loop join 时关联字段是主键字段，每次到被驱动表上使用主键查找，需要对所有分区执行，因此慢了。
+注：OMS、dbcat 都是迁移工具，不用深究，只需理解为什么会有这种区别即可，下面会做解释。 select * from ( SELECT a.act_Id as actId, a.data_Id as dataId, ... from T1 a, T2 b where a.data_Id = b.data_Id and a." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/cc446de26738396da1de0fefc3b3a735/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2024-03-11T19:59:08+08:00" />
+<meta property="article:modified_time" content="2024-03-11T19:59:08+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">SQL 优化实践：关于增强 OceanBase本地索引性能的案例</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p>本文通过一个案例，帮用户了解在Oracle迁移<a class="link-info" href="https://www.oceanbase.com/" rel="nofollow" title="Oceanbase">Oceanbase</a>时，应该如何选择全局索引和本地索引以带来更好的SQL性能。</p> 
+<blockquote>
+  作者：胡呈清，爱可生的DBA团队成员，擅长故障分析和性能优化。本文约 5000 字，预计阅读需要 15 分钟。 
+</blockquote> 
+<blockquote>
+  数据库版本：OceanBase V3.2.3.3 
+</blockquote> 
+<h3></h3> 
+<h3 id="问题描述">案例的问题描述</h3> 
+<p>在进行 Oracle 到 OceanBase的迁移过程中，有张表无法关闭 <strong>row movement </strong>功能，导致无法使用 OMS直接迁移数据。为了解决这个问题，在割接窗口期之前，采用<em> dbcat </em>工具单独迁移该表结构，在窗口期内，通过数据导入的方式特别处理了这张表。</p> 
+<p>这是一张分区表，在 Oracle 数据库中，其主键约束并未包含分区键。然而OceanBase数据库要求主键必须包含分区键。因此，在进行Oracle数据迁移至 OceanBase 的过程中，我们有两种不同的处理方式：</p> 
+<ol><li>OMS 工具：迁移时会将主键转成 <strong>全局唯一索引</strong> +NOT NULL 约束，等价 Oracle 的主键约束。表没有显示主键，但会有一个隐式主键（分区键+隐藏自增列）；</li><li>dbcat 工具：迁移时会把分区键加入到主键中，这是个本地索引。</li></ol> 
+<p>这里最主要的区别是：Oracle 上的主键是全局索引，用 <em>dbcat</em> 迁移到 OB 时会变成本地索引，用 OMS 迁移则还是全局索引。然后以下 SQL 做 <strong>nested-loop join</strong> 时关联字段是主键字段，每次到被驱动表上使用主键查找，需要对所有分区执行，因此慢了。</p> 
+<blockquote>
+  注：OMS、dbcat 都是迁移工具，不用深究，只需理解为什么会有这种区别即可，下面会做解释。 
+</blockquote> 
+<pre><code>select
+  *
+from
+  (
+    SELECT
+      a.act_Id as actId,
+      a.data_Id as dataId,
+      ...
+    from
+      T1 a,
+      T2 b
+    where
+      a.data_Id = b.data_Id
+      and a.cmp_Status not in ('08')
+      and a.crt_Dttm &gt;= to_date('2023-09-15 04:37:49', 'YYYY-mm-dd hh24:mi:ss')
+      and a.crt_Dttm &lt; to_date('2023-10-14 04:37:49', 'YYYY-mm-dd hh24:mi:ss')
+      ...
+    order by
+      a.reserve_Begin_Dttm asc,
+      a.act_Limit_Date asc,
+      a.act_Id asc
+  )
+where
+  rownum &lt;= 10
+</code></pre> 
+<h3 id="关于全局索引和本地索引">关于全局索引和本地索引</h3> 
+<p>OB 的官方文档上有非常详细的说明：<a href="https://links.jianshu.com/go?to=https%3A%2F%2Fwww.oceanbase.com%2Fdocs%2Fenterprise-oceanbase-database-cn-10000000000356624" rel="nofollow" title="局部索引和全局索引">局部索引和全局索引</a>。因此本文只做些脉络上的补充。</p> 
+<h3>1. 什么是全局索引、什么是本地索引？</h3> 
+<p>首先只有分区表才有全局索引、本地索引的区分。先以 MySQL InnoDB 为例，分区表的每个分区实际上都有独立的表空间，完全可以把分区看成独立的表，因此对于一个索引来说，它也只能是每个分区维护各自的索引结构，这个就是本地索引，并且 InnoDB 只有本地索引，没有全局索引。</p> 
+<p>相反，一张表的所有分区如果只维护一个索引结构，这个就是全局索引。典型的 Oracle 支持全局索引，并且默认创建的都是全局索引。</p> 
+<h3>2. 以 MySQL DBA 的视角来说，为什么要有全局索引？</h3> 
+<p>从索引查找的效率上对比，分两种情况：</p> 
+<ul><li>如果 SQL 带分区键查询，分区裁剪后只需要查找少量几个分区，则只需要对这几个分区上的所有进行查找即可，可以降低系统资源的使用，效率更高；</li><li>如果 SQL 不带分区键查询，没做分区裁剪，则本地索引需要对所有分区上的索引进行查找；同理，如果进行分区裁剪后还要查找多个分区也一样，会使用更多的系统资源，效率更慢。全局索引则只需要对一个大的索引进行查找，显然更节省成本。</li></ul> 
+<h3>3. Oracle 与 OB 主键的区别</h3> 
+<p>Oracle 的主键约束 = 唯一索引+NOT NULL 约束；</p> 
+<p>OB 的数据结构上不同于 Oracle，Oracle 是堆表，索引上存的是数据行的指针，索引和数据是分开的。而 OB 是索引组织表，数据都在主键索引上，其他二级索引上存的是主键值。</p> 
+<p>因此对于分区表来说，OB 上每个分区的数据就是主键，主键必须是本地索引。然后由于主键有唯一约束，得保证全局唯一，而本地索引只能保证分区内唯一，怎么实现？不同的分区，分区键值一定是不一样的，所以可以通过分区键的唯一来保证主键的全局唯一，这就是为什么 OB 上的分区表要求主键必须包含分区键。</p> 
+<p>同理 Oracle 为什么不要求主键必须包含分区键？因为 Oracle 的主键约束默认创建的是全局唯一索引，它本身就能保证全局唯一，不需要携带分区键实现。Oracle 如果要创建本地唯一索引，也是要求包含分区键的。</p> 
+<h3>4. OB 上全局索引带来的挑战</h3> 
+<p>OB 是一个分布式数据库，全局索引和分区数据的分布位置肯定是不一样的，因此如果查找全局索引后要回表，很容易产生分布式事务，如果要回表的数据量很大，需要多次 rpc 交互，查询效率会下降很明显。</p> 
+<p>通常 OB 上适合使用全局索引的场景是：</p> 
+<ol><li>基数很大的索引（即效率很高），高频的点查，并且 WHERE 条件中没有分区键，无法进行分区裁剪；</li><li>非分布式架构。</li></ol> 
+<h3 id="分析过程">分析过程</h3> 
+<p>介绍完本地索引和全局索引，下面回到慢 SQL 的分析上。</p> 
+<h3>1. 测试复现</h3> 
+<p>迁移到 OB 上被驱动表 <code>b</code> 的相关索引是：PRIMARY KEY(“DATA_ID”, “POLICY_VALID_DATE”)，Oracle 上对应的索引是：GLOBAL UNIQUE(“DATA_ID”)。</p> 
+<p>为了方便测试，在 OB 上再新建一张表，将两个索引都建上：PRIMARY KEY(“DATA_ID”, “POLICY_VALID_DATE”)，CONSTRAINT “UIDX_DATA_ID2” UNIQUE (“DATA_ID”)。</p> 
+<p>复现情况如下：</p> 
+<ul><li>被驱动表默认走主键，进行 <strong>nested-loop join</strong>，耗时 90 秒</li><li>加 <code>hint /*+ index(b UIDX_DATA_ID2) */</code> 执行，被驱动表强制走全局唯一索引，进行 <strong>nested-loop join</strong>，耗时只需要 5 秒</li></ul> 
+<p>注意：这里驱动表输出 8 万行，join 结果也是 8 万行。</p> 
+<p>执行计划对比，走主键的执行计划：</p> 
+<pre><code>==================================================================
+|ID|OPERATOR                           |NAME    |EST. ROWS|COST  |
+------------------------------------------------------------------
+|0 |LIMIT                              |        |10       |237614|
+|1 | PX COORDINATOR MERGE SORT         |        |10       |237614|
+|2 |  EXCHANGE OUT DISTR               |:EX10001|10       |237565|
+|3 |   LIMIT                           |        |10       |237565|
+|4 |    TOP-N SORT                     |        |10       |237565|
+|5 |     NESTED-LOOP JOIN              |        |353      |237420|
+|6 |      EXCHANGE IN DISTR            |        |58       |234466|
+|7 |       EXCHANGE OUT DISTR (BC2HOST)|:EX10000|58       |234297|
+|8 |        PX PARTITION ITERATOR      |        |58       |234297|
+|9 |         TABLE SCAN                |A       |58       |234297|
+|10|      PX PARTITION ITERATOR        |        |7        |49    |
+|11|       TABLE SCAN                  |B       |7        |49    |
+==================================================================
+
+Outputs &amp; filters: 
+-------------------------------------
+  0 - output([A.ACT_ID(0x7e7d01e62040)], [A.DATA_ID(0x7e7d01e575a0)], [A.CMP_STATUS(0x7e7d01e5add0)], [A.CMP_TYPE_CD(0x7e7d01e59d00)], [A.CMP_TYPE_ID(0x7e7d01e62fb0)], [A.COUT_MODE(0x7e7d01e635c0)], [A.ASSOCIATE_ID(0x7e7d01e63bd0)], [A.ORGAN_ID(0x7e7d01e641e0)], [A.CUSTOMER_TYPE(0x7e7d01e647f0)], [A.CUSTOMER_NAME(0x7e7d01e64e00)], [A.RES_CODE(0x7e7d01e65410)], [A.CRT_DTTM(0x7e7d01e55070)], [A.USER_GRP_ID(0x7e7d01e65d40)], [A.USER_ID(0x7e7d01e66350)], [A.ACT_LIMIT_DATE(0x7e7d01e68970)], [A.CALL_CRT_DTTM(0x7e7d01e68f80)], [A.CONTACT_TEL1(0x7e7d01e69590)], [A.CONTACT_TEL2(0x7e7d01e77bb0)], [B.POLICY_PAY_ADDR(0x7e7d01e781c0)], [A.ORGAN3_ID(0x7e7d01e787d0)], [A.FAIL_COUT_NUM(0x7e7d01e78de0)], [A.SYS_TYPE(0x7e7d01e793f0)], [A.RESERVE_BEGIN_DTTM(0x7e7d01e79a00)], [A.RESERVE_END_DTTM(0x7e7d01e7a010)], [B.SALE_CHANNEL(0x7e7d01e7a620)], [B.POLICY_NO(0x7e7d01e7ac30)], [B.FREE_LOOK_PERIOD(0x7e7d01e7b240)], [B.HOLDER_SEX(0x7e7d01e7b850)], [B.ORGAN4_ID(0x7e7d01e7be60)], [A.ASSIGN_DTTM(0x7e7d01e7c470)], [A.HANDLER_AGENT_CODE(0x7e7d01e7ca80)], [B.CANVASSER_CODE(0x7e7d01e7d090)], [B.CANVASSER_NAME(0x7e7d01e7d6a0)], [B.POLICY_OPE_DATE(0x7e7d01e7dcb0)], [A.APP_FLG(0x7e7d01e7e2c0)], [A.INTER_FLG(0x7e7d01e7e8d0)]), filter(nil), limit(?), offset(nil)
+  1 - output([A.ACT_ID(0x7e7d01e62040)], [A.DATA_ID(0x7e7d01e575a0)], [A.CMP_STATUS(0x7e7d01e5add0)], [A.CMP_TYPE_CD(0x7e7d01e59d00)], [A.CMP_TYPE_ID(0x7e7d01e62fb0)], [A.COUT_MODE(0x7e7d01e635c0)], [A.ASSOCIATE_ID(0x7e7d01e63bd0)], [A.ORGAN_ID(0x7e7d01e641e0)], [A.CUSTOMER_TYPE(0x7e7d01e647f0)], [A.CUSTOMER_NAME(0x7e7d01e64e00)], [A.RES_CODE(0x7e7d01e65410)], [A.CRT_DTTM(0x7e7d01e55070)], [A.USER_GRP_ID(0x7e7d01e65d40)], [A.USER_ID(0x7e7d01e66350)], [A.ACT_LIMIT_DATE(0x7e7d01e68970)], [A.CALL_CRT_DTTM(0x7e7d01e68f80)], [A.CONTACT_TEL1(0x7e7d01e69590)], [A.CONTACT_TEL2(0x7e7d01e77bb0)], [B.POLICY_PAY_ADDR(0x7e7d01e781c0)], [A.ORGAN3_ID(0x7e7d01e787d0)], [A.FAIL_COUT_NUM(0x7e7d01e78de0)], [A.SYS_TYPE(0x7e7d01e793f0)], [A.RESERVE_BEGIN_DTTM(0x7e7d01e79a00)], [A.RESERVE_END_DTTM(0x7e7d01e7a010)], [B.SALE_CHANNEL(0x7e7d01e7a620)], [B.POLICY_NO(0x7e7d01e7ac30)], [B.FREE_LOOK_PERIOD(0x7e7d01e7b240)], [B.HOLDER_SEX(0x7e7d01e7b850)], [B.ORGAN4_ID(0x7e7d01e7be60)], [A.ASSIGN_DTTM(0x7e7d01e7c470)], [A.HANDLER_AGENT_CODE(0x7e7d01e7ca80)], [B.CANVASSER_CODE(0x7e7d01e7d090)], [B.CANVASSER_NAME(0x7e7d01e7d6a0)], [B.POLICY_OPE_DATE(0x7e7d01e7dcb0)], [A.APP_FLG(0x7e7d01e7e2c0)], [A.INTER_FLG(0x7e7d01e7e8d0)]), filter(nil), sort_keys([A.RESERVE_BEGIN_DTTM(0x7e7d01e79a00), ASC], [A.ACT_LIMIT_DATE(0x7e7d01e68970), ASC], [A.ACT_ID(0x7e7d01e62040), ASC])
+  2 - output([A.ACT_ID(0x7e7d01e62040)], [A.DATA_ID(0x7e7d01e575a0)], [A.CMP_STATUS(0x7e7d01e5add0)], [A.CMP_TYPE_CD(0x7e7d01e59d00)], [A.CMP_TYPE_ID(0x7e7d01e62fb0)], [A.COUT_MODE(0x7e7d01e635c0)], [A.ASSOCIATE_ID(0x7e7d01e63bd0)], [A.ORGAN_ID(0x7e7d01e641e0)], [A.CUSTOMER_TYPE(0x7e7d01e647f0)], [A.CUSTOMER_NAME(0x7e7d01e64e00)], [A.RES_CODE(0x7e7d01e65410)], [A.CRT_DTTM(0x7e7d01e55070)], [A.USER_GRP_ID(0x7e7d01e65d40)], [A.USER_ID(0x7e7d01e66350)], [A.ACT_LIMIT_DATE(0x7e7d01e68970)], [A.CALL_CRT_DTTM(0x7e7d01e68f80)], [A.CONTACT_TEL1(0x7e7d01e69590)], [A.CONTACT_TEL2(0x7e7d01e77bb0)], [B.POLICY_PAY_ADDR(0x7e7d01e781c0)], [A.ORGAN3_ID(0x7e7d01e787d0)], [A.FAIL_COUT_NUM(0x7e7d01e78de0)], [A.SYS_TYPE(0x7e7d01e793f0)], [A.RESERVE_BEGIN_DTTM(0x7e7d01e79a00)], [A.RESERVE_END_DTTM(0x7e7d01e7a010)], [B.SALE_CHANNEL(0x7e7d01e7a620)], [B.POLICY_NO(0x7e7d01e7ac30)], [B.FREE_LOOK_PERIOD(0x7e7d01e7b240)], [B.HOLDER_SEX(0x7e7d01e7b850)], [B.ORGAN4_ID(0x7e7d01e7be60)], [A.ASSIGN_DTTM(0x7e7d01e7c470)], [A.HANDLER_AGENT_CODE(0x7e7d01e7ca80)], [B.CANVASSER_CODE(0x7e7d01e7d090)], [B.CANVASSER_NAME(0x7e7d01e7d6a0)], [B.POLICY_OPE_DATE(0x7e7d01e7dcb0)], [A.APP_FLG(0x7e7d01e7e2c0)], [A.INTER_FLG(0x7e7d01e7e8d0)]), filter(nil), dop=1
+  3 - output([A.ACT_ID(0x7e7d01e62040)], [A.DATA_ID(0x7e7d01e575a0)], [A.CMP_STATUS(0x7e7d01e5add0)], [A.CMP_TYPE_CD(0x7e7d01e59d00)], [A.CMP_TYPE_ID(0x7e7d01e62fb0)], [A.COUT_MODE(0x7e7d01e635c0)], [A.ASSOCIATE_ID(0x7e7d01e63bd0)], [A.ORGAN_ID(0x7e7d01e641e0)], [A.CUSTOMER_TYPE(0x7e7d01e647f0)], [A.CUSTOMER_NAME(0x7e7d01e64e00)], [A.RES_CODE(0x7e7d01e65410)], [A.CRT_DTTM(0x7e7d01e55070)], [A.USER_GRP_ID(0x7e7d01e65d40)], [A.USER_ID(0x7e7d01e66350)], [A.ACT_LIMIT_DATE(0x7e7d01e68970)], [A.CALL_CRT_DTTM(0x7e7d01e68f80)], [A.CONTACT_TEL1(0x7e7d01e69590)], [A.CONTACT_TEL2(0x7e7d01e77bb0)], [B.POLICY_PAY_ADDR(0x7e7d01e781c0)], [A.ORGAN3_ID(0x7e7d01e787d0)], [A.FAIL_COUT_NUM(0x7e7d01e78de0)], [A.SYS_TYPE(0x7e7d01e793f0)], [A.RESERVE_BEGIN_DTTM(0x7e7d01e79a00)], [A.RESERVE_END_DTTM(0x7e7d01e7a010)], [B.SALE_CHANNEL(0x7e7d01e7a620)], [B.POLICY_NO(0x7e7d01e7ac30)], [B.FREE_LOOK_PERIOD(0x7e7d01e7b240)], [B.HOLDER_SEX(0x7e7d01e7b850)], [B.ORGAN4_ID(0x7e7d01e7be60)], [A.ASSIGN_DTTM(0x7e7d01e7c470)], [A.HANDLER_AGENT_CODE(0x7e7d01e7ca80)], [B.CANVASSER_CODE(0x7e7d01e7d090)], [B.CANVASSER_NAME(0x7e7d01e7d6a0)], [B.POLICY_OPE_DATE(0x7e7d01e7dcb0)], [A.APP_FLG(0x7e7d01e7e2c0)], [A.INTER_FLG(0x7e7d01e7e8d0)]), filter(nil), limit(?), offset(nil)
+  4 - output([A.ACT_ID(0x7e7d01e62040)], [A.DATA_ID(0x7e7d01e575a0)], [A.CMP_STATUS(0x7e7d01e5add0)], [A.CMP_TYPE_CD(0x7e7d01e59d00)], [A.CMP_TYPE_ID(0x7e7d01e62fb0)], [A.COUT_MODE(0x7e7d01e635c0)], [A.ASSOCIATE_ID(0x7e7d01e63bd0)], [A.ORGAN_ID(0x7e7d01e641e0)], [A.CUSTOMER_TYPE(0x7e7d01e647f0)], [A.CUSTOMER_NAME(0x7e7d01e64e00)], [A.RES_CODE(0x7e7d01e65410)], [A.CRT_DTTM(0x7e7d01e55070)], [A.USER_GRP_ID(0x7e7d01e65d40)], [A.USER_ID(0x7e7d01e66350)], [A.ACT_LIMIT_DATE(0x7e7d01e68970)], [A.CALL_CRT_DTTM(0x7e7d01e68f80)], [A.CONTACT_TEL1(0x7e7d01e69590)], [A.CONTACT_TEL2(0x7e7d01e77bb0)], [B.POLICY_PAY_ADDR(0x7e7d01e781c0)], [A.ORGAN3_ID(0x7e7d01e787d0)], [A.FAIL_COUT_NUM(0x7e7d01e78de0)], [A.SYS_TYPE(0x7e7d01e793f0)], [A.RESERVE_BEGIN_DTTM(0x7e7d01e79a00)], [A.RESERVE_END_DTTM(0x7e7d01e7a010)], [B.SALE_CHANNEL(0x7e7d01e7a620)], [B.POLICY_NO(0x7e7d01e7ac30)], [B.FREE_LOOK_PERIOD(0x7e7d01e7b240)], [B.HOLDER_SEX(0x7e7d01e7b850)], [B.ORGAN4_ID(0x7e7d01e7be60)], [A.ASSIGN_DTTM(0x7e7d01e7c470)], [A.HANDLER_AGENT_CODE(0x7e7d01e7ca80)], [B.CANVASSER_CODE(0x7e7d01e7d090)], [B.CANVASSER_NAME(0x7e7d01e7d6a0)], [B.POLICY_OPE_DATE(0x7e7d01e7dcb0)], [A.APP_FLG(0x7e7d01e7e2c0)], [A.INTER_FLG(0x7e7d01e7e8d0)]), filter(nil), sort_keys([A.RESERVE_BEGIN_DTTM(0x7e7d01e79a00), ASC], [A.ACT_LIMIT_DATE(0x7e7d01e68970), ASC], [A.ACT_ID(0x7e7d01e62040), ASC]), topn(?)
+  5 - output([A.ACT_ID(0x7e7d01e62040)], [A.DATA_ID(0x7e7d01e575a0)], [A.CMP_STATUS(0x7e7d01e5add0)], [A.CMP_TYPE_CD(0x7e7d01e59d00)], [A.CMP_TYPE_ID(0x7e7d01e62fb0)], [A.COUT_MODE(0x7e7d01e635c0)], [A.ASSOCIATE_ID(0x7e7d01e63bd0)], [A.ORGAN_ID(0x7e7d01e641e0)], [A.CUSTOMER_TYPE(0x7e7d01e647f0)], [A.CUSTOMER_NAME(0x7e7d01e64e00)], [A.RES_CODE(0x7e7d01e65410)], [A.CRT_DTTM(0x7e7d01e55070)], [A.USER_GRP_ID(0x7e7d01e65d40)], [A.USER_ID(0x7e7d01e66350)], [A.ACT_LIMIT_DATE(0x7e7d01e68970)], [A.CALL_CRT_DTTM(0x7e7d01e68f80)], [A.CONTACT_TEL1(0x7e7d01e69590)], [A.CONTACT_TEL2(0x7e7d01e77bb0)], [B.POLICY_PAY_ADDR(0x7e7d01e781c0)], [A.ORGAN3_ID(0x7e7d01e787d0)], [A.FAIL_COUT_NUM(0x7e7d01e78de0)], [A.SYS_TYPE(0x7e7d01e793f0)], [A.RESERVE_BEGIN_DTTM(0x7e7d01e79a00)], [A.RESERVE_END_DTTM(0x7e7d01e7a010)], [B.SALE_CHANNEL(0x7e7d01e7a620)], [B.POLICY_NO(0x7e7d01e7ac30)], [B.FREE_LOOK_PERIOD(0x7e7d01e7b240)], [B.HOLDER_SEX(0x7e7d01e7b850)], [B.ORGAN4_ID(0x7e7d01e7be60)], [A.ASSIGN_DTTM(0x7e7d01e7c470)], [A.HANDLER_AGENT_CODE(0x7e7d01e7ca80)], [B.CANVASSER_CODE(0x7e7d01e7d090)], [B.CANVASSER_NAME(0x7e7d01e7d6a0)], [B.POLICY_OPE_DATE(0x7e7d01e7dcb0)], [A.APP_FLG(0x7e7d01e7e2c0)], [A.INTER_FLG(0x7e7d01e7e8d0)]), filter(nil), 
+      conds(nil), nl_params_([A.DATA_ID(0x7e7d01e575a0)]), batch_join=false
+  6 - output([A.CRT_DTTM(0x7e7d01e55070)], [A.DATA_ID(0x7e7d01e575a0)], [A.CMP_TYPE_CD(0x7e7d01e59d00)], [A.CMP_STATUS(0x7e7d01e5add0)], [A.ACT_ID(0x7e7d01e62040)], [A.CMP_TYPE_ID(0x7e7d01e62fb0)], [A.COUT_MODE(0x7e7d01e635c0)], [A.ASSOCIATE_ID(0x7e7d01e63bd0)], [A.ORGAN_ID(0x7e7d01e641e0)], [A.CUSTOMER_TYPE(0x7e7d01e647f0)], [A.CUSTOMER_NAME(0x7e7d01e64e00)], [A.RES_CODE(0x7e7d01e65410)], [A.USER_GRP_ID(0x7e7d01e65d40)], [A.USER_ID(0x7e7d01e66350)], [A.ACT_LIMIT_DATE(0x7e7d01e68970)], [A.CALL_CRT_DTTM(0x7e7d01e68f80)], [A.CONTACT_TEL1(0x7e7d01e69590)], [A.CONTACT_TEL2(0x7e7d01e77bb0)], [A.ORGAN3_ID(0x7e7d01e787d0)], [A.FAIL_COUT_NUM(0x7e7d01e78de0)], [A.SYS_TYPE(0x7e7d01e793f0)], [A.RESERVE_BEGIN_DTTM(0x7e7d01e79a00)], [A.RESERVE_END_DTTM(0x7e7d01e7a010)], [A.ASSIGN_DTTM(0x7e7d01e7c470)], [A.HANDLER_AGENT_CODE(0x7e7d01e7ca80)], [A.APP_FLG(0x7e7d01e7e2c0)], [A.INTER_FLG(0x7e7d01e7e8d0)]), filter(nil)
+  7 - output([A.CRT_DTTM(0x7e7d01e55070)], [A.DATA_ID(0x7e7d01e575a0)], [A.CMP_TYPE_CD(0x7e7d01e59d00)], [A.CMP_STATUS(0x7e7d01e5add0)], [A.ACT_ID(0x7e7d01e62040)], [A.CMP_TYPE_ID(0x7e7d01e62fb0)], [A.COUT_MODE(0x7e7d01e635c0)], [A.ASSOCIATE_ID(0x7e7d01e63bd0)], [A.ORGAN_ID(0x7e7d01e641e0)], [A.CUSTOMER_TYPE(0x7e7d01e647f0)], [A.CUSTOMER_NAME(0x7e7d01e64e00)], [A.RES_CODE(0x7e7d01e65410)], [A.USER_GRP_ID(0x7e7d01e65d40)], [A.USER_ID(0x7e7d01e66350)], [A.ACT_LIMIT_DATE(0x7e7d01e68970)], [A.CALL_CRT_DTTM(0x7e7d01e68f80)], [A.CONTACT_TEL1(0x7e7d01e69590)], [A.CONTACT_TEL2(0x7e7d01e77bb0)], [A.ORGAN3_ID(0x7e7d01e787d0)], [A.FAIL_COUT_NUM(0x7e7d01e78de0)], [A.SYS_TYPE(0x7e7d01e793f0)], [A.RESERVE_BEGIN_DTTM(0x7e7d01e79a00)], [A.RESERVE_END_DTTM(0x7e7d01e7a010)], [A.ASSIGN_DTTM(0x7e7d01e7c470)], [A.HANDLER_AGENT_CODE(0x7e7d01e7ca80)], [A.APP_FLG(0x7e7d01e7e2c0)], [A.INTER_FLG(0x7e7d01e7e8d0)]), filter(nil), dop=1
+  8 - output([A.CRT_DTTM(0x7e7d01e55070)], [A.DATA_ID(0x7e7d01e575a0)], [A.CMP_TYPE_CD(0x7e7d01e59d00)], [A.CMP_STATUS(0x7e7d01e5add0)], [A.ACT_ID(0x7e7d01e62040)], [A.CMP_TYPE_ID(0x7e7d01e62fb0)], [A.COUT_MODE(0x7e7d01e635c0)], [A.ASSOCIATE_ID(0x7e7d01e63bd0)], [A.ORGAN_ID(0x7e7d01e641e0)], [A.CUSTOMER_TYPE(0x7e7d01e647f0)], [A.CUSTOMER_NAME(0x7e7d01e64e00)], [A.RES_CODE(0x7e7d01e65410)], [A.USER_GRP_ID(0x7e7d01e65d40)], [A.USER_ID(0x7e7d01e66350)], [A.ACT_LIMIT_DATE(0x7e7d01e68970)], [A.CALL_CRT_DTTM(0x7e7d01e68f80)], [A.CONTACT_TEL1(0x7e7d01e69590)], [A.CONTACT_TEL2(0x7e7d01e77bb0)], [A.ORGAN3_ID(0x7e7d01e787d0)], [A.FAIL_COUT_NUM(0x7e7d01e78de0)], [A.SYS_TYPE(0x7e7d01e793f0)], [A.RESERVE_BEGIN_DTTM(0x7e7d01e79a00)], [A.RESERVE_END_DTTM(0x7e7d01e7a010)], [A.ASSIGN_DTTM(0x7e7d01e7c470)], [A.HANDLER_AGENT_CODE(0x7e7d01e7ca80)], [A.APP_FLG(0x7e7d01e7e2c0)], [A.INTER_FLG(0x7e7d01e7e8d0)]), filter(nil), 
+      force partition granule, asc.
+  9 - output([A.CRT_DTTM(0x7e7d01e55070)], [A.DATA_ID(0x7e7d01e575a0)], [A.CMP_TYPE_CD(0x7e7d01e59d00)], [A.CMP_STATUS(0x7e7d01e5add0)], [A.ACT_ID(0x7e7d01e62040)], [A.CMP_TYPE_ID(0x7e7d01e62fb0)], [A.COUT_MODE(0x7e7d01e635c0)], [A.ASSOCIATE_ID(0x7e7d01e63bd0)], [A.ORGAN_ID(0x7e7d01e641e0)], [A.CUSTOMER_TYPE(0x7e7d01e647f0)], [A.CUSTOMER_NAME(0x7e7d01e64e00)], [A.RES_CODE(0x7e7d01e65410)], [A.USER_GRP_ID(0x7e7d01e65d40)], [A.USER_ID(0x7e7d01e66350)], [A.ACT_LIMIT_DATE(0x7e7d01e68970)], [A.CALL_CRT_DTTM(0x7e7d01e68f80)], [A.CONTACT_TEL1(0x7e7d01e69590)], [A.CONTACT_TEL2(0x7e7d01e77bb0)], [A.ORGAN3_ID(0x7e7d01e787d0)], [A.FAIL_COUT_NUM(0x7e7d01e78de0)], [A.SYS_TYPE(0x7e7d01e793f0)], [A.RESERVE_BEGIN_DTTM(0x7e7d01e79a00)], [A.RESERVE_END_DTTM(0x7e7d01e7a010)], [A.ASSIGN_DTTM(0x7e7d01e7c470)], [A.HANDLER_AGENT_CODE(0x7e7d01e7ca80)], [A.APP_FLG(0x7e7d01e7e2c0)], [A.INTER_FLG(0x7e7d01e7e8d0)]), filter([A.CMP_TYPE_CD(0x7e7d01e59d00) = ?(0x7e7d01e595e0)], [(T_OP_IS, A.POOL_STATUS(0x7e7d01e58c10), NULL, 0)(0x7e7d01e58240)], [A.CMP_STATUS(0x7e7d01e5add0) != ?(0x7e7d01e5a110)]), 
+      access([A.CRT_DTTM(0x7e7d01e55070)], [A.DATA_ID(0x7e7d01e575a0)], [A.POOL_STATUS(0x7e7d01e58c10)], [A.CMP_TYPE_CD(0x7e7d01e59d00)], [A.CMP_STATUS(0x7e7d01e5add0)], [A.ACT_ID(0x7e7d01e62040)], [A.CMP_TYPE_ID(0x7e7d01e62fb0)], [A.COUT_MODE(0x7e7d01e635c0)], [A.ASSOCIATE_ID(0x7e7d01e63bd0)], [A.ORGAN_ID(0x7e7d01e641e0)], [A.CUSTOMER_TYPE(0x7e7d01e647f0)], [A.CUSTOMER_NAME(0x7e7d01e64e00)], [A.RES_CODE(0x7e7d01e65410)], [A.USER_GRP_ID(0x7e7d01e65d40)], [A.USER_ID(0x7e7d01e66350)], [A.ACT_LIMIT_DATE(0x7e7d01e68970)], [A.CALL_CRT_DTTM(0x7e7d01e68f80)], [A.CONTACT_TEL1(0x7e7d01e69590)], [A.CONTACT_TEL2(0x7e7d01e77bb0)], [A.ORGAN3_ID(0x7e7d01e787d0)], [A.FAIL_COUT_NUM(0x7e7d01e78de0)], [A.SYS_TYPE(0x7e7d01e793f0)], [A.RESERVE_BEGIN_DTTM(0x7e7d01e79a00)], [A.RESERVE_END_DTTM(0x7e7d01e7a010)], [A.ASSIGN_DTTM(0x7e7d01e7c470)], [A.HANDLER_AGENT_CODE(0x7e7d01e7ca80)], [A.APP_FLG(0x7e7d01e7e2c0)], [A.INTER_FLG(0x7e7d01e7e8d0)]), partitions(p[116-117]), 
+      is_index_back=false, filter_before_indexback[false,false,false], 
+      range_key([A.CRT_DTTM(0x7e7d01e55070)], [A.__pk_increment(0x7e7d01f795d0)]), range(2023-09-15 04:37:49,MIN ; 2023-10-14 04:37:49,MIN), 
+      range_cond([A.CRT_DTTM(0x7e7d01e55070) &gt;= ?(0x7e7d01e5c560)], [A.CRT_DTTM(0x7e7d01e55070) &lt; ?(0x7e7d01e5fb10)])
+  10 - output([B.POLICY_PAY_ADDR(0x7e7d01e781c0)], [B.SALE_CHANNEL(0x7e7d01e7a620)], [B.POLICY_NO(0x7e7d01e7ac30)], [B.FREE_LOOK_PERIOD(0x7e7d01e7b240)], [B.HOLDER_SEX(0x7e7d01e7b850)], [B.ORGAN4_ID(0x7e7d01e7be60)], [B.CANVASSER_CODE(0x7e7d01e7d090)], [B.CANVASSER_NAME(0x7e7d01e7d6a0)], [B.POLICY_OPE_DATE(0x7e7d01e7dcb0)]), filter(nil), 
+      access all, force partition granule.
+  11 - output([B.POLICY_PAY_ADDR(0x7e7d01e781c0)], [B.SALE_CHANNEL(0x7e7d01e7a620)], [B.POLICY_NO(0x7e7d01e7ac30)], [B.FREE_LOOK_PERIOD(0x7e7d01e7b240)], [B.HOLDER_SEX(0x7e7d01e7b850)], [B.ORGAN4_ID(0x7e7d01e7be60)], [B.CANVASSER_CODE(0x7e7d01e7d090)], [B.CANVASSER_NAME(0x7e7d01e7d6a0)], [B.POLICY_OPE_DATE(0x7e7d01e7dcb0)]), filter(nil), 
+      access([B.POLICY_PAY_ADDR(0x7e7d01e781c0)], [B.SALE_CHANNEL(0x7e7d01e7a620)], [B.POLICY_NO(0x7e7d01e7ac30)], [B.FREE_LOOK_PERIOD(0x7e7d01e7b240)], [B.HOLDER_SEX(0x7e7d01e7b850)], [B.ORGAN4_ID(0x7e7d01e7be60)], [B.CANVASSER_CODE(0x7e7d01e7d090)], [B.CANVASSER_NAME(0x7e7d01e7d6a0)], [B.POLICY_OPE_DATE(0x7e7d01e7dcb0)]), partitions(p[0-129]), 
+      is_index_back=false, 
+      range_key([B.DATA_ID(0x7e7d01e57890)], [B.POLICY_VALID_DATE(0x7e7d01e56550)]), range(MIN ; MAX), 
+      range_cond([? = B.DATA_ID(0x7e7d01e57890)(0x7e887f48c800)])
+
+Used Hint:
+-------------------------------------
+  /*+
+  */
+
+Outline Data:
+-------------------------------------
+  /*+
+      BEGIN_OUTLINE_DATA
+      LEADING(@"SEL$2" ("LIFE.A"@"SEL$2" "LIFE.B"@"SEL$2" ))
+      USE_NL(@"SEL$2" ("LIFE.B"@"SEL$2" ))
+      PQ_DISTRIBUTE(@"SEL$2" ("LIFE.B"@"SEL$2" ) BC2HOST NONE)
+      NO_USE_NL_MATERIALIZATION(@"SEL$2" ("LIFE.B"@"SEL$2" ))
+      FULL(@"SEL$2" "LIFE.A"@"SEL$2")
+      FULL(@"SEL$2" "LIFE.B"@"SEL$2")
+      END_OUTLINE_DATA
+  */
+
+Plan Type:
+-------------------------------------
+DISTRIBUTED
+
+Optimization Info:
+-------------------------------------
+A:table_rows:11907770, physical_range_rows:595388, logical_range_rows:595388, index_back_rows:0, output_rows:57, est_method:local_storage, optimization_method=cost_based, avaiable_index_name[IDX_LI_COUT_ACTIVITY_DATAID,IDX_LI_COUT_ACTIVIT_RESE,IDX_T_LI_COUT_ACTIVITY,IDX_T_LI_COUT_ACTIVITY_TEST2,T_LI_COUT_ACTIVITY], pruned_index_name[PK_T_LI_COUT_ACTIVITY,IDX_CUSTOMER_ID_CARD,IDX_LI_COUT_ACT_NEXTDTTM,IDX_LI_COUT_ACTIVITY_CALLCRT,IDX_LI_COUT_ACTIVITY_ASID,IDX_LI_COUT_ACTIVITY_BDATE,IDX_LI_COUT_ACTIVITY_CDT,IDX_LI_COUT_ACTIVITY_CPS,IDX_LI_COUT_ACTIVITY_ENDDATE,IDX_LI_COUT_ACTIVITY_LASTDTTM,IDX_LI_COUT_ACTIVITY_LDT,IDX_LI_COUT_ACTIVITY_LRT,IDX_LI_COUT_ACTIVITY_OWN,IDX_LI_COUT_ACT_FIRSTACTID,IDX_T_LI_COUT_ACTIVITY_SHUSHUI,IDX_GLO_CMP_TYPE_ID,IDX_GLO_ASSOC_CMP]
+B:table_rows:114906166, physical_range_rows:6, logical_range_rows:6, index_back_rows:0, output_rows:6, est_method:local_storage, optimization_method=rule_based, heuristic_rule=unique_index_with_indexback
+</code></pre> 
+<p>走全局唯一索引的执行计划：</p> 
+<pre><code>=====================================================================
+|ID|OPERATOR                      |NAME            |EST. ROWS|COST  |
+---------------------------------------------------------------------
+|0 |LIMIT                         |                |10       |235743|
+|1 | PX COORDINATOR MERGE SORT    |                |10       |235743|
+|2 |  EXCHANGE OUT DISTR          |:EX10000        |10       |235694|
+|3 |   LIMIT                      |                |10       |235694|
+|4 |    TOP-N SORT                |                |10       |235694|
+|5 |     PX PARTITION ITERATOR    |                |55       |235668|
+|6 |      NESTED-LOOP JOIN        |                |55       |235668|
+|7 |       TABLE SCAN             |A               |58       |234297|
+|8 |       TABLE LOOKUP           |B               |1        |23    |
+|9 |        DISTRIBUTED TABLE SCAN|B(UIDX_DATA_ID2)|1        |12    |
+=====================================================================
+
+Outputs &amp; filters: 
+-------------------------------------
+  0 - output([A.ACT_ID(0x7f03a5ae63e0)], [A.DATA_ID(0x7f03a5adb940)], [A.CMP_STATUS(0x7f03a5adf170)], [A.CMP_TYPE_CD(0x7f03a5ade0a0)], [A.CMP_TYPE_ID(0x7f03a5ae7350)], [A.COUT_MODE(0x7f03a5ae7960)], [A.ASSOCIATE_ID(0x7f03a5ae7f70)], [A.ORGAN_ID(0x7f03a5ae8580)], [A.CUSTOMER_TYPE(0x7f03a5ae8b90)], [A.CUSTOMER_NAME(0x7f03a5ae91a0)], [A.RES_CODE(0x7f03a5ae97b0)], [A.CRT_DTTM(0x7f03a5ad9410)], [A.USER_GRP_ID(0x7f03a5aea0e0)], [A.USER_ID(0x7f03a5aea6f0)], [A.ACT_LIMIT_DATE(0x7f03a5aecd10)], [A.CALL_CRT_DTTM(0x7f03a5aed320)], [A.CONTACT_TEL1(0x7f03a5aed930)], [A.CONTACT_TEL2(0x7f03a5afbf50)], [B.POLICY_PAY_ADDR(0x7f03a5afc560)], [A.ORGAN3_ID(0x7f03a5afcb70)], [A.FAIL_COUT_NUM(0x7f03a5afd180)], [A.SYS_TYPE(0x7f03a5afd790)], [A.RESERVE_BEGIN_DTTM(0x7f03a5afdda0)], [A.RESERVE_END_DTTM(0x7f03a5afe3b0)], [B.SALE_CHANNEL(0x7f03a5afe9c0)], [B.POLICY_NO(0x7f03a5afefd0)], [B.FREE_LOOK_PERIOD(0x7f03a5aff5e0)], [B.HOLDER_SEX(0x7f03a5affbf0)], [B.ORGAN4_ID(0x7f03a5b00200)], [A.ASSIGN_DTTM(0x7f03a5b00810)], [A.HANDLER_AGENT_CODE(0x7f03a5b00e20)], [B.CANVASSER_CODE(0x7f03a5b01430)], [B.CANVASSER_NAME(0x7f03a5b01a40)], [B.POLICY_OPE_DATE(0x7f03a5b02050)], [A.APP_FLG(0x7f03a5b02660)], [A.INTER_FLG(0x7f03a5b02c70)]), filter(nil), limit(?), offset(nil)
+  1 - output([A.ACT_ID(0x7f03a5ae63e0)], [A.DATA_ID(0x7f03a5adb940)], [A.CMP_STATUS(0x7f03a5adf170)], [A.CMP_TYPE_CD(0x7f03a5ade0a0)], [A.CMP_TYPE_ID(0x7f03a5ae7350)], [A.COUT_MODE(0x7f03a5ae7960)], [A.ASSOCIATE_ID(0x7f03a5ae7f70)], [A.ORGAN_ID(0x7f03a5ae8580)], [A.CUSTOMER_TYPE(0x7f03a5ae8b90)], [A.CUSTOMER_NAME(0x7f03a5ae91a0)], [A.RES_CODE(0x7f03a5ae97b0)], [A.CRT_DTTM(0x7f03a5ad9410)], [A.USER_GRP_ID(0x7f03a5aea0e0)], [A.USER_ID(0x7f03a5aea6f0)], [A.ACT_LIMIT_DATE(0x7f03a5aecd10)], [A.CALL_CRT_DTTM(0x7f03a5aed320)], [A.CONTACT_TEL1(0x7f03a5aed930)], [A.CONTACT_TEL2(0x7f03a5afbf50)], [B.POLICY_PAY_ADDR(0x7f03a5afc560)], [A.ORGAN3_ID(0x7f03a5afcb70)], [A.FAIL_COUT_NUM(0x7f03a5afd180)], [A.SYS_TYPE(0x7f03a5afd790)], [A.RESERVE_BEGIN_DTTM(0x7f03a5afdda0)], [A.RESERVE_END_DTTM(0x7f03a5afe3b0)], [B.SALE_CHANNEL(0x7f03a5afe9c0)], [B.POLICY_NO(0x7f03a5afefd0)], [B.FREE_LOOK_PERIOD(0x7f03a5aff5e0)], [B.HOLDER_SEX(0x7f03a5affbf0)], [B.ORGAN4_ID(0x7f03a5b00200)], [A.ASSIGN_DTTM(0x7f03a5b00810)], [A.HANDLER_AGENT_CODE(0x7f03a5b00e20)], [B.CANVASSER_CODE(0x7f03a5b01430)], [B.CANVASSER_NAME(0x7f03a5b01a40)], [B.POLICY_OPE_DATE(0x7f03a5b02050)], [A.APP_FLG(0x7f03a5b02660)], [A.INTER_FLG(0x7f03a5b02c70)]), filter(nil), sort_keys([A.RESERVE_BEGIN_DTTM(0x7f03a5afdda0), ASC], [A.ACT_LIMIT_DATE(0x7f03a5aecd10), ASC], [A.ACT_ID(0x7f03a5ae63e0), ASC])
+  2 - output([A.ACT_ID(0x7f03a5ae63e0)], [A.DATA_ID(0x7f03a5adb940)], [A.CMP_STATUS(0x7f03a5adf170)], [A.CMP_TYPE_CD(0x7f03a5ade0a0)], [A.CMP_TYPE_ID(0x7f03a5ae7350)], [A.COUT_MODE(0x7f03a5ae7960)], [A.ASSOCIATE_ID(0x7f03a5ae7f70)], [A.ORGAN_ID(0x7f03a5ae8580)], [A.CUSTOMER_TYPE(0x7f03a5ae8b90)], [A.CUSTOMER_NAME(0x7f03a5ae91a0)], [A.RES_CODE(0x7f03a5ae97b0)], [A.CRT_DTTM(0x7f03a5ad9410)], [A.USER_GRP_ID(0x7f03a5aea0e0)], [A.USER_ID(0x7f03a5aea6f0)], [A.ACT_LIMIT_DATE(0x7f03a5aecd10)], [A.CALL_CRT_DTTM(0x7f03a5aed320)], [A.CONTACT_TEL1(0x7f03a5aed930)], [A.CONTACT_TEL2(0x7f03a5afbf50)], [B.POLICY_PAY_ADDR(0x7f03a5afc560)], [A.ORGAN3_ID(0x7f03a5afcb70)], [A.FAIL_COUT_NUM(0x7f03a5afd180)], [A.SYS_TYPE(0x7f03a5afd790)], [A.RESERVE_BEGIN_DTTM(0x7f03a5afdda0)], [A.RESERVE_END_DTTM(0x7f03a5afe3b0)], [B.SALE_CHANNEL(0x7f03a5afe9c0)], [B.POLICY_NO(0x7f03a5afefd0)], [B.FREE_LOOK_PERIOD(0x7f03a5aff5e0)], [B.HOLDER_SEX(0x7f03a5affbf0)], [B.ORGAN4_ID(0x7f03a5b00200)], [A.ASSIGN_DTTM(0x7f03a5b00810)], [A.HANDLER_AGENT_CODE(0x7f03a5b00e20)], [B.CANVASSER_CODE(0x7f03a5b01430)], [B.CANVASSER_NAME(0x7f03a5b01a40)], [B.POLICY_OPE_DATE(0x7f03a5b02050)], [A.APP_FLG(0x7f03a5b02660)], [A.INTER_FLG(0x7f03a5b02c70)]), filter(nil), dop=1
+  3 - output([A.ACT_ID(0x7f03a5ae63e0)], [A.DATA_ID(0x7f03a5adb940)], [A.CMP_STATUS(0x7f03a5adf170)], [A.CMP_TYPE_CD(0x7f03a5ade0a0)], [A.CMP_TYPE_ID(0x7f03a5ae7350)], [A.COUT_MODE(0x7f03a5ae7960)], [A.ASSOCIATE_ID(0x7f03a5ae7f70)], [A.ORGAN_ID(0x7f03a5ae8580)], [A.CUSTOMER_TYPE(0x7f03a5ae8b90)], [A.CUSTOMER_NAME(0x7f03a5ae91a0)], [A.RES_CODE(0x7f03a5ae97b0)], [A.CRT_DTTM(0x7f03a5ad9410)], [A.USER_GRP_ID(0x7f03a5aea0e0)], [A.USER_ID(0x7f03a5aea6f0)], [A.ACT_LIMIT_DATE(0x7f03a5aecd10)], [A.CALL_CRT_DTTM(0x7f03a5aed320)], [A.CONTACT_TEL1(0x7f03a5aed930)], [A.CONTACT_TEL2(0x7f03a5afbf50)], [B.POLICY_PAY_ADDR(0x7f03a5afc560)], [A.ORGAN3_ID(0x7f03a5afcb70)], [A.FAIL_COUT_NUM(0x7f03a5afd180)], [A.SYS_TYPE(0x7f03a5afd790)], [A.RESERVE_BEGIN_DTTM(0x7f03a5afdda0)], [A.RESERVE_END_DTTM(0x7f03a5afe3b0)], [B.SALE_CHANNEL(0x7f03a5afe9c0)], [B.POLICY_NO(0x7f03a5afefd0)], [B.FREE_LOOK_PERIOD(0x7f03a5aff5e0)], [B.HOLDER_SEX(0x7f03a5affbf0)], [B.ORGAN4_ID(0x7f03a5b00200)], [A.ASSIGN_DTTM(0x7f03a5b00810)], [A.HANDLER_AGENT_CODE(0x7f03a5b00e20)], [B.CANVASSER_CODE(0x7f03a5b01430)], [B.CANVASSER_NAME(0x7f03a5b01a40)], [B.POLICY_OPE_DATE(0x7f03a5b02050)], [A.APP_FLG(0x7f03a5b02660)], [A.INTER_FLG(0x7f03a5b02c70)]), filter(nil), limit(?), offset(nil)
+  4 - output([A.ACT_ID(0x7f03a5ae63e0)], [A.DATA_ID(0x7f03a5adb940)], [A.CMP_STATUS(0x7f03a5adf170)], [A.CMP_TYPE_CD(0x7f03a5ade0a0)], [A.CMP_TYPE_ID(0x7f03a5ae7350)], [A.COUT_MODE(0x7f03a5ae7960)], [A.ASSOCIATE_ID(0x7f03a5ae7f70)], [A.ORGAN_ID(0x7f03a5ae8580)], [A.CUSTOMER_TYPE(0x7f03a5ae8b90)], [A.CUSTOMER_NAME(0x7f03a5ae91a0)], [A.RES_CODE(0x7f03a5ae97b0)], [A.CRT_DTTM(0x7f03a5ad9410)], [A.USER_GRP_ID(0x7f03a5aea0e0)], [A.USER_ID(0x7f03a5aea6f0)], [A.ACT_LIMIT_DATE(0x7f03a5aecd10)], [A.CALL_CRT_DTTM(0x7f03a5aed320)], [A.CONTACT_TEL1(0x7f03a5aed930)], [A.CONTACT_TEL2(0x7f03a5afbf50)], [B.POLICY_PAY_ADDR(0x7f03a5afc560)], [A.ORGAN3_ID(0x7f03a5afcb70)], [A.FAIL_COUT_NUM(0x7f03a5afd180)], [A.SYS_TYPE(0x7f03a5afd790)], [A.RESERVE_BEGIN_DTTM(0x7f03a5afdda0)], [A.RESERVE_END_DTTM(0x7f03a5afe3b0)], [B.SALE_CHANNEL(0x7f03a5afe9c0)], [B.POLICY_NO(0x7f03a5afefd0)], [B.FREE_LOOK_PERIOD(0x7f03a5aff5e0)], [B.HOLDER_SEX(0x7f03a5affbf0)], [B.ORGAN4_ID(0x7f03a5b00200)], [A.ASSIGN_DTTM(0x7f03a5b00810)], [A.HANDLER_AGENT_CODE(0x7f03a5b00e20)], [B.CANVASSER_CODE(0x7f03a5b01430)], [B.CANVASSER_NAME(0x7f03a5b01a40)], [B.POLICY_OPE_DATE(0x7f03a5b02050)], [A.APP_FLG(0x7f03a5b02660)], [A.INTER_FLG(0x7f03a5b02c70)]), filter(nil), sort_keys([A.RESERVE_BEGIN_DTTM(0x7f03a5afdda0), ASC], [A.ACT_LIMIT_DATE(0x7f03a5aecd10), ASC], [A.ACT_ID(0x7f03a5ae63e0), ASC]), topn(?)
+  5 - output([A.ACT_ID(0x7f03a5ae63e0)], [A.DATA_ID(0x7f03a5adb940)], [A.CMP_STATUS(0x7f03a5adf170)], [A.CMP_TYPE_CD(0x7f03a5ade0a0)], [A.CMP_TYPE_ID(0x7f03a5ae7350)], [A.COUT_MODE(0x7f03a5ae7960)], [A.ASSOCIATE_ID(0x7f03a5ae7f70)], [A.ORGAN_ID(0x7f03a5ae8580)], [A.CUSTOMER_TYPE(0x7f03a5ae8b90)], [A.CUSTOMER_NAME(0x7f03a5ae91a0)], [A.RES_CODE(0x7f03a5ae97b0)], [A.CRT_DTTM(0x7f03a5ad9410)], [A.USER_GRP_ID(0x7f03a5aea0e0)], [A.USER_ID(0x7f03a5aea6f0)], [A.ACT_LIMIT_DATE(0x7f03a5aecd10)], [A.CALL_CRT_DTTM(0x7f03a5aed320)], [A.CONTACT_TEL1(0x7f03a5aed930)], [A.CONTACT_TEL2(0x7f03a5afbf50)], [B.POLICY_PAY_ADDR(0x7f03a5afc560)], [A.ORGAN3_ID(0x7f03a5afcb70)], [A.FAIL_COUT_NUM(0x7f03a5afd180)], [A.SYS_TYPE(0x7f03a5afd790)], [A.RESERVE_BEGIN_DTTM(0x7f03a5afdda0)], [A.RESERVE_END_DTTM(0x7f03a5afe3b0)], [B.SALE_CHANNEL(0x7f03a5afe9c0)], [B.POLICY_NO(0x7f03a5afefd0)], [B.FREE_LOOK_PERIOD(0x7f03a5aff5e0)], [B.HOLDER_SEX(0x7f03a5affbf0)], [B.ORGAN4_ID(0x7f03a5b00200)], [A.ASSIGN_DTTM(0x7f03a5b00810)], [A.HANDLER_AGENT_CODE(0x7f03a5b00e20)], [B.CANVASSER_CODE(0x7f03a5b01430)], [B.CANVASSER_NAME(0x7f03a5b01a40)], [B.POLICY_OPE_DATE(0x7f03a5b02050)], [A.APP_FLG(0x7f03a5b02660)], [A.INTER_FLG(0x7f03a5b02c70)]), filter(nil), 
+      partition wise, force partition granule, asc.
+  6 - output([A.ACT_ID(0x7f03a5ae63e0)], [A.DATA_ID(0x7f03a5adb940)], [A.CMP_STATUS(0x7f03a5adf170)], [A.CMP_TYPE_CD(0x7f03a5ade0a0)], [A.CMP_TYPE_ID(0x7f03a5ae7350)], [A.COUT_MODE(0x7f03a5ae7960)], [A.ASSOCIATE_ID(0x7f03a5ae7f70)], [A.ORGAN_ID(0x7f03a5ae8580)], [A.CUSTOMER_TYPE(0x7f03a5ae8b90)], [A.CUSTOMER_NAME(0x7f03a5ae91a0)], [A.RES_CODE(0x7f03a5ae97b0)], [A.CRT_DTTM(0x7f03a5ad9410)], [A.USER_GRP_ID(0x7f03a5aea0e0)], [A.USER_ID(0x7f03a5aea6f0)], [A.ACT_LIMIT_DATE(0x7f03a5aecd10)], [A.CALL_CRT_DTTM(0x7f03a5aed320)], [A.CONTACT_TEL1(0x7f03a5aed930)], [A.CONTACT_TEL2(0x7f03a5afbf50)], [B.POLICY_PAY_ADDR(0x7f03a5afc560)], [A.ORGAN3_ID(0x7f03a5afcb70)], [A.FAIL_COUT_NUM(0x7f03a5afd180)], [A.SYS_TYPE(0x7f03a5afd790)], [A.RESERVE_BEGIN_DTTM(0x7f03a5afdda0)], [A.RESERVE_END_DTTM(0x7f03a5afe3b0)], [B.SALE_CHANNEL(0x7f03a5afe9c0)], [B.POLICY_NO(0x7f03a5afefd0)], [B.FREE_LOOK_PERIOD(0x7f03a5aff5e0)], [B.HOLDER_SEX(0x7f03a5affbf0)], [B.ORGAN4_ID(0x7f03a5b00200)], [A.ASSIGN_DTTM(0x7f03a5b00810)], [A.HANDLER_AGENT_CODE(0x7f03a5b00e20)], [B.CANVASSER_CODE(0x7f03a5b01430)], [B.CANVASSER_NAME(0x7f03a5b01a40)], [B.POLICY_OPE_DATE(0x7f03a5b02050)], [A.APP_FLG(0x7f03a5b02660)], [A.INTER_FLG(0x7f03a5b02c70)]), filter(nil), 
+      conds(nil), nl_params_([A.DATA_ID(0x7f03a5adb940)]), batch_join=false
+  7 - output([A.CRT_DTTM(0x7f03a5ad9410)], [A.DATA_ID(0x7f03a5adb940)], [A.CMP_TYPE_CD(0x7f03a5ade0a0)], [A.CMP_STATUS(0x7f03a5adf170)], [A.ACT_ID(0x7f03a5ae63e0)], [A.CMP_TYPE_ID(0x7f03a5ae7350)], [A.COUT_MODE(0x7f03a5ae7960)], [A.ASSOCIATE_ID(0x7f03a5ae7f70)], [A.ORGAN_ID(0x7f03a5ae8580)], [A.CUSTOMER_TYPE(0x7f03a5ae8b90)], [A.CUSTOMER_NAME(0x7f03a5ae91a0)], [A.RES_CODE(0x7f03a5ae97b0)], [A.USER_GRP_ID(0x7f03a5aea0e0)], [A.USER_ID(0x7f03a5aea6f0)], [A.ACT_LIMIT_DATE(0x7f03a5aecd10)], [A.CALL_CRT_DTTM(0x7f03a5aed320)], [A.CONTACT_TEL1(0x7f03a5aed930)], [A.CONTACT_TEL2(0x7f03a5afbf50)], [A.ORGAN3_ID(0x7f03a5afcb70)], [A.FAIL_COUT_NUM(0x7f03a5afd180)], [A.SYS_TYPE(0x7f03a5afd790)], [A.RESERVE_BEGIN_DTTM(0x7f03a5afdda0)], [A.RESERVE_END_DTTM(0x7f03a5afe3b0)], [A.ASSIGN_DTTM(0x7f03a5b00810)], [A.HANDLER_AGENT_CODE(0x7f03a5b00e20)], [A.APP_FLG(0x7f03a5b02660)], [A.INTER_FLG(0x7f03a5b02c70)]), filter([A.CMP_TYPE_CD(0x7f03a5ade0a0) = ?(0x7f03a5add980)], [(T_OP_IS, A.POOL_STATUS(0x7f03a5adcfb0), NULL, 0)(0x7f03a5adc5e0)], [A.CMP_STATUS(0x7f03a5adf170) != ?(0x7f03a5ade4b0)]), 
+      access([A.CRT_DTTM(0x7f03a5ad9410)], [A.DATA_ID(0x7f03a5adb940)], [A.POOL_STATUS(0x7f03a5adcfb0)], [A.CMP_TYPE_CD(0x7f03a5ade0a0)], [A.CMP_STATUS(0x7f03a5adf170)], [A.ACT_ID(0x7f03a5ae63e0)], [A.CMP_TYPE_ID(0x7f03a5ae7350)], [A.COUT_MODE(0x7f03a5ae7960)], [A.ASSOCIATE_ID(0x7f03a5ae7f70)], [A.ORGAN_ID(0x7f03a5ae8580)], [A.CUSTOMER_TYPE(0x7f03a5ae8b90)], [A.CUSTOMER_NAME(0x7f03a5ae91a0)], [A.RES_CODE(0x7f03a5ae97b0)], [A.USER_GRP_ID(0x7f03a5aea0e0)], [A.USER_ID(0x7f03a5aea6f0)], [A.ACT_LIMIT_DATE(0x7f03a5aecd10)], [A.CALL_CRT_DTTM(0x7f03a5aed320)], [A.CONTACT_TEL1(0x7f03a5aed930)], [A.CONTACT_TEL2(0x7f03a5afbf50)], [A.ORGAN3_ID(0x7f03a5afcb70)], [A.FAIL_COUT_NUM(0x7f03a5afd180)], [A.SYS_TYPE(0x7f03a5afd790)], [A.RESERVE_BEGIN_DTTM(0x7f03a5afdda0)], [A.RESERVE_END_DTTM(0x7f03a5afe3b0)], [A.ASSIGN_DTTM(0x7f03a5b00810)], [A.HANDLER_AGENT_CODE(0x7f03a5b00e20)], [A.APP_FLG(0x7f03a5b02660)], [A.INTER_FLG(0x7f03a5b02c70)]), partitions(p[116-117]), 
+      is_index_back=false, filter_before_indexback[false,false,false], 
+      range_key([A.CRT_DTTM(0x7f03a5ad9410)], [A.__pk_increment(0x7f03a5bfd970)]), range(2023-09-15 04:37:49,MIN ; 2023-10-14 04:37:49,MIN), 
+      range_cond([A.CRT_DTTM(0x7f03a5ad9410) &gt;= ?(0x7f03a5ae0900)], [A.CRT_DTTM(0x7f03a5ad9410) &lt; ?(0x7f03a5ae3eb0)])
+  8 - output([B.POLICY_PAY_ADDR(0x7f03a5afc560)], [B.SALE_CHANNEL(0x7f03a5afe9c0)], [B.POLICY_NO(0x7f03a5afefd0)], [B.FREE_LOOK_PERIOD(0x7f03a5aff5e0)], [B.HOLDER_SEX(0x7f03a5affbf0)], [B.ORGAN4_ID(0x7f03a5b00200)], [B.CANVASSER_CODE(0x7f03a5b01430)], [B.CANVASSER_NAME(0x7f03a5b01a40)], [B.POLICY_OPE_DATE(0x7f03a5b02050)]), filter(nil), 
+      partitions(p[0-129])
+  9 - output([B.DATA_ID(0x7f03a5adbc30)], [B.POLICY_VALID_DATE(0x7f03a5ada8f0)]), filter(nil), 
+      access([B.DATA_ID(0x7f03a5adbc30)], [B.POLICY_VALID_DATE(0x7f03a5ada8f0)]), partitions(p0), 
+      is_index_back=false, 
+      range_key([B.DATA_ID(0x7f03a5adbc30)], [B.shadow_pk_0(0x7e791da35600)], [B.shadow_pk_1(0x7e791da358f0)]), range(MIN ; MAX), 
+      range_cond([? = B.DATA_ID(0x7f03a5adbc30)(0x7e791da4df70)])
+
+Used Hint:
+-------------------------------------
+  /*+
+      INDEX(@"SEL$2" "LIFE.B"@"SEL$2" "UIDX_DATA_ID2")
+  */
+
+Outline Data:
+-------------------------------------
+  /*+
+      BEGIN_OUTLINE_DATA
+      LEADING(@"SEL$2" ("LIFE.A"@"SEL$2" "LIFE.B"@"SEL$2" ))
+      USE_NL(@"SEL$2" ("LIFE.B"@"SEL$2" ))
+      PQ_DISTRIBUTE(@"SEL$2" ("LIFE.B"@"SEL$2" ) NONE NONE)
+      NO_USE_NL_MATERIALIZATION(@"SEL$2" ("LIFE.B"@"SEL$2" ))
+      FULL(@"SEL$2" "LIFE.A"@"SEL$2")
+      INDEX(@"SEL$2" "LIFE.B"@"SEL$2" "UIDX_DATA_ID2")
+      END_OUTLINE_DATA
+  */
+
+Plan Type:
+-------------------------------------
+DISTRIBUTED
+
+Optimization Info:
+-------------------------------------
+A:table_rows:11907770, physical_range_rows:595388, logical_range_rows:595388, index_back_rows:0, output_rows:57, est_method:local_storage, optimization_method=cost_based, avaiable_index_name[IDX_LI_COUT_ACTIVITY_DATAID,IDX_LI_COUT_ACTIVIT_RESE,IDX_T_LI_COUT_ACTIVITY,IDX_T_LI_COUT_ACTIVITY_TEST2,T_LI_COUT_ACTIVITY], pruned_index_name[PK_T_LI_COUT_ACTIVITY,IDX_CUSTOMER_ID_CARD,IDX_LI_COUT_ACT_NEXTDTTM,IDX_LI_COUT_ACTIVITY_CALLCRT,IDX_LI_COUT_ACTIVITY_ASID,IDX_LI_COUT_ACTIVITY_BDATE,IDX_LI_COUT_ACTIVITY_CDT,IDX_LI_COUT_ACTIVITY_CPS,IDX_LI_COUT_ACTIVITY_ENDDATE,IDX_LI_COUT_ACTIVITY_LASTDTTM,IDX_LI_COUT_ACTIVITY_LDT,IDX_LI_COUT_ACTIVITY_LRT,IDX_LI_COUT_ACTIVITY_OWN,IDX_LI_COUT_ACT_FIRSTACTID,IDX_T_LI_COUT_ACTIVITY_SHUSHUI,IDX_GLO_CMP_TYPE_ID,IDX_GLO_ASSOC_CMP]
+B:table_rows:114906166, physical_range_rows:1, logical_range_rows:1, index_back_rows:1, output_rows:1, est_method:local_storage, optimization_method=rule_based, heuristic_rule=unique_index_with_indexback
+</code></pre> 
+<h3>2. 拆解 SQL</h3> 
+<p>从执行计划来看，都是 <code>A</code> nested-loop join <code>B</code>。驱动表 <code>A</code> 表都是走主键，不用管，被驱动表 <code>B</code> 走主键和走全局唯一索引是有区别的，构造一个简单的查询测试即可看出对比：</p> 
+<ul><li>默认走主键，要扫 130 个分区，耗时 7ms</li><li>加 <code>hint /*+ index(b UIDX_DATA_ID2) */</code>，走全局唯一索引，耗时 700us</li></ul> 
+<pre><code>select
+  *
+from
+  T2 b
+where
+  data_id = 13260601;
+</code></pre> 
+<p>走主键的执行计划中，最关键的信息是 <code>partitions(p[0-129])</code>，要到所有分区上进行查找：</p> 
+<pre><code>====================================================
+|ID|OPERATOR               |NAME    |EST. ROWS|COST|
+----------------------------------------------------
+|0 |PX COORDINATOR         |        |1        |58  |
+|1 | EXCHANGE OUT DISTR    |:EX10000|1        |46  |
+|2 |  PX PARTITION ITERATOR|        |1        |46  |
+|3 |   TABLE SCAN          |B       |1        |46  |
+====================================================
+
+
+Used Hint:
+-------------------------------------
+  /*+
+  */
+
+Outline Data:
+-------------------------------------
+  /*+
+      BEGIN_OUTLINE_DATA
+      FULL(@"SEL$1" "LIFE.B"@"SEL$1")
+      END_OUTLINE_DATA
+  */
+
+Plan Type:
+-------------------------------------
+DISTRIBUTED
+
+Optimization Info:
+-------------------------------------
+B:table_rows:114906166, physical_range_rows:1, logical_range_rows:1, index_back_rows:0, output_rows:1, est_method:local_storage, optimization_method=rule_based, heuristic_rule=unique_index_with_indexback
+</code></pre> 
+<p>走全局唯一索引的执行计划中，1 号算子只需要访问 1 个分区 <code>partitions(p0)</code>，0 号回表算子实际上也只需要访问 1 个分区，因为全局索引的叶子节点上有主键值，而主键是包含分区键的，所以回表时是知道这一行数据的分区键值的，因此可以进行分区裁剪。这里需要注意的是执行计划显示上错误 <code>partitions(p[0-129])</code>。</p> 
+<pre><code>============================================================
+|ID|OPERATOR               |NAME            |EST. ROWS|COST|
+------------------------------------------------------------
+|0 |TABLE LOOKUP           |B               |1        |92  |
+|1 | DISTRIBUTED TABLE SCAN|B(UIDX_DATA_ID2)|1        |46  |
+============================================================
+
+Outputs &amp; filters: 
+-------------------------------------
+  0 - output([B.DATA_ID(0x7efef3480a70)], [B.BATCH_ID(0x7efef3480e60)], [B.CMP_TYPE_ID(0x7efef3481150)], [B.ORGAN_ID(0x7efef3481440)], [B.ORGAN3_ID(0x7efef3481730)], [B.POLICY_NO(0x7efef3481a20)], [B.CLASS_CODE(0x7efef3481d10)], [B.POLICY_ATTACH_FLG(0x7efef3482000)], [B.POLICY_STATUS(0x7efef34822f0)], [B.POLICY_OPE_DATE(0x7efef34825e0)], [B.POLICY_PAY_DATE(0x7efef34828d0)], [B.POLICY_PREMIUM(0x7efef3482bc0)], [B.POLICY_PAYMETHOD(0x7efef3482eb0)], [B.POLICY_PAYYEARS(0x7efef34831a0)], [B.POLICY_PAY_ADDR(0x7efef3483490)], [B.POLICY_POSTCODE(0x7efef3483780)], [B.PAYMENT_TEL_AREA(0x7efef3485a80)], [B.POLICY_PAYMENT_TEL(0x7efef3485d70)], [B.CUSTOMER_ID(0x7efef3486060)], [B.HOLDER_IDCARD(0x7efef3486350)], [B.HOLDER_NAME(0x7efef3486640)], [B.HOLDER_SEX(0x7efef3486930)], [B.WORK_TEL_AREA(0x7efef3486c20)], [B.HOLDER_WORK_TEL(0x7efef3486f10)], [B.FAMILY_TEL_AREA(0x7efef3487200)], [B.HOLDER_FAMILY_TEL(0x7efef34874f0)], [B.MOBILE_TEL_AREA(0x7efef34877e0)], [B.HOLDER_MOBILE_NO(0x7efef3487ad0)], [B.RECOGNIZEE_IDCARD(0x7efef3487dc0)], [B.RECOGNIZEE_NAME(0x7efef34880b0)], [B.RECOGNIZEE_GENDER(0x7efef34883a0)], [B.RECOGNIZEE_AGE(0x7efef3488690)], [B.HOLDER_REC_REL(0x7efef3488980)], [B.POLICY_APPDATE(0x7efef3488c70)], [B.CANVASSER_CODE(0x7efef3488f60)], [B.CANVASSER_NAME(0x7efef3489250)], [B.CANVASSER_TEL(0x7efef3489540)], [B.POLICY_VALID_DATE(0x7efef347fa90)], [B.SALE_CHANNEL(0x7efef3489830)], [B.BANK_FLG(0x7efef3489b20)], [B.REC_DATE(0x7efef3489e10)], [B.REC_INPUT_DTTM(0x7efef348a100)], [B.SET_CODE(0x7efef348a3f0)], [B.ACCO_NO(0x7efef348a6e0)], [B.BANK_NAME(0x7efef348a9d0)], [B.HOLDER_BIRTH_DATE(0x7efef348acc0)], [B.CUSTOMER_TYPE(0x7efef348afb0)], [B.OWNER_SOURCE_ID(0x7efef348b2a0)], [B.INSURED_SOURCE_ID(0x7efef348b590)], [B.BUSIMAN_FLG(0x7efef348b880)], [B.OPE_END_DATE(0x7efef348bb70)], [B.SALE_TYPE(0x7efef348be60)], [B.OPERATING_AGENCIES(0x7efef348c150)], [B.SMS_REC_INPUT_DTTM(0x7efef348c440)], [B.PAYMENT_STANDARD(0x7efef348c730)], [B.PREMIUM_STANDARD(0x7efef348ca20)], [B.POLICY_PIECES(0x7efef348cd10)], [B.DIGITAL_FLG(0x7efef348d000)], [B.INSURE_METHOD(0x7efef348d2f0)], [B.SOURCE_SYSTEM_FLG(0x7efef348d5e0)], [B.HOLDER_IDCARD2(0x7efef348d8d0)], [B.ACK_TYPE(0x7efef348dbc0)], [B.CHANNEL_CODE(0x7efef348deb0)], [B.ACTIVITY_CODE(0x7efef348e1a0)], [B.GENJOB_FLG(0x7efef348e490)], [B.HOLDER_AGE(0x7efef348e780)], [B.ORGAN4_ID(0x7efef348ea70)], [B.HESITATE_DAY(0x7efef348ed60)], [B.LOWEST_RATE(0x7efef348f050)], [B.CRT_USER_ID(0x7efef348f340)], [B.CRT_DTTM(0x7efef348f630)], [B.LASTUPT_USER_ID(0x7efef348f920)], [B.LASTUPT_DTTM(0x7efef348fc10)], [B.ENABLE_FLG(0x7efef348ff00)], [B.ACC_CREATE_FLG(0x7efef34901f0)], [B.FREE_LOOK_PERIOD(0x7efef34904e0)], [B.NEWFLAG(0x7efef34907d0)], [B.PROTECT_FLG(0x7efef3490ac0)], [B.DEPTNAME(0x7efef3490db0)], [B.SUB_SALE_TYPE(0x7efef34910a0)], [B.DOUBLE_RECORD(0x7efef3491390)], [B.BQ_OPTION(0x7efef3491680)], [B.HOLDER_IDCARD_TYPE(0x7efef3491970)], [B.HOLDER_OTHER_IDCARD(0x7efef3491c60)], [B.RECOGNIZEE_IDCARD_TYPE(0x7efef3491f50)], [B.RECOGNIZEE_OTHER_IDCARD(0x7efef3492240)], [B.SUBAMT(0x7efef3492530)], [B.RENEW_FLG(0x7efef3492820)], [B.PRDCT_TYPE(0x7efef3492b10)], [B.VIDEO_FLG(0x7efef3492e00)], [B.YB_BANK_NAME(0x7efef34930f0)], [B.MULTI_RECOGNIZEE_AGE(0x7efef34933e0)]), filter(nil), 
+      partitions(p[0-129])
+  1 - output([B.DATA_ID(0x7efef3480a70)], [B.POLICY_VALID_DATE(0x7efef347fa90)]), filter(nil), 
+      access([B.DATA_ID(0x7efef3480a70)], [B.POLICY_VALID_DATE(0x7efef347fa90)]), partitions(p0), 
+      is_index_back=false, 
+      range_key([B.DATA_ID(0x7efef3480a70)], [B.shadow_pk_0(0x7efef357f740)], [B.shadow_pk_1(0x7efef357fa30)]), range(13260601,MIN,MIN ; 13260601,MAX,MAX), 
+      range_cond([B.DATA_ID(0x7efef3480a70) = 13260601(0x7efef3480350)])
+
+Used Hint:
+-------------------------------------
+  /*+
+      INDEX(@"SEL$1" "LIFE.B"@"SEL$1" "UIDX_DATA_ID2")
+  */
+
+Outline Data:
+-------------------------------------
+  /*+
+      BEGIN_OUTLINE_DATA
+      INDEX(@"SEL$1" "LIFE.B"@"SEL$1" "UIDX_DATA_ID2")
+      END_OUTLINE_DATA
+  */
+
+Plan Type:
+-------------------------------------
+LOCAL
+
+Optimization Info:
+-------------------------------------
+B:table_rows:114906166, physical_range_rows:1, logical_range_rows:1, index_back_rows:1, output_rows:1, est_method:local_storage, optimization_method=rule_based, heuristic_rule=unique_index_with_indexback
+</code></pre> 
+<h3 id="结论">结论</h3> 
+<p>这个问题中 OB 集群是非分布式架构（指定了一个 primary zone），全局索引不会带来分布式事务问题。SQL 无法做分区裁剪时，使用了高效的唯一索引，当索引是全局索引时效率最高；当索引是本地索引时，需要访问所有的索引分区，性能会下降。</p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/7b4fbadfa3a16b2ef03bf46968fe9d46/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">Suervisor http://localhost:9001 refused connection</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/b6b3c0c2241eed4c01bcdf93a1754179/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">C#请假加班案例（二）</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

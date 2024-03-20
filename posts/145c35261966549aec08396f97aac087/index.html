@@ -1,0 +1,283 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>深度翻页导出导致慢SQL，mysqlCPU飙升优化方案 - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="深度翻页导出导致慢SQL，mysqlCPU飙升优化方案" />
+<meta property="og:description" content="慢SQL原因分析：
+1.深度翻页
+2.多表JOIN
+3. 大IN
+4. id倒排序
+本文针对深度翻页的优化进行探讨
+方案1： 将limit offset, pageSize的方式改成 id &gt; xx limit pageSize.
+这样能走Id索引，提高速度。
+缺点：不能使用多线程，入参ID从上页结果。
+方案2： 基于 方案1再优化， 将limit offset, pageSize 的方式改成 id &gt; startId and id&lt; endId .
+一次性查出符合条件的ID范围，然后切分ID范围进行查询。（可分实际ID划分，或逻辑范围划分）
+优点: 能用多线程并发查询。
+缺点：逻辑范围划分有的id范围可能无数据，进行无效查询。
+方案3： 终极方案：设置fetchSize，思想是 一次查询在Mysql侧缓冲全量数据，程序侧通过游标cursor批量读取数据，通过回调函数resulthandler处理数据。
+优点： 不用多次和Mysql查询，一次查询多次读取数据。回调里可以使用多线程操作数据。
+缺点： Mysql要缓冲全量数据，内存飙升
+方案二步骤：
+（1） 查询 对应表的ID范围，COUNT条数
+（2） 根据count条数，和每页数量，计算页数，根据页数 和 ID范围进行ID范围切分。
+（3）根据ID范围，发起多线程并发查询。
+其中具体核心逻辑代码：
+ID范围查询 &lt;!-- 统计分页查询总条数 --&gt; &lt;select id=&#34;findIdRange&#34; resultType=&#34;com.xyy.ms.export.core.erpreport.dto.ExportIdRangeDTO&#34;&gt; select min(b.id) as minId, max(b.id) as maxId, count(1) as count from storage_batchnum b &lt;include refid=&#34;" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/145c35261966549aec08396f97aac087/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-09-11T17:59:20+08:00" />
+<meta property="article:modified_time" content="2023-09-11T17:59:20+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">深度翻页导出导致慢SQL，mysqlCPU飙升优化方案</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p></p> 
+<p>慢SQL原因分析：</p> 
+<p>1.深度翻页</p> 
+<p>2.多表JOIN</p> 
+<p>3. 大IN</p> 
+<p>4. id倒排序</p> 
+<p></p> 
+<p>本文针对深度翻页的优化进行探讨</p> 
+<p></p> 
+<h2>方案1： </h2> 
+<p>将limit   offset, pageSize的方式改成 id &gt; xx limit pageSize.</p> 
+<p>这样能走Id索引，提高速度。</p> 
+<p>缺点：不能使用多线程，入参ID从上页结果。</p> 
+<p></p> 
+<p></p> 
+<h2>方案2：</h2> 
+<p>基于 方案1再优化， 将limit   offset, pageSize 的方式改成 id &gt; startId and id&lt; endId .</p> 
+<p>一次性查出符合条件的ID范围，然后切分ID范围进行查询。（可分实际ID划分，或逻辑范围划分）</p> 
+<p>优点:  能用多线程并发查询。</p> 
+<p>缺点：逻辑范围划分有的id范围可能无数据，进行无效查询。</p> 
+<p></p> 
+<h2>方案3：</h2> 
+<p>终极方案：设置fetchSize，思想是 一次查询在Mysql侧缓冲全量数据，程序侧通过游标cursor批量读取数据，通过回调函数resulthandler处理数据。</p> 
+<p>优点： 不用多次和Mysql查询，一次查询多次读取数据。回调里可以使用多线程操作数据。</p> 
+<p>缺点： Mysql要缓冲全量数据，内存飙升</p> 
+<p><img alt="" height="89" src="https://images2.imgbox.com/25/4a/1Q5ZZMpd_o.png" width="1017"></p> 
+<p></p> 
+<p>方案二步骤：</p> 
+<p>（1） 查询 对应表的ID范围，COUNT条数</p> 
+<p>（2） 根据count条数，和每页数量，计算页数，根据页数 和 ID范围进行ID范围切分。</p> 
+<p>（3）根据ID范围，发起多线程并发查询。</p> 
+<p></p> 
+<p>其中具体核心逻辑代码：</p> 
+<h3>ID范围查询</h3> 
+<pre><code class="language-sql">&lt;!-- 统计分页查询总条数 --&gt;
+	&lt;select id="findIdRange" resultType="com.xyy.ms.export.core.erpreport.dto.ExportIdRangeDTO"&gt;
+	select
+		min(b.id) as minId, max(b.id) as maxId, count(1) as count
+		from storage_batchnum b
+		&lt;include refid="batchNumExportWhere"&gt;&lt;/include&gt;
+	&lt;/select&gt;</code></pre> 
+<p></p> 
+<h4>ID切分逻辑：</h4> 
+<pre><code class="language-java">package com.xyy.ms.export.core.erpreport.dto;
+
+import lombok.AllArgsConstructor;
+import lombok.Getter;
+import lombok.Setter;
+import lombok.ToString;
+
+import java.io.Serializable;
+import java.util.ArrayList;
+import java.util.List;
+
+/**
+ * @author stivenjin
+ * @version 1.0
+ * @description 说明: 取表中最小和最大ID， 用ID翻页查询，避免深度翻页（批号库存翻页导出）
+ * 翻页优化步骤：
+ * 1:根据ID范围，进行切分组
+ * 2:用每组 的边界值进行id范围翻页查询。
+ * @date 2023/9/1 18:10
+ */
+@Getter
+@Setter
+@ToString
+@AllArgsConstructor
+public class ExportIdRangeDTO implements Serializable {
+    /**
+     * 最小ID
+     */
+    private int minId = 0;
+    /**
+     * 最大ID
+     */
+    private int maxId = 0;
+    /**
+     * 总条数
+     */
+    private long count = 0;
+
+    public boolean isValid() {
+        return minId &gt; 0 &amp;&amp; maxId &gt; 0;
+    }
+
+    /**
+     * 按页数分隔ID范围
+     * @param pageCount
+     * @return
+     */
+    public List&lt;ExportIdRangeDTO&gt; splitByPageCount(int pageCount) {
+        List&lt;ExportIdRangeDTO&gt; splitList = new ArrayList&lt;ExportIdRangeDTO&gt;();
+        int startId = minId;
+        int endId = maxId;
+        int pageSize = (int)Math.ceil((Double.valueOf(maxId) - Double.valueOf(minId)) / pageCount);
+        System.out.println("pageSize:" + pageSize + ",pageCount:" + pageCount);
+        int tmp = endId;
+        for(int i = 1 ;i&lt;=pageCount;i++){
+            if(startId &lt;= tmp){
+                if(startId + pageSize &lt;= tmp){
+                    endId = startId + pageSize ;
+                }else{
+                    endId = tmp;
+                }
+            }else{
+                break;
+            }
+            //System.out.println("循环调用：" + startId + " : " + endId);
+            splitList.add(new ExportIdRangeDTO(startId, endId, 0));
+            if(endId &lt;= tmp){
+                startId = endId +1;
+            }
+        }
+        return splitList;
+    }
+
+    public static void main(String[] args) {
+        ExportIdRangeDTO dto = new ExportIdRangeDTO(100,823540, 0);
+        dto.splitByPageCount(10);
+        System.out.println("切分一片原始：" + dto.getMinId() + " : " + dto.getMaxId());
+    }
+}
+</code></pre> 
+<pre>&lt;if test="minId != null and maxId != null"&gt;
+   and b.id &gt;= #{minId} and b.id &amp;lt;= #{maxId}
+&lt;/if&gt;</pre> 
+<p></p> 
+<h3>按ID范围切分后，可用多线程并发查询导出</h3> 
+<p>taskExecutor.submit</p> 
+<pre><code class="language-java">// 增加顺序按起点ID导出模式，避免深度翻页慢SQL(之前是多线程并发深度翻页查MYSQL，mysql cpu飙升)
+            if (batchNumExportUseId) {
+                ExportIdRangeDTO idRangeRes = exportStorageBatchNumApi.findIdRange(params);
+                logger.info(" taskId [{}] 开始-异步顺序导出,idRange={}",taskId, JSON.toJSONString(idRangeRes));
+                if (idRangeRes != null &amp;&amp; idRangeRes.isValid()) {
+                    paramsObject.put("pageSize", StorageWebConstant.PURCHASE_CALL_PAGESIZE);
+
+                    int pageCnt = (int)(idRangeRes.getCount()/StorageWebConstant.PURCHASE_CALL_PAGESIZE);
+                    pageCnt = pageCnt + (idRangeRes.getCount()%StorageWebConstant.PURCHASE_CALL_PAGESIZE == 0 ? 0:1);
+                    List&lt;ExportIdRangeDTO&gt; idRangeList = idRangeRes.splitByPageCount(pageCnt);
+
+                    AtomicInteger pageNum = new AtomicInteger(0);
+                    for (ExportIdRangeDTO idRange : idRangeList) {
+                        int pn = pageNum.incrementAndGet();
+                        Map&lt;String, Object&gt; exportParamMap = new HashMap&lt;&gt;();
+                        exportParamMap.putAll(paramsObject);
+                        exportParamMap.put("pageNum", pn);
+                        exportParamMap.put("minId", idRange.getMinId());
+                        exportParamMap.put("maxId", idRange.getMaxId());
+                        logger.info("##  taskId [" + taskId + "]开始导出,第 " + pn + " 页 {}-{}", idRange.getMaxId(), idRange.getMaxId());
+                        exportMap.putIfAbsent(pn, taskExecutor.submit(() -&gt; storageReportService.listStorageBatchNumReportView(exportParamMap)));
+                    }
+
+                    for (int i = 1; i &lt;= pageNum.get(); i++) {
+                        List&lt;StorageReportViewVo&gt; list = exportMap.get(i).get().getList();
+                        ExportExcelUtil.insertDataToExcel(work, colName, list, line, true);
+                        line = line + list.size();
+                    }
+                }
+
+
+            } </code></pre> 
+<p></p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/d1832a7762e10850317dcf2aa428d346/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">Rokid Jungle--Station pro</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/9e076f653d539f02975781f4b4cbe147/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">启动并验证hive</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

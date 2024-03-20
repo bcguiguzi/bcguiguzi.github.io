@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>hive建模和优化,impala刷新元数据和表 - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="hive建模和优化,impala刷新元数据和表" />
+<meta property="og:description" content="如果涉及到表的schema改变，使用invalidate metadata [table_name]
+如果只是涉及到表的数据改变，使用refresh [table_name]
+如果只是涉及到表的某一个分区数据改变，使用refresh [table_name] partition [partition]
+impala-shell -i node_name -q ‘refresh table_name;’
+hive客户端显示数据库,查询显示列名称
+一次配置，永久生效，在当前用户的HOME目录下，新建.hiverc文件，把属性设置命令放置到该文件中，每次打开cli时，都会先执行该文件。
+– 打印表头
+set hive.cli.print.header=true;
+set hive.cli.print.row.to.vertical=true;
+set hive.cli.print.row.to.vertical.num=1;
+– 显示当前数据库
+set hive.cli.print.current.db=true;
+hive的几种格式：
+数据仓库的开发是逐步完善的原型法的开发方法，它要求：要尽快地让系统运行起来，尽早产生效益；要在系统运行或使用中，不断地理解需求，改善系统；不断地考虑新的需求，完善系统。
+维护数据仓库的工作主要是管理日常数据装入的工作，包括刷新数据仓库的当前详细数据，将过时的数据转化成历史数据．清除不再使用的数据，管理元数据，等等；另外，如何利用接口定期从操作型环境向数据仓库追加数据，确定数据仓库的数据刷新频率，等等。
+建模
+1、介绍
+Hive作为数据仓库，同关系型数据库开发过程类似，都需要先进行建模，所谓建模，就是对表之间指定关系方式。建模在hive中大致分为星型、雪花型和星座型。要对建模深入理解，首先需要对hive数仓中的集中表概念进行界定。hive中的表从形态上分内部表、外部表、桶表、分区表。在数据逻辑上划分为维度表和事实表。维度表等价于我们常说的字典表。事实表就是字典表之外的数据表。
+1.1 星型
+多张维度表，一张事实表，维度表之间没有关系。查询性能要好些,存储有冗余的。星型模型使用的比较多。
+1.2 雪花型
+雪花型是星型建模的扩展，维度表之间有关系。存储减少冗余，查询性能有损失，需要多级连接。和星型模型的共性就是只有一张是事实表。
+1.3 星座型
+星座型也是星型模型的扩展，存在多张事实表。
+数据仓库分层：
+ODS层：原始同步数据（或者清洗后的数据）
+DW层：数据汇总层，宽表
+DM层：数据集市层（各种维度表）
+应用层：从集市层拿出需要的数据同步到数据库（Mongodb/Oracle）
+事实表是数据仓库结构中的中央表，它包含联系事实与维度表的数字度量值和键。事实数据表包含描述业务（例如产品销售）内特定事件的数据。
+维度表是维度属性的集合。是分析问题的一个窗口。是人们观察数据的特定角度，是考虑问题时的一类属性，属性的集合构成一个维。数据库结构中的星型结构，该结构在位于结构中心的单个事实数据表中维护数据，其它维度数据存储在维度表中。每个维度表与事实数据表直接相关，且通常通过一个键联接到事实数据表中。星型架构是数据仓库比较流向的一种架构。
+1)、事实表就是你要关注的内容；
+2)、维度表就是你观察该事务的角度，是从哪个角度去观察这个内容的。
+例如，某地区商品的销量，是从地区这个角度观察商品销量的。事实表就是销量表，维度表就是地区表
+4、主题表：主题（Subject）是在较高层次上将企业信息系统中的数据进行综合、归类和分析利用的一个抽象概念，每一个主题基本对应一个宏观的分析领域。在逻辑意义上，它是对应企业中某一宏观分析领域所涉及的分析对象。例如“销售分析”就是一个分析领域，因此这个数据仓库应用的主题就是“销售分析”。
+面向主题的数据组织方式，就是在较高层次上对分析对象数据的一个完整并且一致的描述，能刻画各个分析对象所涉及的企业各项数据，以及数据之间的联系。所谓较高层次是相对面向应用的数据组织方式而言的，是指按照主题进行数据组织的方式具有更高的数据抽象级别。与传统数据库面向应用进行数据组织的特点相对应，数据仓库中的数据是面向主题进行组织的。例如，一个生产企业的数据仓库所组织的主题可能有产品订货分析和货物发运分析等。而按应用来组织则可能为财务子系统、销售子系统、供应子系统、人力资源子系统和生产调度子系统。
+5、汇总数据层：聚合原子粒度事实表及维度表，为满足固定分析需求，以提高查询性能为目的，形成的高粒度表，如周报、月报、季报、年报等。
+6、应用层：
+为应用层，这层数据是完全为了满足具体的分析需求而构建的数据，也是星形结构的数据。应用层为前端应用的展现提现数据，可以为关系型数据库组成
+hive优化
+1、设置合理的map reduce的task数量 可以使用默认的
+map阶段优化
+mapred.min.split.size: 指的是数据的最小分割单元大小；min的默认值是1B
+mapred.max.split.size: 指的是数据的最大分割单元大小；max的默认值是256MB
+通过调整max可以起到调整map数的作用，减小max可以增加map数，增大max可以减少map数。" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/59fdf5dfe33c7b5a2c6070d6971aabac/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2022-06-01T09:27:59+08:00" />
+<meta property="article:modified_time" content="2022-06-01T09:27:59+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">hive建模和优化,impala刷新元数据和表</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-light">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p>如果涉及到表的schema改变，使用invalidate metadata [table_name]<br> 如果只是涉及到表的数据改变，使用refresh [table_name]<br> 如果只是涉及到表的某一个分区数据改变，使用refresh [table_name] partition [partition]<br> impala-shell -i node_name -q ‘refresh table_name;’</p> 
+<p>hive客户端显示数据库,查询显示列名称<br> 一次配置，永久生效，在当前用户的HOME目录下，新建.hiverc文件，把属性设置命令放置到该文件中，每次打开cli时，都会先执行该文件。<br> – 打印表头<br> set hive.cli.print.header=true;<br> set hive.cli.print.row.to.vertical=true;<br> set hive.cli.print.row.to.vertical.num=1;</p> 
+<p>– 显示当前数据库<br> set hive.cli.print.current.db=true;</p> 
+<p>hive的几种格式：<br> <img src="https://images2.imgbox.com/96/51/WssTcund_o.png" alt="在这里插入图片描述"></p> 
+<p>数据仓库的开发是逐步完善的原型法的开发方法，它要求：要尽快地让系统运行起来，尽早产生效益；要在系统运行或使用中，不断地理解需求，改善系统；不断地考虑新的需求，完善系统。</p> 
+<p>维护数据仓库的工作主要是管理日常数据装入的工作，包括刷新数据仓库的当前详细数据，将过时的数据转化成历史数据．清除不再使用的数据，管理元数据，等等；另外，如何利用接口定期从操作型环境向数据仓库追加数据，确定数据仓库的数据刷新频率，等等。</p> 
+<p>建模</p> 
+<p>1、介绍<br> Hive作为数据仓库，同关系型数据库开发过程类似，都需要先进行建模，所谓建模，就是对表之间指定关系方式。建模在hive中大致分为星型、雪花型和星座型。要对建模深入理解，首先需要对hive数仓中的集中表概念进行界定。hive中的表从形态上分内部表、外部表、桶表、分区表。在数据逻辑上划分为维度表和事实表。维度表等价于我们常说的字典表。事实表就是字典表之外的数据表。</p> 
+<p>1.1 星型<br> 多张维度表，一张事实表，维度表之间没有关系。查询性能要好些,存储有冗余的。星型模型使用的比较多。</p> 
+<p>1.2 雪花型<br> 雪花型是星型建模的扩展，维度表之间有关系。存储减少冗余，查询性能有损失，需要多级连接。和星型模型的共性就是只有一张是事实表。</p> 
+<p>1.3 星座型<br> 星座型也是星型模型的扩展，存在多张事实表。</p> 
+<p>数据仓库分层：<br> ODS层：原始同步数据（或者清洗后的数据）<br> DW层：数据汇总层，宽表<br> DM层：数据集市层（各种维度表）<br> 应用层：从集市层拿出需要的数据同步到数据库（Mongodb/Oracle）</p> 
+<p>事实表是数据仓库结构中的中央表，它包含联系事实与维度表的数字度量值和键。事实数据表包含描述业务（例如产品销售）内特定事件的数据。</p> 
+<p>维度表是维度属性的集合。是分析问题的一个窗口。是人们观察数据的特定角度，是考虑问题时的一类属性，属性的集合构成一个维。数据库结构中的星型结构，该结构在位于结构中心的单个事实数据表中维护数据，其它维度数据存储在维度表中。每个维度表与事实数据表直接相关，且通常通过一个键联接到事实数据表中。星型架构是数据仓库比较流向的一种架构。</p> 
+<p>1)、事实表就是你要关注的内容；</p> 
+<p>2)、维度表就是你观察该事务的角度，是从哪个角度去观察这个内容的。</p> 
+<p>例如，某地区商品的销量，是从地区这个角度观察商品销量的。事实表就是销量表，维度表就是地区表</p> 
+<p>4、主题表：主题（Subject）是在较高层次上将企业信息系统中的数据进行综合、归类和分析利用的一个抽象概念，每一个主题基本对应一个宏观的分析领域。在逻辑意义上，它是对应企业中某一宏观分析领域所涉及的分析对象。例如“销售分析”就是一个分析领域，因此这个数据仓库应用的主题就是“销售分析”。</p> 
+<p>面向主题的数据组织方式，就是在较高层次上对分析对象数据的一个完整并且一致的描述，能刻画各个分析对象所涉及的企业各项数据，以及数据之间的联系。所谓较高层次是相对面向应用的数据组织方式而言的，是指按照主题进行数据组织的方式具有更高的数据抽象级别。与传统数据库面向应用进行数据组织的特点相对应，数据仓库中的数据是面向主题进行组织的。例如，一个生产企业的数据仓库所组织的主题可能有产品订货分析和货物发运分析等。而按应用来组织则可能为财务子系统、销售子系统、供应子系统、人力资源子系统和生产调度子系统。</p> 
+<p>5、汇总数据层：聚合原子粒度事实表及维度表，为满足固定分析需求，以提高查询性能为目的，形成的高粒度表，如周报、月报、季报、年报等。</p> 
+<p>6、应用层：</p> 
+<p>为应用层，这层数据是完全为了满足具体的分析需求而构建的数据，也是星形结构的数据。应用层为前端应用的展现提现数据，可以为关系型数据库组成</p> 
+<p>hive优化</p> 
+<p>1、设置合理的map reduce的task数量 可以使用默认的<br> map阶段优化<br> mapred.min.split.size: 指的是数据的最小分割单元大小；min的默认值是1B<br> mapred.max.split.size: 指的是数据的最大分割单元大小；max的默认值是256MB<br> 通过调整max可以起到调整map数的作用，减小max可以增加map数，增大max可以减少map数。<br> 需要提醒的是，直接调整mapred.map.tasks这个参数是没有效果的。<br> reduce阶段优化<br> hive.exec.reducers.bytes.per.reducer（每个reduce任务处理的数据量，默认为1000^3=1G）<br> hive.exec.reducers.max（每个任务最大的reduce数，默认为999）</p> 
+<p>2、小文件合并优化<br> 用于设置合并的参数有：<br> 是否合并Map输出文件：hive.merge.mapfiles=true（默认值为true）<br> 是否合并Reduce端输出文件：hive.merge.mapredfiles=false（默认值为false）<br> 合并文件的大小：hive.merge.size.per.task=256<em>1000</em>1000（默认值为256000000）</p> 
+<p>3、Hive优化之小文件问题及其解决方案：<br> 小文件是如何产生的：<br> 动态分区插入数据，产生大量的小文件，从而导致map数量剧增；<br> reduce数量越多，小文件也越多（reduce的个数和输出文件是对应的）；<br> 数据源本身就包含大量的小文件。</p> 
+<p>小文件问题的影响：<br> 从Hive的角度看，小文件会开很多map，一个map开一个JVM去执行，所以这些任务的初始化，启动，执行会浪费大量的资源，严重影响性能。<br> 在HDFS中，每个小文件对象约占150byte，如果小文件过多会占用大量内存。这样NameNode内存容量严重制约了集群的扩展。<br> 　　<br> 小文件问题的解决方案：<br> 　　　　从小文件产生的途径就可以从源头上控制小文件数量，方法如下：<br> 使用Sequencefile作为表存储格式，不要用textfile，在一定程度上可以减少小文件；<br> 减少reduce的数量（可以使用参数进行控制）；<br> 少用动态分区，用时记得按distribute by分区；</p> 
+<p>对于已有的小文件，我们可以通过以下几种方案解决：<br> 使用hadoop archive命令把小文件进行归档；<br> 重建表，建表时减少reduce数量；<br> 通过参数进行调节，设置map/reduce端的相关参数，如下：<br> //每个Map最大输入大小(这个值决定了合并后文件的数量)<br> set mapred.max.split.size=256000000;<br> //一个节点上split的至少的大小(这个值决定了多个DataNode上的文件是否需要合并)<br> set mapred.min.split.size.per.node=100000000;<br> //一个交换机下split的至少的大小(这个值决定了多个交换机上的文件是否需要合并)<br> set mapred.min.split.size.per.rack=100000000;<br> //执行Map前进行小文件合并<br> set hive.input.format=org.apache.hadoop.hive.ql.io.CombineHiveInputFormat;</p> 
+<p>设置map输出和reduce输出进行合并的相关参数：<br> //设置map端输出进行合并，默认为true<br> set hive.merge.mapfiles = true<br> //设置reduce端输出进行合并，默认为false<br> set hive.merge.mapredfiles = true<br> //设置合并文件的大小<br> set hive.merge.size.per.task = 256<em>1000</em>1000<br> //当输出文件的平均大小小于该值时，启动一个独立的MapReduce任务进行文件merge。<br> set hive.merge.smallfiles.avgsize=16000000<br> 4、SQL优化<br> 1 列裁剪<br> 　　Hive在读数据的时候，可以只读取查询中所需要用到的列，而忽略其他列<br> SELECT a,b FROM q WHERE e&lt;10;<br> 2 分区裁剪<br> 可以在查询的过程中减少不必要的分区。</p> 
+<p><strong>yarn资源调优的几个参数:</strong></p> 
+<p>准备知识<br> 每个job提交到yarn执行的时候，都会分配container容器去运行，而这个容器需要资源才能运行，那这个资源就是cpu和内存，也就是每个任务container都需要CPU和内存，那么下面我们从CPU和内存去分析</p> 
+<p>CPU资源调度<br> 目前的CPU被划分为虚拟CPU(CPU virtual Core)，这里的虚拟CPU是yarn自己引入的概念，因为每个服务器的CPU计算能力不一样，有的机器可能是其他机器计算能力的两倍，然后可以通过多配置几个虚拟CPU弥补差异。在yarn中，CPU的相关配置如下：</p> 
+<p>1.yarn.nodemanager.resource.cpu-vcores<br> 表示该节点服务器上yarn可以使用的虚拟CPU个数，默认是8，推荐将值配置与物理核心个数相同，如果节点CPU核心不足8个，要调小这个值，yarn不会智能的去检测物理核心数</p> 
+<p>2.yarn.scheduler.minimum-allocation-vcores<br> 单个任务最小可申请的虚拟核心数，默认为1</p> 
+<p>3.yarn.scheduler.maximum-allocation-vcores<br> 单个任务最大可申请的虚拟核心水，默认为4，如果申请资源时，超过这个配置，会抛出InvalidResourceRequestException</p> 
+<p>Memory资源调度<br> yarn一般允许用户配置每个节点上可用的物理资源，注意，这里是"可用的"，不是物理内存多少，就设置多少，因为一个服务器节点上会有若干的内存，一部分给yarn，一部分给hdfs，一部分给hbase；Member相关的配置如下：</p> 
+<p>1.yarn.nodemanager.resource.memory-mb<br> 设置该节点上yarn可使用的内存，默认为8G，如果节点内存资源不足8G，要减少这个值，yarn不会智能的去检测内存资源，一般这个设置yarn的可用内存资源</p> 
+<p>2.yarn.scheduler.minimum-allocation-mb<br> 单个任务可申请的最少物理内存量，默认是1024（MB），如果一个任务申请的物理内存量少于该值，则该对应的值改为这个数</p> 
+<p>3.yarn.scheduler.maximum-allocation-mb<br> 单个任务最大申请物理内存量，默认为8291MB</p> 
+<p>4.yarn.nodemanager.vmem-pmem-ratio<br> 任务每使用1MB物理内存，最多可使用虚拟内存量，默认是2.1。</p> 
+<p>5.yarn.nodemanager.pmem-check-enabled<br> 是否启动一个线程检查每个任务正使用的物理内存量，如果任务超出分配值，则直接将其杀掉，默认是true。</p> 
+<p>6.yarn.nodemanager.vmem-check-enabled<br> 是否启动一个线程检查每个任务正使用的虚拟内存量，如果任务超出分配值，则直接将其杀掉，默认是true。</p> 
+<p>案例<br> 如果有一个服务器16核，64G内存，我们应该如何配置上面的6个参数呢（一句话：资源最大化利用）</p> 
+<p>yarn.nodemanager.resource.cpu-vcores 虚拟core<br> 这个参数根据自己生产服务器决定，比如公司服务器很富裕，那就直接1:1，设置成16，如果公司服务器不是很富裕，<br> 那就直接成1:2,设置成32，我们生产设置的是32</p> 
+<p>yarn.nodemanager.resource.memory-mb 单个服务器内存<br> 生产上我们一般要预留15-20%的内存，那么可用内存就是64*0.8=51.2G，我们设置成50G就可以了（固定经验值）</p> 
+<p>yarn.scheduler.minimum-allocation-mb 单任务最小内存<br> 如果设置成2G，那50/2 = 25，就是最多可以跑25个container<br> 如果设置成3G，那50/3 = 16，就是最多可以跑16个container</p> 
+<p>yarn.scheduler.minimum-allocation-mb 单任务最少vcore<br> 如果设置vcore = 1，那么32/1 = 32，就是最多可以跑32个container，如果设置成这个，根据上面内存分配的情况，最多只能跑25个container，vcore有点浪费<br> 如果设置vcore = 2，那么32/2 = 16，就是最多可以跑16个container</p> 
+<p>yarn.scheduler.maximum-allocation-vcores 单任务最多vcore<br> 一般就设置成4个，cloudera公司做过性能测试，如果cpu大于等于5之后，cpu利用率反而不是很好（固定经验值）</p> 
+<p>yarn.scheduler.maximum-allocation-mb 单任务最大内存<br> 这个要根据自己公司业务设定，如果有大任务，需要5-6G内存，那就设置为8G</p> 
+<h3><a id="yarn_201"></a>yarn性能调优</h3> 
+<p><strong>1.1 RM的内存资源配置, 配置的是资源调度相关</strong><br> RM1：yarn.scheduler.minimum-allocation-mb 分配给AM单个容器可申请的最小内存<br> RM2：yarn.scheduler.maximum-allocation-mb 分配给AM单个容器可申请的最大内存<br> 注：</p> 
+<p>最小值可以计算一个节点最大Container数量<br> 一旦设置，不可动态改变</p> 
+<p><strong>1.2 NM的内存资源配置，配置的是硬件资源相关</strong><br> NM1：yarn.nodemanager.resource.memory-mb 节点最大可用内存<br> NM2：yarn.nodemanager.vmem-pmem-ratio 虚拟内存率，默认2.1<br> 注：</p> 
+<p>RM1、RM2的值均不能大于NM1的值<br> NM1可以计算节点最大最大Container数量，max(Container)=NM1/RM1<br> 一旦设置，不可动态改变</p> 
+<p><strong>1.3 AM内存配置相关参数，配置的是任务相关</strong><br> AM1：mapreduce.map.memory.mb 分配给map Container的内存大小<br> AM2：mapreduce.reduce.memory.mb 分配给reduce Container的内存大小</p> 
+<p>这两个值应该在RM1和RM2这两个值之间<br> AM2的值最好为AM1的两倍<br> 这两个值可以在启动时改变<br> AM3：mapreduce.map.java.opts 运行map任务的jvm参数，如-Xmx，-Xms等选项<br> AM4：mapreduce.reduce.java.opts 运行reduce任务的jvm参数，如-Xmx，-Xms等选项<br> 注：</p> 
+<p>这两个值应该在AM1和AM2之间</p> 
+<p>新建可以读取json格式的表<br> CREATE TABLE json_nested_test (<br> country string,<br> languages array,<br> religions map&lt;string,array&gt;)<br> ROW FORMAT SERDE ‘org.openx.data.jsonserde.JsonSerDe’<br> STORED AS TEXTFILE;</p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/6baf558c8b8bc67eabdd043fe4d5d7ca/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">nvidia-docker的安装</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/8f860f482e2ba82720e001baac0cc4c4/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">OpenCV_01基本操作</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

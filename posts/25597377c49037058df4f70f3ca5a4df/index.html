@@ -1,0 +1,1129 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>【1】谷歌2021模型量化白皮书《A White Paper on Neural Network Quantization》 - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="【1】谷歌2021模型量化白皮书《A White Paper on Neural Network Quantization》" />
+<meta property="og:description" content="2021 Google模型量化白皮书 摘要引言模型量化的理论基础硬件背景均匀仿射量化对称均匀量化2的幂次方量化量化粒度 量化模拟Batch normalization foldingActivation function fusing其他网络层及其量化 Practical considerationsSymmetric vs. asymmetric quantizationPer-tensor and per-channel quantization 最近开始学习模型量化的知识，找到了一篇入门版的论文A White Paper on Neural Network Quantization.
+在学习的过程中做一些记录加深理解，防止遗忘（记性不好让人头大，担心自己老年痴呆），并添加一些自己的理解。如果可以帮到大家，是我的荣幸。
+摘要 当前神经网络在许多应用中都取得了进展，但它也总是带来很高的计算消耗。如果我们想要将神经网络部署在具有严格的功率和计算要求的边缘设备上，降低神经网络推理时的功率和延迟是关键。模型量化是达到这些要求的最有效的方法之一，但是模型量化过程中引入的噪声也会带来准确率的下降。
+在这篇论文中，作者介绍了当前效果最好的模型量化算法，它们在保持低位权重和激活值的同时尽量消除量化噪声对模型性能影响。文章首先从硬件背景介绍模型量化，之后主要讨论两类主流的量化算法：训练后量化 (PTQ) 和量化感知训练 (QAT)。PTQ不需要预训练和标注的数据，因此，它是一种轻量级的按键式的量化方法。在大多数情况下，PTQ可以达到8比特量化，同时精度接近浮点型。QAT需要微调和标注数据，但是可以完成更低位的量化，取得更有竞争力的结果。对于这两种方案，作者基于已有的文献和扩展实验提供了测试好的pipelines，这些pipelines对于常见的深度学习模型和任务达到了SOTA的性能。
+个人理解：为了追求性能，神经网络模型的体量不断增大，这给在边缘设备上部署模型造成了困难。因此需要一些技术使得模型轻量化，加快模型的推理速度和功率消耗。模型量化就是一种非常有效的模型轻量化算法。它主要通过对模型内的权重和激活值参数进行类型转化（比如浮点型转低位整型，或者混合精度等）来加快模型推理速度。但是，这种粗略的量化方式会引入噪声使得模型精度有所下降。主流的模型量化算法主要分为PTQ和QAT两种。PTQ是在模型参数训练好之后进行精度转换，这种算法可以解决大多数问题。QAT是在训练过程中进行量化，步骤要繁琐一些，需要微调和标注数据，但是其精度要好于PTQ。
+引言 随着深度学习越来越作为一种通用方案用来给电子设备赋予智能属性，体量小、低延迟并且性能好的神经网络方案成为一种发展趋势。如今，在很多电子产品和服务中都可以看到神经网络的身影，比如智能手机、智能眼镜、智能家居、机器人、自动驾驶等。这些设备通常要求神经网络在执行中遵守严格的时间限制，并且为了长续航性能需要降低推理的功耗。
+模型量化，是降低计算时间和能量消耗的最佳方法之一。模型训练的时候，权重和激活张量通常以16或32位精度的数据类型存储，而模型量化将权重和激活的张量存储在低精度的张量中。当把权重和激活张量从32位转为8位后，存储张量的内存空间缩小4倍，同时矩阵乘法的计算消耗降低14倍。神经网络已被证实，模型量化到较为低位的带宽之后，精度所受到的影响在可接受的范围之内。除此之外，模型量化还经常和其他模型优化的方法一同使用，比如网络架构搜索，模型压缩，模型剪枝等。所以模型量化是深度学习实际落地应用的一个核心步骤。但它也有缺点：低位宽量化会引入噪声到模型中，导致精度下降。尽管一些网络对噪声具有抗干扰性，但是其他网络还需要额外的工作去最大化量化的好处。
+在这篇论文中，作者介绍了SOTA的模型量化算法。他们首先介绍量化，并讨论了硬件背景和实际应用条件。然后分别讨论两种主流量化算法：PTQ和QAT。PTQ处理的是已经训练好的网络，使用少量数据或者不需要使用数据进行量化，它需要较少的超参数进行调整，并且不用端到端的训练。这使得PTQ不需要太多工程量和计算消耗，并且可以看作一种push-button方法（按钮启动方法，我理解的是在模型训练的时候不需要考虑，模型训练好之后如果需要PTQ就设置添加PTQ，如果不需要就不用添加，类似于想用的时候只需要按一下即可）。QAT依赖于在训练pipeline中使用模拟量化重新训练神经网络。虽然这需要在训练和潜在的超参数调整方面付出更多努力，但与低位量化的 PTQ 相比，它通常会进一步缩小与全精度精度的差距。对于这两种方案，作者引入了基于现有文献和广泛实验的标准pipelines，从而为常见的计算机视觉和自然语言处理模型带来了最先进的性能。 我们还提出了一个调试工作流程来识别和解决量化新模型时的常见问题。
+模型量化的理论基础 在本节中，作者介绍了神经网络量化的基本原理以及运行量化网络的定点加速器。这一节从硬件背景开始，然后介绍标准量化方案及其属性。 稍后又讨论了与现代神经网络中常见的层相关的实际考虑因素及其对定点加速器的影响。
+硬件背景 在深入了解技术细节之前，首先探索量化的硬件背景以及它如何在设备上实现高效推理。图1展示了一个矩阵-向量如何在神经网络加速器（硬件模块）中相乘 y = ω x &#43; b y = {\omega}x &#43; b y=ωx&#43;b 的机制图。这是大型矩阵之间相乘和卷积操作的基础模块。这样的硬件模块旨在通过并行计算提升神经网络的推理速度。图1中神经网络加速器的两个基本元素：处理元件 C n , m C_{n,m} Cn,m​和累加器 A n A_n An​。
+其中 C n , m C_{n,m} Cn,m​执行的是乘法操作（ C n , m C_{n,m} Cn,m​里边， ω n , m 和 x m 相 乘 {\omega_{n,m}}和x_m相乘 ωn,m​和xm​相乘）," />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/25597377c49037058df4f70f3ca5a4df/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2022-04-23T22:33:38+08:00" />
+<meta property="article:modified_time" content="2022-04-23T22:33:38+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">【1】谷歌2021模型量化白皮书《A White Paper on Neural Network Quantization》</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p></p> 
+<div class="toc"> 
+ <h4>2021 Google模型量化白皮书</h4> 
+ <ul><li><a href="#_6" rel="nofollow">摘要</a></li><li><a href="#_12" rel="nofollow">引言</a></li><li><a href="#_19" rel="nofollow">模型量化的理论基础</a></li><li><ul><li><a href="#_21" rel="nofollow">硬件背景</a></li><li><a href="#_46" rel="nofollow">均匀仿射量化</a></li><li><ul><li><a href="#_69" rel="nofollow">对称均匀量化</a></li><li><a href="#2_78" rel="nofollow">2的幂次方量化</a></li><li><a href="#_80" rel="nofollow">量化粒度</a></li></ul> 
+   </li><li><a href="#_84" rel="nofollow">量化模拟</a></li><li><ul><li><a href="#Batch_normalization_folding_92" rel="nofollow">Batch normalization folding</a></li><li><a href="#Activation_function_fusing_102" rel="nofollow">Activation function fusing</a></li><li><a href="#_107" rel="nofollow">其他网络层及其量化</a></li></ul> 
+   </li><li><a href="#Practical_considerations_114" rel="nofollow">Practical considerations</a></li><li><ul><li><a href="#Symmetric_vs_asymmetric_quantization_118" rel="nofollow">Symmetric vs. asymmetric quantization</a></li><li><a href="#Pertensor_and_perchannel_quantization_125" rel="nofollow">Per-tensor and per-channel quantization</a></li></ul> 
+  </li></ul> 
+ </li></ul> 
+</div> 
+<p></p> 
+<p>最近开始学习模型量化的知识，找到了一篇入门版的论文<a href="https://arxiv.org/abs/2106.08295" rel="nofollow">A White Paper on Neural Network Quantization</a>.</p> 
+<p>在学习的过程中做一些记录加深理解，防止遗忘（记性不好让人头大，担心自己老年痴呆），并添加一些自己的理解。如果可以帮到大家，是我的荣幸。</p> 
+<h2><a id="_6"></a>摘要</h2> 
+<p>当前神经网络在许多应用中都取得了进展，但它也总是带来很高的计算消耗。如果我们想要将神经网络部署在具有严格的功率和计算要求的边缘设备上，降低神经网络推理时的功率和延迟是关键。模型量化是达到这些要求的最有效的方法之一，但是模型量化过程中引入的噪声也会带来准确率的下降。</p> 
+<p>在这篇论文中，作者介绍了当前效果最好的模型量化算法，它们在保持低位权重和激活值的同时尽量消除量化噪声对模型性能影响。文章首先从硬件背景介绍模型量化，之后主要讨论两类主流的量化算法：训练后量化 (PTQ) 和量化感知训练 (QAT)。PTQ不需要预训练和标注的数据，因此，它是一种轻量级的按键式的量化方法。在大多数情况下，PTQ可以达到8比特量化，同时精度接近浮点型。QAT需要微调和标注数据，但是可以完成更低位的量化，取得更有竞争力的结果。对于这两种方案，作者基于已有的文献和扩展实验提供了测试好的pipelines，这些pipelines对于常见的深度学习模型和任务达到了SOTA的性能。</p> 
+<p><strong>个人理解</strong>：为了追求性能，神经网络模型的体量不断增大，这给在边缘设备上部署模型造成了困难。因此需要一些技术使得模型轻量化，加快模型的推理速度和功率消耗。模型量化就是一种非常有效的模型轻量化算法。它主要通过对模型内的权重和激活值参数进行类型转化（比如浮点型转低位整型，或者混合精度等）来加快模型推理速度。但是，这种粗略的量化方式会引入噪声使得模型精度有所下降。主流的模型量化算法主要分为PTQ和QAT两种。PTQ是在模型参数训练好之后进行精度转换，这种算法可以解决大多数问题。QAT是在训练过程中进行量化，步骤要繁琐一些，需要微调和标注数据，但是其精度要好于PTQ。</p> 
+<h2><a id="_12"></a>引言</h2> 
+<p>随着深度学习越来越作为一种通用方案用来给电子设备赋予智能属性，体量小、低延迟并且性能好的神经网络方案成为一种发展趋势。如今，在很多电子产品和服务中都可以看到神经网络的身影，比如智能手机、智能眼镜、智能家居、机器人、自动驾驶等。这些设备通常要求神经网络在执行中遵守严格的时间限制，并且为了长续航性能需要降低推理的功耗。</p> 
+<p>模型量化，是降低计算时间和能量消耗的最佳方法之一。模型训练的时候，权重和激活张量通常以16或32位精度的数据类型存储，而模型量化将权重和激活的张量存储在低精度的张量中。当把权重和激活张量从32位转为8位后，存储张量的内存空间缩小4倍，同时矩阵乘法的计算消耗降低14倍。神经网络已被证实，模型量化到较为低位的带宽之后，精度所受到的影响在可接受的范围之内。除此之外，模型量化还经常和其他模型优化的方法一同使用，比如网络架构搜索，模型压缩，模型剪枝等。所以模型量化是深度学习实际落地应用的一个核心步骤。但它也有缺点：低位宽量化会引入噪声到模型中，导致精度下降。尽管一些网络对噪声具有抗干扰性，但是其他网络还需要额外的工作去最大化量化的好处。</p> 
+<p>在这篇论文中，作者介绍了SOTA的模型量化算法。他们首先介绍量化，并讨论了硬件背景和实际应用条件。然后分别讨论两种主流量化算法：PTQ和QAT。PTQ处理的是已经训练好的网络，使用少量数据或者不需要使用数据进行量化，它需要较少的超参数进行调整，并且不用端到端的训练。这使得PTQ不需要太多工程量和计算消耗，并且可以看作一种push-button方法（按钮启动方法，我理解的是在模型训练的时候不需要考虑，模型训练好之后如果需要PTQ就设置添加PTQ，如果不需要就不用添加，类似于想用的时候只需要按一下即可）。QAT依赖于在训练pipeline中使用模拟量化重新训练神经网络。虽然这需要在训练和潜在的超参数调整方面付出更多努力，但与低位量化的 PTQ 相比，它通常会进一步缩小与全精度精度的差距。对于这两种方案，作者引入了基于现有文献和广泛实验的标准pipelines，从而为常见的计算机视觉和自然语言处理模型带来了最先进的性能。 我们还提出了一个调试工作流程来识别和解决量化新模型时的常见问题。</p> 
+<h2><a id="_19"></a>模型量化的理论基础</h2> 
+<p>在本节中，作者介绍了神经网络量化的基本原理以及运行量化网络的定点加速器。这一节从硬件背景开始，然后介绍标准量化方案及其属性。 稍后又讨论了与现代神经网络中常见的层相关的实际考虑因素及其对定点加速器的影响。</p> 
+<h3><a id="_21"></a>硬件背景</h3> 
+<p>在深入了解技术细节之前，首先探索量化的硬件背景以及它如何在设备上实现高效推理。图1展示了一个矩阵-向量如何在神经网络加速器（<mark>硬件模块</mark>）中相乘<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         y 
+        
+       
+         = 
+        
+       
+         ω 
+        
+       
+         x 
+        
+       
+         + 
+        
+       
+         b 
+        
+       
+      
+        y = {\omega}x + b 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.625em; vertical-align: -0.19444em;"></span><span class="mord mathdefault" style="margin-right: 0.03588em;">y</span><span class="mspace" style="margin-right: 0.277778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.277778em;"></span></span><span class="base"><span class="strut" style="height: 0.66666em; vertical-align: -0.08333em;"></span><span class="mord"><span class="mord mathdefault" style="margin-right: 0.03588em;">ω</span></span><span class="mord mathdefault">x</span><span class="mspace" style="margin-right: 0.222222em;"></span><span class="mbin">+</span><span class="mspace" style="margin-right: 0.222222em;"></span></span><span class="base"><span class="strut" style="height: 0.69444em; vertical-align: 0em;"></span><span class="mord mathdefault">b</span></span></span></span></span> 的机制图。这是大型矩阵之间相乘和卷积操作的基础模块。这样的硬件模块旨在通过并行计算提升神经网络的推理速度。图1中神经网络加速器的两个基本元素：处理元件<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          C 
+         
+         
+         
+           n 
+          
+         
+           , 
+          
+         
+           m 
+          
+         
+        
+       
+      
+        C_{n,m} 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.969438em; vertical-align: -0.286108em;"></span><span class="mord"><span class="mord mathdefault" style="margin-right: 0.07153em;">C</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.151392em;"><span class="" style="top: -2.55em; margin-left: -0.07153em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathdefault mtight">n</span><span class="mpunct mtight">,</span><span class="mord mathdefault mtight">m</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.286108em;"><span class=""></span></span></span></span></span></span></span></span></span></span>和累加器<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          A 
+         
+        
+          n 
+         
+        
+       
+      
+        A_n 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.83333em; vertical-align: -0.15em;"></span><span class="mord"><span class="mord mathdefault">A</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.151392em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight">n</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span></span></span></span></span>。</p> 
+<p><mark>其中<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+         
+         
+           C 
+          
+          
+          
+            n 
+           
+          
+            , 
+           
+          
+            m 
+           
+          
+         
+        
+       
+         C_{n,m} 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.969438em; vertical-align: -0.286108em;"></span><span class="mord"><span class="mord mathdefault" style="margin-right: 0.07153em;">C</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.151392em;"><span class="" style="top: -2.55em; margin-left: -0.07153em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathdefault mtight">n</span><span class="mpunct mtight">,</span><span class="mord mathdefault mtight">m</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.286108em;"><span class=""></span></span></span></span></span></span></span></span></span></span>执行的是乘法操作（<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+         
+         
+           C 
+          
+          
+          
+            n 
+           
+          
+            , 
+           
+          
+            m 
+           
+          
+         
+        
+       
+         C_{n,m} 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.969438em; vertical-align: -0.286108em;"></span><span class="mord"><span class="mord mathdefault" style="margin-right: 0.07153em;">C</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.151392em;"><span class="" style="top: -2.55em; margin-left: -0.07153em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathdefault mtight">n</span><span class="mpunct mtight">,</span><span class="mord mathdefault mtight">m</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.286108em;"><span class=""></span></span></span></span></span></span></span></span></span></span>里边，<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+         
+         
+           ω 
+          
+          
+          
+            n 
+           
+          
+            , 
+           
+          
+            m 
+           
+          
+         
+        
+          和 
+         
+         
+         
+           x 
+          
+         
+           m 
+          
+         
+        
+          相 
+         
+        
+          乘 
+         
+        
+       
+         {\omega_{n,m}}和x_m相乘 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.716668em; vertical-align: -0.286108em;"></span><span class="mord"><span class="mord"><span class="mord mathdefault" style="margin-right: 0.03588em;">ω</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.151392em;"><span class="" style="top: -2.55em; margin-left: -0.03588em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathdefault mtight">n</span><span class="mpunct mtight">,</span><span class="mord mathdefault mtight">m</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.286108em;"><span class=""></span></span></span></span></span></span></span><span class="mord cjk_fallback">和</span><span class="mord"><span class="mord mathdefault">x</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.151392em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight">m</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mord cjk_fallback">相</span><span class="mord cjk_fallback">乘</span></span></span></span></span>）,</mark></p> 
+<p><mark><span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+         
+         
+           A 
+          
+         
+           n 
+          
+         
+        
+          = 
+         
+         
+         
+           b 
+          
+         
+           n 
+          
+         
+        
+          + 
+         
+         
+         
+           ∑ 
+          
+          
+          
+            i 
+           
+          
+            = 
+           
+          
+            1 
+           
+          
+         
+           4 
+          
+         
+         
+         
+           C 
+          
+          
+          
+            n 
+           
+          
+            , 
+           
+          
+            i 
+           
+          
+         
+        
+          , 
+         
+        
+          　 
+         
+         
+         
+           b 
+          
+         
+           n 
+          
+         
+        
+          为 
+         
+        
+          偏 
+         
+        
+          置 
+         
+        
+          b 
+         
+        
+          i 
+         
+        
+          a 
+         
+        
+          s 
+         
+        
+       
+         A_n=b_n + {\sum}_{i=1}^{4}C_{n,i},　b_n为偏置bias 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.83333em; vertical-align: -0.15em;"></span><span class="mord"><span class="mord mathdefault">A</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.151392em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight">n</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mspace" style="margin-right: 0.277778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.277778em;"></span></span><span class="base"><span class="strut" style="height: 0.84444em; vertical-align: -0.15em;"></span><span class="mord"><span class="mord mathdefault">b</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.151392em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight">n</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mspace" style="margin-right: 0.222222em;"></span><span class="mbin">+</span><span class="mspace" style="margin-right: 0.222222em;"></span></span><span class="base"><span class="strut" style="height: 1.25372em; vertical-align: -0.29971em;"></span><span class="mord"><span class="mord"><span class="mop op-symbol small-op" style="position: relative; top: -5e-06em;">∑</span></span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.954008em;"><span class="" style="top: -2.40029em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathdefault mtight">i</span><span class="mrel mtight">=</span><span class="mord mtight">1</span></span></span></span><span class="" style="top: -3.2029em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mtight">4</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.29971em;"><span class=""></span></span></span></span></span></span><span class="mord"><span class="mord mathdefault" style="margin-right: 0.07153em;">C</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.311664em;"><span class="" style="top: -2.55em; margin-left: -0.07153em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathdefault mtight">n</span><span class="mpunct mtight">,</span><span class="mord mathdefault mtight">i</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.286108em;"><span class=""></span></span></span></span></span></span><span class="mpunct">,</span><span class="mspace" style="margin-right: 0.166667em;"></span><span class="mord cjk_fallback">　</span><span class="mord"><span class="mord mathdefault">b</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.151392em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight">n</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mord cjk_fallback">为</span><span class="mord cjk_fallback">偏</span><span class="mord cjk_fallback">置</span><span class="mord mathdefault">b</span><span class="mord mathdefault">i</span><span class="mord mathdefault">a</span><span class="mord mathdefault">s</span></span></span></span></span> 。</mark></p> 
+<p>经过不断重复这样的计算步骤，就完成了矩阵之间的乘法。一旦所有输入元素计算完成，累加器中的值<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          A 
+         
+        
+          n 
+         
+        
+       
+      
+        A_n 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.83333em; vertical-align: -0.15em;"></span><span class="mord"><span class="mord mathdefault">A</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.151392em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight">n</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span></span></span></span></span>就会被移回内存以用于下一个神经网络层的输入。</p> 
+<p>一般神经网络的训练都是用32位的浮点数表示权重和激活值。如果我们要使用32位的浮点数执行推理，处理元件<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          C 
+         
+         
+         
+           n 
+          
+         
+           , 
+          
+         
+           m 
+          
+         
+        
+       
+      
+        C_{n,m} 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.969438em; vertical-align: -0.286108em;"></span><span class="mord"><span class="mord mathdefault" style="margin-right: 0.07153em;">C</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.151392em;"><span class="" style="top: -2.55em; margin-left: -0.07153em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathdefault mtight">n</span><span class="mpunct mtight">,</span><span class="mord mathdefault mtight">m</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.286108em;"><span class=""></span></span></span></span></span></span></span></span></span></span>和累加器<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          A 
+         
+        
+          n 
+         
+        
+       
+      
+        A_n 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.83333em; vertical-align: -0.15em;"></span><span class="mord"><span class="mord mathdefault">A</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.151392em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight">n</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span></span></span></span></span>必须支持浮点逻辑，并且我们需要将 32 位数据从内存传输到处理单元<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          C 
+         
+         
+         
+           n 
+          
+         
+           , 
+          
+         
+           m 
+          
+         
+        
+       
+      
+        C_{n,m} 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.969438em; vertical-align: -0.286108em;"></span><span class="mord"><span class="mord mathdefault" style="margin-right: 0.07153em;">C</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.151392em;"><span class="" style="top: -2.55em; margin-left: -0.07153em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathdefault mtight">n</span><span class="mpunct mtight">,</span><span class="mord mathdefault mtight">m</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.286108em;"><span class=""></span></span></span></span></span></span></span></span></span></span>。 图1中的计算流程和数据传输消耗了神经网络推理过程中花费的大部分能量。 因此，可以通过使用较低位的定点或量化表示来实现。低位定点表示（比如 INT 8）不仅降低了大量的数据传输，也降低了图1中操作的内存和能量消耗。<mark>因为数字算术的成本通常与使用的位数成二次线性关系，并且定点加法比浮点加法更有效。</mark><br> <img src="https://images2.imgbox.com/27/ea/YdB4aUup_o.png" alt="在这里插入图片描述"><br> 　　　　　　　　　　　图1. 神经网络加速器硬件中的矩阵-向量相乘运算的机制图</p> 
+<p>为了从浮点型运算转为更高效的定点运算，我们需要一个将浮点型向量转换为整型向量的机制：一个浮点型向量<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         X 
+        
+       
+      
+        X 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.68333em; vertical-align: 0em;"></span><span class="mord mathdefault" style="margin-right: 0.07847em;">X</span></span></span></span></span>能够被粗略地表示成一个常量诚意一个整型向量。<br> 　　　　　　　　　　　　　　　<img src="https://images2.imgbox.com/c3/23/oVZ2o9Yt_o.png" alt="在这里插入图片描述"><br> 基于上面公式中表示的转换机制，累加器<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          A 
+         
+        
+          n 
+         
+        
+       
+      
+        A_n 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.83333em; vertical-align: -0.15em;"></span><span class="mord"><span class="mord mathdefault">A</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.151392em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight">n</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span></span></span></span></span>的计算过程可近似为：<br> 　　　　　　　　　　<img src="https://images2.imgbox.com/76/12/VabVGEUK_o.png" alt="在这里插入图片描述"><br> <mark>这里值得注意的一点是，对于权重w和激活值x近似时采取了不同的常量<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+         
+         
+           S 
+          
+         
+           w 
+          
+         
+        
+       
+         S_w 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.83333em; vertical-align: -0.15em;"></span><span class="mord"><span class="mord mathdefault" style="margin-right: 0.05764em;">S</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.151392em;"><span class="" style="top: -2.55em; margin-left: -0.05764em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight" style="margin-right: 0.02691em;">w</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span></span></span></span></span>和<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+         
+         
+           S 
+          
+         
+           x 
+          
+         
+        
+       
+         S_x 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.83333em; vertical-align: -0.15em;"></span><span class="mord"><span class="mord mathdefault" style="margin-right: 0.05764em;">S</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.151392em;"><span class="" style="top: -2.55em; margin-left: -0.05764em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight">x</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span></span></span></span></span>。这种做法较为灵活，且能够降低量化损失。在量化的时候，我们之所以可以把<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+         
+         
+           S 
+          
+         
+           w 
+          
+         
+        
+       
+         S_w 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.83333em; vertical-align: -0.15em;"></span><span class="mord"><span class="mord mathdefault" style="margin-right: 0.05764em;">S</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.151392em;"><span class="" style="top: -2.55em; margin-left: -0.05764em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight" style="margin-right: 0.02691em;">w</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span></span></span></span></span>和<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+         
+         
+           S 
+          
+         
+           x 
+          
+         
+        
+       
+         S_x 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.83333em; vertical-align: -0.15em;"></span><span class="mord"><span class="mord mathdefault" style="margin-right: 0.05764em;">S</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.151392em;"><span class="" style="top: -2.55em; margin-left: -0.05764em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight">x</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span></span></span></span></span>拿到<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          ∑ 
+         
+        
+       
+         \sum 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 1.00001em; vertical-align: -0.25001em;"></span><span class="mop op-symbol small-op" style="position: relative; top: -5e-06em;">∑</span></span></span></span></span>之外，是因为对于每个张量里的所有元素采用相同的近似常量。</mark> 我们现在有意忽略偏差量化，因为偏差通常以更高的位宽（32 位）存储，其比例因子取决于权重和激活的比例因子。</p> 
+<p>图2中展示了当引入量化后，神经网络加速器发生了什么改变。在这里以 INT 8类型进行举例。对于累加器，保持一个更高的位宽是重要的，通常在32位宽。否则，随着在计算过程中相加的元素变多，我们可能会因溢出的风险而遭受损失。</p> 
+<p>储存在32位累加器中的激活值在用作下一层的输入之前，需要将它们写入内存。为了降低读写内存时数据传输量和下一层的计算量，这些激活值需要被重新量化回 INT8类型（这时就需要一个<em>requantization</em>步骤，看图2）。<br> <img src="https://images2.imgbox.com/42/ce/35AMTEWZ_o.png" alt="在这里插入图片描述"><br> 　　　　　　　　　图2. 用于量化推理的神经网络加速器中的矩阵乘法逻辑示意图。</p> 
+<h3><a id="_46"></a>均匀仿射量化</h3> 
+<p>在本节中，作者定义了他们将在论文中使用的量化方案。 这种方案称为均匀量化，它是最常用的量化方案，因为它允许有效地实现定点算术。</p> 
+<p><mark>均匀仿射量化，也称为非对称量化，由三个量化参数定义：比例因子 s、零点 z 和位宽 b</mark>。</p> 
+<ul><li>比例因子和零点用于将浮点值映射到整数网格，其大小取决于位宽。 
+  <ul><li>比例因子 s 通常表示为浮点数，并指定量化器的步长；</li><li>零点 z 是一个整数，可确保对实零进行无误差量化。这对于确保零填充或 ReLU 等常见操作不会引起量化误差很重要。</li><li></ul> </li></ul> 
+<p><mark>看到上边对三个量化参数的描述可能会有些不太明白，我们慢慢往下看。</mark></p> 
+<p>一旦三个量化参数定义好之后，便可以执行量化操作了。</p> 
+<p>首先按照下边的公式将一个原始的权重或激活值向量x映射到无符号的整型网格中{0, … , <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          2 
+         
+        
+          b 
+         
+        
+       
+         − 
+        
+       
+         1 
+        
+       
+      
+        2^b-1 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.932438em; vertical-align: -0.08333em;"></span><span class="mord"><span class="mord">2</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.849108em;"><span class="" style="top: -3.063em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight">b</span></span></span></span></span></span></span></span><span class="mspace" style="margin-right: 0.222222em;"></span><span class="mbin">−</span><span class="mspace" style="margin-right: 0.222222em;"></span></span><span class="base"><span class="strut" style="height: 0.64444em; vertical-align: 0em;"></span><span class="mord">1</span></span></span></span></span>}，其中b是位宽。<br> 　　　　　　　　　　<img src="https://images2.imgbox.com/a2/fd/QVrWwA9y_o.png" alt="在这里插入图片描述"><br> <img src="https://images2.imgbox.com/3a/ca/t7DgFeTK_o.png" alt="在这里插入图片描述"><br> 表示四舍五入操作，clamp(x;a,c)函数定义如下：<br> 　　　　　　　　　　<img src="https://images2.imgbox.com/24/01/RrFIjq5m_o.png" alt="在这里插入图片描述"><br> 相反地，为了从量化后的数据中恢复出真实的数据x，我们需要反量化操作：<br> 　　　　　　　　　<img src="https://images2.imgbox.com/72/30/zlG5GNEa_o.png" alt="在这里插入图片描述"><br> 将量化步骤和反量化步骤结合在一起，得到通用的量化函数<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         q 
+        
+       
+         ( 
+        
+       
+         . 
+        
+       
+         ) 
+        
+       
+      
+        q(.) 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mord mathdefault" style="margin-right: 0.03588em;">q</span><span class="mopen">(</span><span class="mord">.</span><span class="mclose">)</span></span></span></span></span>：<br> 　　<img src="https://images2.imgbox.com/fb/b4/hpvtA3Ff_o.png" alt="在这里插入图片描述"><br> 通过反量化步骤，我们也可以定义量化范围(<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          q 
+         
+         
+         
+           m 
+          
+         
+           i 
+          
+         
+           n 
+          
+         
+        
+       
+         , 
+        
+        
+        
+          q 
+         
+         
+         
+           m 
+          
+         
+           a 
+          
+         
+           x 
+          
+         
+        
+       
+      
+        q_{min}, q_{max} 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.625em; vertical-align: -0.19444em;"></span><span class="mord"><span class="mord mathdefault" style="margin-right: 0.03588em;">q</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.311664em;"><span class="" style="top: -2.55em; margin-left: -0.03588em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathdefault mtight">m</span><span class="mord mathdefault mtight">i</span><span class="mord mathdefault mtight">n</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mpunct">,</span><span class="mspace" style="margin-right: 0.166667em;"></span><span class="mord"><span class="mord mathdefault" style="margin-right: 0.03588em;">q</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.151392em;"><span class="" style="top: -2.55em; margin-left: -0.03588em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathdefault mtight">m</span><span class="mord mathdefault mtight">a</span><span class="mord mathdefault mtight">x</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span></span></span></span></span>)，其中<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          q 
+         
+         
+         
+           m 
+          
+         
+           i 
+          
+         
+           n 
+          
+         
+        
+       
+         = 
+        
+       
+         − 
+        
+       
+         s 
+        
+       
+         z 
+        
+       
+      
+        q_{min}=-sz 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.625em; vertical-align: -0.19444em;"></span><span class="mord"><span class="mord mathdefault" style="margin-right: 0.03588em;">q</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.311664em;"><span class="" style="top: -2.55em; margin-left: -0.03588em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathdefault mtight">m</span><span class="mord mathdefault mtight">i</span><span class="mord mathdefault mtight">n</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mspace" style="margin-right: 0.277778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.277778em;"></span></span><span class="base"><span class="strut" style="height: 0.66666em; vertical-align: -0.08333em;"></span><span class="mord">−</span><span class="mord mathdefault">s</span><span class="mord mathdefault" style="margin-right: 0.04398em;">z</span></span></span></span></span>，<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          q 
+         
+         
+         
+           m 
+          
+         
+           a 
+          
+         
+           x 
+          
+         
+        
+       
+         = 
+        
+       
+         s 
+        
+       
+         ( 
+        
+        
+        
+          2 
+         
+        
+          b 
+         
+        
+       
+         − 
+        
+       
+         1 
+        
+       
+         − 
+        
+       
+         z 
+        
+       
+         ) 
+        
+       
+      
+        q_{max}=s(2^b-1-z) 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.625em; vertical-align: -0.19444em;"></span><span class="mord"><span class="mord mathdefault" style="margin-right: 0.03588em;">q</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.151392em;"><span class="" style="top: -2.55em; margin-left: -0.03588em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathdefault mtight">m</span><span class="mord mathdefault mtight">a</span><span class="mord mathdefault mtight">x</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mspace" style="margin-right: 0.277778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.277778em;"></span></span><span class="base"><span class="strut" style="height: 1.09911em; vertical-align: -0.25em;"></span><span class="mord mathdefault">s</span><span class="mopen">(</span><span class="mord"><span class="mord">2</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.849108em;"><span class="" style="top: -3.063em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight">b</span></span></span></span></span></span></span></span><span class="mspace" style="margin-right: 0.222222em;"></span><span class="mbin">−</span><span class="mspace" style="margin-right: 0.222222em;"></span></span><span class="base"><span class="strut" style="height: 0.72777em; vertical-align: -0.08333em;"></span><span class="mord">1</span><span class="mspace" style="margin-right: 0.222222em;"></span><span class="mbin">−</span><span class="mspace" style="margin-right: 0.222222em;"></span></span><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mord mathdefault" style="margin-right: 0.04398em;">z</span><span class="mclose">)</span></span></span></span></span>。超出此范围的任何 x 值都将被剪裁到其极限，从而导致剪裁错误（<mark>精度上的误差</mark>）。如果想要降低裁剪误差，可以通过增大比例因子 s 扩大量化范围。然而，增大比例因子的同时会增大四舍五入的误差，因为四舍五入的误差在范围<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         [ 
+        
+       
+         − 
+        
+        
+        
+          1 
+         
+        
+          2 
+         
+        
+       
+         s 
+        
+       
+         , 
+        
+        
+        
+          1 
+         
+        
+          2 
+         
+        
+       
+         s 
+        
+       
+         ] 
+        
+       
+      
+        [-\frac{1}{2}s, \frac{1}{2}s] 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 1.19011em; vertical-align: -0.345em;"></span><span class="mopen">[</span><span class="mord">−</span><span class="mord"><span class="mopen nulldelimiter"></span><span class="mfrac"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.845108em;"><span class="" style="top: -2.655em;"><span class="pstrut" style="height: 3em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mtight">2</span></span></span></span><span class="" style="top: -3.23em;"><span class="pstrut" style="height: 3em;"></span><span class="frac-line" style="border-bottom-width: 0.04em;"></span></span><span class="" style="top: -3.394em;"><span class="pstrut" style="height: 3em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mtight">1</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.345em;"><span class=""></span></span></span></span></span><span class="mclose nulldelimiter"></span></span><span class="mord mathdefault">s</span><span class="mpunct">,</span><span class="mspace" style="margin-right: 0.166667em;"></span><span class="mord"><span class="mopen nulldelimiter"></span><span class="mfrac"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.845108em;"><span class="" style="top: -2.655em;"><span class="pstrut" style="height: 3em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mtight">2</span></span></span></span><span class="" style="top: -3.23em;"><span class="pstrut" style="height: 3em;"></span><span class="frac-line" style="border-bottom-width: 0.04em;"></span></span><span class="" style="top: -3.394em;"><span class="pstrut" style="height: 3em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mtight">1</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.345em;"><span class=""></span></span></span></span></span><span class="mclose nulldelimiter"></span></span><span class="mord mathdefault">s</span><span class="mclose">]</span></span></span></span></span>。在后边会介绍如何选择量化参数，在裁剪误差和四舍五入误差之间做trade-off。</p> 
+<h4><a id="_69"></a>对称均匀量化</h4> 
+<p>对称量化是不对称情况的简化版本。 对称量化器将零点限制为 0。这减少了在不对称量化中的累加操作期间处理零点偏移的计算开销。 但是偏移量的缺乏限制了整数域和浮点域之间的映射。 因此，有符号或无符号整数网格的选择很重要：<br> <img src="https://images2.imgbox.com/30/38/ej3zZZCI_o.png" alt="在这里插入图片描述"><br> <mark>无符号型的对称量化很适合单尾分布的数据，比如RELU的激活值。而有符号型的对称量化适合用于关于零大致对称的数据。</mark></p> 
+<p>均匀量化的三种形式（非对称均匀量化，有符号型对称量化，无符号型对称量化）如图3所示。<br> <img src="https://images2.imgbox.com/a0/5e/yvnLdNYC_o.png" alt="在这里插入图片描述"><br> 图3. 位宽为 8 的不同均匀量化网格的直观解释。s 是比例因子，z 是零点。 浮点网格为黑色，整数量化网格为蓝色。</p> 
+<h4><a id="2_78"></a>2的幂次方量化</h4> 
+<p>2的幂次方量化是对称量化的一种特殊情况，比例因子 s 被限制为2的幂次方，即 <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         s 
+        
+       
+         = 
+        
+        
+        
+          2 
+         
+         
+         
+           − 
+          
+         
+           k 
+          
+         
+        
+       
+      
+        s=2^{-k} 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.43056em; vertical-align: 0em;"></span><span class="mord mathdefault">s</span><span class="mspace" style="margin-right: 0.277778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.277778em;"></span></span><span class="base"><span class="strut" style="height: 0.849108em; vertical-align: 0em;"></span><span class="mord"><span class="mord">2</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.849108em;"><span class="" style="top: -3.063em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mtight">−</span><span class="mord mathdefault mtight" style="margin-right: 0.03148em;">k</span></span></span></span></span></span></span></span></span></span></span></span></span>。这种方式在硬件上可以表现的很高效，因为这样缩放相当于简单的位移操作。然而，这种比例因子的有限表达能力会使舍入误差和裁剪误差之间的权衡变得复杂。</p> 
+<h4><a id="_80"></a>量化粒度</h4> 
+<p>到目前为止，我们已经为每个张量定义了一组量化参数（量化器），一个用于权重，一个用于激活。这称为 <em>per-tensor</em> 量化。我们还可以为张量的各个维度（例如，权重张量的输出通道）定义单独的量化器，从而增加量化粒度。在神经网络量化中， <em>per-tensor</em> 量化是最常见的粒度选择，因为它的硬件实现更简单：图2中所有累加器都使用相同的比例因子<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          S 
+         
+        
+          w 
+         
+        
+       
+         , 
+        
+        
+        
+          S 
+         
+        
+          x 
+         
+        
+       
+      
+        S_w, S_x 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.87777em; vertical-align: -0.19444em;"></span><span class="mord"><span class="mord mathdefault" style="margin-right: 0.05764em;">S</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.151392em;"><span class="" style="top: -2.55em; margin-left: -0.05764em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight" style="margin-right: 0.02691em;">w</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mpunct">,</span><span class="mspace" style="margin-right: 0.166667em;"></span><span class="mord"><span class="mord mathdefault" style="margin-right: 0.05764em;">S</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.151392em;"><span class="" style="top: -2.55em; margin-left: -0.05764em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight">x</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span></span></span></span></span>。但是，我们可以使用更精细的粒度来进一步提高性能。例如，对于权重张量，我们可以为每个输出通道指定不同的量化器。这称为<em>per-channel</em>量化。</p> 
+<p>还有一些其他的工作不止于为每个输出通道指定不同的量化器，而是为每组权重或激活应用单独的量化器。但是，增加组的粒度通常会以一些额外开销为代价来提高准确性。开销与处理具有不同比例因子的值之和的累加器相关。大多数现有的定点加速器目前不支持这种逻辑，因此，我们不会在这项工作中考虑它们。然而，随着该领域研究的增长，预计未来会有更多对这些方法的硬件支持。</p> 
+<h3><a id="_84"></a>量化模拟</h3> 
+<p><mark>为了测试神经网络在量化设备上的运行情况，我们经常在用于训练神经网络的相同通用硬件上模拟量化行为。这就叫做 <em>quantization simulation</em> （量化模拟）</mark>。 我们旨在<mark>使用浮点型的硬件</mark>估计<mark>定点运算</mark>。相比较于在真正的量化硬件或者使用量化过的核跑实验，模拟量化更好实现。这允许用户高效地测试不同的量化策略，并且对于QAT还可以使能GPU加速。在这一节，作者首先解释了量化模拟步骤的基本原理，然后讨论能够帮助减少模拟量化核在真实设备上运行之间的差异的技术。</p> 
+<p>之前，我们了解了在定点运算型的设备上，矩阵-向量相乘是怎么计算的。在图4a中，作者将这种运算过程推广到卷积层，而且还包括一个激活函数以使其更真实。在设备上推理期间，硬件的所有输入（偏差、权重和输入激活）都是定点格式。 然而，当我们使用常见的深度学习框架和通用硬件模拟量化时，这些量是浮点数。 这就是我们在计算图中引入量化模块以诱导量化效果的原因。</p> 
+<p>图 4b 显示了如何在深度学习框架中对相同的卷积层进行建模。在权重和卷积之间添加量化块以模拟权重量化，并在激活函数之后添加以模拟激活量化。 偏差通常不会被量化，因为它以更高的精度存储。在前边的小节中，作者更详细地讨论了何时将量化模块置于非线性之后是合适的。 量化模块实现前边列出的的量化函数，每个量化模块由一组量化参数（比例因子、零点、位宽）定义。<mark>量化模块的输入和输出都是浮点格式，但输出位于量化网格上。</mark><br> <img src="https://images2.imgbox.com/a4/f9/G7oMtiT4_o.png" alt="在这里插入图片描述"><br> 图4. 卷积层量化前向传递的示意图：a) 计算实际设备上量化推理的图。 b) 模拟通用浮点硬件的量化推理。</p> 
+<h4><a id="Batch_normalization_folding_92"></a>Batch normalization folding</h4> 
+<p>批量归一化是现代卷积网络的标准组件。批量归一化在缩放和添加偏移之前对线性层的输出进行归一化。<mark>对于设备上的推理，这些操作在称为批量归一化折叠的步骤中折叠到上一个或下一个线性层中</mark>。 这完全从网络中删除了批量标准化操作，因为计算被吸收到相邻的线性层中。 除了减少额外缩放和偏移的计算开销之外，这还可以防止额外的数据移动和层输出的量化。更正式地说，在推理过程中，批量归一化被定义为输出 x 的仿射图：<br> 　　　　　　　　　　　　　<br> 　　　　　　　　　　　　　<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         B 
+        
+       
+         a 
+        
+       
+         t 
+        
+       
+         c 
+        
+       
+         h 
+        
+       
+         N 
+        
+       
+         o 
+        
+       
+         r 
+        
+       
+         m 
+        
+       
+         ( 
+        
+       
+         x 
+        
+       
+         ) 
+        
+       
+         = 
+        
+       
+         γ 
+        
+       
+         ( 
+        
+        
+         
+         
+           x 
+          
+         
+           − 
+          
+         
+           μ 
+          
+         
+         
+          
+           
+           
+             σ 
+            
+           
+             2 
+            
+           
+          
+         
+           + 
+          
+         
+           ϵ 
+          
+         
+        
+       
+         ) 
+        
+       
+         + 
+        
+       
+         β 
+        
+       
+      
+        BatchNorm(x)={\gamma}({\frac{x-{\mu}}{\sqrt{<!-- -->{\sigma}^2}+{\epsilon}}})+{\beta} 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mord mathdefault" style="margin-right: 0.05017em;">B</span><span class="mord mathdefault">a</span><span class="mord mathdefault">t</span><span class="mord mathdefault">c</span><span class="mord mathdefault">h</span><span class="mord mathdefault" style="margin-right: 0.10903em;">N</span><span class="mord mathdefault">o</span><span class="mord mathdefault" style="margin-right: 0.02778em;">r</span><span class="mord mathdefault">m</span><span class="mopen">(</span><span class="mord mathdefault">x</span><span class="mclose">)</span><span class="mspace" style="margin-right: 0.277778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.277778em;"></span></span><span class="base"><span class="strut" style="height: 1.39742em; vertical-align: -0.542978em;"></span><span class="mord"><span class="mord mathdefault" style="margin-right: 0.05556em;">γ</span></span><span class="mopen">(</span><span class="mord"><span class="mord"><span class="mopen nulldelimiter"></span><span class="mfrac"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.854439em;"><span class="" style="top: -2.51535em;"><span class="pstrut" style="height: 3em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord sqrt mtight"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.963782em;"><span class="svg-align" style="top: -3em;"><span class="pstrut" style="height: 3em;"></span><span class="mord mtight" style="padding-left: 0.833em;"><span class="mord mtight"><span class="mord mtight"><span class="mord mathdefault mtight" style="margin-right: 0.03588em;">σ</span></span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.746314em;"><span class="" style="top: -2.786em; margin-right: 0.0714286em;"><span class="pstrut" style="height: 2.5em;"></span><span class="sizing reset-size3 size1 mtight"><span class="mord mtight">2</span></span></span></span></span></span></span></span></span></span><span class="" style="top: -2.92378em;"><span class="pstrut" style="height: 3em;"></span><span class="hide-tail mtight" style="min-width: 0.853em; height: 1.08em;"> 
+                    <svg width="400em" height="1.08em" viewbox="0 0 400000 1080" preserveaspectratio="xMinYMin slice"> 
+                     <path d="M95,702c-2.7,0,-7.17,-2.7,-13.5,-8c-5.8,-5.3,-9.5,
+-10,-9.5,-14c0,-2,0.3,-3.3,1,-4c1.3,-2.7,23.83,-20.7,67.5,-54c44.2,-33.3,65.8,
+-50.3,66.5,-51c1.3,-1.3,3,-2,5,-2c4.7,0,8.7,3.3,12,10s173,378,173,378c0.7,0,
+35.3,-71,104,-213c68.7,-142,137.5,-285,206.5,-429c69,-144,104.5,-217.7,106.5,
+-221c5.3,-9.3,12,-14,20,-14H400000v40H845.2724s-225.272,467,-225.272,467
+s-235,486,-235,486c-2.7,4.7,-9,7,-19,7c-6,0,-10,-1,-12,-3s-194,-422,-194,-422
+s-65,47,-65,47z M834 80H400000v40H845z"></path> 
+                    </svg></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.0762179em;"><span class=""></span></span></span></span></span><span class="mbin mtight">+</span><span class="mord mtight"><span class="mord mathdefault mtight">ϵ</span></span></span></span></span><span class="" style="top: -3.23em;"><span class="pstrut" style="height: 3em;"></span><span class="frac-line" style="border-bottom-width: 0.04em;"></span></span><span class="" style="top: -3.44611em;"><span class="pstrut" style="height: 3em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathdefault mtight">x</span><span class="mbin mtight">−</span><span class="mord mtight"><span class="mord mathdefault mtight">μ</span></span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.542978em;"><span class=""></span></span></span></span></span><span class="mclose nulldelimiter"></span></span></span><span class="mclose">)</span><span class="mspace" style="margin-right: 0.222222em;"></span><span class="mbin">+</span><span class="mspace" style="margin-right: 0.222222em;"></span></span><span class="base"><span class="strut" style="height: 0.88888em; vertical-align: -0.19444em;"></span><span class="mord"><span class="mord mathdefault" style="margin-right: 0.05278em;">β</span></span></span></span></span></span><br> 其中<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         μ 
+        
+       
+      
+        {\mu} 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.625em; vertical-align: -0.19444em;"></span><span class="mord"><span class="mord mathdefault">μ</span></span></span></span></span></span>和<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         σ 
+        
+       
+      
+        {\sigma} 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.43056em; vertical-align: 0em;"></span><span class="mord"><span class="mord mathdefault" style="margin-right: 0.03588em;">σ</span></span></span></span></span></span>为均值和方差，是训练过程中以batch为统计单位计算结果的指数移动平均数。<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         γ 
+        
+       
+      
+        {\gamma} 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.625em; vertical-align: -0.19444em;"></span><span class="mord"><span class="mord mathdefault" style="margin-right: 0.05556em;">γ</span></span></span></span></span></span>和<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         β 
+        
+       
+      
+        {\beta} 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.88888em; vertical-align: -0.19444em;"></span><span class="mord"><span class="mord mathdefault" style="margin-right: 0.05278em;">β</span></span></span></span></span></span>是从每个通道中学习到的仿射超参数。如果像上边说的，在线性层 y= BatchNorm(Wx) 之后立即应用批量归一化，我们可以重写这些公式，使批量归一化操作与线性层本身融合。假定一个权重矩阵<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         W 
+        
+       
+         ϵ 
+        
+       
+           
+        
+        
+        
+          R 
+         
+         
+         
+           n 
+          
+         
+           × 
+          
+         
+           m 
+          
+         
+        
+       
+      
+        W{\epsilon}~R^{n×m} 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.771331em; vertical-align: 0em;"></span><span class="mord mathdefault" style="margin-right: 0.13889em;">W</span><span class="mord"><span class="mord mathdefault">ϵ</span></span><span class="mspace nobreak"> </span><span class="mord"><span class="mord mathdefault" style="margin-right: 0.00773em;">R</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.771331em;"><span class="" style="top: -3.063em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathdefault mtight">n</span><span class="mbin mtight">×</span><span class="mord mathdefault mtight">m</span></span></span></span></span></span></span></span></span></span></span></span></span>，对输出<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         Y 
+        
+       
+      
+        Y 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.68333em; vertical-align: 0em;"></span><span class="mord mathdefault" style="margin-right: 0.22222em;">Y</span></span></span></span></span>的每一个通道<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          y 
+         
+        
+          k 
+         
+        
+       
+      
+        y_k 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.625em; vertical-align: -0.19444em;"></span><span class="mord"><span class="mord mathdefault" style="margin-right: 0.03588em;">y</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.336108em;"><span class="" style="top: -2.55em; margin-left: -0.03588em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight" style="margin-right: 0.03148em;">k</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span></span></span></span></span>（k={1, 2, …, n}）应用批量归一化。<br> 　　　　　　　　　　<img src="https://images2.imgbox.com/f6/ab/RFHJ1jHc_o.png" alt="在这里插入图片描述"><br> 其中，<br> 　　　　　　　　　<img src="https://images2.imgbox.com/17/03/QeqXIbKn_o.png" alt="在这里插入图片描述"><br> <mark>通过上述变换，就将批量归一化层和线性层融合在了一起。</mark></p> 
+<h4><a id="Activation_function_fusing_102"></a>Activation function fusing</h4> 
+<p>在图2中介绍的简单量化加速器中，我们看到激活的反量化发生在计算矩阵乘法或卷积输出值之后。<mark>然而，实际上我们经常在线性运算之后直接出现非线性（图4中的情况）</mark>。因为将线性层的激活写入内存，然后将它们重新加载到计算核心应用非线性运算会很浪费资源。出于这个原因，许多硬件解决方案都带有一个硬件单元，在重新量化步骤之前应用非线性。 如果是这种情况，我们只需要模拟在非线性之后发生的重新量化。 例如 ReLU 非线性很容易由重新量化块建模，因为您可以设置它的最小可表示值激活量化为 0。</p> 
+<p>其他更复杂的激活函数，例如 sigmoid 或 Swish，需要更专门的支持。如果这种支持不可用，我们需要在图中的非线性前后添加一个量化步骤。这会对量化模型的准确性产生很大影响 尽管像 Swish 函数这样的新激活可以提高浮点精度，但这些激活在量化后可能会消失，或者在定点硬件上部署的效率可能较低。</p> 
+<h4><a id="_107"></a>其他网络层及其量化</h4> 
+<p>在神经网络中还有很多其它经常用到的层。它们如何被建模主要取决于具体的硬件实施。有时，模拟量化和目标性能之间的不匹配归结为未正确量化的层。 在这里，我们提供了一些关于如何模拟几个常用层的量化的指导，帮助这些层被正确量化，并使得模拟量化能够匹配目标性能。</p> 
+<ul><li>Max Pooling：不需要对激活值进行量化，因为输入和输出在相同的量化网格上；</li><li>Average Pooling：几个整数的平均数不一定是整数。出于这个原因，Average Pooling之后需要一个量化步骤。然而，因为量化范围没有显著变化，可以对输入和输出采用相同的量化模块；</li><li>Element-wise addition：尽管这一步骤很简单，但是很难能够正确地模拟。在相加的过程中，两个输入的加数的量化范围必须完全匹配。如果不匹配，需要格外小心才能按预期进行其余的工作。<mark>我理解的是因为两个数相加可能会超出量化范围。</mark> 对此，没有单一公认的解决方案，但添加重新量化步骤可以粗略地模拟添加的噪声。另一种方法是通过绑定输入的量化网格来优化网络。这将阻止重新量化步骤，但可能需要微调。</li><li>Concatenation：被连接的两个分支通常不共享相同的量化参数。这意味着它们的量化网格可能不会重叠，因此需要重新量化步骤。与Element-wise addition一样，可以优化您的网络，以便为连接的分支共享量化参数。</li></ul> 
+<h3><a id="Practical_considerations_114"></a>Practical considerations</h3> 
+<p>在对多层神经网络进行量化时，我们面临着大量的量化选择空间，包括量化方案、粒度和位宽。 在本节中，作者探讨了一些有助于减少搜索空间的实际考虑因素。</p> 
+<p>请注意，在本白皮书中，作者仅考虑<mark>同质位宽</mark>。这意味着为权重或激活选择的位宽在所有层中保持不变。因为硬件更普遍地支持同构位宽，但最近的一些工作也探索了<mark>异构位宽或混合精度</mark>的实现。</p> 
+<h4><a id="Symmetric_vs_asymmetric_quantization_118"></a>Symmetric vs. asymmetric quantization</h4> 
+<p>对于每个权重和激活量化，我们必须选择一个量化方案。一方面，非对称量化更具表现力，因为有一个额外的偏移参数，但另一方面可能存在计算开销。要了解为什么会出现这种情况，请考虑当权重不对称时会发生什么。<br> 下边分别是当前层量化后的权重和上一层的量化后的激活值。如下所示，它们要进行相乘得到当前层的计算结果。　<br> <img src="https://images2.imgbox.com/fa/45/IYjXm0IL_o.png" alt="在这里插入图片描述"><br> <img src="https://images2.imgbox.com/1c/f0/aqHQQGXD_o.png" alt="在这里插入图片描述"><br> <img src="https://images2.imgbox.com/31/be/WfvITmUQ_o.png" alt="在这里插入图片描述"><br> 如果两个操作都是对称格式，第一项就是我们将拥有的（<mark>因为没有零点和偏置</mark>）。第三项和第四项仅取决于预先知道的比例、偏移量和重量值。因此，这两项可以预先计算并添加到层的偏置项中，几乎不需要任何成本 然而，第二项取决于输入数据 x。这意味着对于每批数据，我们需要在推理期间计算一个附加项。这可能会导致延迟和功率的显着开销，因为它相当于添加一个额外的通道。出于这个原因，使用非对称激活量化和对称权重量化是一种常见的方法，可以避免额外的数据相关项。</p> 
+<h4><a id="Pertensor_and_perchannel_quantization_125"></a>Per-tensor and per-channel quantization</h4> 
+<p>在量化细粒度那一节，作者讨论了不同级别的量化粒度。权重和激活的 Per-tensor 量化已经成为标准有一段时间了，因为它受到所有定点加速器的支持。然而，权重的 per-channel 量化可以提高准确性，特别是当权重的分布因通道而异时。在加速器中可以通过应用单独的 per-channel 权重比例因子来实现 per-channel 权重量化，而无需重新缩放。激活的 per-channel 量化更难实现，因为我们无法将比例因子从求和中分解出来，因此需要为每个输入通道重新调整累加器。尽管权重的每通道量化越来越普遍，但并非所有商业硬件都支持它。因此，重要的是检查它是否可以在您的预期目标设备中使用。</p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/c60a94ced478f58dc7da8d0d5bada035/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">华为机试题61-放苹果</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/9a0d2206617a21ea7c4958e48a5429cb/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">Java基础之==与equals</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

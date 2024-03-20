@@ -1,0 +1,439 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>连载《Chrome V8 原理讲解》第九篇 Builtin源码分析 - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="连载《Chrome V8 原理讲解》第九篇 Builtin源码分析" />
+<meta property="og:description" content="1 摘要 上一篇文章中，Builtin作为先导知识，我们做了宏观概括和介绍。Builtin（Built-in function）是编译好的内置代码块（chunk），存储在snapshot_blob.bin文件中，V8启动时以反序列化方式加载，运行时可以直接调用。Builtins功能共计600多个，细分为多个子类型，涵盖了解释器、字节码、执行单元等多个V8核心功能，本文从微观角度剖析Builtins功能的源码，在不使用snapshot_blob.bin文件的情况下，详细说明Builtin创建和运行过程。
+本文内容组织结构：Bultin初始化过程（章节2），Builtin子类型讲解(章节3)。
+2 Builtin初始化 下面是code类，它负责管理所有Builtin功能，是builtin table的数据类型。
+1. class Code : public HeapObject { 2. public: 3. NEVER_READ_ONLY_SPACE 4. // Opaque data type for encapsulating code flags like kind, inline 5. // cache state, and arguments count. 6. using Flags = uint32_t; 7. #define CODE_KIND_LIST(V) \ 8. V(OPTIMIZED_FUNCTION) \ 9. V(BYTECODE_HANDLER) \ 10. V(STUB) \ 11. V(BUILTIN) \ 12. V(REGEXP) \ 13. V(WASM_FUNCTION) \ 14. V(WASM_TO_CAPI_FUNCTION) \ 15." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/945612d19964768f79e1b4bb60d4c1cd/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2021-11-04T11:45:01+08:00" />
+<meta property="article:modified_time" content="2021-11-04T11:45:01+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">连载《Chrome V8 原理讲解》第九篇 Builtin源码分析</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <h2></h2> 
+<p></p> 
+<p style="text-align:center;"><a href="https://p4.ssl.qhimg.com/t01311664f732dc279f.png" rel="nofollow"><img alt="" src="https://images2.imgbox.com/65/7e/QDAA7VJJ_o.png"></a></p> 
+<p></p> 
+<h3 id="h2-0">1 摘要</h3> 
+<p>上一篇文章中，Builtin作为先导知识，我们做了宏观概括和介绍。Builtin（Built-in function）是编译好的内置代码块（chunk），存储在<code>snapshot_blob.bin</code>文件中，V8启动时以反序列化方式加载，运行时可以直接调用。Builtins功能共计600多个，细分为多个子类型，涵盖了解释器、字节码、执行单元等多个V8核心功能，本文从微观角度剖析Builtins功能的源码，在不使用<code>snapshot_blob.bin</code>文件的情况下，详细说明Builtin创建和运行过程。<br> 本文内容组织结构：Bultin初始化过程（章节2），Builtin子类型讲解(章节3)。</p> 
+<p></p> 
+<h3 id="h2-1">2 Builtin初始化</h3> 
+<p>下面是<code>code</code>类，它负责管理所有<code>Builtin</code>功能，是<code>builtin table</code>的数据类型。</p> 
+<pre><code>1.  class Code : public HeapObject {
+2.   public:
+3.    NEVER_READ_ONLY_SPACE
+4.    // Opaque data type for encapsulating code flags like kind, inline
+5.    // cache state, and arguments count.
+6.    using Flags = uint32_t;
+7.  #define CODE_KIND_LIST(V)   \
+8.    V(OPTIMIZED_FUNCTION)     \
+9.    V(BYTECODE_HANDLER)       \
+10.   V(STUB)                   \
+11.    V(BUILTIN)                \
+12.    V(REGEXP)                 \
+13.    V(WASM_FUNCTION)          \
+14.    V(WASM_TO_CAPI_FUNCTION)  \
+15.    V(WASM_TO_JS_FUNCTION)    \
+16.    V(JS_TO_WASM_FUNCTION)    \
+17.    V(JS_TO_JS_FUNCTION)      \
+18.    V(WASM_INTERPRETER_ENTRY) \
+19.    V(C_WASM_ENTRY)
+20.    enum Kind {
+21.  #define DEFINE_CODE_KIND_ENUM(name) name,
+22.      CODE_KIND_LIST(DEFINE_CODE_KIND_ENUM)
+23.  #undef DEFINE_CODE_KIND_ENUM
+24.          NUMBER_OF_KINDS
+25.    };
+26.    static const char* Kind2String(Kind kind);
+27.    // Layout description.
+28.  #define CODE_FIELDS(V)                                                    \
+29.    V(kRelocationInfoOffset, kTaggedSize)                                   \
+30.    V(kDeoptimizationDataOffset, kTaggedSize)                               \
+31.    V(kSourcePositionTableOffset, kTaggedSize)                              \
+32.    V(kCodeDataContainerOffset, kTaggedSize)                                \
+33.    /* Data or code not directly visited by GC directly starts here. */     \
+34.    /* The serializer needs to copy bytes starting from here verbatim. */   \
+35.    /* Objects embedded into code is visited via reloc info. */             \
+36.    V(kDataStart, 0)                                                        \
+37.    V(kInstructionSizeOffset, kIntSize)                                     \
+38.    V(kFlagsOffset, kIntSize)                                               \
+39.    V(kSafepointTableOffsetOffset, kIntSize)                                \
+40.    V(kHandlerTableOffsetOffset, kIntSize)                                  \
+41.    V(kConstantPoolOffsetOffset,                                            \
+42.      FLAG_enable_embedded_constant_pool ? kIntSize : 0)                    \
+43.    V(kCodeCommentsOffsetOffset, kIntSize)                                  \
+44.    V(kBuiltinIndexOffset, kIntSize)                                        \
+45.    V(kUnalignedHeaderSize, 0)                                              \
+46.    /* Add padding to align the instruction start following right after */  \
+47.    /* the Code object header. */                                           \
+48.    V(kOptionalPaddingOffset, CODE_POINTER_PADDING(kOptionalPaddingOffset)) \
+49.    V(kHeaderSize, 0)
+50.    DEFINE_FIELD_OFFSET_CONSTANTS(HeapObject::kHeaderSize, CODE_FIELDS)
+51.  #undef CODE_FIELDS
+52.    STATIC_ASSERT(FIELD_SIZE(kOptionalPaddingOffset) == kHeaderPaddingSize);
+53.    inline int GetUnwindingInfoSizeOffset() const;
+54.    class BodyDescriptor;
+55.    // Flags layout.  BitField&lt;type, shift, size&gt;.
+56.  #define CODE_FLAGS_BIT_FIELDS(V, _)    \
+57.    V(HasUnwindingInfoField, bool, 1, _) \
+58.    V(KindField, Kind, 5, _)             \
+59.    V(IsTurbofannedField, bool, 1, _)    \
+60.    V(StackSlotsField, int, 24, _)       \
+61.    V(IsOffHeapTrampoline, bool, 1, _)
+62.    DEFINE_BIT_FIELDS(CODE_FLAGS_BIT_FIELDS)
+63.  #undef CODE_FLAGS_BIT_FIELDS
+64.    static_assert(NUMBER_OF_KINDS &lt;= KindField::kMax, "Code::KindField size");
+65.    static_assert(IsOffHeapTrampoline::kLastUsedBit &lt; 32,
+66.                  "Code::flags field exhausted");
+67.    // KindSpecificFlags layout (STUB, BUILTIN and OPTIMIZED_FUNCTION)
+68.  #define CODE_KIND_SPECIFIC_FLAGS_BIT_FIELDS(V, _) \
+69.    V(MarkedForDeoptimizationField, bool, 1, _)     \
+70.    V(EmbeddedObjectsClearedField, bool, 1, _)      \
+71.    V(DeoptAlreadyCountedField, bool, 1, _)         \
+72.    V(CanHaveWeakObjectsField, bool, 1, _)          \
+73.    V(IsPromiseRejectionField, bool, 1, _)          \
+74.    V(IsExceptionCaughtField, bool, 1, _)
+75.    DEFINE_BIT_FIELDS(CODE_KIND_SPECIFIC_FLAGS_BIT_FIELDS)
+76.  #undef CODE_KIND_SPECIFIC_FLAGS_BIT_FIELDS
+77.   private:
+78.    friend class RelocIterator;
+79.    bool is_promise_rejection() const;
+80.    bool is_exception_caught() const;
+81.    OBJECT_CONSTRUCTORS(Code, HeapObject);  
+82.  };
+//........................代码太长，省略很多.....................
+//.............................................................
+</code></pre> 
+<p>上述代码中，<code>CODE_KIND_LIST</code>从code角度定义了类型，在<code>Builtin</code>类中也定义了<code>Builtin</code>一共有七种子类型，这是两种不同的定义方式，但说的都是Builtin。<code>Builtin</code>的初始化工作由方法<code>void Isolate::Initialize(Isolate* isolate,const v8::Isolate::CreateParams&amp; params)</code>统一完成，下面给出这个方法的部分代码。</p> 
+<pre><code>0.  void Isolate::Initialize(Isolate* isolate,
+1.                           const v8::Isolate::CreateParams&amp; params) {
+2.    i::Isolate* i_isolate = reinterpret_cast&lt;i::Isolate*&gt;(isolate);
+3.    CHECK_NOT_NULL(params.array_buffer_allocator);
+4.    i_isolate-&gt;set_array_buffer_allocator(params.array_buffer_allocator);
+5.    if (params.snapshot_blob != nullptr) {
+6.      i_isolate-&gt;set_snapshot_blob(params.snapshot_blob);
+7.    } else {
+8.      i_isolate-&gt;set_snapshot_blob(i::Snapshot::DefaultSnapshotBlob());
+9.    }
+10.    auto code_event_handler = params.code_event_handler;
+11.  //........................代码太长，省略很多.....................
+12.    if (!i::Snapshot::Initialize(i_isolate)) {
+13.      // If snapshot data was provided and we failed to deserialize it must
+14.      // have been corrupted.
+15.      if (i_isolate-&gt;snapshot_blob() != nullptr) {
+16.        FATAL(
+17.            "Failed to deserialize the V8 snapshot blob. This can mean that the "
+18.            "snapshot blob file is corrupted or missing.");
+19.      }
+20.      base::ElapsedTimer timer;
+21.      if (i::FLAG_profile_deserialization) timer.Start();
+22.      i_isolate-&gt;InitWithoutSnapshot();
+23.      if (i::FLAG_profile_deserialization) {
+24.        double ms = timer.Elapsed().InMillisecondsF();
+25.        i::PrintF("[Initializing isolate from scratch took %0.3f ms]\n", ms);
+26.      }
+27.    }
+28.    i_isolate-&gt;set_only_terminate_in_safe_scope(
+29.        params.only_terminate_in_safe_scope);
+30.  }
+</code></pre> 
+<p>上述方面中进入第22行，最终进入下面的Builtin初始化方法。</p> 
+<pre><code>1.  void SetupIsolateDelegate::SetupBuiltinsInternal(Isolate* isolate) {
+2.  //...................删除部分代码，留下最核心功能
+3.  //...................删除部分代码，留下最核心功能
+4.    int index = 0;
+5.    Code code;
+6.  #define BUILD_CPP(Name)                                                      \
+7.    code = BuildAdaptor(isolate, index, FUNCTION_ADDR(Builtin_##Name), #Name); \
+8.    AddBuiltin(builtins, index++, code);
+9.  #define BUILD_TFJ(Name, Argc, ...)                              \
+10.   code = BuildWithCodeStubAssemblerJS(                          \
+11.        isolate, index, &amp;Builtins::Generate_##Name, Argc, #Name); \
+12.    AddBuiltin(builtins, index++, code);
+13.  #define BUILD_TFC(Name, InterfaceDescriptor)                      \
+14.    /* Return size is from the provided CallInterfaceDescriptor. */ \
+15.    code = BuildWithCodeStubAssemblerCS(                            \
+16.        isolate, index, &amp;Builtins::Generate_##Name,                 \
+17.        CallDescriptors::InterfaceDescriptor, #Name);               \
+18.    AddBuiltin(builtins, index++, code);
+19.  #define BUILD_TFS(Name, ...)                                                   \
+20.    /* Return size for generic TF builtins (stub linkage) is always 1. */        \
+21.    code =                                                                       \
+22.        BuildWithCodeStubAssemblerCS(isolate, index, &amp;Builtins::Generate_##Name, \
+23.                                     CallDescriptors::Name, #Name);              \
+24.    AddBuiltin(builtins, index++, code);
+25.  #define BUILD_TFH(Name, InterfaceDescriptor)              \
+26.    /* Return size for IC builtins/handlers is always 1. */ \
+27.    code = BuildWithCodeStubAssemblerCS(                    \
+28.        isolate, index, &amp;Builtins::Generate_##Name,         \
+29.        CallDescriptors::InterfaceDescriptor, #Name);       \
+30.    AddBuiltin(builtins, index++, code);
+31.  #define BUILD_BCH(Name, OperandScale, Bytecode)                           \
+32.    code = GenerateBytecodeHandler(isolate, index, OperandScale, Bytecode); \
+33.    AddBuiltin(builtins, index++, code);
+34.  #define BUILD_ASM(Name, InterfaceDescriptor)                                \
+35.    code = BuildWithMacroAssembler(isolate, index, Builtins::Generate_##Name, \
+36.                                   #Name);                                    \
+37.    AddBuiltin(builtins, index++, code);
+38.    BUILTIN_LIST(BUILD_CPP, BUILD_TFJ, BUILD_TFC, BUILD_TFS, BUILD_TFH, BUILD_BCH,
+39.                 BUILD_ASM);
+40.  //...................删除部分代码，留下最核心功能
+41.  //...................删除部分代码，留下最核心功能
+42.  }
+</code></pre> 
+<p>上述代码只保留了最核心的Builtin初始化功能，初始化工作主要是生成并编译Builtin代码，并以独立功能的形式挂载到<code>isolate</code>上，以<code>BuildWithCodeStubAssemblerCS()</code>详细描述该过程。<br> 见下面代码，第一个参数是<code>isolate</code>，用于保存初化完成的<code>Builtin</code>；第二个参数全局变量<code>index</code>，<code>Builtin</code>存储在<code>isolate</code>的数组成员中，<code>index</code>是数组下标；第三个参数<code>generator</code>是函数指针，该函数用于生成<code>Builtin</code>；第四个参数是call描述符；最后一个是函数名字。</p> 
+<pre><code>1.  // Builder for builtins implemented in TurboFan with CallStub linkage.
+2.  Code BuildWithCodeStubAssemblerCS(Isolate* isolate, int32_t builtin_index,
+3.                                    CodeAssemblerGenerator generator,
+4.                                    CallDescriptors::Key interface_descriptor,
+5.                                    const char* name) {
+6.    HandleScope scope(isolate);
+7.    // Canonicalize handles, so that we can share constant pool entries pointing
+8.    // to code targets without dereferencing their handles.
+9.    CanonicalHandleScope canonical(isolate);
+10.   Zone zone(isolate-&gt;allocator(), ZONE_NAME);
+11.    // The interface descriptor with given key must be initialized at this point
+12.    // and this construction just queries the details from the descriptors table.
+13.    CallInterfaceDescriptor descriptor(interface_descriptor);
+14.    // Ensure descriptor is already initialized.
+15.    DCHECK_LE(0, descriptor.GetRegisterParameterCount());
+16.    compiler::CodeAssemblerState state(
+17.        isolate, &amp;zone, descriptor, Code::BUILTIN, name,
+18.        PoisoningMitigationLevel::kDontPoison, builtin_index);
+19.    generator(&amp;state);
+20.    Handle&lt;Code&gt; code = compiler::CodeAssembler::GenerateCode(
+21.        &amp;state, BuiltinAssemblerOptions(isolate, builtin_index));
+22.    return *code;
+23.  }
+</code></pre> 
+<p>在代码中，第19行代码生成Builtin源码，以第一个Builtin为例说明<code>generator(&amp;state)</code>的功能，此时<code>generator</code>指针代表的函数是<code>TF_BUILTIN(RecordWrite, RecordWriteCodeStubAssembler)</code>，下面是代码：</p> 
+<pre><code>1.  TF_BUILTIN(RecordWrite, RecordWriteCodeStubAssembler) {
+2.    Label generational_wb(this);
+3.    Label incremental_wb(this);
+4.    Label exit(this);
+5.    Node* remembered_set = Parameter(Descriptor::kRememberedSet);
+6.    Branch(ShouldEmitRememberSet(remembered_set), &amp;generational_wb,
+7.           &amp;incremental_wb);
+8.    BIND(&amp;generational_wb);
+9.    {
+10.     Label test_old_to_young_flags(this);
+11.      Label store_buffer_exit(this), store_buffer_incremental_wb(this);
+12.      TNode&lt;IntPtrT&gt; slot = UncheckedCast&lt;IntPtrT&gt;(Parameter(Descriptor::kSlot));
+13.      Branch(IsMarking(), &amp;test_old_to_young_flags, &amp;store_buffer_exit);
+14.      BIND(&amp;test_old_to_young_flags);
+15.      {
+16.        TNode&lt;IntPtrT&gt; value =
+17.            BitcastTaggedToWord(Load(MachineType::TaggedPointer(), slot));
+18.        TNode&lt;BoolT&gt; value_is_young =
+19.            IsPageFlagSet(value, MemoryChunk::kIsInYoungGenerationMask);
+20.        GotoIfNot(value_is_young, &amp;incremental_wb);
+21.        TNode&lt;IntPtrT&gt; object =
+22.            BitcastTaggedToWord(Parameter(Descriptor::kObject));
+23.        TNode&lt;BoolT&gt; object_is_young =
+24.            IsPageFlagSet(object, MemoryChunk::kIsInYoungGenerationMask);
+25.        Branch(object_is_young, &amp;incremental_wb, &amp;store_buffer_incremental_wb);
+26.      }
+27.      BIND(&amp;store_buffer_exit);
+28.      {
+29.        TNode&lt;ExternalReference&gt; isolate_constant =
+30.            ExternalConstant(ExternalReference::isolate_address(isolate()));
+31.        Node* fp_mode = Parameter(Descriptor::kFPMode);
+32.        InsertToStoreBufferAndGoto(isolate_constant, slot, fp_mode, &amp;exit);
+33.      }
+34.      BIND(&amp;store_buffer_incremental_wb);
+35.      {
+36.        TNode&lt;ExternalReference&gt; isolate_constant =
+37.            ExternalConstant(ExternalReference::isolate_address(isolate()));
+38.        Node* fp_mode = Parameter(Descriptor::kFPMode);
+39.        InsertToStoreBufferAndGoto(isolate_constant, slot, fp_mode,
+40.                                   &amp;incremental_wb);
+41.      }
+42.    } //........................省略代码......................................
+43.    BIND(&amp;exit);
+44.    IncrementCounter(isolate()-&gt;counters()-&gt;write_barriers(), 1);
+45.    Return(TrueConstant());
+46.  }
+</code></pre> 
+<p>这个函数<code>TF_BUILTIN(RecordWrite, RecordWriteCodeStubAssembler)</code>是生成器，它的作用是生成写记录功能的源代码，<code>TF_BUILTIN</code>是宏模板，展开后可以看到它的类成员<code>CodeAssemblerState* state</code>保存了生成之后的源码。“用平台无关的生成器为特定平台生成源代码”是<code>Builtin</code>的常用做法，这样减少了工作量。函数执行完成后返回到<code>BuildWithCodeStubAssemblerCS</code>，生成的源代码经过处理后，最终由<code>code</code>表示，下面是<code>code</code>的数据类型。</p> 
+<pre><code>class Code : public HeapObject {
+ public:
+  NEVER_READ_ONLY_SPACE
+  // Opaque data type for encapsulating code flags like kind, inline
+  // cache state, and arguments count.
+  using Flags = uint32_t;
+
+#define CODE_KIND_LIST(V)   \
+  V(OPTIMIZED_FUNCTION)     \
+  V(BYTECODE_HANDLER)       \
+  V(STUB)                   \
+  V(BUILTIN)                \
+  V(REGEXP)                 \
+  V(WASM_FUNCTION)          \
+  V(WASM_TO_CAPI_FUNCTION)  \
+  V(WASM_TO_JS_FUNCTION)    \
+  V(JS_TO_WASM_FUNCTION)    \
+  V(JS_TO_JS_FUNCTION)      \
+  V(WASM_INTERPRETER_ENTRY) \
+  V(C_WASM_ENTRY)
+
+  enum Kind {
+#define DEFINE_CODE_KIND_ENUM(name) name,
+    CODE_KIND_LIST(DEFINE_CODE_KIND_ENUM)
+#undef DEFINE_CODE_KIND_ENUM
+        NUMBER_OF_KINDS
+  };
+//..................省略........................
+//.............................................
+</code></pre> 
+<p>上述代码中，可以看到从<code>code</code>的角度对<code>Builtin</code>进行了更详细的分类。另外<code>code</code>是堆对象，也就是说<code>Builtin</code>是由V8的堆栈进行管理，后续讲到堆栈时再详细说明这部分知识。图2给出函数调用堆栈，供读者自行复现。</p> 
+<p style="text-align:center;"><a href="https://p1.ssl.qhimg.com/t01c99c876ce0cff60c.png" rel="nofollow"><img alt="" src="https://images2.imgbox.com/bc/e9/WSfZonry_o.png"></a></p> 
+<p>在<code>SetupBuiltinsInternal()</code>中可以看到<code>AddBuiltin()</code>将生成的<code>code</code>代码添加到<code>isolate</code>中，代码如下。</p> 
+<pre><code>void SetupIsolateDelegate::AddBuiltin(Builtins* builtins, int index,
+                                      Code code) {
+  DCHECK_EQ(index, code.builtin_index());
+  builtins-&gt;set_builtin(index, code);
+}
+//..............分隔线......................
+void Builtins::set_builtin(int index, Code builtin) {
+  isolate_-&gt;heap()-&gt;set_builtin(index, builtin);
+}
+</code></pre> 
+<p>所有<code>Builtin</code>功能生成后保存在<code>Address builtins_[Builtins::builtin_count]</code>中，初始化方法<code>SetupBuiltinsInternal</code>按照<code>BUILTIN_LIST</code>的定义顺序依次完成所有Builtin的源码生成、编译和挂载到isolate。</p> 
+<p></p> 
+<h3 id="h2-2">2 Builtin子类型</h3> 
+<p>从<code>Builtins</code>的功能看，它包括了：Ignition实现、字节码实现、以及ECMA规范实现等众多V8的核心功能，在<code>BUILTIN_LIST</code>定义中有详细注释，请读者自行查阅。前面讲过，从<code>BUILTIN</code>的实现角度分为七种类型，见下面代码：</p> 
+<pre><code>#define BUILD_CPP(Name)
+#define BUILD_TFJ(Name, Argc, ...) 
+#define BUILD_TFC(Name, InterfaceDescriptor)  
+#define BUILD_TFS(Name, ...) 
+#define BUILD_TFH(Name, InterfaceDescriptor) 
+#define BUILD_BCH(Name, OperandScale, Bytecode)  
+#define BUILD_ASM(Name, InterfaceDescriptor)
+</code></pre> 
+<p>以子类型<code>BUILD_CPP</code>举例说明，下面是完整源代码。</p> 
+<pre><code>1.  Code BuildAdaptor(Isolate* isolate, int32_t builtin_index,
+2.                    Address builtin_address, const char* name) {
+3.    HandleScope scope(isolate);
+4.    // Canonicalize handles, so that we can share constant pool entries pointing
+5.    // to code targets without dereferencing their handles.
+6.    CanonicalHandleScope canonical(isolate);
+7.    constexpr int kBufferSize = 32 * KB;
+8.    byte buffer[kBufferSize];
+9.    MacroAssembler masm(isolate, BuiltinAssemblerOptions(isolate, builtin_index),
+10.                       CodeObjectRequired::kYes,
+11.                        ExternalAssemblerBuffer(buffer, kBufferSize));
+12.    masm.set_builtin_index(builtin_index);
+13.    DCHECK(!masm.has_frame());
+14.    Builtins::Generate_Adaptor(&amp;masm, builtin_address);
+15.    CodeDesc desc;
+16.    masm.GetCode(isolate, &amp;desc);
+17.    Handle&lt;Code&gt; code = Factory::CodeBuilder(isolate, desc, Code::BUILTIN)
+18.                            .set_self_reference(masm.CodeObject())
+19.                            .set_builtin_index(builtin_index)
+20.                            .Build();
+21.    return *code;
+22.  }
+</code></pre> 
+<p><code>BuildAdaptor</code>的生成功能由第13行代码实现，最终该代码的实现如下：</p> 
+<pre><code>void Builtins::Generate_Adaptor(MacroAssembler* masm, Address address) {
+  __ LoadAddress(kJavaScriptCallExtraArg1Register,
+                 ExternalReference::Create(address));
+  __ Jump(BUILTIN_CODE(masm-&gt;isolate(), AdaptorWithBuiltinExitFrame),
+          RelocInfo::CODE_TARGET);
+}
+}
+</code></pre> 
+<p>上面两部分代码实现了第77号<code>Builtin</code>功能，名字是<code>HandleApiCall</code>，图2以<code>char</code>类型展示了生成的源代码。</p> 
+<p style="text-align:center;"><a href="https://p4.ssl.qhimg.com/t01fc867537289d42cb.png" rel="nofollow"><img alt="" src="https://images2.imgbox.com/07/2d/fDfYufYu_o.png"></a></p> 
+<p>总结：学习Builtin时，涉及很多系统结构相关的知识，本文讲解采用的是x64架构。每种<code>Builtin</code>的生成方式虽不相同，但分析源码的思路相同，有问题可以联系我。<br> 好了，今天到这里，下次见。<br><strong>恳请读者批评指正、提出宝贵意见</strong><br><strong>微信：qq9123013 备注：v8交流 邮箱：<a href="mailto:v8blink@outlook.com" rel="nofollow" title="v8blink@outlook.com">v8blink@outlook.com</a></strong></p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/0edb3b4d5bce4e2efee353f82a905ab9/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">【ant-design-vue】 a-table的可编辑行使用</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/a7d1f2febba6088201a52fe3fdf99e42/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">Android 重力感应和手动横竖屏切换</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

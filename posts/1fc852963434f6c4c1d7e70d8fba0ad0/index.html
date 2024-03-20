@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>深入了解Kafka的文件存储原理 - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="深入了解Kafka的文件存储原理" />
+<meta property="og:description" content="Kafka简介 Kafka最初由Linkedin公司开发的分布式、分区的、多副本的、多订阅者的消息系统。它提供了类似于JMS的特性，但是在设计实现上完全不同，此外它并不是JMS规范的实现。kafka对消息保存是根据Topic进行归类，发送消息者称为Producer；消息接受者称为Consumer；此外kafka集群有多个kafka实例组成，每个实例(server)称为broker。无论是kafka集群，还是producer和consumer都依赖于zookeeper来保证系统可用性集群保存一些meta信息（kafka的0.8版本之后，producer不在依赖zookeeper保存meta信息，而是producer自己保存meta信息）。本文不打算对Apache Kafka的原理和实现进行介绍，而在编程的角度上介绍如何使用Apache Kafka。我们分别介绍如何编写Producer、Consumer以及Partitioner等。
+Producer发送的消息是如何定位到具体的broker 生产者初始化：Producer在初始化时会加载配置参数，并开启网络线程准备发送消息。拦截器逻辑：Producer可以设置拦截器来预处理消息，例如，修改或者丰富消息内容。序列化：Producer将处理后的消息key/value进行序列化，以便在网络上传输。分区策略：Producer会根据分区策略选择一个合适的分区，这个分区策略可以是轮询、随机或者根据key的哈希值等。选择Broker：Producer并不直接将消息发送到指定的Broker，而是将消息发送到所选分区的leader副本所在的Broker。如果一个主题有多个分区，这些分区会均匀分布在集群中的Broker上。每个分区都有一个leader副本，Producer总是将消息发送到leader副本，然后由leader副本负责同步到follower副本。发送模式：Producer发送消息的模式主要有三种：发后即忘（不关心结果），同步发送（等待结果），以及异步发送（通过Future对象跟踪状态）。缓冲和批量发送：为了提高效率，Producer会先将消息收集到一个批次中，然后再一次性发送到Broker。可靠性配置：Producer可以通过设置request.required.acks参数来控制消息的可靠性级别，例如，设置为&#34;all&#34;时，需要所有in-sync replicas都确认接收后才认为消息发送成功。失败重试：如果请求失败，Producer会根据配置的retries参数来决定是否重试发送消息。 Kafka的Producer通过一系列步骤来确定消息的发送目标，其中分区策略和leader副本的选择是关键步骤，确保了消息能够正确地发送到相应的Broker。同时，通过合理的配置和重试机制，Producer能够保证消息的可靠性和系统的健壮性。
+Kafka存储文件长什么样 在kafka集群中，每个broker（一个kafka实例称为一个broker）中有多个topic，topic数量可以自己设定。在每个topic中又有多个partition，每个partition为一个分区。kafka的分区有自己的命名的规则，它的命名规则为topic的名称&#43;有序序号，这个序号从0开始依次增加。
+在每个partition中有可以分为多个segment file。当生产者往partition中存储数据时，内存中存不下了，就会往segment file里面存储。kafka默认每个segment file的大小是500M，在存储数据时，会先生成一个segment file，当这个segment file到500M之后，再生成第二个segment file 以此类推。每个segment file对应两个文件，分别是以.log结尾的数据文件和以.index结尾的索引文件。
+具体来说，Kafka中的每个分区（Partition）由一个或多个Segment组成。每个Segment实际上是磁盘上的一个目录，这个目录下面会包含几个特定的文件：
+.log文件：这是真正存储消息数据的地方。每个Segment有一个对应的.log文件，它存储了属于这个Segment的所有消息。.index文件：索引文件，用于快速定位到.log文件中的具体消息。通过.index文件可以高效地查找消息所在的.log文件位置。.timeindex文件（可选）：如果启用了时间戳索引，还会有这个文件。它用于按时间戳高效检索消息。 此外，Segment作为Kafka中数据组织的基本单位，设计成固定大小，这样做可以方便地进行数据的清理和压缩，同时保证性能。当一个Segment文件写满后，Kafka会自动创建一个新的Segment来继续存储数据。旧的Segment文件在满足一定条件（如被消费且达到一定的保留期）后会被删除，释放磁盘空间。
+每个segment file也有自己的命名规则，每个名字有20个字符，不够用0填充。每个名字从0开始命名，下一个segment file文件的名字就是上一个segment file中最后一条消息的索引值。在.index文件中，存储的是key-value格式的，key代表在.log中按顺序开始第条消息，value代表该消息的位置偏移。但是在.index中不是对每条消息都做记录，它是每隔一些消息记录一次，避免占用太多内存。即使消息不在index记录中在已有的记录中查找，范围也大大缩小了。 Consumer如何消费数据 Kafka中的Consumer通过以下步骤来消费数据：
+创建消费者实例：需要创建一个消费者实例，并指定一些关键配置，如消费者所属的群组、Topic名称以及与服务器通信的相关设置。订阅主题：创建好的消费者实例需要订阅一个或多个主题，以便开始接收消息。拉取数据：与一些消息系统采用的推送模式不同，Kafka的消费者采用的是“拉取”模式。这意味着消费者需要主动从Broker拉取数据，而不是等待Broker将数据推送过来。这种模式使得消费者可以根据自身处理能力来控制数据的获取速度。长轮询机制：在没有新消息可消费时，消费者会使用长轮询机制等待新消息到达。消费者调用poll()方法时可以设置超时时间（timeout），这样如果没有新消息，消费者会在等待一段时间后返回，并在下次调用poll()时继续尝试获取新消息。提交偏移量：消费者在消费过程中会跟踪每个分区的消费进度，即偏移量（offset）。当消费者处理完消息后，它会提交当前的偏移量到Broker，以便在服务重启或故障恢复的情况下可以从准确的位置继续消费数据。故障恢复：如果消费者发生宕机等故障，由于Kafka会持久化消费者的偏移量信息，消费者可以在恢复后继续从之前提交的偏移量处消费数据，确保不丢失任何消息。消费者群组：Kafka支持多个消费者组成一个群组共同消费一个主题。在一个群组内，每个消费者会被分配不同的分区来消费，从而实现负载均衡和横向伸缩。同一个分区不能被一个群组内的多个消费者同时消费。数据处理：消费者在拉取到数据后，可以根据自己的业务逻辑对数据进行处理，比如进行实时流处理或者存储到数据库中进行离线分析。 综上所述，Kafka的Consumer通过上述流程高效地从Broker拉取并处理数据，这些特性使得Kafka能够在高吞吐量和可扩展性方面表现出色，适合处理大规模数据流的场景。
+Kafka中的过期数据处理机制 kafka作为一个消息中间件，是需要定期处理数据的，否则磁盘就爆了。
+处理的机制 根据数据的时间长短进行清理，例如数据在磁盘中超过多久会被清理（默认是168个小时） 根据文件大小的方式给进行清理，例如数据大小超过多大时，删除数据（大小是按照每个partition的大小来界定的）。 删除过期的日志的方式 Kafka通过日志清理机制来删除过期的日志，主要依赖于两个配置参数来实现这一功能：
+日志保留时间：通过设置log.retention.hours参数，可以指定日志文件的保留时间。当日志文件的保存时间超过这个设定值时，这些文件将被删除。日志清理策略：Kafka支持两种日志清理策略，分别是delete和compact。delete策略会根据数据的保存时间或日志的最大大小来进行删除。而compact策略则是根据消息中的key来进行删除操作，通常用于特定类型的主题，如__consumer_offsets。 此外，在Kafka 0.9.0及更高版本中，日志清理功能默认是开启的（log.cleaner.enable默认为true）。这意味着Kafka会自动运行清理线程来执行定时清理任务。
+综上所述，Kafka通过结合保留时间和清理策略的配置，实现了对过期日志的有效管理。这些机制确保了系统资源的合理利用，同时避免了因日志无限增长而导致的潜在问题" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/1fc852963434f6c4c1d7e70d8fba0ad0/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2024-03-03T10:01:05+08:00" />
+<meta property="article:modified_time" content="2024-03-03T10:01:05+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">深入了解Kafka的文件存储原理</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <h2><strong>Kafka简介</strong></h2> 
+<p>Kafka最初由Linkedin公司开发的分布式、分区的、多副本的、多订阅者的消息系统。它提供了类似于JMS的特性，但是在设计实现上完全不同，此外它并不是JMS规范的实现。kafka对消息保存是根据Topic进行归类，发送消息者称为Producer；消息接受者称为Consumer；此外kafka集群有多个kafka实例组成，每个实例(server)称为broker。无论是kafka集群，还是producer和consumer都依赖于zookeeper来保证系统可用性集群保存一些meta信息（kafka的0.8版本之后，producer不在依赖zookeeper保存meta信息，而是producer自己保存meta信息）。本文不打算对Apache Kafka的原理和实现进行介绍，而在编程的角度上介绍如何使用Apache Kafka。我们分别介绍如何编写Producer、Consumer以及Partitioner等。</p> 
+<h2><strong>Producer发送的消息是如何定位到具体的broker</strong></h2> 
+<ol><li><strong>生产者初始化</strong>：Producer在初始化时会加载配置参数，并开启网络线程准备发送消息。</li><li><strong>拦截器逻辑</strong>：Producer可以设置拦截器来预处理消息，例如，修改或者丰富消息内容。</li><li><strong>序列化</strong>：Producer将处理后的消息key/value进行序列化，以便在网络上传输。</li><li><strong>分区策略</strong>：Producer会根据分区策略选择一个合适的分区，这个分区策略可以是轮询、随机或者根据key的哈希值等。</li><li><strong>选择Broker</strong>：Producer并不直接将消息发送到指定的Broker，而是将消息发送到所选分区的leader副本所在的Broker。如果一个主题有多个分区，这些分区会均匀分布在集群中的Broker上。每个分区都有一个leader副本，Producer总是将消息发送到leader副本，然后由leader副本负责同步到follower副本。</li><li><strong>发送模式</strong>：Producer发送消息的模式主要有三种：发后即忘（不关心结果），同步发送（等待结果），以及异步发送（通过Future对象跟踪状态）。</li><li><strong>缓冲和批量发送</strong>：为了提高效率，Producer会先将消息收集到一个批次中，然后再一次性发送到Broker。</li><li><strong>可靠性配置</strong>：Producer可以通过设置<code>request.required.acks</code>参数来控制消息的可靠性级别，例如，设置为"all"时，需要所有in-sync replicas都确认接收后才认为消息发送成功。</li><li><strong>失败重试</strong>：如果请求失败，Producer会根据配置的<code>retries</code>参数来决定是否重试发送消息。</li></ol> 
+<p>Kafka的Producer通过一系列步骤来确定消息的发送目标，其中分区策略和leader副本的选择是关键步骤，确保了消息能够正确地发送到相应的Broker。同时，通过合理的配置和重试机制，Producer能够保证消息的可靠性和系统的健壮性。</p> 
+<h2><strong>Kafka存储文件长什么样</strong></h2> 
+<p>在kafka集群中，每个broker（一个kafka实例称为一个broker）中有多个topic，topic数量可以自己设定。在每个topic中又有多个partition，每个partition为一个分区。kafka的分区有自己的命名的规则，它的命名规则为topic的名称+有序序号，这个序号从0开始依次增加。</p> 
+<p class="img-center"><img alt="图片" height="473" src="https://images2.imgbox.com/9d/5d/YyqPJubc_o.png" width="700"></p> 
+<p>在每个partition中有可以分为多个segment file。当生产者往partition中存储数据时，内存中存不下了，就会往segment file里面存储。kafka默认每个segment file的大小是500M，在存储数据时，会先生成一个segment file，当这个segment file到500M之后，再生成第二个segment file 以此类推。每个segment file对应两个文件，分别是以.log结尾的数据文件和以.index结尾的索引文件。</p> 
+<p>具体来说，Kafka中的每个分区（Partition）由一个或多个Segment组成。每个Segment实际上是磁盘上的一个目录，这个目录下面会包含几个特定的文件：</p> 
+<ol><li><strong>.log文件</strong>：这是真正存储消息数据的地方。每个Segment有一个对应的.log文件，它存储了属于这个Segment的所有消息。</li><li><strong>.index文件</strong>：索引文件，用于快速定位到.log文件中的具体消息。通过.index文件可以高效地查找消息所在的.log文件位置。</li><li><strong>.timeindex文件</strong>（可选）：如果启用了时间戳索引，还会有这个文件。它用于按时间戳高效检索消息。</li></ol> 
+<p>此外，Segment作为Kafka中数据组织的基本单位，设计成固定大小，这样做可以方便地进行数据的清理和压缩，同时保证性能。当一个Segment文件写满后，Kafka会自动创建一个新的Segment来继续存储数据。旧的Segment文件在满足一定条件（如被消费且达到一定的保留期）后会被删除，释放磁盘空间。</p> 
+<p class="img-center"><img alt="图片" height="323" src="https://images2.imgbox.com/a3/0a/FHfYWWYV_o.png" width="500"></p> 
+<p>每个segment file也有自己的命名规则，每个名字有20个字符，不够用0填充。每个名字从0开始命名，下一个segment file文件的名字就是上一个segment file中最后一条消息的索引值。在.index文件中，存储的是key-value格式的，key代表在.log中按顺序开始第条消息，value代表该消息的位置偏移。但是在.index中不是对每条消息都做记录，它是每隔一些消息记录一次，避免占用太多内存。即使消息不在index记录中在已有的记录中查找，范围也大大缩小了。 </p> 
+<h2><strong>Consumer如何消费数据</strong></h2> 
+<p>Kafka中的Consumer通过以下步骤来消费数据：</p> 
+<ol><li><strong>创建消费者实例</strong>：需要创建一个消费者实例，并指定一些关键配置，如消费者所属的群组、Topic名称以及与服务器通信的相关设置。</li><li><strong>订阅主题</strong>：创建好的消费者实例需要订阅一个或多个主题，以便开始接收消息。</li><li><strong>拉取数据</strong>：与一些消息系统采用的推送模式不同，Kafka的消费者采用的是“拉取”模式。这意味着消费者需要主动从Broker拉取数据，而不是等待Broker将数据推送过来。这种模式使得消费者可以根据自身处理能力来控制数据的获取速度。</li><li><strong>长轮询机制</strong>：在没有新消息可消费时，消费者会使用长轮询机制等待新消息到达。消费者调用<code>poll()</code>方法时可以设置超时时间（timeout），这样如果没有新消息，消费者会在等待一段时间后返回，并在下次调用<code>poll()</code>时继续尝试获取新消息。</li><li><strong>提交偏移量</strong>：消费者在消费过程中会跟踪每个分区的消费进度，即偏移量（offset）。当消费者处理完消息后，它会提交当前的偏移量到Broker，以便在服务重启或故障恢复的情况下可以从准确的位置继续消费数据。</li><li><strong>故障恢复</strong>：如果消费者发生宕机等故障，由于Kafka会持久化消费者的偏移量信息，消费者可以在恢复后继续从之前提交的偏移量处消费数据，确保不丢失任何消息。</li><li><strong>消费者群组</strong>：Kafka支持多个消费者组成一个群组共同消费一个主题。在一个群组内，每个消费者会被分配不同的分区来消费，从而实现负载均衡和横向伸缩。同一个分区不能被一个群组内的多个消费者同时消费。</li><li><strong>数据处理</strong>：消费者在拉取到数据后，可以根据自己的业务逻辑对数据进行处理，比如进行实时流处理或者存储到数据库中进行离线分析。</li></ol> 
+<p>综上所述，Kafka的Consumer通过上述流程高效地从Broker拉取并处理数据，这些特性使得Kafka能够在高吞吐量和可扩展性方面表现出色，适合处理大规模数据流的场景。</p> 
+<h2><strong>Kafka中的过期数据处理机制</strong></h2> 
+<p> kafka作为一个消息中间件，是需要定期处理数据的，否则磁盘就爆了。</p> 
+<h3>处理的机制</h3> 
+<ul><li>根据数据的时间长短进行清理，例如数据在磁盘中超过多久会被清理（默认是168个小时） </li><li>根据文件大小的方式给进行清理，例如数据大小超过多大时，删除数据（大小是按照每个partition的大小来界定的）。</li></ul> 
+<h3>删除过期的日志的方式</h3> 
+<p>Kafka通过日志清理机制来删除过期的日志，主要依赖于两个配置参数来实现这一功能：</p> 
+<ul><li><strong>日志保留时间</strong>：通过设置<code>log.retention.hours</code>参数，可以指定日志文件的保留时间。当日志文件的保存时间超过这个设定值时，这些文件将被删除。</li><li><strong>日志清理策略</strong>：Kafka支持两种日志清理策略，分别是<code>delete</code>和<code>compact</code>。<code>delete</code>策略会根据数据的保存时间或日志的最大大小来进行删除。而<code>compact</code>策略则是根据消息中的key来进行删除操作，通常用于特定类型的主题，如<code>__consumer_offsets</code>。</li></ul> 
+<p>此外，在Kafka 0.9.0及更高版本中，日志清理功能默认是开启的（<code>log.cleaner.enable</code>默认为true）。这意味着Kafka会自动运行清理线程来执行定时清理任务。</p> 
+<p>综上所述，Kafka通过结合保留时间和清理策略的配置，实现了对过期日志的有效管理。这些机制确保了系统资源的合理利用，同时避免了因日志无限增长而导致的潜在问题</p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/cfa370d76f1bb80a540927a6d23bea93/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">CDN技术解析：构建快速、可靠的内容分发网络</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/84ab1e0e407cfd9f694f2bc2685dd343/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">Excel MATCH函数 两张顺序不同表格,统一排序</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

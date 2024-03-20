@@ -1,0 +1,320 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>基于stm32的简单车牌识别原理 - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="基于stm32的简单车牌识别原理" />
+<meta property="og:description" content="前言
+车牌识别的目的是交通牌照识别系统，用于交通违法拍照，停车缴费等交通应用场景，车牌识别的流程可分为车牌定位和字符识别两个部分，传统的车牌定位算法常采用二值化分割加上边缘提取，然后进行目标晒选，常采用连线法和车牌宽高比确定真实车牌，定位到车牌位置后再进行OCR字符分割，为了高精度的车牌定位和字符识别，目前引入了深度学习算法进行精准识别和处理。但是，本文所要讲述的是一种基于stm32单片机的车牌识别实现，使用上述高级算法和复杂计算是不现实的，因此，总结出一套可行的，能简单进行车牌定位和字符分割识别的算法，供大家参考和学习。
+1.车牌识别基本原理
+本文讲述的是基于stm32单片机的车牌识别原理，包括车牌图像定位，字符分割，字符归一化处理，以及模板匹配等操作，当然如果芯片处理性能足够还可以加入旋转矫正，多车牌处理等，本文尽量采用最简单易懂的方法进行图像分割处理，同时加快处理速度。
+首先，讲一讲网络上大部分stm32F103车牌识别的硬件和软件实现，硬件采用的是stm32f103rct6&#43;OV7670&amp;FIFO&#43;16bit并口LCD屏；72M主频，不支持浮点运算等操作；
+软件实现过程大致如下：
+（1）OV7670带FIFO摄像头图像采集，采用GPIO模拟摄像头时序，通过读取FIFO输出值将图像直接显示在LCD屏上
+（2）LCD屏相当于一个图像缓存，同时也做显示，通过读取LCD屏上的像素值进行图像处理；
+（3）车牌定位处理，车牌定位常用二值化分割，腐蚀膨胀处理，连通域计算等操作，显然这些算法在stm32f1上实现是很困难的，且处理速度太慢，因此，采用RGB转HSV颜色空间变换和阈值选择进行车牌定位，然后将车牌定位区域进行二值化处理，不是蓝色车牌的部分就是字符区域；
+（4）车牌字符分割处理，字符分割先采用行统计加列统计的方式，确定每行和每列的有效像素和，进一步确定字符区域；然后进行横向统计分割，通过每一列的像素和阈值判断字符的分界线和个数；
+（5）车牌归一化处理，归一化处理先将每个字符提取出来，然后按照像素值进行横向和纵向压缩，最终处理成模板一样大小的字符；并在液晶屏上保存字符的数据；
+（6）模板匹配，将归一化之后的字符，与模板中的字符通过像素值一一比较，确定相似度最高的字符就是目标值；
+上述方法简单有效，但是对于图像模糊，杂色较多以及光照条件不同的情况下，识别效果会很差。
+2.基于stm32的车牌识别算法
+2.1基本硬件
+硬件采用stm32f407vet6（168M主频，192KB RAM）&#43;OV7670无fifo&#43;SPI-LCD（采用F407及以上具有DCMI数字摄像头接口的主芯片）；处理速度和内存都比F103强太多，因此不用采用读取像素值的方式，甚至不用液晶屏显示也能进行识别处理。
+2.2识别算法流程
+将车牌识别分为四个步骤，分别是双HSV颜色阈值定位，车牌旋转矫正，字符分割和提取，以及最终的车牌字符识别，全部采用的是传统图像处理算法，适合单片机运行。
+（1）基于双阈值HSV颜色空间的车牌定位
+首先，我们的车牌区域是具有双阈值特性的，蓝牌车具有蓝底白字的特性，绿牌车具有绿底黑字的特性，这种特性使得基于颜色空间进行定位分割是非常方便的（虽然受环境光照影响可能阈值不太准确，但是这种方法是最简单且有效的），通过颜色阈值分割之后，再根据车牌长宽比进行真实车牌目标的定位。
+（2）基于霍夫变换的车牌矫正
+对于定位之后的车牌，再进行二值化处理和边界计算，可以得到车牌的边界线，根据霍夫变换寻找车牌边界上的最长线段，计算线段的偏转角度进行车牌旋转矫正，矫正之后的车牌区域再进行字符分割，能增加准确率。通过矫正之后，建议先将车牌图像进行归一化处理，即，将车牌区域进行剪裁和缩放到固定大小，便于后续处理。
+（3）字符分割和提取
+首先对二值化的车牌进行滤波处理，去除一些杂质，然后根据线段分割法，计算车牌水平和垂直方向投影的像素线段长度，可以分割出每个字符所在的区域，但是由于车牌的边缘固定件，车牌污渍的影响，此时需要做非字符区域去除，首先去除车牌固定件影响的区域，通过水平投影线计算车牌的上下界限，将车牌外部的边缘排除出去，然后进行局部边缘滤波，去除污渍，最后车牌部分分割，并提取出来进行下一步处理；
+常用简单滤波方法有，中值滤波，局部均方差滤波，高斯滤波，盒子滤波，拉普拉斯边缘增强等等，边缘提取算法有sobel算子，pewrit算子，canny算子等，可在车牌字符区域处理过程中综合运用
+（4）字符识别
+将车牌部分字符提取出来后，先将字符做归一化处理，采用图像缩放算法进行字符大小调整到统一尺寸，然后做字符指纹图转换（将8bit转换成1bit，便于字符指纹比对），最后采用模板匹配算法计算目标字符与模板的相似度，这里可以采用逐一像素比对法，也可以采用余弦距离计算，最后将相似度最高的模板做标记，车牌的全部字符处理完成可得到最终的结果。
+2.3 图像处理算法
+以下讲述几种可用于车牌图像处理的算法，其中LAB颜色阈值处理可比HSV颜色阈值精准度更好一些，可做参考
+（1）RGB转LAB颜色空间
+直接查表法最快最简单，这里直接引用openmv中的算法，具体可以在openmv 的github上查看。
+#define COLOR_RGB565_TO_R8(pixel) \ ({ \ __typeof__ (pixel) __pixel = (pixel); \ __pixel = (__pixel &gt;&gt; 8) &amp; 0xF8; \ __pixel | (__pixel &gt;&gt; 5); \ }) #define COLOR_RGB565_TO_G8(pixel) \ ({ \ __typeof__ (pixel) __pixel = (pixel); \ __pixel = (__pixel &gt;&gt; 3) &amp; 0xFC; \ __pixel | (__pixel &gt;&gt; 6); \ }) #define COLOR_RGB565_TO_B8(pixel) \ ({ \ __typeof__ (pixel) __pixel = (pixel); \ __pixel = (__pixel &lt;&lt; 3) &amp; 0xF8; \ __pixel | (__pixel &gt;&gt; 5); \ })	int8_t imlib_rgb565_to_l(uint16_t pixel) { float r_lin = xyz_table[COLOR_RGB565_TO_R8(pixel)]; float g_lin = xyz_table[COLOR_RGB565_TO_G8(pixel)]; float b_lin = xyz_table[COLOR_RGB565_TO_B8(pixel)]; float y = ((r_lin * 0." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/86f1f2246fb3295d86cca3fe74f9888a/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2022-07-27T08:49:49+08:00" />
+<meta property="article:modified_time" content="2022-07-27T08:49:49+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">基于stm32的简单车牌识别原理</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p><strong>前言</strong><br> 车牌识别的目的是交通牌照识别系统，用于交通违法拍照，停车缴费等交通应用场景，车牌识别的流程可分为车牌定位和字符识别两个部分，传统的车牌定位算法常采用二值化分割加上边缘提取，然后进行目标晒选，常采用连线法和车牌宽高比确定真实车牌，定位到车牌位置后再进行OCR字符分割，为了高精度的车牌定位和字符识别，目前引入了深度学习算法进行精准识别和处理。但是，本文所要讲述的是一种基于stm32单片机的车牌识别实现，使用上述高级算法和复杂计算是不现实的，因此，总结出一套可行的，能简单进行车牌定位和字符分割识别的算法，供大家参考和学习。<br> <strong>1.车牌识别基本原理</strong><br> 本文讲述的是基于stm32单片机的车牌识别原理，包括车牌图像定位，字符分割，字符归一化处理，以及模板匹配等操作，当然如果芯片处理性能足够还可以加入旋转矫正，多车牌处理等，本文尽量采用最简单易懂的方法进行图像分割处理，同时加快处理速度。<br> 首先，讲一讲网络上大部分stm32F103车牌识别的硬件和软件实现，硬件采用的是stm32f103rct6+OV7670&amp;FIFO+16bit并口LCD屏；72M主频，不支持浮点运算等操作；<br> 软件实现过程大致如下：<br> （1）OV7670带FIFO摄像头图像采集，采用GPIO模拟摄像头时序，通过读取FIFO输出值将图像直接显示在LCD屏上<br> （2）LCD屏相当于一个图像缓存，同时也做显示，通过读取LCD屏上的像素值进行图像处理；<br> （3）车牌定位处理，车牌定位常用二值化分割，腐蚀膨胀处理，连通域计算等操作，显然这些算法在stm32f1上实现是很困难的，且处理速度太慢，因此，采用RGB转HSV颜色空间变换和阈值选择进行车牌定位，然后将车牌定位区域进行二值化处理，不是蓝色车牌的部分就是字符区域；<br> （4）车牌字符分割处理，字符分割先采用行统计加列统计的方式，确定每行和每列的有效像素和，进一步确定字符区域；然后进行横向统计分割，通过每一列的像素和阈值判断字符的分界线和个数；<br> （5）车牌归一化处理，归一化处理先将每个字符提取出来，然后按照像素值进行横向和纵向压缩，最终处理成模板一样大小的字符；并在液晶屏上保存字符的数据；<br> （6）模板匹配，将归一化之后的字符，与模板中的字符通过像素值一一比较，确定相似度最高的字符就是目标值；<br> 上述方法简单有效，但是对于图像模糊，杂色较多以及光照条件不同的情况下，识别效果会很差。<br> <strong>2.基于stm32的车牌识别算法</strong><br> <strong>2.1基本硬件</strong><br> 硬件采用stm32f407vet6（168M主频，192KB RAM）+OV7670无fifo+SPI-LCD（采用F407及以上具有DCMI数字摄像头接口的主芯片）；处理速度和内存都比F103强太多，因此不用采用读取像素值的方式，甚至不用液晶屏显示也能进行识别处理。<br> <strong>2.2识别算法流程</strong><br> 将车牌识别分为四个步骤，分别是双HSV颜色阈值定位，车牌旋转矫正，字符分割和提取，以及最终的车牌字符识别，全部采用的是传统图像处理算法，适合单片机运行。</p> 
+<p>（1）基于双阈值HSV颜色空间的车牌定位<br> 首先，我们的车牌区域是具有双阈值特性的，蓝牌车具有蓝底白字的特性，绿牌车具有绿底黑字的特性，这种特性使得基于颜色空间进行定位分割是非常方便的（虽然受环境光照影响可能阈值不太准确，但是这种方法是最简单且有效的），通过颜色阈值分割之后，再根据车牌长宽比进行真实车牌目标的定位。<br> （2）基于霍夫变换的车牌矫正<br> 对于定位之后的车牌，再进行二值化处理和边界计算，可以得到车牌的边界线，根据霍夫变换寻找车牌边界上的最长线段，计算线段的偏转角度进行车牌旋转矫正，矫正之后的车牌区域再进行字符分割，能增加准确率。通过矫正之后，建议先将车牌图像进行归一化处理，即，将车牌区域进行剪裁和缩放到固定大小，便于后续处理。<br> （3）字符分割和提取<br> 首先对二值化的车牌进行滤波处理，去除一些杂质，然后根据线段分割法，计算车牌水平和垂直方向投影的像素线段长度，可以分割出每个字符所在的区域，但是由于车牌的边缘固定件，车牌污渍的影响，此时需要做非字符区域去除，首先去除车牌固定件影响的区域，通过水平投影线计算车牌的上下界限，将车牌外部的边缘排除出去，然后进行局部边缘滤波，去除污渍，最后车牌部分分割，并提取出来进行下一步处理；<br> 常用简单滤波方法有，中值滤波，局部均方差滤波，高斯滤波，盒子滤波，拉普拉斯边缘增强等等，边缘提取算法有sobel算子，pewrit算子，canny算子等，可在车牌字符区域处理过程中综合运用<br> （4）字符识别<br> 将车牌部分字符提取出来后，先将字符做归一化处理，采用图像缩放算法进行字符大小调整到统一尺寸，然后做字符指纹图转换（将8bit转换成1bit，便于字符指纹比对），最后采用模板匹配算法计算目标字符与模板的相似度，这里可以采用逐一像素比对法，也可以采用余弦距离计算，最后将相似度最高的模板做标记，车牌的全部字符处理完成可得到最终的结果。<br> <strong>2.3 图像处理算法</strong><br> 以下讲述几种可用于车牌图像处理的算法，其中LAB颜色阈值处理可比HSV颜色阈值精准度更好一些，可做参考<br> （1）RGB转LAB颜色空间<br> 直接查表法最快最简单，这里直接引用openmv中的算法，具体可以在openmv 的github上查看。</p> 
+<pre><code>#define COLOR_RGB565_TO_R8(pixel) \
+({ \
+__typeof__ (pixel) __pixel = (pixel); \
+__pixel = (__pixel &gt;&gt; 8) &amp; 0xF8; \
+__pixel | (__pixel &gt;&gt; 5); \
+})
+
+#define COLOR_RGB565_TO_G8(pixel) \
+({ \
+ __typeof__ (pixel) __pixel = (pixel); \
+    __pixel = (__pixel &gt;&gt; 3) &amp; 0xFC; \
+    __pixel | (__pixel &gt;&gt; 6); \
+})
+#define COLOR_RGB565_TO_B8(pixel) \
+({ \
+   __typeof__ (pixel) __pixel = (pixel); \
+   __pixel = (__pixel &lt;&lt; 3) &amp; 0xF8; \
+   __pixel | (__pixel &gt;&gt; 5); \
+ })	
+int8_t imlib_rgb565_to_l(uint16_t pixel)
+{   
+float r_lin = xyz_table[COLOR_RGB565_TO_R8(pixel)];    
+	float g_lin = 	xyz_table[COLOR_RGB565_TO_G8(pixel)];   
+	float b_lin = xyz_table[COLOR_RGB565_TO_B8(pixel)];
+	float y = ((r_lin * 0.2126f) + (g_lin * 0.7152f) + (b_lin * 0.0722f)) * (1.0f / 100.000f);
+	y = (y&gt;0.008856f) ? fast_cbrtf(y) : ((y * 7.787037f) + 0.137931f);	    
+	return fast_floorf(116 * y) - 16;
+}
+	
+int8_t imlib_rgb565_to_a(uint16_t pixel)
+{  
+	 float r_lin = xyz_table[COLOR_RGB565_TO_R8(pixel)];   
+	 float g_lin =  xyz_table[COLOR_RGB565_TO_G8(pixel)];  
+	 float b_lin =  xyz_table[COLOR_RGB565_TO_B8(pixel)];
+	 float x = ((r_lin * 0.4124f) + (g_lin * 0.3576f) + (b_lin * 0.1805f)) * (1.0f / 095.047f);    float y = ((r_lin * 0.2126f) + (g_lin * 0.7152f) + (b_lin * 0.0722f)) * (1.0f / 100.000f);
+	 x = (x&gt;0.008856f) ? fast_cbrtf(x) : ((x * 7.787037f) + 0.137931f);    y = (y&gt;0.008856f) ? fast_cbrtf(y) : ((y * 7.787037f) + 0.137931f);		
+	 return fast_floorf(500 * (x-y));
+}
+
+int8_t imlib_rgb565_to_b(uint16_t pixel)
+{   
+	float r_lin = xyz_table[COLOR_RGB565_TO_R8(pixel)];   
+	float g_lin = xyz_table[COLOR_RGB565_TO_G8(pixel)];   
+	float b_lin = xyz_table[COLOR_RGB565_TO_B8(pixel)];				
+	float y = ((r_lin * 0.2126f) + (g_lin * 0.7152f) + (b_lin * 0.0722f)) * (1.0f / 100.000f);    float z = ((r_lin * 0.0193f) + (g_lin * 0.1192f) + (b_lin * 0.9505f)) * (1.0f / 108.883f);				
+	y = (y&gt;0.008856f) ? fast_cbrtf(y) : ((y * 7.787037f) + 0.137931f);    z = (z&gt;0.008856f) ? fast_cbrtf(z) : ((z * 7.787037f) + 0.137931f);				
+	return fast_floorf(200 * (y-z));
+}
+</code></pre> 
+<p>3）领域插值法图像缩放<br> void PicZoom_y8(unsigned char* Dst_y8,unsigned short Dst_width,unsigned short Dst_height, unsigned char*Src_y8,unsigned short Src_width,unsigned short Src_height)<br> {<!-- --><br> unsigned short y=0; <br> unsigned short x=0;<br> if ((0<mark>Dst_width)||(0</mark>Dst_height)||(0<mark>Src_width)||(0</mark>Src_height)) return;</p> 
+<pre><code>	unsigned short xrIntFloat_16=(Src_width&lt;&lt;8)/Dst_width+1;   //扩大倍数    
+	unsigned short yrIntFloat_16=(Src_height&lt;&lt;8)/Dst_height+1;    
+	 
+	unsigned char* pDstLine=Dst_y8;  
+	unsigned short srcy_16=0;    
+	  
+        for (y=0;y&lt;Dst_height;++y)   
+       {        
+             unsigned char* pSrcLine=((unsigned char*)((unsigned char*)Src_y8+Src_width*(srcy_16&gt;&gt;8)));    
+             unsigned short srcx_16=0;     
+             for (x=0;x&lt;Dst_width;++x)      
+              {          
+		pDstLine[x]=pSrcLine[srcx_16&gt;&gt;8];         
+		srcx_16+=xrIntFloat_16;       
+              }      
+               srcy_16+=yrIntFloat_16;    
+               pDstLine+=Dst_width;   
+      } 
+}
+</code></pre> 
+<p>（4）模板匹配算法</p> 
+<pre><code>/**
+* @function 欧几里得距离计算，用于图片相似度计算
+* @param[in] src1和src2，必须是相同大小灰度图片
+* @param[out] 欧几里得距离
+* @retval ERROR -1 错误
+* @par 2021年5月28日 zhengmf
+*/
+float Euclidean_Distance(unsigned char *Src1,unsigned char *Src2,int length,float Euclideandis)
+{
+	if(Src1==NULL||Src2==NULL)
+	{
+		return -1;
+	}
+	int sum=0;
+	int i=0;
+	for(i=0;i&lt;length;i++)
+	{
+		sum+=(int)pow((*Src1-*Src2),2);
+		Src1++;
+		Src2++;
+	}
+	
+	Euclideandis=(float)sqrt(sum);
+	return Euclideandis;
+}
+
+
+/**
+* @function 余弦相似度计算，用于图片相似度计算
+* @param[in] src1和src2，必须是相同大小灰度图片
+* @param[out] 余弦相似度
+* @retval 0 相似度小于0
+* @retval ERROR -1 错误
+* @retval CosineSimilar
+* @par 2021年5月28日 zhengmf
+*/
+float Cosine_Similarity(unsigned char *Src1,unsigned char *Src2,int length,float CosineSimilar)
+{
+	if(Src1==NULL||Src2==NULL)
+	{
+		return -1;
+	}
+	int sum=0,sum1=0,sum2=0;
+	float temp0=0,temp1=0;
+	int i=0;
+	for(i=0;i&lt;length;i++)
+	{
+	
+		sum+=(int)(*Src1)*(*Src2);
+		sum1+=(int)pow((*Src1),2);
+		sum2+=(int)pow((*Src2),2);
+		Src1++;
+		Src2++;
+	}
+	if(sum&lt;=0)
+	{
+		return 0;
+	}
+	temp0=(float)(sqrt(sum1));
+	temp1=(float)(sqrt(sum2));
+	CosineSimilar=(float)((sum/temp0)/temp1);
+
+	return CosineSimilar;
+}
+
+
+/**
+* @function 皮尔逊相似度计算，用于图片相似度计算
+* @param[in] src1和src2，必须是相同大小灰度图片
+* @param[out] 皮尔逊相似度
+* @retval ERROR -1 错误
+* @par 2021年5月28日 zhengmf
+*/
+float Pearson_Correlation(unsigned char *Src1,unsigned char *Src2,int length,float PearsonSimilar)
+{
+	if(Src1==NULL||Src2==NULL)
+	{
+		return -1;
+	}
+	unsigned char aver1=0,aver2=0;
+	int sum=0,sum1=0,sum2=0;
+	float temp0=0,temp1=0;
+	int i=0;
+	for(i=0;i&lt;length;i++)
+	{
+		sum1+=*Src1;
+		sum2+=*Src2;
+		Src1++;
+		Src2++;
+	}
+	aver1=(unsigned char)(sum1/length);
+	aver2=(unsigned char)(sum2/length);
+	sum1=0;
+	sum2=0;
+	
+	for(i=0;i&lt;length;i++)
+	{
+		sum+=(int)(*Src1-aver1)*(*Src2-aver2);
+		sum1+=(int)pow((*Src1-aver1),2);
+		sum2+=(int)pow((*Src2-aver2),2);
+		Src1++;
+		Src2++;
+	}
+	if(sum&lt;=0)
+	{
+		return 0;
+	}
+	temp0=(float)(sqrt(sum1));
+	temp1=(float)(sqrt(sum2));
+	PearsonSimilar=(float)((sum/temp0)/temp1);		
+	return PearsonSimilar;
+}
+</code></pre>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/a1b20a069c7b4f8f8059283ae33b82ee/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">网络之以太网</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/538da2a83202630013e51391d38689ac/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">HFSS过孔建模</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

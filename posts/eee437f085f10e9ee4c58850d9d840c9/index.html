@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>LWN 翻译：Atomic Mode Setting 设计简介（上） - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="LWN 翻译：Atomic Mode Setting 设计简介（上）" />
+<meta property="og:description" content="译者注
+本文翻译自 Daniel Vetter（Intel，Linux DRM maintainer） 于 2015 年 8 月 5 日在 LWN 上发表的关于 DRM Atomic Mode Setting 的文章。该文章虽然是在五年前发表的，但是它的核心思想至今仍然没有改变，非常值得一读。通过阅读本文，你将了解以下内容：
+Atomic mode setting 产生的背景Atomic KMS 与谷歌 ADF 相比有哪些优势TEST_ONLY 模式的正确打开方式KMS state 的使用方法Atomic check 和 commit 的功能
+原文链接：https://lwn.net/Articles/653071/
+Atomic mode setting design overview, part 1 在过去的几年时间里，两大趋势促使我们急需一套全新的 kernel Display 驱动接口。一方面，当 GUI 内容发生变化时，人们不再欣赏局部重绘和窗口切割。像 Wayland 这种以 “每一帧都是完美的（every frame is perfect）” 为口号的 Compositor 也随之诞生。另一方面，采用电池供电的手机和平板电脑，它们有着绚丽的图形界面，但对功耗却有着严格的限制，这就促使一大批特殊用途的显示硬件应运而生，以此来辅助更加通用但极其耗电的 GPU，完成屏幕显示内容的合成工作。将这些趋势结合在一起，就需要以 “要么全有要么全无” 的原子（atomic）方式更新大量显示硬件状态（state），以确保每一帧都是完美的，并尽可能地使用那些专门为功耗优化而设计的显示硬件。
+经过几年的开发，Direct Rendering Manager (DRM，直接渲染管理器) 驱动程序的原子更新（atomic update） ioctl 终于随着 Dave Airlie 的 Pull Request（合入请求）一起合入到了 linux-4." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/eee437f085f10e9ee4c58850d9d840c9/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2020-12-21T22:45:09+08:00" />
+<meta property="article:modified_time" content="2020-12-21T22:45:09+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">LWN 翻译：Atomic Mode Setting 设计简介（上）</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <blockquote> 
+ <p><strong>译者注</strong><br><br> 本文翻译自 Daniel Vetter（Intel，Linux DRM maintainer） 于 2015 年 8 月 5 日在 LWN 上发表的关于 DRM Atomic Mode Setting 的文章。该文章虽然是在五年前发表的，但是它的核心思想至今仍然没有改变，非常值得一读。通过阅读本文，你将了解以下内容：</p> 
+ <ul><li>Atomic mode setting 产生的背景</li><li>Atomic KMS 与谷歌 ADF 相比有哪些优势</li><li>TEST_ONLY 模式的正确打开方式</li><li>KMS state 的使用方法</li><li>Atomic check 和 commit 的功能<br> <br></li></ul> 
+ <p>原文链接：<a href="https://lwn.net/Articles/653071/" rel="nofollow">https://lwn.net/Articles/653071/</a></p> 
+</blockquote> 
+<h2><a id="Atomic_mode_setting_design_overview_part_1_11"></a>Atomic mode setting design overview, part 1</h2> 
+<p>在过去的几年时间里，两大趋势促使我们急需一套全新的 kernel Display 驱动接口。一方面，当 GUI 内容发生变化时，人们不再欣赏局部重绘和窗口切割。像 Wayland 这种以 <strong>“每一帧都是完美的（every frame is perfect）”</strong> 为口号的 Compositor 也随之诞生。另一方面，采用电池供电的手机和平板电脑，它们有着绚丽的图形界面，但对功耗却有着严格的限制，这就促使一大批特殊用途的显示硬件应运而生，以此来辅助更加通用但极其耗电的 GPU，完成屏幕显示内容的合成工作。将这些趋势结合在一起，就需要以 <strong>“要么全有要么全无”</strong> 的原子（atomic）方式更新大量显示硬件状态（state），以确保每一帧都是完美的，并尽可能地使用那些专门为功耗优化而设计的显示硬件。</p> 
+<p>经过几年的开发，<strong>Direct Rendering Manager</strong> (DRM，直接渲染管理器) 驱动程序的原子更新（atomic update） ioctl 终于随着 Dave Airlie 的 <a href="http://mid.mail-archive.com/alpine.DEB.2.00.1506260158440.13786@skynet.skynet.ie" rel="nofollow">Pull Request</a>（合入请求）一起合入到了 linux-4.2 主线中。这是一条漫长的道路，许多<a href="http://blog.ffwll.ch/2014/11/atomic-modeset-support-for-kms-drivers.html" rel="nofollow">驱动程序</a>已经转换为 atomic 驱动，而更多的驱动则还在转换的过程中，而且 DRM 子系统中的 <a href="http://blog.ffwll.ch/2015/01/update-for-atomic-display-updates.html" rel="nofollow">atomic helper 函数库和支持代码</a>已经完善的差不多了。但真正缺少的是对整个 atomic 框架设计的介绍，以及为什么某些决策和细节要这样去实现。</p> 
+<p>本文总共分为上下两篇，这是第一篇。本篇将首先回顾 kernel mode-setting 支持的历史，阐述老的接口是如何产生的，以及为什么它们不再适用了。然后介绍 out-of-tree （即 kernel 主线之外）的解决方案，最后介绍已合入的 atomic display 刷新接口是长什么样子的。在第二篇文章中我们将深入研究这些接口实现的具体细节。</p> 
+<p>在深入了解所有细节之前，需要先简单介绍一下如今的 Display 硬件是如何在 DRM 子系统中进行抽象的。首先是 <code>drm_connector</code> 结构体，它表示一个屏幕，无论是集成在主板上还是外接的显示屏。注意，如今的 connector 是可以支持热插拔的，因为 DisplayPort 支持在一根电缆上对多个设备进行分支和多路复用，类似于其他外设总线。在另一端是 <code>drm_plane</code> 结构体，它表示一个扫描引擎（scanout engine），该引擎从 <code>drm_framebuffer</code> 所表示的内存中读取像素数据，并将其发送给显示硬件。</p> 
+<p>为了让驱动程序支持所有的硬件特性，尤其是超出每个 object 核心数据结构所能支持的硬件特性，DRM 引入了 property （属性），这些 property 可以绑定（attach）到任意 DRM object 上。property 的类型有很多种，每种类型接受特定的输入参数，比如枚举（例如在 pillarbox 和 letterbox 之间切换缩放模式）或整数范围（如亮度控制）。</p> 
+<p>对于一个高级的硬件而言，它的 plane 可以在输出矩形中自由偏移、缩放以及其它参数的调整，而它的两端（输入输出）则与 <code>drm_crtc</code> （用于表示 display pipeline）绑定在了一起。请注意 CRTC 的意思是“阴极射线管控制器”（cathode ray tube controller），它只不过是个历史遗留的缩略词而已。多个 plane 可以连接到同一个 CRTC 上，为其提供输入数据，这样的 display pipeline 再依次连接到一个或多个 <code>drm_connector</code> 上，从而最终在屏幕上显示真正的画面。CRTC 除了是整个链路的核心对象外，还负责跟踪其他参数的设置，如 display pipeline 的显示模式（如刷新率和分辨率）以及背景色（通常指没有可见图层区域的颜色）。</p> 
+<h3><a id="___ioctl__property_24"></a>旧世界 —— 一堆的 ioctl 和 property</h3> 
+<p>关于 mode-setting 的历史已经有更好更详细的<a href="http://ppaalanen.blogspot.ch/2014/06/from-pre-history-to-beyond-global.html" rel="nofollow">文章</a>了，因此我这里只重点介绍最近几年发生的变化。大约在 7 年前，kernel 显示驱动合入第一笔 <a href="https://git.kernel.org/cgit/linux/kernel/git/torvalds/linux.git/commit/?id=f453ba0460742ad027ae0c4c7d61e62817b3e7ef" rel="nofollow">KMS（kernel mode setting）patch</a>，预示着 kernel 显示驱动新时代的到来。当然，<a href="https://en.wikipedia.org/wiki/Linux_framebuffer" rel="nofollow">fbdev</a> 一直都存在，只是这个子系统从来没有获得对显存管理真正意义上的支持，在显示和渲染之间没有一个明确的划分，并且从来没有解决更多的问题。</p> 
+<p>最初的 KMS ioctl 命令是按照 X 的 user-space mode-setting 协议 <a href="http://www.x.org/wiki/Projects/XRandR/" rel="nofollow">XRandR</a> 建模的，也就是说这些 ioctl 能很好的在屏幕上单独设置模式，并将单个 primary framebuffer object（表示驱动程序特有的内存缓冲区）与该显示连接起来。这都是在旋转桌面立方体成为新潮流时设计出来的，那时每个人都想使用 3D 渲染引擎来合成桌面显示内容 —— 老式的视频叠加层（video overlay plane）彻底失去了人们的青睐（因为那样的桌面根本就无法动弹），因此根本不受支持。</p> 
+<p>当然，有个特例：光标支持。但它完全是一个独立的 ioctl，甚至都没有使用 KMS framebuffer object。无论是 primary framebuffer 更新操作还是 vertical blanking 事件，光标都没法与这些操作同步更新 —— X 无需也无法使用该 ioctl。如果不能与 VBLANK 保持同步（即 Vsync），屏幕重绘将与光标更新产生竞争，最终出现难看的撕裂（tearing effect）效果。于是后来添加了对 primary plane 的非阻塞更新（non-blocking update），以此来实现基于 Vsync 同步且无撕裂的更新操作。</p> 
+<p>当然，再后来智能手机和平板电脑出现了，于是再也不能用电源来显示了。突然间，overlay plane 又成为了新宠，因为它们在一些细分应用场景下更加省电，比如视频播放场景。KMS 通过<a href="https://git.kernel.org/cgit/linux/kernel/git/torvalds/linux.git/commit/?id=8cf5c9177151537e73ff1816540e4ba24b174391" rel="nofollow">新增 plane object</a> 和一组新的 ioctl 命令来实现对 overlay plane 的支持。</p> 
+<p>但是，就像光标更新一样，plane 的更新不能与其它任何操作保持同步，无论是 plane 更新还是 Vsync，都还是因为 X 做不了更多的事情，也不关心 upstream graphics。结果就是，对于相同硬件的不同实例，有三个不同的 ioctl 接口。Planes，无论是 Primary、Cursor 还是 Overlay，都接收一个 framebuffer object，然后以某种方式将其合成到一起，并将其发送给 display pipeline （在 KMS 中由 CRTC object 表示），后者再发送给 connector 和 panel。<a href="http://cgit.freedesktop.org/~airlied/linux/commit/?id=2844ea3f252331cc0ecf3ae74f6226db2f580f8a" rel="nofollow">要统一 plane 接口</a>其实相当简单：primary plane 和 cursor plane 必须导出给 userspace，以避免给原来的用户空间代码造成混淆。</p> 
+<p>但是，还是没有统一的 ioctl 能搞定这一切。例如，只有 primary plane 支持使用精确的 completion 事件来实现 non-blocking 更新，而且还没有什么接口能一次性更新多个 plane —— 用户空间必须进行多次 ioctl() 调用，并希望所有更新操作都能在同一帧里完成。很明显，对于像 Wayland 这样想要保证 <em>“每帧像素的更新都是完美的”</em> 现代 Compositor 来说，这是不可能做到的。</p> 
+<p>发生的另一件事则是向所有的 KMS object 添加 property 支持，这样就可以将硬件的其它特性轻松地导出给 userspace 了，如 plane 之间的合成方式、背景色的设置、旋转或直接输出。当然，这仍然是采用单独的 ioctl 命令来完成的。同样，因为 X 在引入这个的时候做的不够好，所以无法实现同步更新。这意味着破坏性的更新会很容易发生，举个例子，当旋转角度的值已经更新了，但 plane 的 buffer 却还没有更新到与该角度对应的画面内容。如果可能的话 —— 我们希望某些参数只能一起或以特定的顺序进行更新，比如在将 primary plane 切换到 memory-bandwidth-demanding 模式之前先关闭其它的 plane。</p> 
+<p>一切都乱糟糟的，急需解决。</p> 
+<h3><a id="Android_Atomic_Display_Framework__41"></a>Android Atomic Display Framework （原子显示框架）</h3> 
+<p>在 Upstream Graphics 之外，特别是在 Android 领域，情况甚至更糟。每个 GPU 厂商都有自己的 kernel-space、user-space API，所有的驱动程序都在重复造相同的轮子，只是方式略有不同而已。谷歌对这一现状很不满意，于是创建了 <a href="https://lwn.net/Articles/565422/" rel="nofollow">Atomic Display Framework </a>（ADF）原子显示框架。它借鉴了 upstream kernel mode-setting 的支持，但与此同时它又是一个全新的子系统。我并不打算在本文中讲解 ADF 的总体设计，因为它并不实用。相比之下，我更愿意聊聊 ADF 在 Upstream Graphics 中都有哪些使用上的不足:</p> 
+<ul><li> <p>ADF 对于整个显示设备而言只支持一个更新队列，这非常适合 Android 的 SurfaceFlinger，后者只有一个绘制循环体，对于大多数情况下只有一个屏幕的手机和平板电脑来说，这完全够用了。但是，如果您有多个屏幕，而它们通常以略微不同的刷新率运行，那么一个更新队列是远远不够的。你要么在帧率快的屏幕上延迟送显，要么在帧率慢的屏幕上直接丢弃某几帧，这两种方法都无法实现绝对流畅的动画。upstream kernel 中的 primary plane 非阻塞更新已经完全解耦了，像 Wayland 这样的 Compositor 已经支持了每个显示输出（per-output）拥有一个独立的绘制循环体，这对 ADF 而言是一个重大的功能缺失。</p> </li><li> <p>ADF 使用驱动程序特有的数据结构来描述 atomic update，这对 Android 来说没什么问题，因为它在 Hardware Composer 接口下实现了一个 GPU 所特有的 userspace 驱动程序（类似于 xf86-video-intel 这样的 X 设备驱动程序）。但 upstream 还希望支持通用的用户空间 Compositor，如 Wayland 或 xf86-video-modesetting X 驱动程序。ADF 有一个用于屏幕刷新的通用接口，但它只适用于简单的启动界面刷新。当然，我们总会面临某些 feature 只适用于某个特定的驱动程序，但是通过对驱动程序的 property 进行标准化处理，upstream DRM 已经具备了在通用 user-space 代码中支持任意功能的基础框架。</p> </li><li> <p>ADF 的原子特性只适用于 plane 的更新，而不适用于重新配置整个输出链路。同样，如果您只关心单个屏幕的使用场景，这也不是什么问题，但是在现代 GPU 上，当使用多个输出时，会有很多共享资源。通过循环遍历所有输出进行重新配置的幼稚方法很容易导致硬件不支持的状态发生，比如因为驱动程序用光了临时配置的显示时钟发生器。因此对于 upstream 而言，对整个 pipeline 的所有输出进行原子更新是必须要支持的。更重要的是，在冒着黑屏的风险去修改某些参数之前，需要有一些手段来检测该操作是否真正可行。</p> </li><li> <p>ADF 是一个<a href="https://lwn.net/Articles/336262/" rel="nofollow">独立的中间层子系统</a>。如果你的目标是在那 90% 的驱动里提高技术水平，ADF 确实能做的很好。但如果你的驱动恰巧在那不被支持的 10% 里，那就很痛苦了。尽管在一些 upstream DRM legacy 子系统中出现过一些糟糕的情况，但通过将所有接口经由 ioctl() 导出给驱动程序的回调接口 <em>（译者注：原文为 hook，钩子函数，本文统称为回调接口）</em>，并为所有常用 case 提供一个庞大的 helper 库，mode-setting 已经形成了一套良好的体系结构，这肯定是要保留下来的。</p> </li><li> <p>ADF 还有一套全新的 user-space ABI 和驱动程序接口，也就是说它所有的驱动都是和主线分隔开的。从向后兼容性和维护性角度来看，这是不可取的。</p> </li></ul> 
+<p>当然，这些问题并不那么容易解决。接下来的内容以及下一篇文章将更详细地进行讨论，并阐述这些问题在已合入的 Atomic 支持中是如何被解决的。</p> 
+<h3><a id="_56"></a>一个真正实用的驱动程序通用接口</h3> 
+<p>由于 DRM 已经支持了 property，很明显我们可以重用这部分作为 user-space ABI 的通用传输通道，用户空间只需要提供一个（object_id、property_id、value）三元组的列表即可。这一下子就实现了驱动程序的可扩展性 —— 用户空间对于不了解的 property 就不会去修改它。只要驱动程序在初始化时将所有 property 设置为合理的值（比如将 rotation property 设置为 “unrotated”），那么当加入新 feature 后，老的用户空间通用代码将依然能够正常工作。</p> 
+<p>当然，这个计划还是有一些差距的 —— 必须为已存在的元数据（metadata）添加 property，并使用一个特殊的 flag 来将其导出给那些只支持 atomic 的 user-space 程序。目前已经创建了一种新的 property type，它接受 KMS objects 作为 property 的 value 来设置显示链路。还有一些其他的代码需要调整，比如扩展 blob property 以便适用于 atomic update。</p> 
+<p>允许 <strong>部分参数更新</strong>（partial update）也解决了 kernel 内部向后兼容的问题：所有老的 KMS ioctl 命令都已支持部分参数更新，如果只允许 <strong>全部参数更新</strong>（full update），则意味着驱动程序需要同时支持 legacy 接口和 atomic 接口。有了部分参数 atomic update 支持，legacy 驱动的回调接口就可以直接使用 atomic helper 库函数来实现了。</p> 
+<p>最后，还有将硬件限制和驱动程序限制导出给用户空间的问题。这种情况很多，而且每次标准化一个新的 property 时，它就会变得更加复杂。试图在接口中明确地描述约束条件很快就被认为是不现实的，内核唯一能做的事情就是拒绝不可能实现的状态请求（甚至只是转换，因为有时这些都有可能成为约束条件）。但这需要驱动程序特有的用户空间代码 <em>（译者注：想想 Android HWComposer）</em>，导致为实现通用接口而付出的努力全都白费了。</p> 
+<p>相反，Atomic ioctl 支持 <code>DRM_MODE_ATOMIC_TEST_ONLY</code> flag，可以不真正向硬件提交更新。这样，通用用户空间就可以使用一些探测方法逐步构建它想要配置的状态，并每次测试该更新操作是否仍然有效，直到找到最大化配置参数。例如，Compositor 在使用硬件 plane 将给定的 client buffer 合成到屏幕上时，可以按照优先顺序逐个添加 plane，最后使用 OpenGL 来处理剩余的 client buffer。一旦一切准备就绪，它就可以将真正的更新操作塞入（queue）队列里，并且确信该操作是能被正确执行的（当然，前提是驱动程序没有 bug）。这样，用户空间的通用代码就可以使用具有各种限制的硬件，而无需在接口中显式地描述这些限制。当然，不可能每次做出的判断都是完美的，但在大多数情况下，这已经足够好了。</p> 
+<p>这些问题很快就解决了，大约自三年前<a href="http://www.spinics.net/lists/dri-devel/msg24399.html" rel="nofollow">第一笔 RFC patch</a> 出现以来，除了一些小的修补，上游 atomic user-space ABI 一直没有发生过变化。而花了几年时间才解决的一个大问题则是 DRM Core 到 vendor driver 的接口（core-to-driver）。仅仅将相同的三元素组合（property）以列表的形式传递给驱动程序是最简单的做法，而且也实现了概念验证（proof-of-concept）。但是，对于 kernel 用户来说，这意味着一个脆弱而冗长的接口，对于最终的 atomic 驱动的支持而言，将有太多这样的回调接口来处理每个 legacy ioctl 命令和 legacy user（如 fbdev emulator）。简单粗暴地传递解析后的数据结构（就像老的回调接口一样）也不见得是个好方案，因为有时我们会面临驱动程序私有扩展（driver-private extensions）和部分参数更新的需求。</p> 
+<p>当前已 merged 的解决方案十分简单粗暴。首先，每种 KMS object 类型都有一个通用的 state 结构体，你可以为其分配 property。例如，plane 的 state 结构体如下:</p> 
+<pre><code class="prism language-c"><span class="token keyword">struct</span> drm_plane_state <span class="token punctuation">{<!-- --></span>
+	<span class="token keyword">struct</span> drm_plane <span class="token operator">*</span>plane<span class="token punctuation">;</span>
+	<span class="token keyword">struct</span> drm_crtc <span class="token operator">*</span>crtc<span class="token punctuation">;</span>
+	<span class="token keyword">struct</span> drm_framebuffer <span class="token operator">*</span>fb<span class="token punctuation">;</span>
+
+	<span class="token comment">/* Signed dest location allows it to be partially off screen */</span>
+	int32_t crtc_x<span class="token punctuation">,</span> crtc_y<span class="token punctuation">;</span>
+	uint32_t crtc_w<span class="token punctuation">,</span> crtc_h<span class="token punctuation">;</span>
+
+	<span class="token comment">/* ... */</span>
+
+	<span class="token keyword">struct</span> drm_atomic_state <span class="token operator">*</span>state<span class="token punctuation">;</span>
+<span class="token punctuation">}</span><span class="token punctuation">;</span>
+</code></pre> 
+<p>每个 state 结构体都有一个与之对应的 object 的指针，紧随其后的是该 object 所对应的 KMS state 在 kernel 中解析后的参数。对于 plane 而言，它是一个指向 plane 所绑定的 CRTC 指针（表示一个 display pipeline），以及一个指向它应该扫描的 framebuffer 指针、plane 在显示窗口上的位置，以及为了方便阅读而省略的其他内容。最后还有一个指向 <code>drm_atomic_state</code> 结构体的反向指针，它用来跟踪每次更新操作时每个 object 的不同状态，从而允许在对象级别上进行部分参数更新。</p> 
+<p>当更新最终被提交（commit）时，state 指针将存储在每个 object 中，这里对 plane 而言则是 plane-&gt;state。当提交 state 时，plane-&gt;state-&gt;state 反向指针也会被清空，因为一旦提交，state 的数据结构就由驱动程序保管，而不再由更新操作时的结构体来维护。</p> 
+<p>object 中的部分参数更新是通过复制（duplicate）已有 state 来实现的。驱动程序私有扩展（driver-private extensions）的支持是通过将 <code>drm_plane_state</code> 嵌入到它们自己特有的 state 结构体中来实现的。也就是说需要有一个 <code>-&gt;atomic_duplicate_state()</code> 回调接口，它具有像 <code>drm_atomic_helper_plane_duplicate_state()</code> 这样的默认实现。由于 state 结构体指向的某些 object 会带引用计数（如 framebuffer），因此还需要有一个 <code>-&gt;atomic_destroy_state()</code> 回调接口用来销毁所有内容。所有的回调接口都有一个默认的实现，即使有些暂时还排不上用场 —— 通过这种方式，将一些 property 从 driver 特定的数据结构转移到 DRM Core 结构中，就很容易对它们的处理过程进行标准化操作。</p> 
+<p>这样，那些只实现了通用 property 的通用代码和驱动程序就不必直接处理原始 property ID 和 value 了，因为所有的解析都已在核心框架代码所实现的 atomic ioctl() 中完成了。对于特殊的驱动程序，我们还有 <code>-&gt;atomic_set_property()</code> 和 <code>-&gt;atomic_get_property()</code> 回调接口，它们同样是对 state 结构体进行操作，并用于解析其他新增的 property。</p> 
+<p>除了这些用来处理 per-object state 的功能函数与回调接口外，最主要的 atomic 驱动接口其实非常简单，就两个回调接口:</p> 
+<ul><li> <p><code>-&gt;atomic_check()</code> 需要确保本次 atomic update 操作是能被正确执行的。它只会从传入的 <code>drm_atomic_state</code> 中查看并写入 object 所对应的 state 结构体。一方面，这是为了确保 <code>TEST_ONLY</code> 模式不会突然改变已经稳定的硬件或软件状态。另一个方面则是为了确保并发更新操作不会意外地出现相互踩踏 —— duplicate state 操作也会在内部持有相关的锁。本系列文章的第 2 部分将更详细地讨论持锁。</p> </li><li> <p><code>-&gt;atomic_commit()</code> 会将已准备就绪且经 <code>-&gt;atomic_check()</code> 检查通过的 state 进行提交，并鼓励驱动程序将派生出来的 state（如显示 clock 参数）存储在其 state object 的私有数据结构中，以避免在 check 和 commit 回调函数中出现重复的代码逻辑。注意，为了驱动程序的健壮性，在 duplicate state object 时应该清空它的派生 state，以确保总是计算得到正确的值。commit 函数只允许因内存不足或硬件故障而返回失败，除此之外的其它任何异常（比如 GPU 缺少共享资源）都必须在前期的 check 回调接口中被提前捕获。</p> </li></ul> 
+<p>下一篇我将讨论关于异步更新和锁操作接口的更多细节。当然，驱动程序不必完全由自己来实现主要的 atomic 回调接口，因为这实现起来一点也不轻松 —— 我们还将介绍一个大型的 helper 库。</p> 
+<br> 
+<p>下一篇：<a href="https://blog.csdn.net/hexiaolong2009/article/details/111876034">LWN 翻译：Atomic Mode Setting 设计简介（下）</a></p> 
+<p><strong>文章汇总：</strong> <a href="https://blog.csdn.net/hexiaolong2009/article/details/83720940">DRM (Direct Rendering Manager) 学习简介</a></p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/a099c2c1242fce34847a42b1adfbae35/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">python 复制文件到剪贴板_python 剪贴板与文件复制操作</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/687d6ac2c293885602fe692e804ccfdb/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">经纬度换算数值_经纬度换算</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>如何使WPF在处理图像时表现得像Windows（解决DPI问题） - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="如何使WPF在处理图像时表现得像Windows（解决DPI问题）" />
+<meta property="og:description" content="目录
+介绍
+如何在WPF中显示图像
+旁注
+WPF位图类继承
+使WPF行为类似于Windows的第一种方法
+第二种失败的方法
+最终解决方案
+结语
+介绍 当Windows在“照片”中显示类似.jpg文件的图片时，它不关心文件的dpi（每英寸点数）设置。具有不同dpi设置但相同像素数的文件以相同的大小显示。以下是三个文件，它们都使用500 x 500像素，但dpi设置不同：
+WPF显示相同的图片，如下所示：
+如果编写的应用采用Windows程序生成的图像文件，更改图像中的某些内容，然后将其作为新的图像文件写回，则用户希望WPF应用的行为类似于传统的Windows应用，即以与Windows相同的大小显示图像。
+显示器的dpi设置也存在类似的差异。Windows对图像使用相同数量的“像素”，而不考虑监视器的dpi设置。请注意，用户可以在Windows中更改用于显示一个“像素”的监视器像素数。
+另一方面，WPF使用图像文件的dpi信息。如果该文件的宽度为96像素，DPI为96，则WPF会尝试在1 dpi监视器和96 dpi监视器上显示它192英寸长。在第一种情况下，它使用96个显示器像素，在第二种情况下使用192个显示器像素。
+不幸的是，在许多情况下，用户并不关心实际尺寸，而是希望看到整个图像，无论用户是看小手机屏幕、笔记本电脑屏幕还是巨大的电视屏幕。在1英寸电视上显示100英寸的图像有什么用？
+本文介绍如何编写代码，以便WPF像Windows一样处理图像。解决方案确实很简单，但我花了一个月的时间才弄清楚。
+如何在WPF中显示图像 显示图像文件的最简单的WPF代码是这样的：
+&lt;Image Source=&#34;SomePath\SomeImageFile.jpg&#34;/&gt; 当图形命令（矢量图形）中定义图形时，WPF图形系统效果最佳，例如使用特定粗细和颜色从A点到B点绘制一条线。
+旁注 绘制黑色1显示器像素线几乎是不可能的。问题在于，显示图形的控件被包含图形的其他Control定位，并且图像边框通常放置在2个监视器像素之间。其效果是将线条涂在2个像素上，并以灰色而不是黑色绘制。还涉及一个问题。许多人认为，当他们set StrokeThickness = 1时，他们会在监视器上获得1个像素。但根据显示器的dpi，1DIP可能会转换为多个像素或仅转换为像素的一部分。有一些属性，如SnapsToDevicePixels或GuidelineSet，应该会有所帮助，但我从未设法获得正确的黑色1像素线。
+但是，图像文件是面向像素的，这是WPF不太喜欢的。它将图像的像素值存储在位图中，该位图是一个名为BitmapSource的类，该类将像素存储在二维数组中，但该数组是隐藏的。如果要读取和写入像素，则需要使用继承自BitmapSource的WriteableBitmap。 Image使用派生自BitmapSource的内部类来存储像素。然后，它将位图的像素缩放为屏幕像素。
+要允许在显示位图之前对其进行处理，最好先将图像文件读入继承自BitmapSource的BitmapImage，然后将其分配给Image.Source。
+&lt;Image Stretch=&#34;None&#34;&gt; &lt;Image.Source&gt; &lt;BitmapImage UriSource=&#34;SomePath\SomeImageFile.jpg&#34; /&gt; &lt;/Image.Source&gt; &lt;/Image&gt; 通常，我更喜欢在XAML中仅定义与UI相关的控件，并在代码隐藏中执行所有其他操作：
+&lt;Image Name=&#34;MyImage&#34;/&gt; var bitmapImage= new BitmapImage(new Uri(&#34;SomePath\SomeImageFile.jpg&#34;)); MyImage.Source = bitmapSource; 图像是DIP中定义的FrameworkElement，并且具有Width和Height定义，并且可以是可视化树的一部分。BitmapImage不继承自Visual，因此不能在可视化树中使用。一些BitmapImage属性，它们都是readonly：
+PixelWidth、PixelHeight：位图的大小（以图像像素为单位）DpiX、DpiY：图像文件中指示的每英寸点数Width、Height：在设备无关像素中位图的大小。Width=96/DpiX*PixelWidth。它们通常具有与Image.ActualWidth和Image.ActualHeight不同的值。DecodePixelWidth，DecodePixelHeight：可以在读取图像文件之前使用，以指示生成的位图应该有多大。当您已经知道只需要图片的一个小版本（如缩略图）时，这会最小化位图大小。但是，当您想要处理图像并稍后在Windows中使用结果时，请不要给DecodeXxx一个值，这意味着位图将为每个像素包含与图像文件相同的值。 WPF位图类继承 在尝试理解WPF中的位图时，一个挑战是实际上存在相当多的位图类。以下是最重要的：
+Image是一个FrameworkElement。它不是位图，但在其Source属性中包含位图或矢量图形。ImageSource是位图或矢量图形的基类。它只有几个属性，基本上是使用DIP的图像的Height和Width。DrawingImage用于矢量图形，不属于本文的一部分。BitmapSource是所有其他位图类的基类。我认为它将位图的实际数据保存在二维数组中，这对程序员来说是不可见的。可以从包含像素值的整数数组创建一个BitmapSource，并将位图导出为整数数组。 这三个类用于创建位图：
+BitmapImage：读取图像文件BitmapFrame：用于存储可能具有多个帧（图像）的GIF文件RenderTargetBitmap：将WPF Visual呈现为位图 这三个类用于处理位图。它们将BitmapSource作为输入，并提供更改后的位图作为输出：
+TransformedBitmap：缩放和旋转BitmapSourceCroppedBitmap：只剪掉BitmapSource一部分WriteableBitmap：提供更改位图像素的方法 使WPF行为类似于Windows的第一种方法 起初，我认为这个问题很容易解决。如果WPF显示的图像是Windows中的两倍，则只需调整Image控件的大小即可。这可以通过如下布局转换轻松完成：
+//correct the monitor dpi var dpi = VisualTreeHelper." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/72fed80fa9b539b06fa92fcabb2697cb/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-12-29T20:26:33+08:00" />
+<meta property="article:modified_time" content="2023-12-29T20:26:33+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">如何使WPF在处理图像时表现得像Windows（解决DPI问题）</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p id="main-toc"><strong>目录</strong></p> 
+<p id="%E4%BB%8B%E7%BB%8D-toc" style="margin-left:0px;"><a href="#%E4%BB%8B%E7%BB%8D" rel="nofollow">介绍</a></p> 
+<p id="%E5%A6%82%E4%BD%95%E5%9C%A8WPF%E4%B8%AD%E6%98%BE%E7%A4%BA%E5%9B%BE%E5%83%8F-toc" style="margin-left:0px;"><a href="#%E5%A6%82%E4%BD%95%E5%9C%A8WPF%E4%B8%AD%E6%98%BE%E7%A4%BA%E5%9B%BE%E5%83%8F" rel="nofollow">如何在WPF中显示图像</a></p> 
+<p id="%E6%97%81%E6%B3%A8-toc" style="margin-left:40px;"><a href="#%E6%97%81%E6%B3%A8" rel="nofollow">旁注</a></p> 
+<p id="WPF%E4%BD%8D%E5%9B%BE%E7%B1%BB%E7%BB%A7%E6%89%BF-toc" style="margin-left:0px;"><a href="#WPF%E4%BD%8D%E5%9B%BE%E7%B1%BB%E7%BB%A7%E6%89%BF" rel="nofollow">WPF位图类继承</a></p> 
+<p id="%E4%BD%BFWPF%E8%A1%8C%E4%B8%BA%E7%B1%BB%E4%BC%BC%E4%BA%8EWindows%E7%9A%84%E7%AC%AC%E4%B8%80%E7%A7%8D%E6%96%B9%E6%B3%95-toc" style="margin-left:0px;"><a href="#%E4%BD%BFWPF%E8%A1%8C%E4%B8%BA%E7%B1%BB%E4%BC%BC%E4%BA%8EWindows%E7%9A%84%E7%AC%AC%E4%B8%80%E7%A7%8D%E6%96%B9%E6%B3%95" rel="nofollow">使WPF行为类似于Windows的第一种方法</a></p> 
+<p id="%E7%AC%AC%E4%BA%8C%E7%A7%8D%E5%A4%B1%E8%B4%A5%E7%9A%84%E6%96%B9%E6%B3%95-toc" style="margin-left:0px;"><a href="#%E7%AC%AC%E4%BA%8C%E7%A7%8D%E5%A4%B1%E8%B4%A5%E7%9A%84%E6%96%B9%E6%B3%95" rel="nofollow">第二种失败的方法</a></p> 
+<p id="%E6%9C%80%E7%BB%88%E8%A7%A3%E5%86%B3%E6%96%B9%E6%A1%88-toc" style="margin-left:0px;"><a href="#%E6%9C%80%E7%BB%88%E8%A7%A3%E5%86%B3%E6%96%B9%E6%A1%88" rel="nofollow">最终解决方案</a></p> 
+<p id="%E7%BB%93%E8%AF%AD-toc" style="margin-left:0px;"><a href="#%E7%BB%93%E8%AF%AD" rel="nofollow">结语</a></p> 
+<hr id="hr-toc"> 
+<p></p> 
+<h2 id="%E4%BB%8B%E7%BB%8D" style="background-color:transparent;margin-left:0px;text-align:left;"><span style="background-color:#FFFFFF;"><span style="color:#ff9900;">介绍</span></span></h2> 
+<p style="margin-left:0;text-align:left;"><span style="background-color:#FFFFFF;"><span style="color:#111111;">当</span><span style="color:#111111;">Windows</span><span style="color:#111111;">在</span><span style="color:#111111;">“</span><span style="color:#111111;">照片</span><span style="color:#111111;">”</span><span style="color:#111111;">中显示类似</span><em><span style="color:#111111;">.jpg</span></em><span style="color:#111111;">文件的图片时，它不关心文件的</span><span style="color:#111111;">dpi</span><span style="color:#111111;">（每英寸点数）设置。具有不同</span><span style="color:#111111;">dpi</span><span style="color:#111111;">设置但相同像素数的文件以相同的大小显示。以下是三个文件，它们都使用</span><span style="color:#111111;">500 x 500</span><span style="color:#111111;">像素，但</span><span style="color:#111111;">dpi</span><span style="color:#111111;">设置不同：</span></span></p> 
+<p style="margin-left:0;text-align:left;"><img alt="" height="168" src="https://images2.imgbox.com/42/fe/Tnu0uA7K_o.png" width="640"></p> 
+<p style="margin-left:0;text-align:left;"><span style="background-color:#FFFFFF;"><span style="color:#111111;">WPF</span><span style="color:#111111;">显示相同的图片，如下所示：</span></span></p> 
+<p style="margin-left:0;text-align:left;"><img alt="" height="392" src="https://images2.imgbox.com/b3/22/mQv3Vkhp_o.png" width="640"></p> 
+<p style="margin-left:0;text-align:left;"><span style="background-color:#FFFFFF;"><span style="color:#111111;">如果编写的应用采用</span><span style="color:#111111;">Windows</span><span style="color:#111111;">程序生成的图像文件，更改图像中的某些内容，然后将其作为新的图像文件写回，则用户希望</span><span style="color:#111111;">WPF</span><span style="color:#111111;">应用的行为类似于传统的</span><span style="color:#111111;">Windows</span><span style="color:#111111;">应用，即以与</span><span style="color:#111111;">Windows</span><span style="color:#111111;">相同的大小显示图像。</span></span></p> 
+<p style="margin-left:0;text-align:left;"><span style="background-color:#FFFFFF;"><span style="color:#111111;">显示器的</span><span style="color:#111111;">dpi</span><span style="color:#111111;">设置也存在类似的差异。</span><span style="color:#111111;">Windows</span><span style="color:#111111;">对图像使用相同数量的</span><span style="color:#111111;">“</span><span style="color:#111111;">像素</span><span style="color:#111111;">”</span><span style="color:#111111;">，而不考虑监视器的</span><span style="color:#111111;">dpi</span><span style="color:#111111;">设置。请注意，用户可以在</span><span style="color:#111111;">Windows</span><span style="color:#111111;">中更改用于显示一个</span><span style="color:#111111;">“</span><span style="color:#111111;">像素</span><span style="color:#111111;">”</span><span style="color:#111111;">的监视器像素数。</span></span></p> 
+<p style="margin-left:0;text-align:left;"><span style="background-color:#FFFFFF;"><span style="color:#111111;">另一方面，</span><span style="color:#111111;">WPF</span><span style="color:#111111;">使用图像文件的</span><span style="color:#111111;">dpi</span><span style="color:#111111;">信息。如果该文件的宽度为</span><span style="color:#111111;">96</span><span style="color:#111111;">像素，</span><span style="color:#111111;">DPI</span><span style="color:#111111;">为</span><span style="color:#111111;">96</span><span style="color:#111111;">，则</span><span style="color:#111111;">WPF</span><span style="color:#111111;">会尝试在</span><span style="color:#111111;">1 dpi</span><span style="color:#111111;">监视器和</span><span style="color:#111111;">96 dpi</span><span style="color:#111111;">监视器上显示它</span><span style="color:#111111;">192</span><span style="color:#111111;">英寸长。在第一种情况下，它使用</span><span style="color:#111111;">96</span><span style="color:#111111;">个显示器像素，在第二种情况下使用</span><span style="color:#111111;">192</span><span style="color:#111111;">个显示器像素。</span></span></p> 
+<p style="margin-left:0;text-align:left;"><span style="background-color:#FFFFFF;"><span style="color:#111111;">不幸的是，在许多情况下，用户并不关心实际尺寸，而是希望看到整个图像，无论用户是看小手机屏幕、笔记本电脑屏幕还是巨大的电视屏幕。在</span><span style="color:#111111;">1</span><span style="color:#111111;">英寸电视上显示</span><span style="color:#111111;">100</span><span style="color:#111111;">英寸的图像有什么用？</span></span></p> 
+<p style="margin-left:0;text-align:left;"><span style="background-color:#FFFFFF;"><span style="color:#111111;">本文介绍如何编写代码，以便</span><span style="color:#111111;">WPF</span><span style="color:#111111;">像</span><span style="color:#111111;">Windows</span><span style="color:#111111;">一样处理图像。解决方案确实很简单，但我花了一个月的时间才弄清楚。</span></span></p> 
+<h2 id="%E5%A6%82%E4%BD%95%E5%9C%A8WPF%E4%B8%AD%E6%98%BE%E7%A4%BA%E5%9B%BE%E5%83%8F" style="margin-left:0px;text-align:left;"><span style="background-color:#FFFFFF;"><span style="color:#ff9900;">如何在</span><span style="color:#ff9900;">WPF</span><span style="color:#ff9900;">中显示图像</span></span></h2> 
+<p style="margin-left:0;text-align:left;"><span style="background-color:#FFFFFF;"><span style="color:#111111;">显示图像文件的最简单的</span><span style="color:#111111;">WPF</span><span style="color:#111111;">代码是这样的：</span></span></p> 
+<pre><code class="language-XML">&lt;Image Source="SomePath\SomeImageFile.jpg"/&gt;</code></pre> 
+<div> 
+ <p style="margin-left:0;text-align:left;"></p> 
+</div> 
+<p style="margin-left:0;text-align:left;"><span style="background-color:#FFFFFF;"><span style="color:#111111;">当图形命令（矢量图形）中定义图形时，</span><span style="color:#111111;">WPF</span><span style="color:#111111;">图形系统效果最佳，例如使用特定粗细和颜色从</span><span style="color:#111111;">A</span><span style="color:#111111;">点到</span><span style="color:#111111;">B</span><span style="color:#111111;">点绘制一条线。</span></span></p> 
+<h3 id="%E6%97%81%E6%B3%A8" style="margin-left:0px;text-align:left;"><span style="background-color:#FFFFFF;"><strong><span style="color:#111111;">旁注</span></strong></span></h3> 
+<p style="margin-left:0;text-align:left;"><span style="background-color:#FFFFFF;"><em><span style="color:#111111;">绘制黑色</span></em><em><span style="color:#111111;">1</span></em><em><span style="color:#111111;">显示器像素线几乎是不可能的。问题在于，显示图形的控件被包含图形的其他</span></em><em><span style="color:#990000;">Control</span></em><em><span style="color:#111111;">定位，并且图像边框通常放置在</span></em><em><span style="color:#111111;">2</span></em><em><span style="color:#111111;">个监视器像素之间。其效果是将线条涂在</span></em><em><span style="color:#111111;">2</span></em><em><span style="color:#111111;">个像素上，并以灰色而不是黑色绘制。还涉及一个问题。许多人认为，当他们</span></em><em><span style="color:#990000;">set StrokeThickness =</span></em><em><span style="color:#111111;"> 1</span></em><em><span style="color:#111111;">时，他们会在监视器上获得</span></em><em><span style="color:#111111;">1</span></em><em><span style="color:#111111;">个像素。但根据显示器的</span></em><em><span style="color:#111111;">dpi</span></em><em><span style="color:#111111;">，</span></em><em><span style="color:#111111;">1DIP</span></em><em><span style="color:#111111;">可能会转换为多个像素或仅转换为像素的一部分。有一些属性，如</span></em><em><span style="color:#990000;">SnapsToDevicePixels</span></em><em><span style="color:#111111;">或</span></em><em><span style="color:#990000;">GuidelineSet</span></em><em><span style="color:#111111;">，应该会有所帮助，但我从未设法获得正确的黑色</span></em><em><span style="color:#111111;">1</span></em><em><span style="color:#111111;">像素线。</span></em></span></p> 
+<p style="margin-left:0;text-align:left;"><span style="background-color:#FFFFFF;"><span style="color:#111111;">但是，图像文件是面向像素的，这是</span><span style="color:#111111;">WPF</span><span style="color:#111111;">不太喜欢的。它将图像的像素值存储在位图中，该位图是一个名为</span><span style="color:#990000;">BitmapSource</span><span style="color:#111111;">的类，该类将像素存储在二维数组中，但该数组是隐藏的。如果要读取和写入像素，则需要使用继承自</span><span style="color:#990000;">BitmapSource</span><span style="color:#111111;">的</span><span style="color:#990000;">WriteableBitmap</span><span style="color:#111111;">。</span> </span></p> 
+<p style="margin-left:0;text-align:left;"><span style="background-color:#FFFFFF;"><span style="color:#990000;">Image</span><span style="color:#111111;">使用派生自</span><span style="color:#990000;">BitmapSource</span><span style="color:#111111;">的内部类来存储像素。然后，它将位图的像素缩放为屏幕像素。</span></span></p> 
+<p style="margin-left:0;text-align:left;"><span style="background-color:#FFFFFF;"><span style="color:#111111;">要允许在显示位图之前对其进行处理，最好先将图像文件读入继承自</span><span style="color:#990000;">BitmapSource</span><span style="color:#111111;">的</span><span style="color:#990000;">BitmapImage</span><span style="color:#111111;">，然后将其分配给</span><span style="color:#990000;">Image.Source</span><span style="color:#111111;">。</span></span></p> 
+<pre><code class="language-XML">&lt;Image Stretch="None"&gt;
+  &lt;Image.Source&gt;
+    &lt;BitmapImage UriSource="SomePath\SomeImageFile.jpg" /&gt;
+  &lt;/Image.Source&gt;
+&lt;/Image&gt;</code></pre> 
+<div> 
+ <p style="margin-left:0;text-align:left;"></p> 
+</div> 
+<p style="margin-left:0;text-align:left;"><span style="background-color:#FFFFFF;"><span style="color:#111111;">通常，我更喜欢在</span><span style="color:#111111;">XAML</span><span style="color:#111111;">中仅定义与</span><span style="color:#111111;">UI</span><span style="color:#111111;">相关的控件，并在代码隐藏中执行所有其他操作：</span></span></p> 
+<pre><code class="language-XML">&lt;Image Name="MyImage"/&gt;</code></pre> 
+<div> 
+ <p style="margin-left:0;text-align:left;"></p> 
+</div> 
+<p style="margin-left:0;text-align:left;"></p> 
+<pre><code class="language-cs">var bitmapImage= new BitmapImage(new Uri("SomePath\SomeImageFile.jpg"));
+MyImage.Source = bitmapSource;</code></pre> 
+<div> 
+ <p style="margin-left:0;text-align:left;"></p> 
+</div> 
+<p style="margin-left:0;text-align:left;"><span style="background-color:#FFFFFF;"><span style="color:#111111;">图像是</span><span style="color:#111111;">DIP</span><span style="color:#111111;">中定义的</span><span style="color:#990000;">FrameworkElement</span><span style="color:#111111;">，并且具有</span><span style="color:#990000;">Width</span><span style="color:#111111;">和</span><span style="color:#990000;">Height</span><span style="color:#111111;">定义，并且可以是可视化树的一部分。</span><span style="color:#990000;">BitmapImage</span><span style="color:#111111;">不继承自</span><span style="color:#990000;">Visual</span><span style="color:#111111;">，因此不能在可视化树中使用。一些</span><span style="color:#990000;">BitmapImage</span><span style="color:#111111;">属性，它们都是</span><span style="color:#990000;">readonly</span><span style="color:#111111;">：</span></span></p> 
+<ul><li style="text-align:left;"><span style="background-color:#FFFFFF;"><span style="color:#111111;"><span style="color:#990000;">PixelWidth</span>、<span style="color:#990000;">PixelHeight</span>：位图的大小（以图像像素为单位）</span></span></li><li style="text-align:left;"><span style="background-color:#FFFFFF;"><span style="color:#111111;"><span style="color:#990000;">DpiX</span>、<span style="color:#990000;">DpiY</span>：图像文件中指示的每英寸点数</span></span></li><li style="text-align:left;"><span style="background-color:#FFFFFF;"><span style="color:#111111;"><span style="color:#990000;">Width</span>、<span style="color:#990000;">Height</span>：在设备无关像素中位图的大小。<span style="color:#990000;">Width</span>=96/<span style="color:#990000;">DpiX</span>*<span style="color:#990000;">PixelWidth</span>。它们通常具有与<span style="color:#990000;">Image.ActualWidth</span>和<span style="color:#990000;">Image.ActualHeight</span>不同的值。</span></span></li><li style="text-align:left;"><span style="background-color:#FFFFFF;"><span style="color:#111111;"><span style="color:#990000;">DecodePixelWidth</span>，<span style="color:#990000;">DecodePixelHeight</span>：可以在读取图像文件之前使用，以指示生成的位图应该有多大。当您已经知道只需要图片的一个小版本（如缩略图）时，这会最小化位图大小。但是，当您想要处理图像并稍后在Windows中使用结果时，请不要给<span style="color:#990000;">DecodeXxx</span>一个值，这意味着位图将为每个像素包含与图像文件相同的值。</span></span></li></ul> 
+<h2 id="WPF%E4%BD%8D%E5%9B%BE%E7%B1%BB%E7%BB%A7%E6%89%BF" style="margin-left:0px;text-align:left;"><span style="background-color:#FFFFFF;"><span style="color:#ff9900;">WPF</span><span style="color:#ff9900;">位图类继承</span></span></h2> 
+<p style="margin-left:0;text-align:left;"><span style="background-color:#FFFFFF;"><span style="color:#111111;">在尝试理解</span><span style="color:#111111;">WPF</span><span style="color:#111111;">中的位图时，一个挑战是实际上存在相当多的位图类。以下是最重要的：</span></span></p> 
+<p style="margin-left:0;text-align:left;"><img alt="" height="446" src="https://images2.imgbox.com/68/a9/sL6b7dXo_o.jpg" width="640"></p> 
+<ul><li style="text-align:left;"><span style="background-color:#FFFFFF;"><span style="color:#111111;"><span style="color:#990000;">Image</span>是一个<span style="color:#990000;">FrameworkElement</span>。它不是位图，但在其<span style="color:#990000;">Source</span>属性中包含位图或矢量图形。</span></span></li><li style="text-align:left;"><span style="background-color:#FFFFFF;"><span style="color:#111111;"><span style="color:#990000;">ImageSource</span>是位图或矢量图形的基类。它只有几个属性，基本上是使用DIP的图像的<strong><span style="color:#990000;">Height</span></strong>和<strong><span style="color:#990000;">Width</span></strong>。</span></span></li><li style="text-align:left;"><span style="background-color:#FFFFFF;"><span style="color:#111111;"><span style="color:#990000;">DrawingImage</span>用于矢量图形，不属于本文的一部分。</span></span></li><li style="text-align:left;"><span style="background-color:#FFFFFF;"><span style="color:#111111;"><span style="color:#990000;">BitmapSource</span>是所有其他位图类的基类。我认为它将位图的实际数据保存在二维数组中，这对程序员来说是不可见的。可以从包含像素值的整数数组创建一个<span style="color:#990000;">BitmapSource</span>，并将位图导出为整数数组。</span></span></li></ul> 
+<p style="margin-left:0;text-align:left;"><span style="background-color:#FFFFFF;"><span style="color:#111111;">这三个类用于创建位图：</span></span></p> 
+<ul><li style="text-align:left;"><span style="background-color:#FFFFFF;"><span style="color:#111111;"><span style="color:#990000;">BitmapImage</span>：读取图像文件</span></span></li><li style="text-align:left;"><span style="background-color:#FFFFFF;"><span style="color:#111111;"><span style="color:#990000;">BitmapFrame</span>：用于存储可能具有多个帧（图像）的GIF文件</span></span></li><li style="text-align:left;"><span style="background-color:#FFFFFF;"><span style="color:#111111;"><span style="color:#990000;">RenderTargetBitmap</span>：将WPF <span style="color:#990000;">Visual</span>呈现为位图</span></span></li></ul> 
+<p style="margin-left:0;text-align:left;"><span style="background-color:#FFFFFF;"><span style="color:#111111;">这三个类用于处理位图。它们将</span><span style="color:#990000;">BitmapSource</span><span style="color:#111111;">作为输入，并提供更改后的位图作为输出：</span></span></p> 
+<ul><li style="text-align:left;"><span style="background-color:#FFFFFF;"><span style="color:#111111;"><span style="color:#990000;">TransformedBitmap</span>：缩放和旋转<span style="color:#990000;">BitmapSource</span></span></span></li><li style="text-align:left;"><span style="background-color:#FFFFFF;"><span style="color:#111111;"><span style="color:#990000;">CroppedBitmap</span>：只剪掉<span style="color:#990000;">BitmapSource</span>一部分</span></span></li><li style="text-align:left;"><span style="background-color:#FFFFFF;"><span style="color:#111111;"><span style="color:#990000;">WriteableBitmap</span>：提供更改位图像素的方法</span></span></li></ul> 
+<h2 id="%E4%BD%BFWPF%E8%A1%8C%E4%B8%BA%E7%B1%BB%E4%BC%BC%E4%BA%8EWindows%E7%9A%84%E7%AC%AC%E4%B8%80%E7%A7%8D%E6%96%B9%E6%B3%95" style="margin-left:0px;text-align:left;"><span style="background-color:#FFFFFF;"><span style="color:#ff9900;">使</span><span style="color:#ff9900;">WPF</span><span style="color:#ff9900;">行为类似于</span><span style="color:#ff9900;">Windows</span><span style="color:#ff9900;">的第一种方法</span></span></h2> 
+<p style="margin-left:0;text-align:left;"><span style="background-color:#FFFFFF;"><span style="color:#111111;">起初，我认为这个问题很容易解决。如果</span><span style="color:#111111;">WPF</span><span style="color:#111111;">显示的图像是</span><span style="color:#111111;">Windows</span><span style="color:#111111;">中的两倍，则只需调整</span><span style="color:#111111;">Image</span><span style="color:#111111;">控件的大小即可。这可以通过如下布局转换轻松完成：</span></span></p> 
+<pre><code class="language-cs">//correct the monitor dpi
+var dpi = VisualTreeHelper.GetDpi(this);
+var correctionX = 96/dpi.PixelsPerInchX;
+var correctionY = 96/dpi.PixelsPerInchY;
+//correct the image's dpi
+var bitmapImage = new BitmapImage(new Uri("MyFile"));
+correctionX *= bitmapImage.DpiX/96;
+correctionY *= bitmapImage.DpiY/96;
+Image.Source = bitmapImage;
+Image.LayoutTransform = new ScaleTransform(correctionX, correctionY);</code></pre> 
+<div> 
+ <p style="margin-left:0;text-align:left;"></p> 
+</div> 
+<p style="margin-left:0;text-align:left;"><span style="background-color:#FFFFFF;"><span style="color:#111111;">但是，这给我带来了程序其余部分的很多问题：</span></span></p> 
+<ol><li style="text-align:left;"><span style="background-color:#FFFFFF;"><span style="color:#111111;">例如，当用户想要创建宽度为100的照片时，他会以图像像素为单位进行思考。他不关心DIP，也不关心监控像素。</span></span></li><li style="text-align:left;"><span style="background-color:#FFFFFF;"><span style="color:#111111;">计算所需<span style="color:#990000;">Image</span>的DIP很复杂，它涉及上述校正。</span></span></li><li style="text-align:left;"><span style="background-color:#FFFFFF;"><span style="color:#111111;">鼠标移动也处于DIP状态。如果用户可以使用鼠标来定义应该将图像的哪一部分写入新文件，则必须将鼠标移动定义的距离转换为图像像素，以便用户知道新图像的尺寸是多少。</span></span></li><li style="text-align:left;"><span style="background-color:#FFFFFF;"><span style="color:#111111;">原始图像的尺寸限制了鼠标的移动位置。如果用户可以为新图像提供比原始图像更大的宽度，则可能没有意义。这意味着每个鼠标移动都必须与图像像素相匹配，然后需要将其转换回DIP，以便GUI可以在<span style="color:#990000;">Image</span>上绘制将要使用的部分。</span></span></li><li style="text-align:left;"><span style="background-color:#FFFFFF;"><span style="color:#111111;">在我的应用程序中，用户可以放大图像，理想情况下，可以使用<span style="color:#990000;">Image.LayoutTransform</span>。使用<span style="color:#990000;">Image.LayoutTransform</span>不同目的（缩放、DPI校正）使代码进一步复杂化。</span></span></li></ol> 
+<p style="margin-left:0;text-align:left;"><span style="background-color:#FFFFFF;"><span style="color:#111111;">比我更好的程序员可能能够解决所有这些问题，但我放弃了，并试图找到一种更简单的方法来纠正</span><span style="color:#111111;">DPI</span><span style="color:#111111;">处理。</span></span></p> 
+<h2 id="%E7%AC%AC%E4%BA%8C%E7%A7%8D%E5%A4%B1%E8%B4%A5%E7%9A%84%E6%96%B9%E6%B3%95" style="margin-left:0px;text-align:left;"><span style="background-color:#FFFFFF;"><span style="color:#ff9900;">第二种失败的方法</span></span></h2> 
+<p style="margin-left:0;text-align:left;"><span style="background-color:#FFFFFF;"><span style="color:#111111;">我的下一个想法是更正位图大小，以补偿</span><span style="color:#111111;">WPF</span><span style="color:#111111;">对</span><span style="color:#111111;">DPI</span><span style="color:#111111;">的处理。如果</span><span style="color:#111111;">WPF</span><span style="color:#111111;">显示的图像是</span><span style="color:#111111;">Windows</span><span style="color:#111111;">的两倍，我想将图像缩小</span><span style="color:#111111;">50%</span><span style="color:#111111;">。转换现有位图可以通过使用另一个继承自</span><span style="color:#990000;">BitmapSource</span><span style="color:#111111;">的类</span><span style="color:#990000;">TransformedBitmap</span><span style="color:#111111;">来完成。它将继承自</span><span style="color:#990000;">BitmapSource</span><span style="color:#111111;">的任何类作为输入，并应用转换，在本例中为缩放：</span> </span></p> 
+<pre><code class="language-cs">var bitmapImage = new BitmapImage(new Uri("MyFile"));
+var dpi = VisualTreeHelper.GetDpi(this);
+var bitmapSource = new TransformedBitmap(bitmapImage,
+  new ScaleTransform(bitmapImage.DpiX/96/dpi.PixelsPerInchX, 
+  bitmapImage.DpiY/96/dpi.PixelsPerInchX));
+Image1.Source = bitmapImage;</code></pre> 
+<div> 
+ <p style="margin-left:0;text-align:left;"></p> 
+</div> 
+<p style="margin-left:0;text-align:left;"><span style="background-color:#FFFFFF;"><span style="color:#111111;">但是，我仍然无法让我的代码正常工作，此外，由于转换，图像质量受到影响，这实际上改变了像素值，因为它可能必须将</span><span style="color:#111111;">1</span><span style="color:#111111;">像素放大到</span><span style="color:#111111;">1.1234</span><span style="color:#111111;">像素或将一个像素缩小到</span><span style="color:#111111;">0.4321</span><span style="color:#111111;">像素。</span></span></p> 
+<h2 id="%E6%9C%80%E7%BB%88%E8%A7%A3%E5%86%B3%E6%96%B9%E6%A1%88" style="margin-left:0px;text-align:left;"><span style="background-color:#FFFFFF;"><span style="color:#ff9900;">最终解决方案</span></span></h2> 
+<p style="margin-left:0;text-align:left;"><span style="background-color:#FFFFFF;"><span style="color:#111111;">我意识到我不应该改变像素数，这让我想到了可以调整位图的</span><span style="color:#111111;">dpi</span><span style="color:#111111;">。如果</span><span style="color:#111111;">WPF</span><span style="color:#111111;">显示的图像是</span><span style="color:#111111;">Windows</span><span style="color:#111111;">的两倍，则不需要缩放图像，只需向</span><span style="color:#111111;">WPF</span><span style="color:#111111;">假装位图具有与</span><span style="color:#111111;">WPF DPI</span><span style="color:#111111;">设置值相同的</span><span style="color:#111111;">DPI</span><span style="color:#111111;">。结果是，每个位图像素将绘制到</span><span style="color:#111111;">1</span><span style="color:#111111;">个监视器像素上，就像</span><span style="color:#111111;">Windows</span><span style="color:#111111;">一样。但有一个问题：</span><span style="color:#990000;">BitmapImage</span><span style="color:#111111;">的</span><span style="color:#111111;">dpi</span><span style="color:#111111;">设置是只读的！基本上，</span><span style="color:#990000;">BitmapImage</span><span style="color:#111111;">构造函数读取图像文件的</span><span style="color:#111111;">DPI</span><span style="color:#111111;">。为了更改</span><span style="color:#111111;">dpi</span><span style="color:#111111;">值，必须将位图内容导出到二维数组中，然后使用该数组创建一个新的</span><span style="color:#990000;">BitmapSource</span><span style="color:#111111;">。是的，这需要两倍的</span><span style="color:#111111;">RAM</span><span style="color:#111111;">量，但幸运的是，复制大型数组的速度很快，我们现在有很多</span><span style="color:#111111;">RAM</span><span style="color:#111111;">。</span></span></p> 
+<pre><code class="language-cs">var bitmapImage = new BitmapImage();
+bitmapImage.BeginInit();
+bitmapImage.CacheOption = BitmapCacheOption.OnLoad;
+bitmapImage.UriSource = new Uri(fileName);
+bitmapImage.EndInit();
+
+BitmapSource bitmapSource;
+var dpi = VisualTreeHelper.GetDpi(this);
+if (bitmapImage.DpiX==dpi.PixelsPerInchX &amp;&amp; bitmapImage.DpiY==dpi.PixelsPerInchY) {
+  //use the BitmapImage as it is
+  bitmapSource = bitmapImage;
+} else {
+  //create a new BitmapSource and use dpi to set its DPI without changing any pixels
+  PixelFormat pf = PixelFormats.Bgr32;
+  int rawStride = (bitmapImage.PixelWidth * pf.BitsPerPixel + 7) / 8;
+  byte[] rawImage = new byte[rawStride * bitmapImage.PixelHeight];
+  bitmapImage.CopyPixels(rawImage, rawStride, 0);
+  bitmapSource = BitmapSource.Create(bitmapImage.PixelWidth, bitmapImage.PixelHeight,
+  dpi.PixelsPerInchX, dpi.PixelsPerInchY, pf, null, rawImage, rawStride);
+}
+ImageControl.Source = bitmapSource;</code></pre> 
+<div> 
+ <p style="margin-left:0;text-align:left;"></p> 
+</div> 
+<p style="margin-left:0;text-align:left;"><span style="background-color:#FFFFFF;"><span style="color:#111111;">如上所述，一旦读取图像文件，许多</span><span style="color:#990000;">BitmapImage</span><span style="color:#111111;">属性就无法再更改。但是，可以使用</span><span style="color:#990000;">BeginInit()</span><span style="color:#111111;">来设置一些属性，然后调用</span><span style="color:#990000;">EndInit()</span><span style="color:#111111;">，之后才读取文件。我不得不在我的应用程序中使用这种方法，因为</span><span style="color:#990000;">BitmapImage</span><span style="color:#111111;">还有另一个烦人的问题。即使在阅读完成后，它也会使图像文件保持打开状态，这意味着不可能向用户显示图像，然后让他永久删除它。使用</span><span style="color:#990000;">BitmapCacheOption.OnLoad</span><span style="color:#111111;">在读取后关闭文件。</span></span></p> 
+<p style="margin-left:0;text-align:left;"><span style="background-color:#FFFFFF;"><span style="color:#111111;">上面的代码可以简化为：</span></span></p> 
+<pre><code class="language-cs">int rawStride = bitmapImage.PixelWidth * 32;</code></pre> 
+<div> 
+ <p style="margin-left:0;text-align:left;"></p> 
+</div> 
+<p style="margin-left:0;text-align:left;"><span style="background-color:#FFFFFF;"><span style="color:#111111;">我们已经知道每个像素需要</span><span style="color:#111111;">32</span><span style="color:#111111;">位（</span><span style="color:#111111;">ARGB</span><span style="color:#111111;">的每个</span><span style="color:#111111;">8</span><span style="color:#111111;">位）。其他</span><span style="color:#990000;">PixelFormats</span><span style="color:#111111;">可能不能很好地与单词边界对齐，因此，</span><span style="color:#111111;">Microsoft</span><span style="color:#111111;">建议以更复杂的方式进行计算</span><span style="color:#990000;">rawStride</span><span style="color:#111111;">。</span></span></p> 
+<p style="margin-left:0;text-align:left;"><span style="background-color:#FFFFFF;"><span style="color:#111111;">有了这个，我让</span><span style="color:#111111;">WPF</span><span style="color:#111111;">在</span><span style="color:#111111;">DPI</span><span style="color:#111111;">方面表现得像</span><span style="color:#111111;">Windows</span><span style="color:#111111;">。请注意，我没有更改整个</span><span style="color:#111111;">WPF </span><span style="color:#990000;">Window</span><span style="color:#111111;">的行为，而只是更改了</span><span style="color:#990000;">Image</span><span style="color:#111111;">。我的程序的其余部分变得简单得多，尽管我仍然必须满足用户在图像像素和</span><span style="color:#111111;">DIP</span><span style="color:#111111;">中的</span><span style="color:#111111;">WPF</span><span style="color:#111111;">的思考。</span></span></p> 
+<h2 id="%E7%BB%93%E8%AF%AD" style="margin-left:0px;text-align:left;"><span style="background-color:#FFFFFF;"><span style="color:#ff9900;">结语</span></span></h2> 
+<p style="margin-left:0;text-align:left;"><span style="background-color:#FFFFFF;"><span style="color:#111111;">是的，我知道这是相当乏味的阅读，导致只有几行代码。我使用</span><span style="color:#111111;">WPF</span><span style="color:#111111;">已经超过</span><span style="color:#111111;">15</span><span style="color:#111111;">年了，但我仍然在努力理解位图在</span><span style="color:#111111;">WPF</span><span style="color:#111111;">中的工作原理。因此，我认为分享我的学习过程的细节可能会帮助其他面临同样挑战的开发人员。</span><span style="color:#111111;">WPF</span><span style="color:#111111;">非常强大，但不幸的是，它也很复杂，而且有点未完成。当只阅读</span><span style="color:#111111;">Microsoft</span><span style="color:#111111;">的文档时，很多事情都没有意义。我希望我的文章有助于缩小一些文档空白。</span></span></p> 
+<p style="margin-left:0;text-align:left;"><span style="background-color:#FFFFFF;"><span style="color:#111111;">我的初衷是写一篇关于如何开发</span><span style="color:#111111;">WPF</span><span style="color:#111111;">应用程序的文章，该应用程序允许用户选择照片的一部分并将其存储为新的</span><em><span style="color:#111111;">.jpg</span></em><span style="color:#111111;">文件。我仍然会写那篇文章，但我想我需要先解释一下如何解决</span><span style="color:#111111;">DPI</span><span style="color:#111111;">问题。</span></span></p> 
+<p style="margin-left:0;text-align:left;"><span style="background-color:#FFFFFF;"><span style="color:#111111;">如果你对</span><span style="color:#111111;">WPF</span><span style="color:#111111;">感兴趣，我强烈建议你阅读我的其他一些</span><span style="color:#111111;">WPF</span><span style="color:#111111;">文章：</span></span></p> 
+<p style="margin-left:0;text-align:left;"><span style="background-color:#FFFFFF;"><span style="color:#111111;">我<strong>最有用的</strong></span><span style="color:#111111;">WPF</span><span style="color:#111111;">文章：</span></span></p> 
+<ul><li style="text-align:left;"><span style="background-color:#FFFFFF;"><span style="color:#111111;"><span style="color:#000000;"><a href="https://blog.csdn.net/mzl87/article/details/115560277" title="使用绑定的WPF DataGrid格式设置指南">使用绑定的WPF DataGrid格式设置指南</a></span></span></span></li></ul> 
+<p style="margin-left:0;text-align:left;"><span style="background-color:#FFFFFF;"><span style="color:#111111;">WPF</span><span style="color:#111111;">控件<strong>不可或缺的测试工具</strong>：</span></span></p> 
+<ul><li style="text-align:left;"><span style="background-color:#FFFFFF;"><span style="color:#111111;"><span style="color:#000000;"><a href="https://blog.csdn.net/mzl87/article/details/127377834" title="WPF开发人员必读：WPF控件测试台">WPF开发人员必读：WPF控件测试台</a></span></span></span></li></ul> 
+<p style="margin-left:0;text-align:left;"><span style="background-color:#FFFFFF;"><span style="color:#111111;">MS</span><span style="color:#111111;">文档中<strong>严重缺乏</strong></span><span style="color:#111111;"> WPF</span><span style="color:#111111;">信息：</span></span></p> 
+<ul><li style="text-align:left;"><span style="background-color:#FFFFFF;"><span style="color:#111111;"><span style="color:#000000;"><a href="https://blog.csdn.net/mzl87/article/details/127377702" title="深入了解WPF布局和渲染">深入了解WPF布局和渲染</a></span></span></span></li></ul> 
+<p style="margin-left:0;text-align:justify;"><a class="link-info" href="https://www.codeproject.com/Articles/5360403/How-to-Make-WPF-Behave-like-Windows-when-Dealing-w" rel="nofollow" title="https://www.codeproject.com/Articles/5360403/How-to-Make-WPF-Behave-like-Windows-when-Dealing-w">https://www.codeproject.com/Articles/5360403/How-to-Make-WPF-Behave-like-Windows-when-Dealing-w</a></p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/2e13d1413ca78dbbd63877575abb37ff/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">rollup 源码解析 - watch 监听</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/6aaf52db8c260c25a54d9097c26708d1/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">矩阵理论基本知识</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

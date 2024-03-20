@@ -1,0 +1,451 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>LIO-SAM从0到1运行自己的数据集 - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="LIO-SAM从0到1运行自己的数据集" />
+<meta property="og:description" content="LIO-SAM从0到1运行自己的数据集 前言 ​ 笔者在学习LIO_SAM时踩了不少坑，在此记录从开始到最后整个踩坑过程。文中参考了很多大佬的文章，我只是个搬运工。可以直接跳到第二部分从0到1实现 有疑问可以随时联系我，欢迎交流。
+一.LIO-SAM简单介绍 （这一部分可以不看哦，干货在第二部分） ⼀种激光惯导紧耦合的SLAM框架，可在室内和室外实现效果不错的建图。
+(1) ImageProjection 激光运动畸变校正
+功能简介 1、利用当前激光帧起止时刻间的imu数据计算旋转增量，IMU里程计数据（来自ImuPreintegration）计算平移增量，进而对该帧激光每一时刻的激光点进行运动畸变校正（利用相对于激光帧起始时刻的位姿增量，变换当前激光点到起始时刻激光点的坐标系下，实现校正）；
+（激光帧的起始数据——由IMU得到旋转增量，由IMU里程计得到平移增量，通过位姿增量，变换当前激光点到原始激光点，实现校正。）
+2、同时用IMU数据的姿态角（RPY，roll、pitch、yaw）、IMU里程计数据的的位姿，对当前帧激光位姿进行粗略初始化。
+订阅 订阅原始IMU数据；
+订阅IMU里程计数据，来自ImuPreintegration，表示每一时刻对应的位姿；
+订阅原始激光点云数据。
+发布 发布当前帧激光运动畸变校正之后的有效点云，用于rviz展示；
+发布当前帧激光运动畸变校正之后的点云信息，包括点云数据、初始位姿、姿态角、有效点云数据等，发布给FeatureExtraction进行特征提取。
+(2) FeatureExtraction 点云特征提取
+功能简介 对经过运动畸变校正之后的当前帧激光点云，计算每个点的曲率，进而提取角点、平面点（用曲率的大小进行判定）。
+订阅 订阅当前激光帧运动畸变校正后的点云信息，来自ImageProjection。
+发布 发布当前激光帧提取特征之后的点云信息，包括的历史数据有：运动畸变校正，点云数据，初始位姿，姿态角，有效点云数据，角点点云，平面点点云等，发布给MapOptimization；
+发布当前激光帧提取的角点点云，用于rviz展示；
+发布当前激光帧提取的平面点点云，用于rviz展示。
+(3) ImuPreintegration IMU预积分
+TransformFusion类
+功能简介 主要功能是订阅激光里程计（来自MapOptimization）和IMU里程计，根据前一时刻激光里程计，和该时刻到当前时刻的IMU里程计变换增量，计算当前时刻IMU里程计；rviz展示IMU里程计轨迹（局部）。
+订阅 订阅激光里程计，来自MapOptimization；
+订阅imu里程计，来自ImuPreintegration。
+发布 发布IMU里程计，用于rviz展示；
+发布IMU里程计轨迹，仅展示最近一帧激光里程计时刻到当前时刻之间的轨迹。
+ImuPreintegration类 功能简介 用激光里程计，两帧激光里程计之间的IMU预计分量构建因子图，优化当前帧的状态（包括位姿、速度、偏置）;
+以优化后的状态为基础，施加IMU预计分量，得到每一时刻的IMU里程计。
+订阅 订阅IMU原始数据，以因子图优化后的激光里程计为基础，施加两帧之间的IMU预计分量，预测每一时刻（IMU频率）的IMU里程计；
+订阅激光里程计（来自MapOptimization），用两帧之间的IMU预计分量构建因子图，优化当前帧位姿（这个位姿仅用于更新每时刻的IMU里程计，以及下一次因子图优化）。
+发布 发布imu里程计；
+(4) MapOptimization 因子图优化
+功能简介 1、scan-to-map匹配：提取当前激光帧特征点（角点、平面点），局部关键帧map的特征点，执行scan-to-map迭代优化，更新当前帧位姿；
+2、关键帧因子图优化：关键帧加入因子图，添加激光里程计因子、GPS因子、闭环因子，执行因子图优化，更新所有关键帧位姿；
+3、闭环检测：在历史关键帧中找距离相近，时间相隔较远的帧设为匹配帧，匹配帧周围提取局部关键帧map，同样执行scan-to-map匹配，得到位姿变换，构建闭环因子数据，加入因子图优化。
+订阅 1、订阅当前激光帧点云信息，来自FeatureExtraction；
+2、订阅GPS里程计；
+3、订阅来自外部闭环检测程序提供的闭环数据，本程序没有提供，这里实际没用上。
+发布 1、发布历史关键帧里程计；
+2、发布局部关键帧map的特征点云；
+3、发布激光里程计，rviz中表现为坐标轴；" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/e4dd0d7b4e2a4ac011aeaf8d27b04a7e/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2022-08-12T13:42:44+08:00" />
+<meta property="article:modified_time" content="2022-08-12T13:42:44+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">LIO-SAM从0到1运行自己的数据集</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <h2><a id="LIOSAM01_0"></a>LIO-SAM从0到1运行自己的数据集</h2> 
+<h3><a id="_2"></a>前言</h3> 
+<p>​ <strong>笔者在学习LIO_SAM时踩了不少坑，在此记录从开始到最后整个踩坑过程。文中参考了很多大佬的文章，我只是个搬运工。</strong><mark>可以直接跳到第二部分从0到1实现</mark> 有疑问可以随时联系我，欢迎交流。</p> 
+<h3><a id="LIOSAM__6"></a>一.LIO-SAM简单介绍 （<mark>这一部分可以不看哦，干货在第二部分</mark>）</h3> 
+<p>⼀种激光惯导紧耦合的SLAM框架，可在室内和室外实现效果不错的建图。</p> 
+<p><img src="https://images2.imgbox.com/ff/c9/YTadrHgQ_o.png" alt="在这里插入图片描述"></p> 
+<p>(1) ImageProjection 激光运动畸变校正</p> 
+<ul><li>功能简介</li></ul> 
+<p>1、利用当前激光帧起止时刻间的imu数据计算旋转增量，IMU里程计数据（来自ImuPreintegration）计算平移增量，进而对该帧激光每一时刻的激光点进行运动畸变校正（利用相对于激光帧起始时刻的位姿增量，变换当前激光点到起始时刻激光点的坐标系下，实现校正）；<br> （激光帧的起始数据——由IMU得到旋转增量，由IMU里程计得到平移增量，通过位姿增量，变换当前激光点到原始激光点，实现校正。）</p> 
+<p>2、同时用IMU数据的姿态角（RPY，roll、pitch、yaw）、IMU里程计数据的的位姿，对当前帧激光位姿进行粗略初始化。</p> 
+<ul><li>订阅</li></ul> 
+<p>订阅原始IMU数据；<br> 订阅IMU里程计数据，来自ImuPreintegration，表示每一时刻对应的位姿；<br> 订阅原始激光点云数据。</p> 
+<ul><li>发布</li></ul> 
+<p>发布当前帧激光运动畸变校正之后的有效点云，用于rviz展示；<br> 发布当前帧激光运动畸变校正之后的点云信息，包括点云数据、初始位姿、姿态角、有效点云数据等，发布给FeatureExtraction进行特征提取。</p> 
+<p>(2) FeatureExtraction 点云特征提取</p> 
+<ul><li>功能简介</li></ul> 
+<p>对经过运动畸变校正之后的当前帧激光点云，计算每个点的曲率，进而提取角点、平面点（用曲率的大小进行判定）。</p> 
+<ul><li>订阅</li></ul> 
+<p>订阅当前激光帧运动畸变校正后的点云信息，来自ImageProjection。</p> 
+<ul><li>发布</li></ul> 
+<p>发布当前激光帧提取特征之后的点云信息，包括的历史数据有：运动畸变校正，点云数据，初始位姿，姿态角，有效点云数据，角点点云，平面点点云等，发布给MapOptimization；<br> 发布当前激光帧提取的角点点云，用于rviz展示；<br> 发布当前激光帧提取的平面点点云，用于rviz展示。</p> 
+<p>(3) ImuPreintegration IMU预积分</p> 
+<p>TransformFusion类</p> 
+<ul><li>功能简介</li></ul> 
+<p>主要功能是订阅激光里程计（来自MapOptimization）和IMU里程计，根据前一时刻激光里程计，和该时刻到当前时刻的IMU里程计变换增量，计算当前时刻IMU里程计；rviz展示IMU里程计轨迹（局部）。</p> 
+<ul><li>订阅</li></ul> 
+<p>订阅激光里程计，来自MapOptimization；<br> 订阅imu里程计，来自ImuPreintegration。</p> 
+<ul><li>发布</li></ul> 
+<p>发布IMU里程计，用于rviz展示；<br> 发布IMU里程计轨迹，仅展示最近一帧激光里程计时刻到当前时刻之间的轨迹。</p> 
+<ol start="2"><li>ImuPreintegration类</li></ol> 
+<ul><li>功能简介</li></ul> 
+<p>用激光里程计，两帧激光里程计之间的IMU预计分量构建因子图，优化当前帧的状态（包括位姿、速度、偏置）;<br> 以优化后的状态为基础，施加IMU预计分量，得到每一时刻的IMU里程计。</p> 
+<ul><li>订阅</li></ul> 
+<p>订阅IMU原始数据，以因子图优化后的激光里程计为基础，施加两帧之间的IMU预计分量，预测每一时刻（IMU频率）的IMU里程计；<br> 订阅激光里程计（来自MapOptimization），用两帧之间的IMU预计分量构建因子图，优化当前帧位姿（这个位姿仅用于更新每时刻的IMU里程计，以及下一次因子图优化）。</p> 
+<ul><li>发布</li></ul> 
+<p>发布imu里程计；</p> 
+<p>(4) MapOptimization 因子图优化</p> 
+<ul><li>功能简介</li></ul> 
+<p>1、scan-to-map匹配：提取当前激光帧特征点（角点、平面点），局部关键帧map的特征点，执行scan-to-map迭代优化，更新当前帧位姿；<br> 2、关键帧因子图优化：关键帧加入因子图，添加激光里程计因子、GPS因子、闭环因子，执行因子图优化，更新所有关键帧位姿；<br> 3、闭环检测：在历史关键帧中找距离相近，时间相隔较远的帧设为匹配帧，匹配帧周围提取局部关键帧map，同样执行scan-to-map匹配，得到位姿变换，构建闭环因子数据，加入因子图优化。</p> 
+<ul><li>订阅</li></ul> 
+<p>1、订阅当前激光帧点云信息，来自FeatureExtraction；<br> 2、订阅GPS里程计；<br> 3、订阅来自外部闭环检测程序提供的闭环数据，本程序没有提供，这里实际没用上。</p> 
+<ul><li>发布</li></ul> 
+<p>1、发布历史关键帧里程计；<br> 2、发布局部关键帧map的特征点云；<br> 3、发布激光里程计，rviz中表现为坐标轴；<br> 4、发布激光里程计；<br> 5、发布激光里程计路径，rviz中表现为载体的运行轨迹；<br> 6、发布地图保存服务；<br> 7、发布闭环匹配局部关键帧map；<br> 8、发布当前关键帧经过闭环优化后的位姿变换之后的特征点云；<br> 9、发布闭环边，rviz中表现为闭环帧之间的连线；<br> 10、发布局部map的降采样平面点集合；<br> 11、发布历史帧（累加的）的角点、平面点降采样集合；<br> 12、发布当前帧原始点云配准之后的点云；</p> 
+<p>特点：</p> 
+<ol><li><strong>一共使用了三个传感器：imu,激光雷达，GPS（可选也可不选，在此我们主要测试VLP16+IMU的情况）</strong>；</li><li>Odometry (IMU frequency) 要收到雷达里程计（lidar odometry）信息后才发出，这样前端频率更高；</li><li>IMU odometry提供初始估计值并做了预积分处理，同时IMU原始数据对雷达进行运动补偿（两个传感器进行数据融合，对于周围环境信息进行更好的估测）；</li><li>后端因子图优化包括四个因子，IMU预积分结合雷达里程计的帧间约束因子在预积分节点维护，其他三个在后端节点维护，分别是GPS因子、雷达里程计因子和回环检测因子。</li><li>紧耦合：IMU的零偏可以被估计，利用雷达里程计的帧间约束进行反馈，使IMU解算更加准确，提供更好的初值。</li></ol> 
+<p><strong>补充说明：</strong></p> 
+<ul><li> <p>​ IMU通常由<strong>三个单轴的加速度计</strong>和<strong>三个单轴的陀螺仪</strong>组成，加速度计检测载体在坐标系统中独立三轴的加速度信号，而陀螺仪检测载体相对于坐标系的角速度信号，对这些信号进行处理之后，便可解算出载体的姿态。IMU的更新频率较高，一般可达几百至1KHz。使用三个加速度值，通过两次积分可获得位移，以此实现位置定位，有角速度值积分可以获取姿态信息，结合在一起可获得物体的实际状态。需要注意的是IMU提供的是相对的原始定位信息，它的作用是测量相对于起点所运动的路线，所以它并不能提供你所在的具体位置的信息。</p> <p>（9轴IMU有三个单轴加速度计，三个单轴陀螺仪和三个单轴磁力计）</p> <p><strong>具体的理论学习，源码解读，大家自行去网上搜索（这一部分公开的资料很多），笔者在此只着重介绍如何利用LIO_SAM运行自己的数据集。</strong></p> </li></ul> 
+<h3><a id="01_128"></a>二.从0到1实现（可以直接看这里）</h3> 
+<h4><a id="1_httpsimgblogcsdnimgcn1aa0540df7744e1582116e38cd864b06jpegpic_center_130"></a>1. 效果图<img src="https://images2.imgbox.com/1d/88/5DzJYmwb_o.jpg" alt="在这里插入图片描述"></h4> 
+<p>先放张效果图，大概能看出个运行出的效果，还是不错的，笔者当时录包的时候录了所有话题的消息，占用了大量内存，短短的40s视频占了4个G。这是没有必要的哈，我们使用激光雷达+IMU ，真正操作过程中我们只需要录雷达和imu话题（/velodyne_points和/imu/data）就可以了。</p> 
+<h4><a id="2__137"></a>2. 硬件介绍</h4> 
+<p>笔者用的是<strong>Velodyne16线激光雷达</strong>（简称VLP16）+<strong>9轴imu（N100）</strong>。</p> 
+<p>网上很多博主介绍跑LIO_SAM要用9轴IMU，6轴IMU也是可以运行的哈，听高博介绍LIO_SAM也是用的6轴。如果需要融合GPS或者资金允许可以采用9轴IMU。为了防止有争议，最好还是用9轴。</p> 
+<h4><a id="3__143"></a>3. 前期工作</h4> 
+<h5><a id="1_145"></a>1）雷达数据格式</h5> 
+<p>​ LIO-SAM算法对激光雷达的数据格式有着较为严格的要求，以往的单激光雷达建图的算法没注意到这一点，一般要求的是XYZI(x, y, z, intensity ) 格式即可，但是LIO-SAM要求的是 XYZIRT（x, y, z, intensity, ring, timestamp） 格式，即算法内使用了激光雷达的通道数ring参数和时间戳timestep参数，启动算法时会检查是否具有这两个参数。那么如何获得这两个参数呢？ 如果你同笔者使用的激光雷达一样，你可以将激光雷达的驱动更新到RSLidar-SDK版本即可采集，参考大佬另一篇教程安装速腾最新的驱动：<a href="https://blog.csdn.net/weixin_42141088/article/details/117123174">(44条消息) Ubuntu18.04 安装速腾聚创最新驱动RSLidar_SDK采集XYZIRT格式的激光点云数据 --SLAM不学无术小问题_<sup>摆渡人</sup>的博客-CSDN博客</a><br>   但问题是采集到的数据仍然有不可直接用，速腾格式的点和Velodyne格式的点还是有问题的。这又如何解决呢？大佬在某hub上找到了一位大佬的转化节点，这一节点可将速腾格式的点转化为Velodyne格式的点，具体安装步骤参考笔者另一篇教程链接: <a href="https://blog.csdn.net/weixin_42141088/article/details/117222678">(44条消息) Ubuntu18 安装ROS节点解决----速腾聚创雷达点云格式转换为Velodyne雷达点云格式 --SLAM不学无术小问题_<sup>摆渡人</sup>的博客-CSDN博客_速腾雷达转velodyne</a>（此处搬运大佬的文章，侵删）</p> 
+<p>​ 如果你使用的激光雷达和笔者是同一款，则不需要考虑这个问题。VLP16的格式就是 XYZIRT（x, y, z, intensity, ring, timestamp） 格式，即算法内使用了激光雷达的通道数ring参数和时间戳timestep参数。</p> 
+<h5><a id="2_152"></a>2）坐标系的一致性</h5> 
+<p>​ （此处搬运大佬的文章，侵删）<a href="https://blog.csdn.net/weixin_42141088/article/details/118000544?spm=1001.2014.3001.5506">(44条消息) LIO-SAM运行自己数据包遇到的问题解决–SLAM不学无数术小问题_<sup>摆渡人</sup>的博客-CSDN博客</a>简单说就是对 <strong>frame_id</strong> 有要求，可以找到对应的源码修改，不想改源代码只能在外部使劲了，这里面涉及到了内部坐标的映射关系，不一样的话可能ERROR 导致无法建图，原作给出的数据集中的 frame_id是这样对应的：</p> 
+<pre><code>//激光雷达数据
+/points_raw-----------frame_id:"velodyne"--------
+//IMU数据
+/imu_raw--------------frame_id:"imu_link"--------
+//GPS数据
+/gps/fix--------------frame_id:"navset_link"-----
+</code></pre> 
+<p>查看自己数据包的frame_id：</p> 
+<pre><code>// 在播放数据包的时候使用如下指令查看某一Topic的frame_id：
+ rostopic echo  /Topic    | grep   frame_id
+</code></pre> 
+<p>如果与原作的不一样的话需要修改，具体修改方法可以在ROS的官方wiki下载一个工具包bag_tools，里面包含了许多关于数据包的操作工具，官方附带了使用教程，可自行百度下载解决。这里给一条印象中的转化指令：</p> 
+<pre><code> rosrun  bag_tools  change_frame_id.py  -t  /需要要改的topic   -f    新的frame_id    -i      旧.bag    -o    新.bag
+</code></pre> 
+<h4><a id="4__imu___178"></a>4. <mark>imu的频率设置</mark> （重要）</h4> 
+<p>imu的频率 最好大于100HZ，笔者在用小于100HZ时导致了在跑数据包时，在转弯的时候，地图跟着车转动（准确来说跟着imu转动），一开始没有注意到imu频率问题，一直以为是外参设置的不够准确。其实看过原作者论文的话应该会发现，作者直接把外参设置为单位矩阵，如下图蓝色圈出的部分:平移矩阵和旋转矩阵</p> 
+<p><img src="https://images2.imgbox.com/62/51/CIFgM772_o.png" alt="在这里插入图片描述"></p> 
+<p>但是我们可以从下图官方配置的图看出，vlp16和imu的平移不可能是0，可见跑lio_sam不需要特别精准的外参，如果不相信的话，可以用标定工具标出的结果对比一下看看是不是接近单位矩阵。</p> 
+<p><img src="https://images2.imgbox.com/c9/a2/CKQrs4Qc_o.jpg" alt="在这里插入图片描述"></p> 
+<p>笔者在一开始跑的时候，一直对外参和imu的内参的设置要精准坚信不疑，当我发现即使我的外参很精准，跑图还是很飘，就意识到事情的不对了，<mark>在此特别感谢两位大佬的提点</mark>。</p> 
+<h4><a id="5_imuvlp16__192"></a>5. <mark>imu和vlp16硬件位置的放置</mark> (重要)</h4> 
+<ol><li> <p>尽量将imu和雷达的位置放置的近一点，这样平移矩阵设置为0也没问题。</p> </li><li> <p>imu和雷达的坐标系最好完全一致，如果不能，则尽量保证坐标系相差90°或者180°；</p> <p>在此插一句题外话，笔者在安装时，一开始没有搞清楚imu的坐标系，整了个乌龙，后来询问商家发现imu的物理坐标系在ROS中输出时已经被调整，而我还按照imu物理坐标系设置，跑出来的图飘的离谱。所以一定要弄清楚获取到的imu数据和雷达坐标系是什么方向的。在此放一张笔者安装图：</p> </li></ol> 
+<p><img src="https://images2.imgbox.com/2a/ca/UJgjn00r_o.jpg" alt="在这里插入图片描述"></p> 
+<p>笔者的imu和lidar坐标系是安装的完全一致的（Z轴竖直向上），而且靠的也很近，所以笔者后来就直接将平移矩阵设置为0，旋转矩阵设置为单位矩阵（这样是最省事的）。外参设置的也就是imu和lidar的转换关系，如果从源头就解决这个问题，那就会方便很多。</p> 
+<p><strong>在lio-sam参数文件中，在imu内参下面的有一个参数是imu的重力加速度，正负表示方向：</strong></p> 
+<p><strong>如果imu和vlp16的Z轴同时向上则设置为正，反之为负。</strong></p> 
+<p>还需要注意一下<mark>波特率和imu频率匹配</mark>，115200对应的频率应该是不能超过50HZ，961200可以设置100HZ往上。</p> 
+<h4><a id="6__IMU_211"></a>6. 激光雷达与IMU外参标定</h4> 
+<p><mark>可以直接跳到链接：<a href="https://blog.csdn.net/weixin_42141088/article/details/118000544?spm=1001.2014.3001.5506">(44条消息) LIO-SAM运行自己数据包遇到的问题解决–SLAM不学无数术小问题_<sup>摆渡人</sup>的博客-CSDN博客_lio_sam</a>这个博主写的很详细</mark>。</p> 
+<p>​ 网上有很多开源的标定方法，笔者使用<strong>lidar_align</strong>标定成功。</p> 
+<p><mark>按上述来说不需要特别精准的外参，如果允许程序时发现 警告large bias…large velocity…，那就是外参设置错了，也就是转换关系错了，可以使用这个标定一下，看一下转换关系</mark></p> 
+<h5><a id="1lidar_alignIMU_219"></a>（1）安装lidar_align联合标定激光雷达和IMU外参程序</h5> 
+<ol><li>下载lidar_align</li></ol> 
+<pre><code>cd 自己的工作空间/src
+
+git clone https://github.com/ethz-asl/lidar_align.git
+
+catkin_make
+
+</code></pre> 
+<p>建议下载修正过后的代码：<a href="https://github.com/wwtx/lidar_align_wwtx">lidar_align_wwtx</a></p> 
+<p>新建自己的ROS工作空间，将该源码放入，catkin_make即可。</p> 
+<ul><li> <p>首次编译会因为缺少NLOPT库报错</p> <p>编译时出现Could not find NLOPTConfig.cmake</p> <p>解决方法：</p> <pre><code>sudo apt-get install libnlopt-dev
+</code></pre> <p>找到并将NLOPTConfig.cmake文件移动到 lidar_align/src/下（此处可以直接编译），如果还是报上面错误的话则在CMakeLists.txt里加上这样一句话：</p> <pre><code>list(APPEND CMAKE_FIND_ROOT_PATH ${PROJECT_SOURCE_DIR})
+set (CMAKE_PREFIX_PATH "/usr/local/lib/cmake/nlopt")
+</code></pre> <p>如图：因为身在外地，无法演示，就放一张大佬的图吧 <mark>（侵删）</mark><a href="https://blog.csdn.net/cyx610481953/article/details/115265585?spm=1001.2014.3001.5506">(44条消息) 激光雷达和IMU联合标定并运行LIOSAM_浪客_剑心的博客-CSDN博客_liosam</a></p> </li></ul> 
+<p><img src="https://images2.imgbox.com/62/ab/r5pNe0rj_o.png" alt="在这里插入图片描述"></p> 
+<p><strong>然后进行第二次编译</strong></p> 
+<ul><li> <p>二次编译还是会报错，解决冲突问题（按照顺序，运行下面的命令即可）</p> <pre><code>sudo mv /usr/include/flann/ext/lz4.h /usr/include/flann/ext/lz4.h.bak
+
+sudo mv /usr/include/flann/ext/lz4hc.h /usr/include/flann/ext/lz4.h.bak
+
+sudo ln -s /usr/include/lz4.h /usr/include/flann/ext/lz4.h
+
+ sudo ln -s /usr/include/lz4hc.h /usr/include/flann/ext/lz4hc.h
+
+ catkin_make
+
+</code></pre> <p><strong>第三次编译通过</strong></p> </li></ul> 
+<h5><a id="2IMU_277"></a>（2）改写IMU接口</h5> 
+<p>原文链接：https://blog.csdn.net/weixin_42141088/article/details/118000544 <mark>（侵删）</mark></p> 
+<p>这一工具原本不是用来标定激光雷达和IMU的而是用来标定激光雷达和里程计的。所以需要改写IMU接口来替换掉里程计接口。所以这一工具一定程度上并不是精确标定上述两种传感器的，但不精确不代表不可用。改写这一接口的大佬没找着，没法连接了所以侵删联系。以下是做法：<br> <strong>打开loader.cpp文件</strong></p> 
+<pre><code class="prism language-c++">找到以下odom部分注释删掉都可
+/*  types.push_back(std::string("geometry_msgs/TransformStamped"));
+  rosbag::View view(bag, rosbag::TypeQuery(types));
+
+  size_t tform_num = 0;
+  for (const rosbag::MessageInstance&amp; m : view) {
+    std::cout &lt;&lt; " Loading transform: \e[1m" &lt;&lt; tform_num++
+              &lt;&lt; "\e[0m from ros bag" &lt;&lt; '\r' &lt;&lt; std::flush;
+
+    geometry_msgs::TransformStamped transform_msg =
+        *(m.instantiate&lt;geometry_msgs::TransformStamped&gt;());
+
+    Timestamp stamp = transform_msg.header.stamp.sec * 1000000ll +
+                      transform_msg.header.stamp.nsec / 1000ll;
+
+    Transform T(Transform::Translation(transform_msg.transform.translation.x,
+                                       transform_msg.transform.translation.y,
+                                       transform_msg.transform.translation.z),
+                Transform::Rotation(transform_msg.transform.rotation.w,
+                                    transform_msg.transform.rotation.x,
+                                    transform_msg.transform.rotation.y,
+                                    transform_msg.transform.rotation.z));
+    odom-&gt;addTransformData(stamp, T);
+  }
+*/
+
+将以上部分替换为：
+
+	types.push_back(std::string("sensor_msgs/Imu"));
+	rosbag::View view(bag, rosbag::TypeQuery(types));
+	size_t imu_num = 0;
+	double shiftX=0,shiftY=0,shiftZ=0,velX=0,velY=0,velZ=0;
+	ros::Time time;
+	double timeDiff,lastShiftX,lastShiftY,lastShiftZ;
+	for (const rosbag::MessageInstance&amp; m : view){
+	  std::cout &lt;&lt;"Loading imu: \e[1m"&lt;&lt; imu_num++&lt;&lt;"\e[0m from ros bag"&lt;&lt;'\r'&lt;&lt; std::flush;
+
+	  sensor_msgs::Imu imu=*(m.instantiate&lt;sensor_msgs::Imu&gt;());
+
+	  Timestamp stamp = imu.header.stamp.sec * 1000000ll +imu.header.stamp.nsec / 1000ll;
+	  if(imu_num==1){
+		 time=imu.header.stamp;
+			 Transform T(Transform::Translation(0,0,0),Transform::Rotation(1,0,0,0));
+		 odom-&gt;addTransformData(stamp, T);
+	 }
+	 else{
+		 timeDiff=(imu.header.stamp-time).toSec();
+		 time=imu.header.stamp;
+		 velX=velX+imu.linear_acceleration.x*timeDiff;
+		 velY=velX+imu.linear_acceleration.y*timeDiff;
+		 velZ=velZ+(imu.linear_acceleration.z-9.801)*timeDiff;
+
+		 lastShiftX=shiftX;
+		 lastShiftY=shiftY;
+		 lastShiftZ=shiftZ;
+		 shiftX=lastShiftX+velX*timeDiff+imu.linear_acceleration.x*timeDiff*timeDiff/2;
+		 shiftY=lastShiftY+velY*timeDiff+imu.linear_acceleration.y*timeDiff*timeDiff/2;
+		 shiftZ=lastShiftZ+velZ*timeDiff+(imu.linear_acceleration.z-9.801)*timeDiff*timeDiff/2;
+
+		 Transform T(Transform::Translation(shiftX,shiftY,shiftZ),
+				Transform::Rotation(imu.orientation.w,
+						 imu.orientation.x,
+						 imu.orientation.y,
+						 imu.orientation.z));
+		 odom-&gt;addTransformData(stamp, T);
+	 }
+	}
+
+并在开头添加头文件：
+
+#include &lt;sensor_msgs/Imu.h&gt;
+
+</code></pre> 
+<p><strong>第四次编译</strong></p> 
+<p>在此之前还需要安装一些其他的库Eigen，Metis，Gtsam，ceres等，总之缺什么就去网上找一下对应的库安装即可，在此需要注意（一定一定要注意版本匹配）。</p> 
+<h5><a id="3_363"></a>（3）录制数据并标定</h5> 
+<p>​ 只需同时录制激光雷达和IMU（/velodyne_points和/imu/data）两分钟即可，最好数据量不要超过2G，超出2G之外可能出现未知错误无法标定。两分钟的数据应该尽量包含较大的旋转量和平移量（也就是先直线跑一段再转两圈），这样标出来的误差结果（据说）会收敛到几百以下（已经相当可以了），（标定过程较为漫长，耐心等待）。最好周围不要有透明的玻璃和移动障碍物。</p> 
+<p>下面这句命令意思就是录制只/velodyne_points /imu/data两个话题的数据包</p> 
+<pre><code>cd 数据包存放的地方（不运行此句，则默认在home下）
+rosbag record -O lidar_imu.bag /velodyne_points /imu/data
+</code></pre> 
+<h5><a id="4launch_374"></a>（4）修改launch文件</h5> 
+<p>打开lidar_align.launch文件，将两分钟的数据包路经copy到下方：</p> 
+<p><img src="https://images2.imgbox.com/74/c9/jJfHBRIB_o.png" alt="在这里插入图片描述"></p> 
+<p>开始标定</p> 
+<pre><code>cd lidar_align
+source devel/setup.bash 
+roslaunch lidar_align lidar_align.launch
+</code></pre> 
+<p>标定过程大概一个小时左右，耐心等待，迭代200~300次。</p> 
+<p>标定好之后会在终端显示出标定结果，也会在result文件夹下面生成对应的标定文件。</p> 
+<h4><a id="7_imu_utils_393"></a>7. 下载imu_utils</h4> 
+<p>​ 这个是标定imu内参的，如果商家提供了内参，可以跳过这个标定步骤<mark>确保内参是正确的</mark>。这个步骤需要录制2小时。笔者就直接采用的商家提供的内参。</p> 
+<p><mark>具体操作步骤这里参考了大佬文章，可直接跳过去按照大佬教程安装<a href="https://blog.csdn.net/fang794735225/article/details/92804030#commentBox">用imu_utils标定IMU，之后用于kalibr中相机和IMU的联合标定</a>.</mark></p> 
+<p>这里要录制两个小时的IMU数据，注意！！！录制数据时必须保持IMU的静止状态，录制全程不可晃动只录制IMU的Topic即可，不过别担心内存，两小时下来只要300M多一点。并且这个数据包最好是放到你imu_utils的工作空间下（与src并列的地方）。最好是IMU上电10分钟之后在开始录制，上电瞬间开始录制会有较大误差。</p> 
+<p>录制指令</p> 
+<pre><code>rosbag play -r 200　imu_utils/imu.bag
+</code></pre> 
+<p>需要注意的是在运行的终端标定时，<mark>终端是不会显示标定信息的</mark>，不要担心，它其实在正常运行，而且很快就能标定完成。</p> 
+<p>在此记录一个问题：</p> 
+<p><img src="https://images2.imgbox.com/a5/d2/ySRtcTk5_o.jpg" alt="在这里插入图片描述"></p> 
+<pre><code>error: cannot convert 'int*' to'idx_t*'{aka long int*}' for argument '1' to 'int' METIS_NodeND(idx_t*, idx_t*, idx_t*,idx_t*, idx_t*, idx_t*,idx_t*)'
+
+output_error = METIS_NodeND(&amp;m, m_indexPtr.data(), m_innerIndices.data(), NULL, NULL, perm.data(), iperm.data());
+</code></pre> 
+<p>此问题最后是因为ceres和Eigen版本不匹配造成的（耽搁了我好久！！）适当降低一下版本。</p> 
+<p>在此放上我运行成功的版本：<br> <img src="https://images2.imgbox.com/a1/0e/2xuoILIk_o.png" alt="在这里插入图片描述"></p> 
+<h4><a id="8_427"></a>8.修改参数文件</h4> 
+<p>根据上面标定的外参和内参对lio-sam参数文件进行修改：</p> 
+<p>具体修改的话，不再赘述，<mark>跳过去看大佬的教程https://blog.csdn.net/weixin_42141088/article/details/118000544，讲的挺详细的</mark></p> 
+<p>在这我放上自己的参数文件，仅供参考</p> 
+<pre><code class="prism language-yaml"><span class="token key atrule">lio_sam</span><span class="token punctuation">:</span>
+
+  <span class="token comment"># Topics</span>
+  <span class="token key atrule">pointCloudTopic</span><span class="token punctuation">:</span> <span class="token string">"velodyne_points"</span>      <span class="token comment"># Point cloud data（替换成自己的点云话题）</span>
+  <span class="token key atrule">imuTopic</span><span class="token punctuation">:</span> <span class="token string">"imu_data"</span>                    <span class="token comment"># IMU data（替换自己的imu话题）</span>
+  <span class="token key atrule">odomTopic</span><span class="token punctuation">:</span> <span class="token string">"odometry/imu"</span>                   <span class="token comment"># IMU pre-preintegration odometry, same frequency as IMU</span>
+  <span class="token key atrule">gpsTopic</span><span class="token punctuation">:</span> <span class="token string">"odometry/gpsz"</span>      
+  <span class="token comment"># GPS odometry topic from navsat, see（没有GPS就不需要更改） module_navsat.launch file</span>
+
+  <span class="token comment"># Frames</span>
+  <span class="token key atrule">lidarFrame</span><span class="token punctuation">:</span> <span class="token string">"base_link"</span>
+  <span class="token key atrule">baselinkFrame</span><span class="token punctuation">:</span> <span class="token string">"base_link"</span>
+  <span class="token key atrule">odometryFrame</span><span class="token punctuation">:</span> <span class="token string">"odom"</span>
+  <span class="token key atrule">mapFrame</span><span class="token punctuation">:</span> <span class="token string">"map"</span>
+
+  <span class="token comment"># GPS Settings</span>
+  <span class="token key atrule">useImuHeadingInitialization</span><span class="token punctuation">:</span> <span class="token boolean important">false</span>          <span class="token comment"># if using GPS data, set to "true"</span>
+  <span class="token key atrule">useGpsElevation</span><span class="token punctuation">:</span> <span class="token boolean important">false</span>                      <span class="token comment"># if GPS elevation is bad, set to "false"</span>
+  <span class="token key atrule">gpsCovThreshold</span><span class="token punctuation">:</span> <span class="token number">2.0</span>                        <span class="token comment"># m^2, threshold for using GPS data</span>
+  <span class="token key atrule">poseCovThreshold</span><span class="token punctuation">:</span> <span class="token number">25.0</span>                      <span class="token comment"># m^2, threshold for using GPS data</span>
+  
+  <span class="token comment"># Export settings</span>
+  <span class="token key atrule">savePCD</span><span class="token punctuation">:</span> <span class="token boolean important">true</span>                               <span class="token comment"># https://github.com/TixiaoShan/LIO-SAM/issues/3</span>
+  <span class="token key atrule">savePCDDirectory</span><span class="token punctuation">:</span> <span class="token string">"/rosbag/pcd"</span>           <span class="token comment"># in your home folder, starts and ends with "/". Warning: the code deletes "LOAM" folder then recreates it. See "mapOptimization" for implementation</span>
+
+  <span class="token comment"># Sensor Settings</span>
+  <span class="token key atrule">sensor</span><span class="token punctuation">:</span> velodyne                            <span class="token comment"># lidar sensor type, 'velodyne' or 'ouster' or 'livox'</span>
+  <span class="token key atrule">N_SCAN</span><span class="token punctuation">:</span> <span class="token number">16</span>                                  <span class="token comment"># number of lidar channel (i.e., Velodyne/Ouster: 16, 32, 64, 128, Livox Horizon: 6)</span>
+  <span class="token key atrule">Horizon_SCAN</span><span class="token punctuation">:</span> <span class="token number">1800</span>                          <span class="token comment"># lidar horizontal resolution (Velodyne:1800, Ouster:512,1024,2048, Livox Horizon: 4000)</span>
+  <span class="token key atrule">downsampleRate</span><span class="token punctuation">:</span> <span class="token number">1</span>                           <span class="token comment"># default: 1. Downsample your data if too many points. i.e., 16 = 64 / 4, 16 = 16 / 1</span>
+  <span class="token key atrule">lidarMinRange</span><span class="token punctuation">:</span> <span class="token number">1.0</span>                          <span class="token comment"># default: 1.0, minimum lidar range to be used</span>
+  <span class="token key atrule">lidarMaxRange</span><span class="token punctuation">:</span> <span class="token number">1000.0</span>                       <span class="token comment"># default: 1000.0, maximum lidar range to be used</span>
+
+  <span class="token comment"># IMU Settings 对应imu的内参  我这里是直接用的商家提供的</span>
+  <span class="token key atrule">imuAccNoise</span><span class="token punctuation">:</span> <span class="token number">1.0909715156015328e-02</span> 
+  <span class="token key atrule">imuGyrNoise</span><span class="token punctuation">:</span> <span class="token number">8.0226069504443656e-04</span>
+  <span class="token key atrule">imuAccBiasN</span><span class="token punctuation">:</span> <span class="token number">4.0347767978459928e-04</span>
+  <span class="token key atrule">imuGyrBiasN</span><span class="token punctuation">:</span> <span class="token number">4.4153147263889589e-05</span>
+  <span class="token key atrule">imuGravity</span><span class="token punctuation">:</span> <span class="token number">9.80511</span>
+  <span class="token key atrule">imuRPYWeight</span><span class="token punctuation">:</span> <span class="token number">0.01</span>
+
+  <span class="token comment"># Extrinsics: T_lb (lidar -&gt; imu)</span>
+  <span class="token key atrule">extrinsicTrans</span><span class="token punctuation">:</span> <span class="token punctuation">[</span><span class="token number">0.0</span><span class="token punctuation">,</span> <span class="token number">0.0</span><span class="token punctuation">,</span> <span class="token number">0.0</span><span class="token punctuation">]</span>   <span class="token comment">#  平移矩阵  我这里直接设置为0   因为我imu和雷达靠的很近  在此不做赘述了 上面解释过了。</span>
+  <span class="token key atrule">extrinsicRot</span><span class="token punctuation">:</span> <span class="token punctuation">[</span><span class="token number">1</span><span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">,</span>           <span class="token comment"># 旋转矩阵  我这里直接是单位矩阵，可以用上面标定的外参对比一下 </span>
+                  0<span class="token punctuation">,</span> <span class="token number">1</span><span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">,</span>
+                  <span class="token number">0</span><span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">,</span> <span class="token number">1</span><span class="token punctuation">]</span>
+  <span class="token key atrule">extrinsicRPY</span><span class="token punctuation">:</span> <span class="token punctuation">[</span><span class="token number">1</span><span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">,</span>
+                  <span class="token number">0</span><span class="token punctuation">,</span> <span class="token number">1</span><span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">,</span>
+                  <span class="token number">0</span><span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">,</span> <span class="token number">1</span><span class="token punctuation">]</span>
+<span class="token comment"># LOAM feature threshold</span>
+  <span class="token key atrule">edgeThreshold</span><span class="token punctuation">:</span> <span class="token number">1.0</span>
+  <span class="token key atrule">surfThreshold</span><span class="token punctuation">:</span> <span class="token number">0.1</span>
+  <span class="token key atrule">edgeFeatureMinValidNum</span><span class="token punctuation">:</span> <span class="token number">10</span>
+  <span class="token key atrule">surfFeatureMinValidNum</span><span class="token punctuation">:</span> <span class="token number">100</span>
+
+
+</code></pre> 
+<p>我这里只列举了主要修改的地方，其他的参数根据注释和个人需要进行修改。</p> 
+<h3><a id="__496"></a>三. 实现</h3> 
+<p>前面的工作做完了之后，现在就可以运行看效果了。</p> 
+<ol><li> <p>打开底层</p> <pre><code>roslaunch  xxx_bringup  xxx.launch  //每个人都不一样，这里是比较常见的方式，运行雷达，imu和底盘。
+</code></pre> </li><li> <p>录制数据包</p> <pre><code>//放到对应的路径下
+rosbag record -O xxx.bag /velodyne_points /imu/data
+</code></pre> </li><li> <p>控制小车运动</p> </li><li> <p>录制包结束之后，开始跑lio-sam</p> <pre><code>roslaunch lio-sam run.launch 
+cd xxxx//数据包的路径
+rosbag play xxx.bag
+</code></pre> <p>这个时候就能看到rviz中的效果了。在跑完数据包后会自己保存pcd文件。</p> </li></ol> 
+<p>5.最后在bag包的路径下有一个pcl文件夹，这里面是保存的点云地图</p> 
+<pre><code>//安装pcl_tools,安装过则跳过
+sudo apt-get install  pcl-tools 
+//到pcl路径下打开一个终端
+pcl_viewer xxx.pcd
+</code></pre> 
+<p><img src="https://images2.imgbox.com/5d/ae/mYbPPCtM_o.jpg" alt="在这里插入图片描述"></p> 
+<p>上图是我的一张pcd图。</p> 
+<h3><a id="__540"></a>四. 参考链接</h3> 
+<p>​ <a href="https://blog.csdn.net/weixin_42141088/article/details/118000544?spm=1001.2014.3001.5506">(44条消息) LIO-SAM运行自己数据包遇到的问题解决–SLAM不学无数术小问题_<sup>摆渡人</sup>的博客-CSDN博客_lio_sam</a></p> 
+<p><a href="https://blog.csdn.net/qq_42938987/article/details/108434290?spm=1001.2014.3001.5506">(44条消息) LIO-SAM：配置环境、安装测试、适配自己采集数据集_有待成长的小学生的博客-CSDN博客_lio-sam</a></p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/c5d23383e1a254274b432db215bd6aaf/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">【值符】嵌入式必备知识点&amp;面试点</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/dd70c83cc04fbfe1795aace075499417/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">Vue项目中特殊字体的使用</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

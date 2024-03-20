@@ -1,0 +1,510 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>深刻理解Live555源码，掌握这把RTSP，RTP的瑞士军刀 - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="深刻理解Live555源码，掌握这把RTSP，RTP的瑞士军刀" />
+<meta property="og:description" content="我无意评价Live555的源码是否优雅易懂，但对于我这种C&#43;&#43;设计模式应用不熟的IT老兵，还是很难直接通过阅读源码深刻清晰，一目了然的理解其中的调用逻辑。Live555中关于RTSP的Session，SubSession的概念，以及FramedSource和Sink的抽象都很不错的。但对于其任务单步调用机制，以及如何读取一帧数据及时发出一帧数据的全部逻辑， 真不容易得到清晰的处理逻辑。实践出真知，笔者本文就介绍一种通过运行时堆栈信息迅速理解关键代码和关键逻辑的方法。
+先来观察本文尾部的GDB打印的堆栈信息，是笔者在实际开发中在Live555中扩展了mp4文件格式的支持，凡是ffmpeg_server目录下的的都是我的私有源码独立实现，不要刻意追究源码，本文教的是方法。该堆栈是Live555服务器接收到PLAY请求后，发送第1帧数据时的状态。
+1.查看堆栈第27层到第0层堆栈，首先我们关注的是getNextFrame函数，该函数是FramedSource的public函数，提供给所有派生类构造层层回调逻辑的函数，通过传入几个回调函数和回调指针。该函数在第3层堆栈，第10层堆栈，第12层堆栈有调用到。
+2.其次需要关注的是doGetNextFrame函数，该函数是FramedSource的虚函数，这个函数是在前面的getNextFrame的实现里被调用的。该函数在第2层，第9层，第11层有调用。这里要提醒一下，堆栈的函数调用顺序是由高到底层层调用进来，最后执行到当前的0层的。
+抓住了这2个关键函数，然后通过观察（可以在编辑器里查找）传入这2个函数的指针（afterGettingClientData）和this指针的地址值，就会恍然大悟的。其他的我不多说了，通过指针值可以知道传入的是哪一层的对象的指针。
+3. 另外一个函数是getNextFrame函数的传入参数，也即回调函数afterGettingFunc需要关注，该回调函数（一般是FramedSource或其派生类中的静态函数(声明为static)）是在读取完一帧数据后回调的，跟第2点提到的afterGettingClientData指针配合使用的。
+Live555的读取一帧，处理，发送一帧的逻辑就是通过以上3个函数的配套调用实现的。
+最后还有一个逻辑，需要关注，这个逻辑在堆栈信息中没有，就是Live555在何时发送下一帧的呢？ 答案是通过【定时器任务】驱动。可以在源码中搜索以下语句，发现调用的地方很稀少， 这就是发送下一帧的关键代码，我们牵住问题的牛鼻子了。
+envir ( ). taskScheduler ( ). scheduleDelayedTask 这个就是增加一个定时器的语句，有几个需要发送下一帧地方用到了以上调用，这也是Live555发送任务调度的关键所在。
+本文堆栈所用到的发送下一帧的逻辑在void MultiFramedRTPSink::sendPacketIfNecessary()函数的尾部，语句如下：
+// Delay this amount of time: nextTask ( ) = envir ( ). taskScheduler ( ). scheduleDelayedTask (uSecondsToGo, (TaskFunc * )sendNext, this ) ; (gdb ) info s #0 FfmpegDemux::ContinueReadProcessing (this=0x41a123d8) at ffmpeg_server/ffmpeg_demux.cpp:629 #1 0x000b27e4 in FfmpegDemux::GetNextFrame (this=0x41a123d8, stream_id=0 &#39;\000&#39;, to=0x41d00008 &#34;&#34;, max_size=2048000, AfterGettingFunc = 0xb639c &lt;FfmpegDemuxedElementaryStream :: AfterGettingFrame ( void *, unsigned int , unsigned int , timeval , unsigned int ) &gt;, after_getting_client_data = 0x41a7c338 , OnCloseFunc = 0xd76a4 &lt;FramedSource :: handleClosure ( void * ) &gt;, on_close_client_data = 0x41a7c338 , frameHandlerFunc = 0 ) at ffmpeg_server /ffmpeg_demux." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/04fe8405d6596e315c800e753ff70f6f/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2015-12-21T10:39:11+08:00" />
+<meta property="article:modified_time" content="2015-12-21T10:39:11+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">深刻理解Live555源码，掌握这把RTSP，RTP的瑞士军刀</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p>我无意评价Live555的源码是否优雅易懂，但对于我这种C++设计模式应用不熟的IT老兵，还是很难直接通过阅读源码深刻清晰，一目了然的理解其中的调用逻辑。Live555中关于RTSP的Session，SubSession的概念，以及FramedSource和Sink的抽象都很不错的。但对于其任务单步调用机制，以及如何读取一帧数据及时发出一帧数据的全部逻辑， 真不容易得到清晰的处理逻辑。实践出真知，笔者本文就介绍一种通过运行时堆栈信息迅速理解关键代码和关键逻辑的方法。</p> 
+<p>先来观察本文尾部的GDB打印的堆栈信息，是笔者在实际开发中在Live555中扩展了mp4文件格式的支持，凡是ffmpeg_server目录下的的都是我的私有源码独立实现，不要刻意追究源码，本文教的是方法。该堆栈是Live555服务器接收到PLAY请求后，发送第1帧数据时的状态。<br> 1.查看堆栈第27层到第0层堆栈，首先我们关注的是getNextFrame函数，该函数是FramedSource的public函数，提供给所有派生类构造层层回调逻辑的函数，通过传入几个回调函数和回调指针。该函数在第3层堆栈，第10层堆栈，第12层堆栈有调用到。</p> 
+<p>2.其次需要关注的是doGetNextFrame函数，该函数是FramedSource的虚函数，这个函数是在前面的getNextFrame的实现里被调用的。该函数在第2层，第9层，第11层有调用。这里要提醒一下，堆栈的函数调用顺序是由高到底层层调用进来，最后执行到当前的0层的。</p> 
+<p>抓住了这2个关键函数，然后通过观察（可以在编辑器里查找）传入这2个函数的指针（afterGettingClientData）和this指针的地址值，就会恍然大悟的。其他的我不多说了，通过指针值可以知道传入的是哪一层的对象的指针。</p> 
+<p>3. 另外一个函数是getNextFrame函数的传入参数，也即回调函数afterGettingFunc需要关注，该回调函数（一般是FramedSource或其派生类中的静态函数(声明为static)）<strong>是在读取完一帧数据后回调的</strong>，跟第2点提到的afterGettingClientData指针配合使用的。</p> 
+<p>Live555的读取一帧，处理，发送一帧的逻辑就是通过以上3个函数的配套调用实现的。</p> 
+<p>最后还有一个逻辑，需要关注，这个逻辑在堆栈信息中没有，就是Live555在何时发送下一帧的呢？ 答案是通过【定时器任务】驱动。可以在源码中搜索以下语句，发现调用的地方很稀少， 这就是发送下一帧的关键代码，我们牵住问题的牛鼻子了。</p> 
+<div class="codecolorer-container cpp default" style="overflow:auto; white-space:nowrap; width:90%"> 
+ <div class="cpp codecolorer">
+   envir 
+  <span class="br0">(</span> 
+  <span class="br0">)</span>. 
+  <span class="me1">taskScheduler</span> 
+  <span class="br0">(</span> 
+  <span class="br0">)</span>. 
+  <span class="me1">scheduleDelayedTask</span> 
+ </div> 
+</div> 
+<p>这个就是增加一个定时器的语句，有几个需要发送下一帧地方用到了以上调用，这也是Live555发送任务调度的关键所在。</p> 
+<p>本文堆栈所用到的发送下一帧的逻辑在void MultiFramedRTPSink::sendPacketIfNecessary()函数的尾部，语句如下：</p> 
+<div class="codecolorer-container cpp default" style="width:90%"> 
+ <div class="cpp codecolorer">
+       
+  <span class="co1">// Delay this amount of time:</span> 
+  <br>     nextTask 
+  <span class="br0">(</span> 
+  <span class="br0">)</span> 
+  <span class="sy1"> =</span> envir 
+  <span class="br0">(</span> 
+  <span class="br0">)</span>. 
+  <span class="me1">taskScheduler</span> 
+  <span class="br0">(</span> 
+  <span class="br0">)</span>. 
+  <span class="me1">scheduleDelayedTask</span> 
+  <span class="br0">(</span>uSecondsToGo, 
+  <span class="br0">(</span>TaskFunc 
+  <span class="sy2">*</span> 
+  <span class="br0">)</span>sendNext, 
+  <span class="kw3">this</span> 
+  <span class="br0">)</span> 
+  <span class="sy4">;</span> 
+ </div> 
+</div> 
+<div class="codecolorer-container c default" style="width:90%"> 
+ <div class="c codecolorer"> 
+  <span class="br0">(</span>gdb 
+  <span class="br0">)</span> info s 
+  <br> 
+  <span class="co2">#0  FfmpegDemux::ContinueReadProcessing (this=0x41a123d8) at ffmpeg_server/ffmpeg_demux.cpp:629</span> 
+  <br> 
+  <span class="co2">#1  0x000b27e4 in FfmpegDemux::GetNextFrame (this=0x41a123d8, stream_id=0 '\000', to=0x41d00008 "", max_size=2048000, </span> 
+  <br>     AfterGettingFunc 
+  <span class="sy0">=</span> 
+  <span class="nu12">0xb639c</span> 
+  <span class="sy0"> &lt;</span>FfmpegDemuxedElementaryStream 
+  <span class="sy0">::</span> 
+  <span class="me2">AfterGettingFrame</span> 
+  <span class="br0">(</span> 
+  <span class="kw4">void</span> 
+  <span class="sy0">*,</span> 
+  <span class="kw4">unsigned</span> 
+  <span class="kw4">int</span> 
+  <span class="sy0">,</span> 
+  <span class="kw4">unsigned</span> 
+  <span class="kw4">int</span> 
+  <span class="sy0">,</span> timeval 
+  <span class="sy0">,</span> 
+  <span class="kw4">unsigned</span> 
+  <span class="kw4">int</span> 
+  <span class="br0">)</span> 
+  <span class="sy0">&gt;,</span> after_getting_client_data 
+  <span class="sy0">=</span> 
+  <span class="nu12">0x41a7c338</span> 
+  <span class="sy0">,</span> OnCloseFunc 
+  <span class="sy0">=</span> 
+  <span class="nu12">0xd76a4</span> 
+  <span class="sy0">&lt;</span>FramedSource 
+  <span class="sy0">::</span> 
+  <span class="me2">handleClosure</span> 
+  <span class="br0">(</span> 
+  <span class="kw4">void</span> 
+  <span class="sy0">*</span> 
+  <span class="br0">)</span> 
+  <span class="sy0">&gt;,</span> 
+  <br>     on_close_client_data 
+  <span class="sy0">=</span> 
+  <span class="nu12">0x41a7c338</span> 
+  <span class="sy0">,</span> frameHandlerFunc 
+  <span class="sy0">=</span> 
+  <span class="nu0">0</span> 
+  <span class="br0">)</span> at ffmpeg_server 
+  <span class="sy0">/</span>ffmpeg_demux. 
+  <span class="me1">cpp</span> 
+  <span class="sy0">:</span> 
+  <span class="nu0">407</span> 
+  <br> 
+  <span class="co2">#2  0x000b6210 in FfmpegDemuxedElementaryStream::doGetNextFrame (this=0x41a7c338)</span> 
+  <br>     at ffmpeg_server 
+  <span class="sy0">/</span>ffmpeg_demuxed_elementary_stream. 
+  <span class="me1">cpp</span> 
+  <span class="sy0">:</span> 
+  <span class="nu0">70</span> 
+  <br> 
+  <span class="co2">#3  0x000d7610 in FramedSource::getNextFrame (this=0x41a7c338, to=0x41d00008 "", maxSize=2048000, </span> 
+  <br>     afterGettingFunc 
+  <span class="sy0">=</span> 
+  <span class="nu12">0x121254</span> 
+  <span class="sy0"> &lt;</span>StreamParser 
+  <span class="sy0">::</span> 
+  <span class="me2">afterGettingBytes</span> 
+  <span class="br0">(</span> 
+  <span class="kw4">void</span> 
+  <span class="sy0">*,</span> 
+  <span class="kw4">unsigned</span> 
+  <span class="kw4">int</span> 
+  <span class="sy0">,</span> 
+  <span class="kw4">unsigned</span> 
+  <span class="kw4">int</span> 
+  <span class="sy0">,</span> timeval 
+  <span class="sy0">,</span> 
+  <span class="kw4">unsigned</span> 
+  <span class="kw4">int</span> 
+  <span class="br0">)</span> 
+  <span class="sy0">&gt;,</span> 
+  <br>     afterGettingClientData 
+  <span class="sy0">=</span> 
+  <span class="nu12">0x41a96a80</span> 
+  <span class="sy0">,</span> onCloseFunc 
+  <span class="sy0">=</span> 
+  <span class="nu12">0x121434</span> 
+  <span class="sy0">&lt;</span>StreamParser 
+  <span class="sy0">::</span> 
+  <span class="me2">onInputClosure</span> 
+  <span class="br0">(</span> 
+  <span class="kw4">void</span> 
+  <span class="sy0">*</span> 
+  <span class="br0">)</span> 
+  <span class="sy0">&gt;,</span> onCloseClientData 
+  <span class="sy0">=</span> 
+  <span class="nu12">0x41a96a80</span> 
+  <span class="br0">)</span> 
+  <br>     at FramedSource. 
+  <span class="me1">cpp</span> 
+  <span class="sy0">:</span> 
+  <span class="nu0">78</span> 
+  <br> 
+  <span class="co2">#4  0x00121228 in StreamParser::ensureValidBytes1 (this=0x41a96a80, numBytesNeeded=1024000) at StreamParser.cpp:159</span> 
+  <br> 
+  <span class="co2">#5  0x000da62c in StreamParser::ensureValidBytes (this=0x41a96a80, numBytesNeeded=4) at StreamParser.hh:118</span> 
+  <br> 
+  <span class="co2">#6  0x000da3d0 in StreamParser::test4Bytes (this=0x41a96a80) at StreamParser.hh:54</span> 
+  <br> 
+  <span class="co2">#7  0x000d9cb4 in H264VideoStreamParser::parse (this=0x41a96a80) at H264VideoStreamFramer.cpp:527</span> 
+  <br> 
+  <span class="co2">#8  0x0012bf7c in MPEGVideoStreamFramer::continueReadProcessing (this=0x41a96650) at MPEGVideoStreamFramer.cpp:154</span> 
+  <br> 
+  <span class="co2">#9  0x0012bf00 in MPEGVideoStreamFramer::doGetNextFrame (this=0x41a96650) at MPEGVideoStreamFramer.cpp:142</span> 
+  <br> 
+  <span class="co2">#10 0x000d7610 in FramedSource::getNextFrame (this=0x41a96650, to=0x42b34009 "", maxSize=900000, </span> 
+  <br>     afterGettingFunc 
+  <span class="sy0">=</span> 
+  <span class="nu12">0x149e34</span> 
+  <span class="sy0"> &lt;</span>H264FUAFragmenter 
+  <span class="sy0">::</span> 
+  <span class="me2">afterGettingFrame</span> 
+  <span class="br0">(</span> 
+  <span class="kw4">void</span> 
+  <span class="sy0">*,</span> 
+  <span class="kw4">unsigned</span> 
+  <span class="kw4">int</span> 
+  <span class="sy0">,</span> 
+  <span class="kw4">unsigned</span> 
+  <span class="kw4">int</span> 
+  <span class="sy0">,</span> timeval 
+  <span class="sy0">,</span> 
+  <span class="kw4">unsigned</span> 
+  <span class="kw4">int</span> 
+  <span class="br0">)</span> 
+  <span class="sy0">&gt;,</span> 
+  <br>     afterGettingClientData 
+  <span class="sy0">=</span> 
+  <span class="nu12">0x41a4ead0</span> 
+  <span class="sy0">,</span> onCloseFunc 
+  <span class="sy0">=</span> 
+  <span class="nu12">0xd76a4</span> 
+  <span class="sy0">&lt;</span>FramedSource 
+  <span class="sy0">::</span> 
+  <span class="me2">handleClosure</span> 
+  <span class="br0">(</span> 
+  <span class="kw4">void</span> 
+  <span class="sy0">*</span> 
+  <span class="br0">)</span> 
+  <span class="sy0">&gt;,</span> onCloseClientData 
+  <span class="sy0">=</span> 
+  <span class="nu12">0x41a4ead0</span> 
+  <span class="br0">)</span> 
+  <br>     at FramedSource. 
+  <span class="me1">cpp</span> 
+  <span class="sy0">:</span> 
+  <span class="nu0">78</span> 
+  <br> 
+  <span class="co2">#11 0x00149aa4 in H264FUAFragmenter::doGetNextFrame (this=0x41a4ead0) at H264VideoRTPSink.cpp:219</span> 
+  <br> 
+  <span class="co2">#12 0x000d7610 in FramedSource::getNextFrame (this=0x41a4ead0, to=0x41b00014 "", maxSize=900644, </span> 
+  <br>     afterGettingFunc 
+  <span class="sy0">=</span> 
+  <span class="nu12">0xe06f4</span> 
+  <span class="sy0"> &lt;</span>MultiFramedRTPSink 
+  <span class="sy0">::</span> 
+  <span class="me2">afterGettingFrame</span> 
+  <span class="br0">(</span> 
+  <span class="kw4">void</span> 
+  <span class="sy0">*,</span> 
+  <span class="kw4">unsigned</span> 
+  <span class="kw4">int</span> 
+  <span class="sy0">,</span> 
+  <span class="kw4">unsigned</span> 
+  <span class="kw4">int</span> 
+  <span class="sy0">,</span> timeval 
+  <span class="sy0">,</span> 
+  <span class="kw4">unsigned</span> 
+  <span class="kw4">int</span> 
+  <span class="br0">)</span> 
+  <span class="sy0">&gt;,</span> 
+  <br>     afterGettingClientData 
+  <span class="sy0">=</span> 
+  <span class="nu12">0x41a96820</span> 
+  <span class="sy0">,</span> onCloseFunc 
+  <span class="sy0">=</span> 
+  <span class="nu12">0xe11bc</span> 
+  <span class="sy0">&lt;</span>MultiFramedRTPSink 
+  <span class="sy0">::</span> 
+  <span class="me2">ourHandleClosure</span> 
+  <span class="br0">(</span> 
+  <span class="kw4">void</span> 
+  <span class="sy0">*</span> 
+  <span class="br0">)</span> 
+  <span class="sy0">&gt;,</span> 
+  <br>     onCloseClientData 
+  <span class="sy0">=</span> 
+  <span class="nu12">0x41a96820</span> 
+  <span class="br0">)</span> at FramedSource. 
+  <span class="me1">cpp</span> 
+  <span class="sy0">:</span> 
+  <span class="nu0">78</span> 
+  <br> 
+  <span class="co2">#13 0x000e06e4 in MultiFramedRTPSink::packFrame (this=0x41a96820) at MultiFramedRTPSink.cpp:218</span> 
+  <br> 
+  <span class="co2">#14 0x000e0538 in MultiFramedRTPSink::buildAndSendPacket (this=0x41a96820, isFirstPacket=1 '\001') at MultiFramedRTPSink.cpp:193</span> 
+  <br> 
+  <span class="co2">#15 0x000e038c in MultiFramedRTPSink::continuePlaying (this=0x41a96820) at MultiFramedRTPSink.cpp:154</span> 
+  <br> 
+  <span class="co2">#16 0x001492f0 in H264VideoRTPSink::continuePlaying (this=0x41a96820) at H264VideoRTPSink.cpp:116</span> 
+  <br> 
+  <span class="co2">#17 0x000db1e8 in MediaSink::startPlaying (this=0x41a96820, source=..., afterFunc=0x10db88 &lt;afterPlayingStreamState(void*)&gt;, </span> 
+  <br>     afterClientData 
+  <span class="sy0">=</span> 
+  <span class="nu12">0x41a969b8</span> 
+  <span class="br0">)</span> at MediaSink. 
+  <span class="me1">cpp</span> 
+  <span class="sy0">:</span> 
+  <span class="nu0">78</span> 
+  <br> 
+  <span class="co2">#18 0x0010e1b0 in StreamState::startPlaying (this=0x41a969b8, dests=0x41a4fcb8, rtcpRRHandler=</span> 
+  <br>     
+  <span class="nu12">0xf0ce4</span> 
+  <span class="sy0">&lt;</span>RTSPServer 
+  <span class="sy0">::</span> 
+  <span class="me2">RTSPClientSession</span> 
+  <span class="sy0">::</span> 
+  <span class="me2">noteClientLiveness</span> 
+  <span class="br0">(</span>RTSPServer 
+  <span class="sy0">::</span> 
+  <span class="me2">RTSPClientSession</span> 
+  <span class="sy0">*</span> 
+  <span class="br0">)</span> 
+  <span class="sy0">&gt;,</span> 
+  <br>     rtcpRRHandlerClientData 
+  <span class="sy0">=</span> 
+  <span class="nu12">0x41a96548</span> 
+  <span class="sy0">,</span> 
+  <br>     serverRequestAlternativeByteHandler 
+  <span class="sy0">=</span> 
+  <span class="nu12">0xeb768</span> 
+  <span class="sy0">&lt;</span>RTSPServer 
+  <span class="sy0">::</span> 
+  <span class="me2">RTSPClientConnection</span> 
+  <span class="sy0">::</span> 
+  <span class="me2">handleAlternativeRequestByte</span> 
+  <span class="br0">(</span> 
+  <span class="kw4">void</span> 
+  <span class="sy0">*,</span> 
+  <span class="kw4">unsigned</span> 
+  <span class="kw4">char</span> 
+  <span class="br0">)</span> 
+  <span class="sy0">&gt;,</span> serverRequestAlternativeByteHandlerClientData 
+  <span class="sy0">=</span> 
+  <span class="nu12">0x41a0d550</span> 
+  <span class="br0">)</span> at OnDemandServerMediaSubsession. 
+  <span class="me1">cpp</span> 
+  <span class="sy0">:</span> 
+  <span class="nu0">474</span> 
+  <br> 
+  <span class="co2">#19 0x0010d178 in OnDemandServerMediaSubsession::startStream (this=0x41a95a08, clientSessionId=2633508190, streamToken=0x41a969b8, </span> 
+  <br>     rtcpRRHandler 
+  <span class="sy0">=</span> 
+  <span class="nu12">0xf0ce4</span> 
+  <span class="sy0"> &lt;</span>RTSPServer 
+  <span class="sy0">::</span> 
+  <span class="me2">RTSPClientSession</span> 
+  <span class="sy0">::</span> 
+  <span class="me2">noteClientLiveness</span> 
+  <span class="br0">(</span>RTSPServer 
+  <span class="sy0">::</span> 
+  <span class="me2">RTSPClientSession</span> 
+  <span class="sy0">*</span> 
+  <span class="br0">)</span> 
+  <span class="sy0">&gt;,</span> 
+  <br>     rtcpRRHandlerClientData 
+  <span class="sy0">=</span> 
+  <span class="nu12">0x41a96548</span> 
+  <span class="sy0">,</span> rtpSeqNum 
+  <span class="sy0">=</span>@ 
+  <span class="nu12">0x40b1543e</span> 
+  <span class="sy0">:</span> 
+  <span class="nu0">0</span> 
+  <span class="sy0">,</span> rtpTimestamp 
+  <span class="sy0">=</span>@ 
+  <span class="nu12">0x40b15438</span> 
+  <span class="sy0">:</span> 
+  <span class="nu0">0</span> 
+  <span class="sy0">,</span> 
+  <br>     serverRequestAlternativeByteHandler 
+  <span class="sy0">=</span> 
+  <span class="nu12">0xeb768</span> 
+  <span class="sy0">&lt;</span>RTSPServer 
+  <span class="sy0">::</span> 
+  <span class="me2">RTSPClientConnection</span> 
+  <span class="sy0">::</span> 
+  <span class="me2">handleAlternativeRequestByte</span> 
+  <span class="br0">(</span> 
+  <span class="kw4">void</span> 
+  <span class="sy0">*,</span> 
+  <span class="kw4">unsigned</span> 
+  <span class="kw4">char</span> 
+  <span class="br0">)</span> 
+  <span class="sy0">&gt;,</span> serverRequestAlternativeByteHandlerClientData 
+  <span class="sy0">=</span> 
+  <span class="nu12">0x41a0d550</span> 
+  <span class="br0">)</span> at OnDemandServerMediaSubsession. 
+  <span class="me1">cpp</span> 
+  <span class="sy0">:</span> 
+  <span class="nu0">201</span> 
+  <br> 
+  <span class="co2">#20 0x000f05f0 in RTSPServer::RTSPClientSession::handleCmd_PLAY (this=0x41a96548, ourClientConnection=0x41a0d550, subsession=0x0, </span> 
+  <br>     fullRequestStr 
+  <span class="sy0">=</span> 
+  <span class="nu12">0x41a0d574</span> 
+  <span class="st0"> "PLAY rtsp://192.168.1.200/test.mp4/ RTSP/1.0<span class="es1">\r</span><span class="es1">\n</span>CSeq: 6<span class="es1">\r</span><span class="es1">\n</span>User-Agent: LibVLC/2.2.1 (LIVE555 Streaming Media v2014.07.25)<span class="es1">\r</span><span class="es1">\n</span>Session: 9CF8255E<span class="es1">\r</span><span class="es1">\n</span>Range: npt=0.000-<span class="es1">\r</span><span class="es1">\n</span><span class="es1">\r</span><span class="es1">\n</span>"</span> 
+  <span class="br0">)</span> at RTSPServer. 
+  <span class="me1">cpp</span> 
+  <span class="sy0">:</span> 
+  <span class="nu0">1991</span> 
+  <br> 
+  <span class="co2">#21 0x000ef888 in RTSPServer::RTSPClientSession::handleCmd_withinSession (this=0x41a96548, ourClientConnection=0x41a0d550, </span> 
+  <br>     cmdName 
+  <span class="sy0">=</span> 
+  <span class="nu12">0x40b15a28</span> 
+  <span class="st0"> "PLAY"</span> 
+  <span class="sy0">,</span> urlPreSuffix 
+  <span class="sy0">=</span> 
+  <span class="nu12">0x40b15960</span> 
+  <span class="st0">"test.mp4"</span> 
+  <span class="sy0">,</span> urlSuffix 
+  <span class="sy0">=</span> 
+  <span class="nu12">0x40b15898</span> 
+  <span class="st0">""</span> 
+  <span class="sy0">,</span> 
+  <br>     fullRequestStr 
+  <span class="sy0">=</span> 
+  <span class="nu12">0x41a0d574</span> 
+  <span class="st0"> "PLAY rtsp://192.168.1.200/test.mp4/ RTSP/1.0<span class="es1">\r</span><span class="es1">\n</span>CSeq: 6<span class="es1">\r</span><span class="es1">\n</span>User-Agent: LibVLC/2.2.1 (LIVE555 Streaming Media v2014.07.25)<span class="es1">\r</span><span class="es1">\n</span>Session: 9CF8255E<span class="es1">\r</span><span class="es1">\n</span>Range: npt=0.000-<span class="es1">\r</span><span class="es1">\n</span><span class="es1">\r</span><span class="es1">\n</span>"</span> 
+  <span class="br0">)</span> at RTSPServer. 
+  <span class="me1">cpp</span> 
+  <span class="sy0">:</span> 
+  <span class="nu0">1794</span> 
+  <br> 
+  <span class="co2">#22 0x000ec67c in RTSPServer::RTSPClientConnection::handleRequestBytes (this=0x41a0d550, newBytesRead=159) at RTSPServer.cpp:1021</span> 
+  <br> 
+  <span class="co2">#23 0x000eb760 in RTSPServer::RTSPClientConnection::incomingRequestHandler1 (this=0x41a0d550) at RTSPServer.cpp:792</span> 
+  <br> 
+  <span class="co2">#24 0x000eb6f0 in RTSPServer::RTSPClientConnection::incomingRequestHandler (instance=0x41a0d550) at RTSPServer.cpp:785</span> 
+  <br> 
+  <span class="co2">#25 0x0016bbb4 in BasicTaskScheduler::SingleStep(unsigned int) ()</span> 
+  <br> 
+  <span class="co2">#26 0x0016d85c in BasicTaskScheduler0::doEventLoop(char*) ()</span> 
+  <br> 
+  <span class="co2">#27 0x000bea38 in rtsp_main (param=0x0) at ffmpeg_server/media_server.cpp:60<br> <br> 转载自：http://www.mworkbox.com/wp/work/610.html<br> </span> 
+ </div> 
+</div>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/cce61eb8f98765670f48fc7ecfabf63d/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">程序员必知之浮点数运算原理详解</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/41d0963af818b522f2acd3afea5d7bde/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">递归应用---倒序输出数组</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

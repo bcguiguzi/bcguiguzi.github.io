@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>数据同步：MySQL到Elasticsearch - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="数据同步：MySQL到Elasticsearch" />
+<meta property="og:description" content="目录 背景1、基于应用程序多写2、基于binlog订阅2.1：canal简介工作原理 2.2、Databus2.3、Maxwell2.4、Flink CDC2.5、DTS（阿里云）2.6、CloudCanal 3、基于SQL抽取基于Logstash同步数据 4、总结 背景 随着平台的业务日益增多，基于数据库的全文搜索查询速度较慢，已经无法满足需求。所以，决定基于Elasticsearch 做一个全文搜索平台，支持业务相关的搜索需求。那么第一个问题就是：如何从MySQL同步数据Elasticsearch？
+1、基于应用程序多写 直接通过应用程序数据双写到MySQL和ES
+**记录删除机制：**直接删除
+一致性： 需要自行处理，需要对失败错误做好日志记录，做好异常告警并人工补偿
+优点： 直接明了，能够灵活控制数据写入，延迟最低
+缺点： 与业务耦合严重，逻辑要写在业务系统中
+应用双写（同步）
+直接通过ES API将数据写入到ES集群中，也就是写入数据库的同时调用ES API写入到ES中，这个过程是同步的
+应用双写（MQ异步解耦）
+对 应用双写（同步）的改进，引入MQ中间件。
+把同步变为异步，做了解耦。
+同时引入MQ后双写性能提高，解决数据一致性问题。
+缺点是会增加延迟性，业务系统增加mq代码，而且多一个MQ中间件要维护
+2、基于binlog订阅 binlog订阅的原理很简单，模拟一个MySQL slave 订阅binlog日志，从而实现CDC（change data capture）
+CDC,变更数据获取的简称，使用CDC我们可以从数据库中获取已提交的更改并将这些更改发送到下游，供下游使用。这些变更可以包括INSERT,DELETE,UPDATE等。
+**记录删除机制：**直接删除
+一致性： 最终一致性
+优点： 对业务系统无任何侵入
+缺点： 需要维护额外增加的一套数据同步平台；有分钟级的延迟
+2.1：canal https://github.com/alibaba/canal/
+阿里巴巴 MySQL binlog 增量订阅&amp;消费组件
+简介 canal [kə’næl]，译意为水道/管道/沟渠，主要用途是基于 MySQL 数据库增量日志解析，提供增量数据订阅和消费
+早期阿里巴巴因为杭州和美国双机房部署，存在跨机房同步的业务需求，实现方式主要是基于业务 trigger 获取增量变更。从 2010 年开始，业务逐步尝试数据库日志解析获取增量变更进行同步，由此衍生出了大量的数据库增量订阅和消费业务。
+基于日志增量订阅和消费的业务包括：
+数据库镜像数据库实时备份索引构建和实时维护(拆分异构索引、倒排索引等)业务 cache 刷新带业务逻辑的增量数据处理 当前的 canal 支持源端 MySQL 版本包括 5.1.x , 5." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/90b7cbb1ec174b71d16a0c4506f580bd/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2022-04-19T19:13:09+08:00" />
+<meta property="article:modified_time" content="2022-04-19T19:13:09+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">数据同步：MySQL到Elasticsearch</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p></p> 
+<div class="toc"> 
+ <h4>目录</h4> 
+ <ul><li><a href="#_2" rel="nofollow">背景</a></li><li><a href="#1_5" rel="nofollow">1、基于应用程序多写</a></li><li><a href="#2binlog_31" rel="nofollow">2、基于binlog订阅</a></li><li><ul><li><a href="#21canal_43" rel="nofollow">2.1：canal</a></li><li><ul><li><a href="#_46" rel="nofollow">简介</a></li><li><a href="#_60" rel="nofollow">工作原理</a></li></ul> 
+   </li><li><a href="#22Databus_86" rel="nofollow">2.2、Databus</a></li><li><a href="#23Maxwell_91" rel="nofollow">2.3、Maxwell</a></li><li><a href="#24Flink_CDC_96" rel="nofollow">2.4、Flink CDC</a></li><li><a href="#25DTS_107" rel="nofollow">2.5、DTS（阿里云）</a></li><li><a href="#26CloudCanal_110" rel="nofollow">2.6、CloudCanal</a></li></ul> 
+  </li><li><a href="#3SQL_115" rel="nofollow">3、基于SQL抽取</a></li><li><ul><li><ul><li><a href="#Logstash_136" rel="nofollow">基于Logstash同步数据</a></li></ul> 
+  </li></ul> 
+  </li><li><a href="#4_182" rel="nofollow">4、总结</a></li></ul> 
+</div> 
+<p></p> 
+<h2><a id="_2"></a>背景</h2> 
+<p>随着平台的业务日益增多，基于数据库的全文搜索查询速度较慢，已经无法满足需求。所以，决定基于Elasticsearch 做一个全文搜索平台，支持业务相关的搜索需求。那么第一个问题就是：如何从MySQL同步数据Elasticsearch？</p> 
+<h2><a id="1_5"></a>1、基于应用程序多写</h2> 
+<p>直接通过应用程序数据双写到MySQL和ES</p> 
+<p><img src="https://images2.imgbox.com/35/72/wkvgNnfc_o.png" alt="在这里插入图片描述"></p> 
+<p>**记录删除机制：**直接删除</p> 
+<p><strong>一致性：</strong> 需要自行处理，需要对失败错误做好日志记录，做好异常告警并人工补偿</p> 
+<p><strong>优点：</strong> 直接明了，能够灵活控制数据写入，延迟最低</p> 
+<p><strong>缺点：</strong> 与业务耦合严重，逻辑要写在业务系统中</p> 
+<p><strong>应用双写（同步）</strong><br> 直接通过ES API将数据写入到ES集群中，也就是写入数据库的同时调用ES API写入到ES中，这个过程是同步的</p> 
+<p><strong>应用双写（MQ异步解耦）</strong><br> 对 应用双写（同步）的改进，引入MQ中间件。</p> 
+<p>把同步变为异步，做了解耦。</p> 
+<p>同时引入MQ后双写性能提高，解决数据一致性问题。</p> 
+<p>缺点是会增加延迟性，业务系统增加mq代码，而且多一个MQ中间件要维护</p> 
+<h2><a id="2binlog_31"></a>2、基于binlog订阅</h2> 
+<p>binlog订阅的原理很简单，模拟一个MySQL slave 订阅binlog日志，从而实现CDC（change data capture）</p> 
+<p>CDC,变更数据获取的简称，使用CDC我们可以从数据库中获取已提交的更改并将这些更改发送到下游，供下游使用。这些变更可以包括INSERT,DELETE,UPDATE等。</p> 
+<p>**记录删除机制：**直接删除</p> 
+<p><strong>一致性：</strong> 最终一致性</p> 
+<p><strong>优点：</strong> 对业务系统无任何侵入</p> 
+<p><strong>缺点：</strong> 需要维护额外增加的一套数据同步平台；有分钟级的延迟</p> 
+<h3><a id="21canal_43"></a>2.1：canal</h3> 
+<p>https://github.com/alibaba/canal/<br> 阿里巴巴 MySQL binlog 增量订阅&amp;消费组件</p> 
+<h4><a id="_46"></a>简介</h4> 
+<p><img src="https://images2.imgbox.com/29/ab/6pL7psmF_o.png" alt="在这里插入图片描述"><br> canal [kə’næl]，译意为水道/管道/沟渠，主要用途是基于 MySQL 数据库增量日志解析，提供增量数据订阅和消费</p> 
+<p>早期阿里巴巴因为杭州和美国双机房部署，存在跨机房同步的业务需求，实现方式主要是基于业务 trigger 获取增量变更。从 2010 年开始，业务逐步尝试数据库日志解析获取增量变更进行同步，由此衍生出了大量的数据库增量订阅和消费业务。</p> 
+<p>基于日志增量订阅和消费的业务包括：</p> 
+<ul><li>数据库镜像</li><li>数据库实时备份</li><li>索引构建和实时维护(拆分异构索引、倒排索引等)</li><li>业务 cache 刷新</li><li>带业务逻辑的增量数据处理</li></ul> 
+<p>当前的 canal 支持源端 MySQL 版本包括 5.1.x , 5.5.x , 5.6.x , 5.7.x , 8.0.x</p> 
+<h4><a id="_60"></a>工作原理</h4> 
+<p><strong>MySQL主备复制原理</strong><br> <img src="https://images2.imgbox.com/33/28/flLjzmGx_o.png" alt="在这里插入图片描述"></p> 
+<ul><li>MySQL master 将数据变更写入二进制日志( binary log, 其中记录叫做二进制日志事件binary log events，可以通过 show binlog events 进行查看)</li><li>MySQL slave 将 master 的 binary log events 拷贝到它的中继日志(relay log)</li><li>MySQL slave 重放 relay log 中事件，将数据变更反映它自己的数据</li></ul> 
+<p><strong>canal 工作原理</strong></p> 
+<ul><li> <p>canal 模拟 MySQL slave 的交互协议，伪装自己为 MySQL slave ，向 MySQL master 发送dump 协议</p> </li><li> <p>MySQL master 收到 dump 请求，开始推送 binary log 给 slave (即 canal )</p> </li><li> <p>canal 解析 binary log 对象(原始为 byte 流)</p> </li></ul> 
+<p>canal同步数据流程图：<br> <img src="https://images2.imgbox.com/84/b9/rF36zxtZ_o.png" alt="在这里插入图片描述"><br> 优点：<br> 1、canal是同步MySQL的binlog日志，不需要全量更新数据；<br> 2、Kafka是一个高吞吐量的分布式发布订阅消息系统，性能高速度快。</p> 
+<p>缺点：<br> 1、组件较多，有canal-server、Kafka 和canal-adapter 三个组件；<br> 2、配置相对复杂。</p> 
+<h3><a id="22Databus_86"></a>2.2、Databus</h3> 
+<p>https://github.com/linkedin/databus</p> 
+<p>Linkedin Databus 分布式数据库同步系统</p> 
+<h3><a id="23Maxwell_91"></a>2.3、Maxwell</h3> 
+<p>官网：http://maxwells-daemon.io/</p> 
+<p>https://github.com/zendesk/maxwell</p> 
+<h3><a id="24Flink_CDC_96"></a>2.4、Flink CDC</h3> 
+<p>https://github.com/ververica/flink-cdc-connectors</p> 
+<p>flink-cdc-connectors 中文教程https://github.com/ververica/flink-cdc-connectors/wiki/%E4%B8%AD%E6%96%87%E6%95%99%E7%A8%8B</p> 
+<p>基于flink数据计算平台实现 MySQL binlog订阅直接写入es</p> 
+<p>Flink CDC抛弃掉其他中间件，实现 MySQL 》Flink CDC》ES 非常简洁的数据同步架构</p> 
+<p>该方式比较新2020年开始的项目，目前在一些实时数仓上有应用</p> 
+<h3><a id="25DTS_107"></a>2.5、DTS（阿里云）</h3> 
+<p>阿里云的商业产品，具备好的易用性，省运维成本。</p> 
+<h3><a id="26CloudCanal_110"></a>2.6、CloudCanal</h3> 
+<p>CloudCanal官网https://www.clougence.com/?utm_source=wwek</p> 
+<p>CloudCannal数据同步迁移系统，商业产品</p> 
+<h2><a id="3SQL_115"></a>3、基于SQL抽取</h2> 
+<p>基于SQL查询的数据抽取同步</p> 
+<p>这种方式需要满足2个基本条件</p> 
+<p>1、MySQL的表必须有唯一键字段（和ES中_id对应）</p> 
+<p>2、MySQL的表必须有一个“修改时间”字段，该记录任何一个字段修改都需要更新“修改时间”</p> 
+<p>有了唯一键字段就可以知道修改某条记录后同步哪条ES记录，有了修改时间字段就可以知道同步到哪儿了。</p> 
+<p>满足了这2个基本条件这样就可实现增量实时同步。</p> 
+<p>记录删除机制：逻辑删除，在MySQL中增加逻辑删除字段，ES搜索时过滤状态</p> 
+<p>一致性： 依赖修改时间字段；延迟时间等于计划任务多久执行一次</p> 
+<p>优点： 对业务系统无任何侵入，简单方便；课用JOIN打宽表</p> 
+<p>缺点： MySQL承受查询压力；需要业务中满足2个基本条件</p> 
+<h4><a id="Logstash_136"></a>基于Logstash同步数据</h4> 
+<p>Logstash同步数据流程图：<br> <img src="https://images2.imgbox.com/d1/83/mGl3V4AW_o.png" alt="在这里插入图片描述"><br> 我们使用 Logstash 和 JDBC 输入插件来让 Elasticsearch 与 MySQL 保持同步。从概念上讲，Logstash 的 JDBC 输入插件会运行一个循环来定期对 MySQL 进行轮询，从而找出在此次循环的上次迭代后插入或更改的记录。如要让其正确运行，必须满足下列条件：</p> 
+<ol><li>在将 MySQL 中的文档写入 Elasticsearch 时，Elasticsearch 中的 “_id” 字段必须设置为 MySQL 中的 “id” 字段。这可在 MySQL 记录Elasticsearch 文档之间建立一个直接映射关系。如果在 MySQL中更新了某条记录，那么将会在 Elasticsearch 中覆盖整条相关记录。请注意，在 Elasticsearch中覆盖文档的效率与更新操作的效率一样高，因为从内部原理上来讲，更新便包括删除旧文档以及随后对全新文档进行索引。</li><li>当在 MySQL 中插入或更新数据时，该条记录必须有一个包含更新或插入时间的字段。通过此字段，便可允许 Logstash仅请求获得在轮询循环的上次迭代后编辑或插入的文档。Logstash 每次对 MySQL 进行轮询时，都会保存其从 MySQL所读取最后一条记录的更新或插入时间。在下一次迭代时，Logstash便知道其仅需请求获得符合下列条件的记录：更新或插入时间晚于在轮询循环中的上一次迭代中所收到的最后一条记录。</li></ol> 
+<pre><code class="prism language-java">input <span class="token punctuation">{<!-- --></span>
+  jdbc <span class="token punctuation">{<!-- --></span>
+    jdbc_driver_library <span class="token operator">=</span><span class="token operator">&gt;</span> <span class="token string">"&lt;path&gt;/mysql-connector-java-8.0.16.jar"</span>
+    jdbc_driver_class <span class="token operator">=</span><span class="token operator">&gt;</span> <span class="token string">"com.mysql.jdbc.Driver"</span>
+    jdbc_connection_string <span class="token operator">=</span><span class="token operator">&gt;</span> <span class="token string">"jdbc:mysql://&lt;MySQL host&gt;:3306/es_db"</span>
+    jdbc_user <span class="token operator">=</span><span class="token operator">&gt;</span> <span class="token generics"><span class="token punctuation">&lt;</span>my username<span class="token punctuation">&gt;</span></span>
+    jdbc_password <span class="token operator">=</span><span class="token operator">&gt;</span> <span class="token generics"><span class="token punctuation">&lt;</span>my password<span class="token punctuation">&gt;</span></span>
+    jdbc_paging_enabled <span class="token operator">=</span><span class="token operator">&gt;</span> <span class="token boolean">true</span>
+    tracking_column <span class="token operator">=</span><span class="token operator">&gt;</span> <span class="token string">"unix_ts_in_secs"</span>
+    use_column_value <span class="token operator">=</span><span class="token operator">&gt;</span> <span class="token boolean">true</span>
+    tracking_column_type <span class="token operator">=</span><span class="token operator">&gt;</span> <span class="token string">"numeric"</span>
+    schedule <span class="token operator">=</span><span class="token operator">&gt;</span> <span class="token string">"*/5 * * * * *"</span>
+    statement <span class="token operator">=</span><span class="token operator">&gt;</span> <span class="token string">"SELECT *, UNIX_TIMESTAMP(modification_time) AS unix_ts_in_secs FROM es_table WHERE (UNIX_TIMESTAMP(modification_time) &gt; :sql_last_value AND modification_time &lt; NOW()) ORDER BY modification_time ASC"</span>
+  <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+filter <span class="token punctuation">{<!-- --></span>
+  mutate <span class="token punctuation">{<!-- --></span>
+    copy <span class="token operator">=</span><span class="token operator">&gt;</span> <span class="token punctuation">{<!-- --></span> <span class="token string">"id"</span> <span class="token operator">=</span><span class="token operator">&gt;</span> <span class="token string">"[@metadata][_id]"</span><span class="token punctuation">}</span>
+    remove_field <span class="token operator">=</span><span class="token operator">&gt;</span> <span class="token punctuation">[</span><span class="token string">"id"</span><span class="token punctuation">,</span> <span class="token string">"@version"</span><span class="token punctuation">,</span> <span class="token string">"unix_ts_in_secs"</span><span class="token punctuation">]</span>
+  <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+output <span class="token punctuation">{<!-- --></span>
+  # stdout <span class="token punctuation">{<!-- --></span> codec <span class="token operator">=</span><span class="token operator">&gt;</span>  <span class="token string">"rubydebug"</span><span class="token punctuation">}</span>
+  elasticsearch <span class="token punctuation">{<!-- --></span>
+      index <span class="token operator">=</span><span class="token operator">&gt;</span> <span class="token string">"rdbms_sync_idx"</span>
+      document_id <span class="token operator">=</span><span class="token operator">&gt;</span> <span class="token string">"%{[@metadata][_id]}"</span>
+  <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>配置Logstash的计划任务，定时执行<br> <strong>优点：</strong><br> 1、组件少，只需要Logstash就可以实现；<br> 2、配置简单，配置Logstash文件就可以。</p> 
+<p><strong>缺点：</strong><br> 在数据量很大的情况下，Logstash可能会成为性能瓶颈</p> 
+<h2><a id="4_182"></a>4、总结</h2> 
+<p>前期建议采用 基于SQL抽取的方式做同步,后期数据量大了建议采用基于binlog订阅的方式同步。</p> 
+<p>如果本身有现成的Flink平台可用，推荐使用Flink CDC。</p> 
+<p>什么是最佳的 MySQL 同步 ElasticSearch 方案？</p> 
+<p>答案是选择缺点可以接受，又满足需求，拥有成本最低的方案。</p> 
+<p>“完美”的方案往往拥有成本会比较高，所以需要结合业务环境的上下文去选择。</p> 
+<p>没有一招鲜的方案，因为每种方案都有利弊，所以选取适合你当下业务环境的方案。那么这样的方案就是最佳方案。</p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/4a413321d724aa3d60d500c500a59991/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">【Appium踩坑】Proxy error:Could not proxy command to remote server.Original error:Error: socket hang up</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/dbbd0afea9cdbcb02968e82eeaa11f3f/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">中介者设计模式</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

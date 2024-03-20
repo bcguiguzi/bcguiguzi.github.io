@@ -1,0 +1,782 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>【Go】标准库底层实现 ① - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="【Go】标准库底层实现 ①" />
+<meta property="og:description" content="文章目录 1.基本类型1.1string面试题：字符串转byte数组时，是否会发生内存拷贝？ 1.2 slice切片是什么切片扩容规则 1.4 channel实现channel 的概念 1.6 interface接口 context原理context是如何传递的？context是如何触发取消的cancelCtx类型timerCtx timetime.sleep() time.Tick()优劣性对比 reflect什么是反射为什么要用反射,（需要反射的 2 个常见场景） new makeselect 底层实现 sync系列sync.poolsync.Pool 适应场景sync.Pool使用示例源码分析 指针系列Golang指针与C/C&#43;&#43;指针的差别unsafeunsafe.pointerstring类型和[]byte之间的零拷贝转换[]byte转化成stringstring转化成[]byte uintptr指针运算 reflect (todo)defer&#43;recoverpanic defer revover定义10种panic方法：panic实现recovery recover实现总结defer recover 小结 1.基本类型 1.1string StringHeader是字符串在Go的底层数据结构：
+type StringHeader struct { Data uintptr Len int } 面试题：字符串转byte数组时，是否会发生内存拷贝？ 解析：字符串转切片一定会产生内存拷贝，严格来说，只要是发生数据类型转换都会发生内存拷贝。
+，因为频繁的内存拷贝听起来对于性能来说不是很友好，那就要想想有没有什么办法使得字符串在转切片的时候不发生内存拷贝呢？
+SliceHeader是切片在G的底层数据结构：
+type SliceHeader struct { Data uintptr Len int Cap int } package main ​ import ( &#34;fmt&#34; &#34;reflect&#34; &#34;unsafe&#34; ) ​ func main() { a := &#34;" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/19276658c3708124e1bd3c3445352dbf/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2024-03-12T23:14:26+08:00" />
+<meta property="article:modified_time" content="2024-03-12T23:14:26+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">【Go】标准库底层实现 ①</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p></p> 
+<div class="toc"> 
+ <h4>文章目录</h4> 
+ <ul><li><a href="#1_1" rel="nofollow">1.基本类型</a></li><li><ul><li><a href="#11string_2" rel="nofollow">1.1string</a></li><li><ul><li><a href="#byte_14" rel="nofollow">面试题：字符串转byte数组时，是否会发生内存拷贝？</a></li></ul> 
+   </li><li><a href="#12_slice_62" rel="nofollow">1.2 slice</a></li><li><ul><li><a href="#_63" rel="nofollow">切片是什么</a></li><li><a href="#_92" rel="nofollow">切片扩容规则</a></li></ul> 
+   </li><li><a href="#14_channel_107" rel="nofollow">1.4 channel实现</a></li><li><ul><li><a href="#channel__113" rel="nofollow">channel 的概念</a></li></ul> 
+   </li><li><a href="#16_interface_131" rel="nofollow">1.6 interface接口</a></li></ul> 
+  </li><li><a href="#context_133" rel="nofollow">context原理</a></li><li><ul><li><ul><li><a href="#context_163" rel="nofollow">context是如何传递的？</a></li><li><a href="#context_212" rel="nofollow">context是如何触发取消的</a></li><li><ul><li><a href="#cancelCtx_220" rel="nofollow">cancelCtx类型</a></li><li><a href="#timerCtx_255" rel="nofollow">timerCtx</a></li></ul> 
+   </li></ul> 
+   </li><li><a href="#time_290" rel="nofollow">time</a></li><li><ul><li><a href="#timesleep_timeTick_306" rel="nofollow">time.sleep() time.Tick()优劣性对比</a></li></ul> 
+   </li><li><a href="#reflect_323" rel="nofollow">reflect</a></li><li><ul><li><ul><li><a href="#_324" rel="nofollow">什么是反射</a></li><li><a href="#_2__333" rel="nofollow">为什么要用反射,（需要反射的 2 个常见场景）</a></li></ul> 
+    </li><li><a href="#new_make_348" rel="nofollow">new make</a></li><li><a href="#select__379" rel="nofollow">select 底层实现</a></li></ul> 
+  </li></ul> 
+  </li><li><a href="#sync_430" rel="nofollow">sync系列</a></li><li><ul><li><a href="#syncpool_434" rel="nofollow">sync.pool</a></li><li><ul><li><a href="#syncPool__436" rel="nofollow">sync.Pool 适应场景</a></li><li><a href="#syncPool_450" rel="nofollow">sync.Pool使用示例</a></li><li><a href="#_511" rel="nofollow">源码分析</a></li></ul> 
+  </li></ul> 
+  </li><li><a href="#_633" rel="nofollow">指针系列</a></li><li><ul><li><a href="#GolangCC_643" rel="nofollow">Golang指针与C/C++指针的差别</a></li><li><a href="#unsafe_661" rel="nofollow">unsafe</a></li><li><ul><li><a href="#unsafepointer_662" rel="nofollow">unsafe.pointer</a></li><li><a href="#stringbyte_713" rel="nofollow">string类型和[]byte之间的零拷贝转换</a></li><li><ul><li><a href="#bytestring_717" rel="nofollow">[]byte转化成string</a></li><li><a href="#stringbyte_758" rel="nofollow">string转化成[]byte</a></li></ul> 
+    </li><li><a href="#uintptr_775" rel="nofollow">uintptr指针运算</a></li></ul> 
+  </li></ul> 
+  </li><li><a href="#reflect_todo_813" rel="nofollow">reflect (todo)</a></li><li><a href="#deferrecover_816" rel="nofollow">defer+recover</a></li><li><ul><li><a href="#panic_defer_revover_826" rel="nofollow">panic defer revover定义</a></li><li><ul><li><a href="#10panic_857" rel="nofollow">10种panic方法：</a></li><li><a href="#panic_877" rel="nofollow">panic实现</a></li><li><ul><li><a href="#recovery_929" rel="nofollow">recovery</a></li></ul> 
+    </li><li><a href="#recover_973" rel="nofollow">recover实现</a></li><li><a href="#_1010" rel="nofollow">总结</a></li><li><a href="#defer_recover__1032" rel="nofollow">defer recover 小结</a></li></ul> 
+  </li></ul> 
+ </li></ul> 
+</div> 
+<p></p> 
+<h2><a id="1_1"></a>1.基本类型</h2> 
+<h3><a id="11string_2"></a>1.1string</h3> 
+<p>StringHeader是字符串在Go的底层数据结构：</p> 
+<pre><code class="prism language-go"><span class="token keyword">type</span> StringHeader <span class="token keyword">struct</span> <span class="token punctuation">{<!-- --></span>
+  Data <span class="token builtin">uintptr</span>
+  Len  <span class="token builtin">int</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<h4><a id="byte_14"></a>面试题：字符串转byte数组时，是否会发生内存拷贝？</h4> 
+<p>解析：字符串转切片一定会产生内存拷贝，严格来说，只要是发生数据类型转换都会发生内存拷贝。</p> 
+<p>，因为频繁的内存拷贝听起来对于性能来说不是很友好，那就要想想有没有什么办法使得字符串在转切片的时候不发生内存拷贝呢？</p> 
+<p>SliceHeader是切片在G的底层数据结构：</p> 
+<pre><code class="prism language-go"><span class="token keyword">type</span> SliceHeader <span class="token keyword">struct</span> <span class="token punctuation">{<!-- --></span>
+  Data <span class="token builtin">uintptr</span>
+  Len  <span class="token builtin">int</span>
+  Cap  <span class="token builtin">int</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<pre><code class="prism language-go"><span class="token keyword">package</span> main
+​
+<span class="token keyword">import</span> <span class="token punctuation">(</span>
+  <span class="token string">"fmt"</span>
+  <span class="token string">"reflect"</span>
+  <span class="token string">"unsafe"</span>
+<span class="token punctuation">)</span>
+​
+<span class="token keyword">func</span> <span class="token function">main</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+  a <span class="token operator">:=</span> <span class="token string">"aaa"</span>
+  ssh <span class="token operator">:=</span> <span class="token operator">*</span><span class="token punctuation">(</span><span class="token operator">*</span>reflect<span class="token punctuation">.</span>StringHeader<span class="token punctuation">)</span><span class="token punctuation">(</span>unsafe<span class="token punctuation">.</span><span class="token function">Pointer</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>a<span class="token punctuation">)</span><span class="token punctuation">)</span>
+  b <span class="token operator">:=</span> <span class="token operator">*</span><span class="token punctuation">(</span><span class="token operator">*</span><span class="token punctuation">[</span><span class="token punctuation">]</span><span class="token builtin">byte</span><span class="token punctuation">)</span><span class="token punctuation">(</span>unsafe<span class="token punctuation">.</span><span class="token function">Pointer</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>ssh<span class="token punctuation">)</span><span class="token punctuation">)</span>
+  fmt<span class="token punctuation">.</span><span class="token function">Printf</span><span class="token punctuation">(</span><span class="token string">"%v"</span><span class="token punctuation">,</span> b<span class="token punctuation">)</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>如果我们想要在底层实现StringHeader和SliceHeader的互转，只需要把StringHeader的地址强制转换为SliceHeader就可以。</p> 
+<ul><li> <p>Go的unsafe包实现了上述功能，来看下介绍：</p> </li><li> <p>unsafe.Pointer(&amp;a) 方法可以得到变量a的指针地址。</p> </li><li> <p>(*reflect.StringHeader)(unsafe.Pointer(&amp;a)) 可把字符串a转成底层结构形式。</p> </li><li> <p>(*[]byte)(unsafe.Pointer(&amp;ssh)) 可把ssh底层结构体转成byte的切片的指针。</p> </li></ul> 
+<h3><a id="12_slice_62"></a>1.2 slice</h3> 
+<h4><a id="_63"></a>切片是什么</h4> 
+<blockquote> 
+ <p>slice通过内部指针和相关属性引用数组片段，来实现变长方案。实现方式和数据结构都类似C++中的vector。它本身是结构体，作为参数传递时传递的是slice本身而不是它引用的底层数组。len()可获得slice长度，cap()可获得slice容量。</p> 
+</blockquote> 
+<pre><code class="prism language-go"><span class="token keyword">type</span> slice <span class="token keyword">struct</span> <span class="token punctuation">{<!-- --></span>
+	array unsafe<span class="token punctuation">.</span>Pointer
+	<span class="token builtin">len</span>   <span class="token builtin">int</span>
+	<span class="token builtin">cap</span>   <span class="token builtin">int</span>
+<span class="token punctuation">}</span>
+
+</code></pre> 
+<p><img src="https://images2.imgbox.com/3b/ec/3plnHgI4_o.jpg" alt="请添加图片描述"></p> 
+<p>slice可以通过数组初始化，也可以直接make。make时直接使用cap作为new的长度来创建底层数组，返回的是slice结构体。如果通过new([]int)来初始化，它返回的是一个指向slice结构体的指针，不能直接对它进行下标操作。</p> 
+<pre><code class="prism language-go"><span class="token keyword">func</span> <span class="token function">makeslice</span><span class="token punctuation">(</span>t <span class="token operator">*</span>slicetype<span class="token punctuation">,</span> len64<span class="token punctuation">,</span> cap64 <span class="token builtin">int64</span><span class="token punctuation">)</span> slice <span class="token punctuation">{<!-- --></span>
+	p <span class="token operator">:=</span> <span class="token function">newarray</span><span class="token punctuation">(</span>t<span class="token punctuation">.</span>elem<span class="token punctuation">,</span> <span class="token function">uintptr</span><span class="token punctuation">(</span><span class="token builtin">cap</span><span class="token punctuation">)</span><span class="token punctuation">)</span>
+	<span class="token keyword">return</span> slice<span class="token punctuation">{<!-- --></span>p<span class="token punctuation">,</span> <span class="token builtin">len</span><span class="token punctuation">,</span> <span class="token builtin">cap</span><span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<h4><a id="_92"></a>切片扩容规则</h4> 
+<p>reslice扩容</p> 
+<p>slice通过append元素使得元素达到cap，就会重新分配内存，复制内容并接着append，即便指向的数组还有空位。比如这个例子a初始化为长度和容量都是3的slice，再往a中append数据时a将<strong>在堆上重新分配空间并复制原始内容</strong>，因此这时原始数组的后几位已经看不到了。</p> 
+<ul><li>扩容规则<br> 当需要的容量超过原切片容量的两倍时，会使用需要的容量作为新容量。（长度是奇数就+1为容量，是偶数就长度为容量）<br> 当原切片长度小于1024时，新切片的容量会直接翻倍。<br> 而当原切片的容量大于等于1024时，会反复地增加25%，直到新容量超过所需要的容量。</li></ul> 
+<h3><a id="14_channel_107"></a>1.4 channel实现</h3> 
+<p>Reference<br> <a href="https://cloud.tencent.com/developer/article/2126558" rel="nofollow">https://cloud.tencent.com/developer/article/2126558</a></p> 
+<p><a href="https://blog.csdn.net/weixin_42309691/article/details/125694412">https://blog.csdn.net/weixin_42309691/article/details/125694412</a></p> 
+<h4><a id="channel__113"></a>channel 的概念</h4> 
+<p>channel 是一个通道，用于<strong>端到端</strong>的数据传输，这有点像我们平常使用的消息队列，只不过 channel 的发送方和接受方是 <strong>goroutine 对象</strong>，属于<strong>内存级别的通信</strong>。</p> 
+<p>这里涉及到了 goroutine 概念，goroutine 是轻量级的协程，有属于自己的栈空间。 我们可以把它理解为线程，只不过 goroutine 的性能开销很小，并且在用户态上实现了属于自己的调度模型。</p> 
+<p>传统的线程通信有很多方式，像内存共享、信号量等。其中内存共享实现较为简单，只需要对变量进行并发控制，加锁即可。但这种在后续业务逐渐复杂时，将很难维护，耦合性也比较强。</p> 
+<p>后来提出了 <strong>CSP 模型</strong>，即在通信双方抽象出中间层，数据的流转由中间层来控制，通信双方只负责数据的发送和接收，从而实现了数据的共享，这就是所谓的<strong>通过通信来共享内存</strong>。 channel 就是按这个模型来实现的。</p> 
+<p><strong>channel 在多并发操作里是属于协程安全的，并且遵循了 FIFO 特性。即先执行读取的 goroutine 会先获取到数据，先发送数据的 goroutine 会先输入数据。</strong></p> 
+<p>另外，channel 的使用将会引起 Go runtime 的调度调用，会有阻塞和唤起 goroutine 的情况产生。</p> 
+<h3><a id="16_interface_131"></a>1.6 interface接口</h3> 
+<h2><a id="context_133"></a>context原理</h2> 
+<p>Go 1.7 标准库引入 context，中文译作“上下文”，准确说它是 goroutine 的上下文，包含 goroutine 的运行状态、环境、现场等信息。</p> 
+<blockquote> 
+ <p>每个Goroutine在执行之前，都要先知道程序当前的执行状态，通常将这些执行状态封装在一个Context变量中，传递给要执行的Goroutine中。上下文则几乎已经成为传递与请求同生存周期变量的标准方法。在网络编程下，当接收到一个网络请求Request，处理Request时，我们可能需要开启不同的Goroutine来获取数据与逻辑处理，即一个请求Request，会在多个Goroutine中处理。而这些Goroutine可能需要共享Request的一些信息；同时当Request被取消或者超时的时候，所有从这个Request创建的所有Goroutine也应该被结束。</p> 
+</blockquote> 
+<ul><li> <p>context作用<br> 在 Goroutine 构成的树形结构中对信号进行同步以减少计算资源的浪费是 context.Context 的最大作用。Go 服务的每一个请求都是通过单独的 Goroutine 处理的2，HTTP/RPC 请求的处理器会启动新的 Goroutine 访问数据库和其他服务。</p> <p>通常需要访问一些与请求特定的数据，比如终端用户的身份认证信息、验证相关的token、请求的截止时间。<br> 当一个请求被取消或超时时，所有用来处理该请求的 goroutine 都应该迅速退出，然后系统才能释放这些 goroutine 占用的资源。</p> <p>context 主要用来在 goroutine 之间传递上下文信息，包括：取消信号、超时时间、截止时间、k-v 等。</p> <p><a href="https://zhuanlan.zhihu.com/p/68792989" rel="nofollow">https://zhuanlan.zhihu.com/p/68792989</a></p> <p><a href="https://www.cnblogs.com/zhangboyu/p/7456606.html" rel="nofollow">https://www.cnblogs.com/zhangboyu/p/7456606.html</a></p> </li><li> <p>图 6-1 Context 与 Goroutine 树<br> <img src="https://images2.imgbox.com/fc/64/0ezCXZth_o.png" alt="在这里插入图片描述"></p> <p>每一个 context.Context 都会从最顶层的 Goroutine 一层一层传递到最下层。context.Context 可以在上层 Goroutine 执行出现错误时，将信号及时同步给下层。</p> </li></ul> 
+<h4><a id="context_163"></a>context是如何传递的？</h4> 
+<p><a href="https://tech.ipalfish.com/blog/2020/03/30/golang-context/" rel="nofollow">https://tech.ipalfish.com/blog/2020/03/30/golang-context/</a></p> 
+<p>首先可以明确，任何一种context都具有传递性，而传递性的内在机制可以理解为: 在调用WithCancel、WithTimeout、WithValue时如何处理父子context。从传递性的角度来说，几种With*函数内部都是通过propagateCancel这个函数来实现的，下面以WithCancel函数为例</p> 
+<p>newCancelCtx是cancelCtx赋值父context的过程，而propagateCancel建立父子context之间的联系。</p> 
+<pre><code class="prism language-go"><span class="token keyword">func</span> <span class="token function">propagateCancel</span><span class="token punctuation">(</span>parent Context<span class="token punctuation">,</span> child canceler<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+	<span class="token keyword">if</span> parent<span class="token punctuation">.</span><span class="token function">Done</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">==</span> <span class="token boolean">nil</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token keyword">return</span> <span class="token comment">// parent is never canceled</span>
+	<span class="token punctuation">}</span>
+	<span class="token keyword">if</span> p<span class="token punctuation">,</span> ok <span class="token operator">:=</span> <span class="token function">parentCancelCtx</span><span class="token punctuation">(</span>parent<span class="token punctuation">)</span><span class="token punctuation">;</span> ok <span class="token punctuation">{<!-- --></span>
+		p<span class="token punctuation">.</span>mu<span class="token punctuation">.</span><span class="token function">Lock</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+		<span class="token keyword">if</span> p<span class="token punctuation">.</span>err <span class="token operator">!=</span> <span class="token boolean">nil</span> <span class="token punctuation">{<!-- --></span>
+			<span class="token comment">// parent has already been canceled</span>
+			child<span class="token punctuation">.</span><span class="token function">cancel</span><span class="token punctuation">(</span><span class="token boolean">false</span><span class="token punctuation">,</span> p<span class="token punctuation">.</span>err<span class="token punctuation">)</span>
+		<span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+			<span class="token keyword">if</span> p<span class="token punctuation">.</span>children <span class="token operator">==</span> <span class="token boolean">nil</span> <span class="token punctuation">{<!-- --></span>
+				p<span class="token punctuation">.</span>children <span class="token operator">=</span> <span class="token function">make</span><span class="token punctuation">(</span><span class="token keyword">map</span><span class="token punctuation">[</span>canceler<span class="token punctuation">]</span><span class="token keyword">struct</span><span class="token punctuation">{<!-- --></span><span class="token punctuation">}</span><span class="token punctuation">)</span>
+			<span class="token punctuation">}</span>
+			p<span class="token punctuation">.</span>children<span class="token punctuation">[</span>child<span class="token punctuation">]</span> <span class="token operator">=</span> <span class="token keyword">struct</span><span class="token punctuation">{<!-- --></span><span class="token punctuation">}</span><span class="token punctuation">{<!-- --></span><span class="token punctuation">}</span>
+		<span class="token punctuation">}</span>
+		p<span class="token punctuation">.</span>mu<span class="token punctuation">.</span><span class="token function">Unlock</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+	<span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token keyword">go</span> <span class="token keyword">func</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+			<span class="token keyword">select</span> <span class="token punctuation">{<!-- --></span>
+			<span class="token keyword">case</span> <span class="token operator">&lt;-</span>parent<span class="token punctuation">.</span><span class="token function">Done</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">:</span>
+				child<span class="token punctuation">.</span><span class="token function">cancel</span><span class="token punctuation">(</span><span class="token boolean">false</span><span class="token punctuation">,</span> parent<span class="token punctuation">.</span><span class="token function">Err</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span>
+			<span class="token keyword">case</span> <span class="token operator">&lt;-</span>child<span class="token punctuation">.</span><span class="token function">Done</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">:</span>
+			<span class="token punctuation">}</span>
+		<span class="token punctuation">}</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+	<span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>1.如果parent.Done是nil，则不做任何处理，因为parent context永远不会取消，比如TODO()、Background()、WithValue等。</p> 
+<p>2.parentCancelCtx根据parent context的类型，返回bool型ok，ok为真时需要建立parent对应的children，并保存parent-&gt;child映射关系(cancelCtx、timerCtx这两种类型会建立，valueCtx类型会一直向上寻找，而循环往上找是因为cancel是必须的，然后找一种最合理的)，这里children的key是canceler接口，并不能处理所有的外部类型，所以会有else，示例见上述代码注释处。对于其他外部类型，不建立直接的传递关系。</p> 
+<h4><a id="context_212"></a>context是如何触发取消的</h4> 
+<p>cancel函数是幂等的，可以被多次调用。<br> context中包含done channel可以用来确认是否取消、通知取消。</p> 
+<h5><a id="cancelCtx_220"></a>cancelCtx类型</h5> 
+<p>cancelCtx会主动进行取消，在自顶向下取消的过程中，会遍历children context，然后依次主动取消。通过channel通知</p> 
+<pre><code class="prism language-go"><span class="token comment">// cancel closes c.done, cancels each of c's children, and, if</span>
+<span class="token comment">// removeFromParent is true, removes c from its parent's children.</span>
+<span class="token keyword">func</span> <span class="token punctuation">(</span>c <span class="token operator">*</span>cancelCtx<span class="token punctuation">)</span> <span class="token function">cancel</span><span class="token punctuation">(</span>removeFromParent <span class="token builtin">bool</span><span class="token punctuation">,</span> err <span class="token builtin">error</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+	<span class="token keyword">if</span> err <span class="token operator">==</span> <span class="token boolean">nil</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token function">panic</span><span class="token punctuation">(</span><span class="token string">"context: internal error: missing cancel error"</span><span class="token punctuation">)</span>
+	<span class="token punctuation">}</span>
+	c<span class="token punctuation">.</span>mu<span class="token punctuation">.</span><span class="token function">Lock</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+	<span class="token keyword">if</span> c<span class="token punctuation">.</span>err <span class="token operator">!=</span> <span class="token boolean">nil</span> <span class="token punctuation">{<!-- --></span>
+		c<span class="token punctuation">.</span>mu<span class="token punctuation">.</span><span class="token function">Unlock</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+		<span class="token keyword">return</span> <span class="token comment">// already canceled</span>
+	<span class="token punctuation">}</span>
+	c<span class="token punctuation">.</span>err <span class="token operator">=</span> err
+	<span class="token keyword">if</span> c<span class="token punctuation">.</span>done <span class="token operator">==</span> <span class="token boolean">nil</span> <span class="token punctuation">{<!-- --></span>
+		c<span class="token punctuation">.</span>done <span class="token operator">=</span> closedchan
+	<span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token function">close</span><span class="token punctuation">(</span>c<span class="token punctuation">.</span>done<span class="token punctuation">)</span>
+	<span class="token punctuation">}</span>
+	<span class="token keyword">for</span> child <span class="token operator">:=</span> <span class="token keyword">range</span> c<span class="token punctuation">.</span>children <span class="token punctuation">{<!-- --></span>
+		<span class="token comment">// NOTE: acquiring the child's lock while holding parent's lock.</span>
+		child<span class="token punctuation">.</span><span class="token function">cancel</span><span class="token punctuation">(</span><span class="token boolean">false</span><span class="token punctuation">,</span> err<span class="token punctuation">)</span>
+	<span class="token punctuation">}</span>
+	c<span class="token punctuation">.</span>children <span class="token operator">=</span> <span class="token boolean">nil</span>
+	c<span class="token punctuation">.</span>mu<span class="token punctuation">.</span><span class="token function">Unlock</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+
+	<span class="token keyword">if</span> removeFromParent <span class="token punctuation">{<!-- --></span>
+		<span class="token function">removeChild</span><span class="token punctuation">(</span>c<span class="token punctuation">.</span>Context<span class="token punctuation">,</span> c<span class="token punctuation">)</span>
+	<span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<h5><a id="timerCtx_255"></a>timerCtx</h5> 
+<p>WithTimeout是通过WithDeadline来实现的，均对应timerCtx类型。通过parentCancelCtx函数的定义我们知道，timerCtx也会记录父子context关系。<strong>但是timerCtx是通过timer定时器触发cancel调用的</strong>，部分实现如下</p> 
+<pre><code class="prism language-go"><span class="token keyword">func</span> <span class="token function">WithDeadline</span><span class="token punctuation">(</span>parent Context<span class="token punctuation">,</span> d time<span class="token punctuation">.</span>Time<span class="token punctuation">)</span> <span class="token punctuation">(</span>Context<span class="token punctuation">,</span> CancelFunc<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+	<span class="token keyword">if</span> cur<span class="token punctuation">,</span> ok <span class="token operator">:=</span> parent<span class="token punctuation">.</span><span class="token function">Deadline</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span> ok <span class="token operator">&amp;&amp;</span> cur<span class="token punctuation">.</span><span class="token function">Before</span><span class="token punctuation">(</span>d<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token comment">// The current deadline is already sooner than the new one.</span>
+		<span class="token keyword">return</span> <span class="token function">WithCancel</span><span class="token punctuation">(</span>parent<span class="token punctuation">)</span>
+	<span class="token punctuation">}</span>
+	c <span class="token operator">:=</span> <span class="token operator">&amp;</span>timerCtx<span class="token punctuation">{<!-- --></span>
+		cancelCtx<span class="token punctuation">:</span> <span class="token function">newCancelCtx</span><span class="token punctuation">(</span>parent<span class="token punctuation">)</span><span class="token punctuation">,</span>
+		deadline<span class="token punctuation">:</span>  d<span class="token punctuation">,</span>
+	<span class="token punctuation">}</span>
+	<span class="token function">propagateCancel</span><span class="token punctuation">(</span>parent<span class="token punctuation">,</span> c<span class="token punctuation">)</span>
+	dur <span class="token operator">:=</span> time<span class="token punctuation">.</span><span class="token function">Until</span><span class="token punctuation">(</span>d<span class="token punctuation">)</span>
+	<span class="token keyword">if</span> dur <span class="token operator">&lt;=</span> <span class="token number">0</span> <span class="token punctuation">{<!-- --></span>
+		c<span class="token punctuation">.</span><span class="token function">cancel</span><span class="token punctuation">(</span><span class="token boolean">true</span><span class="token punctuation">,</span> DeadlineExceeded<span class="token punctuation">)</span> <span class="token comment">// deadline has already passed</span>
+		<span class="token keyword">return</span> c<span class="token punctuation">,</span> <span class="token keyword">func</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span> c<span class="token punctuation">.</span><span class="token function">cancel</span><span class="token punctuation">(</span><span class="token boolean">false</span><span class="token punctuation">,</span> Canceled<span class="token punctuation">)</span> <span class="token punctuation">}</span>
+	<span class="token punctuation">}</span>
+	c<span class="token punctuation">.</span>mu<span class="token punctuation">.</span><span class="token function">Lock</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+	<span class="token keyword">defer</span> c<span class="token punctuation">.</span>mu<span class="token punctuation">.</span><span class="token function">Unlock</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+	<span class="token keyword">if</span> c<span class="token punctuation">.</span>err <span class="token operator">==</span> <span class="token boolean">nil</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token comment">// 超时控制利用time.AfterFunc</span>
+		c<span class="token punctuation">.</span>timer <span class="token operator">=</span> time<span class="token punctuation">.</span><span class="token function">AfterFunc</span><span class="token punctuation">(</span>dur<span class="token punctuation">,</span> <span class="token keyword">func</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+			c<span class="token punctuation">.</span><span class="token function">cancel</span><span class="token punctuation">(</span><span class="token boolean">true</span><span class="token punctuation">,</span> DeadlineExceeded<span class="token punctuation">)</span>
+		<span class="token punctuation">}</span><span class="token punctuation">)</span>
+	<span class="token punctuation">}</span>
+	<span class="token keyword">return</span> c<span class="token punctuation">,</span> <span class="token keyword">func</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span> c<span class="token punctuation">.</span><span class="token function">cancel</span><span class="token punctuation">(</span><span class="token boolean">true</span><span class="token punctuation">,</span> Canceled<span class="token punctuation">)</span> <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<h3><a id="time_290"></a>time</h3> 
+<p>go的time和ticket的调用</p> 
+<p>或者叫timmer internal和其他语言的开发思路不一样。</p> 
+<p>其他语言，多是注册回调函数，定时，时间到了调用回调。</p> 
+<p>go是 通过 chan的阻塞实现的。</p> 
+<p>调用的地方，读取chan 定时，时间到，向chan写入值，阻塞解除，调用函数</p> 
+<h4><a id="timesleep_timeTick_306"></a>time.sleep() time.Tick()优劣性对比</h4> 
+<p>现在我们知道了，Tick，Sleep，包括time.After函数，都使用的timer结构体，都会被放在同一个协程中统一处理，这样看起来使用Tick，Sleep并没有什么区别。</p> 
+<p>实际上是有区别的，</p> 
+<ul><li>Sleep是使用睡眠完成定时任务，需要被调度唤醒。</li><li>Tick函数是使用channel阻塞当前协程，完成定时任务的执行。</li></ul> 
+<p>当前并不清楚golang 阻塞和睡眠对资源的消耗会有什么区别，这方面不能给出建议。</p> 
+<p>优势：<br> 1.使用channel阻塞协程完成定时任务比较灵活，可以结合select设置超时时间以及默认执行方法，<br> 2.可以设置timer的主动关闭，以及不需要每次都生成一个timer(这方面节省系统内存，垃圾收回也需要时间)。</p> 
+<p>所以，建议使用time.Tick完成定时任务。</p> 
+<h3><a id="reflect_323"></a>reflect</h3> 
+<h5><a id="_324"></a>什么是反射</h5> 
+<blockquote> 
+ <p>在计算机科学中，反射是指计算机程序在运行时（Run time）可以访问、检测和修改它本身状态或行为的一种能力。用比喻来说，反射就是程序在运行的时候能够“观察”并且修改自己的行为。</p> 
+</blockquote> 
+<p>实际上，它的本质是程序在运行期探知对象的类型信息和内存结构，不用反射能行吗？可以的！使用汇编语言，直接和内层打交道，什么信息不能获取？但是，当编程迁移到高级语言上来之后，就不行了！就只能通过反射来达到此项技能。</p> 
+<h5><a id="_2__333"></a>为什么要用反射,（需要反射的 2 个常见场景）</h5> 
+<ul><li>有时你需要编写一个函数，但是并不知道传给你的参数类型是什么，可能是没约定好；也可能是传入的类型很多，这些类型并不能统一表示。这时反射就会用的上了。</li><li>有时候需要根据某些条件决定调用哪个函数，比如根据用户的输入来决定。这时就需要对函数和函数的参数进行反射，在运行期间动态地执行函数。</li></ul> 
+<p>在讲反射的原理以及如何用之前，还是说几点不使用反射的理由：</p> 
+<ul><li>与反射相关的代码，经常是难以阅读的。在软件工程中，代码可读性也是一个非常重要的指标。</li><li>Go 语言作为一门静态语言，编码过程中，编译器能提前发现一些类型错误，但是对于反射代码是无能为力的。所以包含反射相关的代码，很可能会运行很久，才会出错，这时候经常是直接 panic，可能会造成严重的后果。</li><li>反射对性能影响还是比较大的，比正常代码运行速度慢一到两个数量级。所以，对于一个项目中处于运行效率关键位置的代码，尽量避免使用反射特性。</li></ul> 
+<h4><a id="new_make_348"></a>new make</h4> 
+<p>new</p> 
+<pre><code class="prism language-go"><span class="token comment">// The new built-in function allocates memory. The first argument is a type,</span>
+<span class="token comment">// not a value, and the value returned is a pointer to a newly</span>
+<span class="token comment">// allocated zero value of that type.</span>
+<span class="token keyword">func</span> <span class="token function">new</span><span class="token punctuation">(</span>Type<span class="token punctuation">)</span> <span class="token operator">*</span>Type
+</code></pre> 
+<blockquote> 
+ <p>它的参数是一个类型，返回值为指向该类型内存地址的指针，同时会把分配的内存置为零，也就是类型的零值, 即字符为空，整型为0,逻辑值为false</p> 
+</blockquote> 
+<p>make 仅用来分配及初始化类型为 slice、map、chan 的数据。new 可分配任意类型的数据.<br> new 分配返回的是指针，即类型 *Type。make 返回引用，即 Type.<br> new 分配的空间被清零, make 分配空间后，会进行初始化.</p> 
+<p>new一般是默认的初始化，无法复制，很多时候，默认的初始化并不友好。比如结构体</p> 
+<p>我们一般</p> 
+<pre><code class="prism language-go"><span class="token keyword">type</span> Rect <span class="token keyword">struct</span><span class="token punctuation">{<!-- --></span><span class="token punctuation">}</span>
+<span class="token comment">// 我们通过加取地址符号&amp;来做初始化</span>
+<span class="token keyword">var</span> v Rect
+r <span class="token operator">:=</span> <span class="token operator">&amp;</span>v<span class="token punctuation">{<!-- --></span><span class="token punctuation">}</span>
+</code></pre> 
+<h4><a id="select__379"></a>select 底层实现</h4> 
+<pre><code class="prism language-go"><span class="token comment">/**
+定义select 结构
+*/</span>
+<span class="token keyword">type</span> hselect <span class="token keyword">struct</span> <span class="token punctuation">{<!-- --></span>
+	tcase     <span class="token builtin">uint16</span>   <span class="token comment">// total count of scase[]      总的case数目</span>
+	ncase     <span class="token builtin">uint16</span>   <span class="token comment">// currently filled scase[]    目前已经注册的case数目     </span>
+	pollorder <span class="token operator">*</span><span class="token builtin">uint16</span>  <span class="token comment">// case poll order             【超重要】 轮询的case序号</span>
+	lockorder <span class="token operator">*</span><span class="token builtin">uint16</span>  <span class="token comment">// channel lock order          【超重要】chan的锁定顺序</span>
+ 
+    <span class="token comment">// case 数组，为了节省一个指针的 8 个字节搞成这样的结构</span>
+    <span class="token comment">// 实际上要访问后面的值，还是需要进行指针移动</span>
+    <span class="token comment">// 指针移动使用 runtime 内部的 add 函数</span>
+	scase     <span class="token punctuation">[</span><span class="token number">1</span><span class="token punctuation">]</span>scase <span class="token comment">// one per case (in order of appearance)  【超重要】保存当前case操作的chan数组 (按照轮询顺序)</span>
+<span class="token punctuation">}</span>
+ 
+ 
+<span class="token comment">/**
+select 中每一个case的定义
+*/</span>
+<span class="token keyword">type</span> scase <span class="token keyword">struct</span> <span class="token punctuation">{<!-- --></span>
+	elem        unsafe<span class="token punctuation">.</span>Pointer <span class="token comment">// data element                           数据指针</span>
+	c           <span class="token operator">*</span>hchan         <span class="token comment">// chan                                   当前case所对应的chan引用</span>
+	pc          <span class="token builtin">uintptr</span>        <span class="token comment">// return pc (for race detector / msan)   和汇编中的pc同义，表示 程序计数器，用于指示当前将要执行的下一条机器指令的内存地址</span>
+	kind        <span class="token builtin">uint16</span>         <span class="token comment">// 通道的类型 default &lt;-chan  chan-&gt;</span>
+	receivedp   <span class="token operator">*</span><span class="token builtin">bool</span><span class="token punctuation">.</span>         <span class="token comment">// pointer to received bool, if any</span>
+	releasetime <span class="token builtin">int64</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>源码包src/runtime/select.go:selectgo()定义了select选择case的函数：</p> 
+<pre><code class="prism language-go"><span class="token keyword">func</span> <span class="token function">selectgo</span><span class="token punctuation">(</span>cas0 <span class="token operator">*</span>scase<span class="token punctuation">,</span> order0 <span class="token operator">*</span><span class="token builtin">uint16</span><span class="token punctuation">,</span> ncases <span class="token builtin">int</span><span class="token punctuation">)</span> <span class="token punctuation">(</span><span class="token builtin">int</span><span class="token punctuation">,</span> <span class="token builtin">bool</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token comment">//1. 锁定scase语句中所有的channel</span>
+    <span class="token comment">//2. 按照随机顺序检测scase中的channel是否ready</span>
+    <span class="token comment">//   2.1 如果case可读，则读取channel中数据，解锁所有的channel，然后返回(case index, true)</span>
+    <span class="token comment">//   2.2 如果case可写，则将数据写入channel，解锁所有的channel，然后返回(case index, false)</span>
+    <span class="token comment">//   2.3 所有case都未ready，则解锁所有的channel，然后返回（default index, false）</span>
+    <span class="token comment">//3. 所有case都未ready，且没有default语句</span>
+    <span class="token comment">//   3.1 将当前协程加入到所有channel的等待队列</span>
+    <span class="token comment">//   3.2 当将协程转入阻塞，等待被唤醒</span>
+    <span class="token comment">//4. 唤醒后返回channel对应的case index</span>
+    <span class="token comment">//   4.1 如果是读操作，解锁所有的channel，然后返回(case index, true)</span>
+    <span class="token comment">//   4.2 如果是写操作，解锁所有的channel，然后返回(case index, false)</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<h2><a id="sync_430"></a>sync系列</h2> 
+<h3><a id="syncpool_434"></a>sync.pool</h3> 
+<h4><a id="syncPool__436"></a>sync.Pool 适应场景</h4> 
+<p><strong>sync.Pool 本质用途是增加临时对象的重用率，减少 GC 负担；</strong></p> 
+<p>sync.Pool 中保存的元素有如下特征：</p> 
+<ul><li>Pool 池里的元素随时可能释放掉，释放策略完全由 runtime 内部管理；</li><li>Get 获取到的元素对象可能是刚创建的，也可能是之前创建好 cache 的，使用者无法区分；</li><li>Pool 池里面的元素个数你无法知道；<br> 所以，只有的你的场景满足以上的假定，才能正确的使用 Pool 。<br> 划重点：临时对象。像 socket 这种带状态的、长期有效的资源是不适合 Pool 的。</li></ul> 
+<p>那么这个池子的目的就是为了<strong>复用已经使用过的对象，来达到优化内存使用和回收的目的</strong>。说白了，一开始这个池子会初始化一些对象供你使用，如果不够了呢，自己会通过new产生一些，当你放回去了之后这些对象会被别人进行复用，当对象特别大并且使用非常频繁的时候可以大大的减少对象的创建和回收的时间。</p> 
+<h4><a id="syncPool_450"></a>sync.Pool使用示例</h4> 
+<pre><code class="prism language-go"><span class="token keyword">package</span> main
+
+<span class="token keyword">import</span> <span class="token punctuation">(</span>
+    <span class="token string">"fmt"</span>
+    <span class="token string">"sync"</span>
+<span class="token punctuation">)</span>
+<span class="token comment">// 定义一个 Person 结构体，有Name和Age变量</span>
+<span class="token keyword">type</span> Person <span class="token keyword">struct</span> <span class="token punctuation">{<!-- --></span>
+    Name <span class="token builtin">string</span>
+    Age <span class="token builtin">int</span>
+<span class="token punctuation">}</span>
+<span class="token comment">// 初始化sync.Pool，new函数就是创建Person结构体</span>
+<span class="token keyword">func</span> <span class="token function">initPool</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">*</span>sync<span class="token punctuation">.</span>Pool <span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">return</span> <span class="token operator">&amp;</span>sync<span class="token punctuation">.</span>Pool<span class="token punctuation">{<!-- --></span>
+        New<span class="token punctuation">:</span> <span class="token keyword">func</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token keyword">interface</span><span class="token punctuation">{<!-- --></span><span class="token punctuation">}</span> <span class="token punctuation">{<!-- --></span>
+            fmt<span class="token punctuation">.</span><span class="token function">Println</span><span class="token punctuation">(</span><span class="token string">"创建一个 person."</span><span class="token punctuation">)</span>
+            <span class="token keyword">return</span> <span class="token operator">&amp;</span>Person<span class="token punctuation">{<!-- --></span><span class="token punctuation">}</span>
+        <span class="token punctuation">}</span><span class="token punctuation">,</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+<span class="token comment">// 主函数，入口函数</span>
+<span class="token keyword">func</span> <span class="token function">main</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    pool <span class="token operator">:=</span> <span class="token function">initPool</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+    person <span class="token operator">:=</span> pool<span class="token punctuation">.</span><span class="token function">Get</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token punctuation">(</span><span class="token operator">*</span>Person<span class="token punctuation">)</span>
+    fmt<span class="token punctuation">.</span><span class="token function">Println</span><span class="token punctuation">(</span><span class="token string">"首次从sync.Pool中获取person："</span><span class="token punctuation">,</span> person<span class="token punctuation">)</span>
+    person<span class="token punctuation">.</span>Name <span class="token operator">=</span> <span class="token string">"Jack"</span>
+    person<span class="token punctuation">.</span>Age <span class="token operator">=</span> <span class="token number">23</span>
+    pool<span class="token punctuation">.</span><span class="token function">Put</span><span class="token punctuation">(</span>person<span class="token punctuation">)</span>
+    fmt<span class="token punctuation">.</span><span class="token function">Println</span><span class="token punctuation">(</span><span class="token string">"设置的对象Name: "</span><span class="token punctuation">,</span> person<span class="token punctuation">.</span>Name<span class="token punctuation">)</span>
+    fmt<span class="token punctuation">.</span><span class="token function">Println</span><span class="token punctuation">(</span><span class="token string">"设置的对象Age: "</span><span class="token punctuation">,</span> person<span class="token punctuation">.</span>Age<span class="token punctuation">)</span>
+    fmt<span class="token punctuation">.</span><span class="token function">Println</span><span class="token punctuation">(</span><span class="token string">"Pool 中有一个对象，调用Get方法获取："</span><span class="token punctuation">,</span> pool<span class="token punctuation">.</span><span class="token function">Get</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token punctuation">(</span><span class="token operator">*</span>Person<span class="token punctuation">)</span><span class="token punctuation">)</span>
+    fmt<span class="token punctuation">.</span><span class="token function">Println</span><span class="token punctuation">(</span><span class="token string">"Pool 中没有对象了，再次调用Get方法："</span><span class="token punctuation">,</span> pool<span class="token punctuation">.</span><span class="token function">Get</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token punctuation">(</span><span class="token operator">*</span>Person<span class="token punctuation">)</span><span class="token punctuation">)</span>
+<span class="token punctuation">}</span>
+
+</code></pre> 
+<p>运行结果如下所示：</p> 
+<p>创建一个 person.<br> 首次从sync.Pool中获取person：&amp;{ 0}<br> 设置的对象Name: Jack<br> 设置的对象Age: 23<br> Pool 中有一个对象，调用Get方法获取：&amp;{Jack 23}<br> 创建一个 person.<br> Pool 中没有对象了，再次调用Get方法： &amp;{ 0}</p> 
+<p><strong>2.申请对象 Get</strong><br> Get 方法会返回 Pool 已经存在的对象;如果没有就使用New方法创建.</p> 
+<p><strong>3.释放对象 Put</strong><br> 对象或资源不用时，调用 Put 方法把对象或资源放回池子，池子里面的对象啥时候真正释放是由 go_runtime进行回收，是不受外部控制的。</p> 
+<h4><a id="_511"></a>源码分析</h4> 
+<p>创建一个 Pool 实例，关键一点是配置 New 方法，声明 Pool 元素创建的方法。源码1.15版本的 Pool.go 声明 Pool结构如下：</p> 
+<pre><code class="prism language-go"><span class="token comment">// A Pool must not be copied after first use.</span>
+<span class="token keyword">type</span> Pool <span class="token keyword">struct</span> <span class="token punctuation">{<!-- --></span>
+        noCopy noCopy
+
+        local     unsafe<span class="token punctuation">.</span>Pointer <span class="token comment">// local fixed-size per-P pool, actual type is [P]poolLocal</span>
+        localSize <span class="token builtin">uintptr</span>        <span class="token comment">// size of the local array</span>
+
+        victim     unsafe<span class="token punctuation">.</span>Pointer <span class="token comment">// local from previous cycle</span>
+        victimSize <span class="token builtin">uintptr</span>        <span class="token comment">// size of victims array</span>
+
+        <span class="token comment">// New optionally specifies a function to generate</span>
+        <span class="token comment">// a value when Get would otherwise return nil.</span>
+        <span class="token comment">// It may not be changed concurrently with calls to Get.</span>
+        New <span class="token keyword">func</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token keyword">interface</span><span class="token punctuation">{<!-- --></span><span class="token punctuation">}</span>   <span class="token comment">// New是一个方法、返回值为 接口</span>
+<span class="token punctuation">}</span>
+
+
+<span class="token comment">// Local per-P Pool appendix.</span>
+<span class="token keyword">type</span> poolLocalInternal <span class="token keyword">struct</span> <span class="token punctuation">{<!-- --></span>
+    private <span class="token keyword">interface</span><span class="token punctuation">{<!-- --></span><span class="token punctuation">}</span> <span class="token comment">// Can be used only by the respective P.</span>
+    shared  poolChain   <span class="token comment">// Local P can pushHead/popHead; any P can popTail.</span>
+<span class="token punctuation">}</span>
+
+<span class="token keyword">type</span> poolLocal <span class="token keyword">struct</span> <span class="token punctuation">{<!-- --></span>
+    poolLocalInternal
+
+    <span class="token comment">// Prevents false sharing on widespread platforms with</span>
+    <span class="token comment">// 128 mod (cache line size) = 0 .</span>
+    pad <span class="token punctuation">[</span><span class="token number">128</span> <span class="token operator">-</span> unsafe<span class="token punctuation">.</span><span class="token function">Sizeof</span><span class="token punctuation">(</span>poolLocalInternal<span class="token punctuation">{<!-- --></span><span class="token punctuation">}</span><span class="token punctuation">)</span><span class="token operator">%</span><span class="token number">128</span><span class="token punctuation">]</span><span class="token builtin">byte</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p><a href="https://zhuanlan.zhihu.com/p/369605252" rel="nofollow">https://zhuanlan.zhihu.com/p/369605252</a><br> <strong>为了使得可以在多个goroutine中高效的使用并发，sync.Pool会为每个P(对应CPU，这里有点像GMP模型)都分配一个本地池，当执行Get或者Put操作的时候，会先将goroutine和某个P的对象池关联，再对该池进行操作。</strong></p> 
+<p>我们可以看到其实结构并不复杂，但是如果自己看的话有点懵。注意几个细节就ok。</p> 
+<ul><li><strong>local</strong>这里面真正的是[P]poolLocal其中P就是GPM模型中的P，有多少个P数组就有多大，也就是每个P维护了一个本地的<strong>poolLocal</strong>。</li><li><strong>poolLocal</strong>里面维护了一个private一个shared，看名字其实就很明显了，- private是给自己用的，而shared的是一个队列，可以给别人用的。注释写的也很清楚，自己可以从队列的头部存然后从头部取，而别的P可以从尾部取。</li><li><strong>victim</strong>这个从字面上面也可以知道，幸存者嘛，当进行gc的stw时候，会将local中的对象移到victim中去，也就是说幸存了一次gc，</li></ul> 
+<pre><code class="prism language-go"><span class="token keyword">func</span> <span class="token punctuation">(</span>p <span class="token operator">*</span>Pool<span class="token punctuation">)</span> <span class="token function">Get</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token keyword">interface</span><span class="token punctuation">{<!-- --></span><span class="token punctuation">}</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token operator">...</span><span class="token operator">...</span>
+    l<span class="token punctuation">,</span> pid <span class="token operator">:=</span> p<span class="token punctuation">.</span><span class="token function">pin</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+    x <span class="token operator">:=</span> l<span class="token punctuation">.</span>private
+    l<span class="token punctuation">.</span>private <span class="token operator">=</span> <span class="token boolean">nil</span>
+    <span class="token keyword">if</span> x <span class="token operator">==</span> <span class="token boolean">nil</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token comment">// Try to pop the head of the local shard. We prefer</span>
+        <span class="token comment">// the head over the tail for temporal locality of</span>
+        <span class="token comment">// reuse.</span>
+        x<span class="token punctuation">,</span> <span class="token boolean">_</span> <span class="token operator">=</span> l<span class="token punctuation">.</span>shared<span class="token punctuation">.</span><span class="token function">popHead</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+        <span class="token keyword">if</span> x <span class="token operator">==</span> <span class="token boolean">nil</span> <span class="token punctuation">{<!-- --></span>
+            x <span class="token operator">=</span> p<span class="token punctuation">.</span><span class="token function">getSlow</span><span class="token punctuation">(</span>pid<span class="token punctuation">)</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+    <span class="token function">runtime_procUnpin</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+    <span class="token operator">...</span><span class="token operator">...</span>
+    <span class="token keyword">if</span> x <span class="token operator">==</span> <span class="token boolean">nil</span> <span class="token operator">&amp;&amp;</span> p<span class="token punctuation">.</span>New <span class="token operator">!=</span> <span class="token boolean">nil</span> <span class="token punctuation">{<!-- --></span>
+        x <span class="token operator">=</span> p<span class="token punctuation">.</span><span class="token function">New</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+    <span class="token punctuation">}</span>
+    <span class="token keyword">return</span> x
+<span class="token punctuation">}</span>
+
+<span class="token keyword">func</span> <span class="token punctuation">(</span>p <span class="token operator">*</span>Pool<span class="token punctuation">)</span> <span class="token function">getSlow</span><span class="token punctuation">(</span>pid <span class="token builtin">int</span><span class="token punctuation">)</span> <span class="token keyword">interface</span><span class="token punctuation">{<!-- --></span><span class="token punctuation">}</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token comment">// See the comment in pin regarding ordering of the loads.</span>
+    size <span class="token operator">:=</span> atomic<span class="token punctuation">.</span><span class="token function">LoadUintptr</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>p<span class="token punctuation">.</span>localSize<span class="token punctuation">)</span> <span class="token comment">// load-acquire</span>
+    locals <span class="token operator">:=</span> p<span class="token punctuation">.</span>local                        <span class="token comment">// load-consume</span>
+    <span class="token comment">// Try to steal one element from other procs.</span>
+    <span class="token keyword">for</span> i <span class="token operator">:=</span> <span class="token number">0</span><span class="token punctuation">;</span> i <span class="token operator">&lt;</span> <span class="token function">int</span><span class="token punctuation">(</span>size<span class="token punctuation">)</span><span class="token punctuation">;</span> i<span class="token operator">++</span> <span class="token punctuation">{<!-- --></span>
+        l <span class="token operator">:=</span> <span class="token function">indexLocal</span><span class="token punctuation">(</span>locals<span class="token punctuation">,</span> <span class="token punctuation">(</span>pid<span class="token operator">+</span>i<span class="token operator">+</span><span class="token number">1</span><span class="token punctuation">)</span><span class="token operator">%</span><span class="token function">int</span><span class="token punctuation">(</span>size<span class="token punctuation">)</span><span class="token punctuation">)</span>
+        <span class="token keyword">if</span> x<span class="token punctuation">,</span> <span class="token boolean">_</span> <span class="token operator">:=</span> l<span class="token punctuation">.</span>shared<span class="token punctuation">.</span><span class="token function">popTail</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span> x <span class="token operator">!=</span> <span class="token boolean">nil</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">return</span> x
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token comment">// Try the victim cache. We do this after attempting to steal</span>
+    <span class="token comment">// from all primary caches because we want objects in the</span>
+    <span class="token comment">// victim cache to age out if at all possible.</span>
+    size <span class="token operator">=</span> atomic<span class="token punctuation">.</span><span class="token function">LoadUintptr</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>p<span class="token punctuation">.</span>victimSize<span class="token punctuation">)</span>
+    <span class="token keyword">if</span> <span class="token function">uintptr</span><span class="token punctuation">(</span>pid<span class="token punctuation">)</span> <span class="token operator">&gt;=</span> size <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">return</span> <span class="token boolean">nil</span>
+    <span class="token punctuation">}</span>
+    locals <span class="token operator">=</span> p<span class="token punctuation">.</span>victim
+    l <span class="token operator">:=</span> <span class="token function">indexLocal</span><span class="token punctuation">(</span>locals<span class="token punctuation">,</span> pid<span class="token punctuation">)</span>
+    <span class="token keyword">if</span> x <span class="token operator">:=</span> l<span class="token punctuation">.</span>private<span class="token punctuation">;</span> x <span class="token operator">!=</span> <span class="token boolean">nil</span> <span class="token punctuation">{<!-- --></span>
+        l<span class="token punctuation">.</span>private <span class="token operator">=</span> <span class="token boolean">nil</span>
+        <span class="token keyword">return</span> x
+    <span class="token punctuation">}</span>
+    <span class="token keyword">for</span> i <span class="token operator">:=</span> <span class="token number">0</span><span class="token punctuation">;</span> i <span class="token operator">&lt;</span> <span class="token function">int</span><span class="token punctuation">(</span>size<span class="token punctuation">)</span><span class="token punctuation">;</span> i<span class="token operator">++</span> <span class="token punctuation">{<!-- --></span>
+        l <span class="token operator">:=</span> <span class="token function">indexLocal</span><span class="token punctuation">(</span>locals<span class="token punctuation">,</span> <span class="token punctuation">(</span>pid<span class="token operator">+</span>i<span class="token punctuation">)</span><span class="token operator">%</span><span class="token function">int</span><span class="token punctuation">(</span>size<span class="token punctuation">)</span><span class="token punctuation">)</span>
+        <span class="token keyword">if</span> x<span class="token punctuation">,</span> <span class="token boolean">_</span> <span class="token operator">:=</span> l<span class="token punctuation">.</span>shared<span class="token punctuation">.</span><span class="token function">popTail</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span> x <span class="token operator">!=</span> <span class="token boolean">nil</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">return</span> x
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token comment">// Mark the victim cache as empty for future gets don't bother</span>
+    <span class="token comment">// with it.</span>
+    atomic<span class="token punctuation">.</span><span class="token function">StoreUintptr</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>p<span class="token punctuation">.</span>victimSize<span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">)</span>
+
+    <span class="token keyword">return</span> <span class="token boolean">nil</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>我去掉了其中一些竞态分析的代码，Get的逻辑其实非常清晰。</p> 
+<ul><li>如果 private 不是空的，那就直接拿来用</li><li>如果 private 是空的，那就先去本地的shared队列里面从头 pop 一个</li><li>如果本地的 shared 也没有了，那 getSlow 去拿，其实就是去别的P的 shared 里面偷，偷不到回去 victim 幸存者里面找</li><li>如果最后都没有，那就只能调用 New 方法创建一个了</li></ul> 
+<h2><a id="_633"></a>指针系列</h2> 
+<p>Go 设计者为编写方便、提高效率且降低复杂度，将其设计成强类型的静态语言</p> 
+<ul><li>强类型意味着定义了就不能改变</li><li>静态意味着类型检查在运行前就做了,</li></ul> 
+<p><strong>Go 语言不允许两个指针类型进行转换</strong></p> 
+<h3><a id="GolangCC_643"></a>Golang指针与C/C++指针的差别</h3> 
+<p>Go 语言的作者之一 Ken Thompson 也是 C 语言的作者。所以，Go 可以看作 C 系语言，它的很多特性都和 C 类似，指针就是其中之一。</p> 
+<p>然而，Go 语言的指针相比 C 的指针有很多限制。这当然是为了安全考虑，要知道像 Java/Python 这些现代语言，生怕程序员出错，哪有什么指针（这里指的是显式的指针）？更别说像 C/C++ 还需要程序员自己清理“垃圾”。所以对于 Go 来说，有指针已经很不错了，仅管它有很多限制。</p> 
+<p><strong>相比于 C 语言中指针的灵活，Go 的指针多了一些限制（弱化了指针的操作，在Golang中，指针的作用仅是操作其指向的对象）。但这也算是 Go 的成功之处：既可以享受指针带来的便利，又避免了指针的危险性。主要表现在下面的两个方面：</strong></p> 
+<ul><li>1.不能进行类似于C/C++的指针运算，例如指针相减、指针移动等。从这一点来看，Golang的指针更类似于C++的引用，</li><li>2、指针类型不能进行转换，如int不能转换为int32</li><li>3.不同类型的指针不能使用 == 或 != 比较。</li></ul> 
+<p>但是在开发过程中，有时需要打破这些限制，对内存进行任意的读写，这里就需要unsafe.Pointer了。</p> 
+<p><img src="https://images2.imgbox.com/74/2d/bDBUHQ6G_o.png" alt="在这里插入图片描述"></p> 
+<h3><a id="unsafe_661"></a>unsafe</h3> 
+<h4><a id="unsafepointer_662"></a>unsafe.pointer</h4> 
+<p><strong>unsafe</strong><br> 顾名思义是不安全的，尽可能不使用</p> 
+<p>**优势:**可绕过 Go的内存安全机制，直接对内存进行读写</p> 
+<p><strong>unsafe.Pointer 是特别定义的一种指针类型，它可以包含任意类型变量的地址（类似 C 语言中的 void 类型指针）。Go 官方文档对这个类型有如下四个描述：</strong></p> 
+<ul><li> <p>任何类型的指针都可以被转化为 unsafe.Pointer；</p> </li><li> <p>unsafe.Pointer 可以被转化为任何类型的指针；</p> </li><li> <p>uintptr 可以被转化为 unsafe.Pointer；</p> </li><li> <p>unsafe.Pointer 可以被转化为 uintptr。</p> </li></ul> 
+<pre><code class="prism language-go"><span class="token keyword">package</span> main
+
+<span class="token keyword">import</span> <span class="token punctuation">(</span>
+	<span class="token string">"fmt"</span>
+	<span class="token string">"unsafe"</span>
+<span class="token punctuation">)</span>
+
+<span class="token keyword">func</span> <span class="token function">swap</span><span class="token punctuation">(</span>a<span class="token punctuation">,</span> b <span class="token operator">*</span><span class="token builtin">int</span><span class="token punctuation">)</span>  <span class="token punctuation">{<!-- --></span>
+	<span class="token operator">*</span>a<span class="token punctuation">,</span> <span class="token operator">*</span>b <span class="token operator">=</span> <span class="token operator">*</span>b<span class="token punctuation">,</span> <span class="token operator">*</span>a
+	fmt<span class="token punctuation">.</span><span class="token function">Println</span><span class="token punctuation">(</span><span class="token string">"swap"</span><span class="token punctuation">,</span><span class="token operator">*</span>a<span class="token punctuation">,</span> <span class="token operator">*</span>b<span class="token punctuation">)</span>
+<span class="token punctuation">}</span>
+
+<span class="token keyword">func</span> <span class="token function">main</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+	i <span class="token operator">:=</span> <span class="token number">10</span>
+	<span class="token keyword">var</span> p <span class="token operator">*</span><span class="token builtin">int</span> <span class="token operator">=</span> <span class="token operator">&amp;</span>i
+
+	<span class="token keyword">var</span> fp <span class="token operator">*</span><span class="token builtin">float32</span> <span class="token operator">=</span> <span class="token punctuation">(</span><span class="token operator">*</span><span class="token builtin">float32</span><span class="token punctuation">)</span><span class="token punctuation">(</span>unsafe<span class="token punctuation">.</span><span class="token function">Pointer</span><span class="token punctuation">(</span>p<span class="token punctuation">)</span><span class="token punctuation">)</span>
+	<span class="token operator">*</span>fp <span class="token operator">=</span> <span class="token operator">*</span>fp <span class="token operator">*</span> <span class="token number">10</span>
+	fmt<span class="token punctuation">.</span><span class="token function">Println</span><span class="token punctuation">(</span>i<span class="token punctuation">)</span>  <span class="token comment">// 100</span>
+<span class="token punctuation">}</span>
+
+<span class="token keyword">func</span> <span class="token function">main</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    i <span class="token operator">:=</span> <span class="token function">int64</span><span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">)</span>
+    <span class="token keyword">var</span> iPtr <span class="token operator">*</span><span class="token builtin">int</span>
+    <span class="token comment">// iPtr = &amp;i // 错误</span>
+    iPtr <span class="token operator">=</span> <span class="token punctuation">(</span><span class="token operator">*</span><span class="token builtin">int</span><span class="token punctuation">)</span><span class="token punctuation">(</span>unsafe<span class="token punctuation">.</span><span class="token function">Pointer</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>i<span class="token punctuation">)</span><span class="token punctuation">)</span>
+    fmt<span class="token punctuation">.</span><span class="token function">Printf</span><span class="token punctuation">(</span><span class="token string">"%d\n"</span><span class="token punctuation">,</span> <span class="token operator">*</span>iPtr<span class="token punctuation">)</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<h4><a id="stringbyte_713"></a>string类型和[]byte之间的零拷贝转换</h4> 
+<p>下面再看一个Golang中的经典例子，实现了string类型和[]byte之间的零拷贝转换，首先在内部string和[]byte的类型定义如下，可以看出[]byte比一个string多了一个Cap字段，其余的字段是一致的。</p> 
+<h5><a id="bytestring_717"></a>[]byte转化成string</h5> 
+<pre><code class="prism language-go"><span class="token keyword">type</span> StringHeader <span class="token keyword">struct</span> <span class="token punctuation">{<!-- --></span>  
+    Data <span class="token builtin">uintptr</span>    
+    Len  <span class="token builtin">int</span>    
+<span class="token punctuation">}</span>   
+
+<span class="token keyword">type</span> SliceHeader <span class="token keyword">struct</span> <span class="token punctuation">{<!-- --></span>   
+    Data <span class="token builtin">uintptr</span>    
+    Len  <span class="token builtin">int</span>    
+    Cap  <span class="token builtin">int</span>    
+<span class="token punctuation">}</span>
+</code></pre> 
+<pre><code class="prism language-go"><span class="token keyword">func</span> <span class="token function">byteToString</span><span class="token punctuation">(</span>b <span class="token punctuation">[</span><span class="token punctuation">]</span><span class="token builtin">byte</span><span class="token punctuation">)</span> <span class="token builtin">string</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token comment">// 首先将一个[]byte转化成*reflect.SliceHeader，从而能够获得</span>
+    <span class="token comment">// 每个字段 </span>
+    by <span class="token operator">:=</span> <span class="token punctuation">(</span><span class="token operator">*</span>reflect<span class="token punctuation">.</span>SliceHeader<span class="token punctuation">)</span><span class="token punctuation">(</span>unsafe<span class="token punctuation">.</span><span class="token function">Pointer</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>b<span class="token punctuation">)</span><span class="token punctuation">)</span>
+
+   <span class="token comment">//  创建relect.StringHeader，其中Data是一个直接指向[]byte的Data的指针，</span>
+   <span class="token comment">// 通过这种方式不在需要创建Data的副本</span>
+    str <span class="token operator">:=</span> reflect<span class="token punctuation">.</span>StringHeader<span class="token punctuation">{<!-- --></span>
+        Data<span class="token punctuation">:</span> by<span class="token punctuation">.</span>Data<span class="token punctuation">,</span>
+        Len<span class="token punctuation">:</span>  by<span class="token punctuation">.</span>Len<span class="token punctuation">,</span>
+    <span class="token punctuation">}</span>
+    <span class="token keyword">return</span> <span class="token operator">*</span><span class="token punctuation">(</span><span class="token operator">*</span><span class="token builtin">string</span><span class="token punctuation">)</span><span class="token punctuation">(</span>unsafe<span class="token punctuation">.</span><span class="token function">Pointer</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>str<span class="token punctuation">)</span><span class="token punctuation">)</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p><strong>其实还可以又更简洁的方式，即直接强制进行类型转换，代码如下：</strong></p> 
+<pre><code class="prism language-go"><span class="token keyword">func</span> <span class="token function">Bytes2str</span><span class="token punctuation">(</span>b <span class="token punctuation">[</span><span class="token punctuation">]</span><span class="token builtin">byte</span><span class="token punctuation">)</span> <span class="token builtin">string</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">return</span> <span class="token operator">*</span><span class="token punctuation">(</span><span class="token operator">*</span><span class="token builtin">string</span><span class="token punctuation">)</span><span class="token punctuation">(</span>unsafe<span class="token punctuation">.</span><span class="token function">Pointer</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>b<span class="token punctuation">)</span><span class="token punctuation">)</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<h5><a id="stringbyte_758"></a>string转化成[]byte</h5> 
+<pre><code class="prism language-go"><span class="token keyword">func</span> <span class="token function">stringTobytes</span><span class="token punctuation">(</span>s <span class="token builtin">string</span><span class="token punctuation">)</span> <span class="token punctuation">[</span><span class="token punctuation">]</span><span class="token builtin">byte</span> <span class="token punctuation">{<!-- --></span>
+    str <span class="token operator">:=</span> <span class="token punctuation">(</span><span class="token operator">*</span>reflect<span class="token punctuation">.</span>StringHeader<span class="token punctuation">)</span><span class="token punctuation">(</span>unsafe<span class="token punctuation">.</span><span class="token function">Pointer</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>s<span class="token punctuation">)</span><span class="token punctuation">)</span>
+    by <span class="token operator">:=</span> reflect<span class="token punctuation">.</span>SliceHeader<span class="token punctuation">{<!-- --></span>
+        Data<span class="token punctuation">:</span> str<span class="token punctuation">.</span>Data<span class="token punctuation">,</span>
+        Len<span class="token punctuation">:</span>  str<span class="token punctuation">.</span>Len<span class="token punctuation">,</span>
+        Cap<span class="token punctuation">:</span>  str<span class="token punctuation">.</span>Len<span class="token punctuation">,</span>
+    <span class="token punctuation">}</span>
+    <span class="token comment">//在把by从sliceheader转为[]byte类型</span>
+    <span class="token keyword">return</span> <span class="token operator">*</span><span class="token punctuation">(</span><span class="token operator">*</span><span class="token punctuation">[</span><span class="token punctuation">]</span><span class="token builtin">byte</span><span class="token punctuation">)</span><span class="token punctuation">(</span>unsafe<span class="token punctuation">.</span><span class="token function">Pointer</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>by<span class="token punctuation">)</span><span class="token punctuation">)</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<h4><a id="uintptr_775"></a>uintptr指针运算</h4> 
+<p>为什么有了unsafe.pointer还需要uintptr类型？</p> 
+<p><strong>uintptr 是 Go 内置的可用于存储指针的整型，而整型是可以进行数学运算的！因此，将 unsafe.Pointer 转化为 uintptr 类型后，就可以让本不具备运算能力的指针具备了指针运算能力，再转换成 pointer 类型。</strong></p> 
+<p>uintptr可以对指针偏移进行计算，这样就可访问特定内存，达到对特定内存读写的目的,这是真正内存级别的操作</p> 
+<p><strong>还有一点要注意的是，uintptr 并没有指针的语义，意思就是 uintptr 所指向的对象会被 gc 无情地回收。而 unsafe.Pointer 有指针语义，可以保护它所指向的对象在“有用”的时候不会被垃圾回收。</strong></p> 
+<p>下面的代码，模拟了通过指针移动，遍历slice的功能，其本质思想是，找到slice的第一个元素的地址，然后通过加上slice每个元素所占的大小作为偏移量，实现指针的移动和运算。</p> 
+<pre><code class="prism language-go"><span class="token keyword">func</span> <span class="token function">main</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    data <span class="token operator">:=</span> <span class="token punctuation">[</span><span class="token punctuation">]</span><span class="token function">byte</span><span class="token punctuation">(</span><span class="token string">"abcd"</span><span class="token punctuation">)</span>
+    <span class="token keyword">for</span> i <span class="token operator">:=</span> <span class="token number">0</span><span class="token punctuation">;</span> i <span class="token operator">&lt;</span> <span class="token function">len</span><span class="token punctuation">(</span>data<span class="token punctuation">)</span><span class="token punctuation">;</span> i<span class="token operator">++</span> <span class="token punctuation">{<!-- --></span>
+        ptr <span class="token operator">:=</span> unsafe<span class="token punctuation">.</span><span class="token function">Pointer</span><span class="token punctuation">(</span><span class="token function">uintptr</span><span class="token punctuation">(</span>unsafe<span class="token punctuation">.</span><span class="token function">Pointer</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>data<span class="token punctuation">[</span><span class="token number">0</span><span class="token punctuation">]</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token operator">+</span> <span class="token function">uintptr</span><span class="token punctuation">(</span>i<span class="token punctuation">)</span><span class="token operator">*</span>unsafe<span class="token punctuation">.</span><span class="token function">Sizeof</span><span class="token punctuation">(</span>data<span class="token punctuation">[</span><span class="token number">0</span><span class="token punctuation">]</span><span class="token punctuation">)</span><span class="token punctuation">)</span> 
+        fmt<span class="token punctuation">.</span><span class="token function">Printf</span><span class="token punctuation">(</span><span class="token string">"%c,"</span><span class="token punctuation">,</span> <span class="token operator">*</span><span class="token punctuation">(</span><span class="token operator">*</span><span class="token builtin">byte</span><span class="token punctuation">)</span><span class="token punctuation">(</span>unsafe<span class="token punctuation">.</span><span class="token function">Pointer</span><span class="token punctuation">(</span>ptr<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">)</span>
+    <span class="token punctuation">}</span>
+    <span class="token comment">// a,b,c,d,</span>
+    fmt<span class="token punctuation">.</span><span class="token function">Printf</span><span class="token punctuation">(</span><span class="token string">"\n"</span><span class="token punctuation">)</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p><strong>for循环的ptr赋值是该例子中的重点代码，它表示：</strong></p> 
+<ul><li>把data的第0个元素的地址，转化为unsafe.Pointer，再把它转换成uintptr，用于加减运算，即（uintptr(unsafe.Pointer(&amp;data[0])) ）</li><li>加上第i个元素的偏移量，得到一个新的uintptr值，计算方法为i每个元素所占的字节数，即（+ uintptr(i)unsafe.Sizeof(data[0])）</li><li>把新的uintptr再转化为unsafe.Pointer，用于在后续的打印操作中，转化为实际类型的指针</li></ul> 
+<h2><a id="reflect_todo_813"></a>reflect (todo)</h2> 
+<h2><a id="deferrecover_816"></a>defer+recover</h2> 
+<p>go中提供了一个defer语句用来延迟一个函数(匿名函数)或者方法的执行，它会在函数执行完成之 后调用。-般为了防止代码里有资源泄露，对于打开的资源比如文件 等我们需要显示进行关闭，这种场合就是defer发挥作用最好的场景，也是go代码中使用defer最常用的场景。</p> 
+<p>如果你用过python的话，go 中的defer和python使用with语句保证资源会被关闭目的一样。另 外函数里可以使用多个defer语句，如果有多个defer它们会按照后进先出(L ast In First Out)的顺序执行。</p> 
+<p>https://zhuanlan.zhihu.com/p/463848031</p> 
+<p>https://draveness.me/golang/docs/part2-foundation/ch05-keyword/golang-panic-recover/</p> 
+<p>https://xiaomi-info.github.io/2020/01/20/go-trample-panic-recover/</p> 
+<h3><a id="panic_defer_revover_826"></a>panic defer revover定义</h3> 
+<p><strong>panic</strong> 是 Go 语言中的一个内置函数，可以停止程序的控制流，改变其流转，并且触发恐慌事件。</p> 
+<p><strong>recover</strong> 也是一个内置函数，但其功能与 panic 相对，recover 可以让程序重新获取恐慌后的程序（goroutine）控制权，但是必须在 defer 中 recover 才会生效。</p> 
+<pre><code class="prism language-go">代码清理逻辑
+<span class="token builtin">panic</span><span class="token punctuation">:</span> 除数不能为<span class="token number">0</span>！
+
+goroutine <span class="token number">1</span> <span class="token punctuation">[</span>running<span class="token punctuation">]</span><span class="token punctuation">:</span>
+main<span class="token punctuation">.</span><span class="token function">main</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+		D<span class="token punctuation">:</span><span class="token operator">/</span>goLang<span class="token operator">/</span>github<span class="token operator">/</span>golang_project<span class="token operator">/</span>错误和异常处理<span class="token operator">/</span><span class="token builtin">panic</span> 和 <span class="token builtin">recover</span><span class="token operator">/</span>panic_recover<span class="token punctuation">.</span><span class="token keyword">go</span><span class="token punctuation">:</span><span class="token number">27</span> <span class="token operator">+</span><span class="token number">0x62</span>
+exit status <span class="token number">2</span>
+
+第一行表示出问题的协程，
+第二行是问题代码所在的包和函数，
+第三行时问题代码的具体位置，
+最后一行则是程序的退出状态。
+</code></pre> 
+<p>无论是 Go 语言底层抛出 panic，还是我们在代码中显式抛出 panic，处理机制都是一样的：当遇到 panic 时，<br> Go 语言会中断当前协程中（main 函数）后续代码的执行，然后执行在中断代码之前定义的 defer 语句（按照先入后出的顺序），<br> 最后程序退出并输出 panic 错误信息，以及出现错误的堆栈跟踪信息，在这里就是</p> 
+<h4><a id="10panic_857"></a>10种panic方法：</h4> 
+<ul><li>数组切片越界</li><li>空指针调用</li><li>过早关闭HTTP响应体(resp.body.calose())</li><li>除零</li><li>向关闭的chan发送消息</li><li>重复关闭chan</li><li>关闭未初始化的的chan</li><li>使用未初始化的map</li><li>跨goroutine处理panic</li><li>sync计数负数。</li></ul> 
+<p><strong>还有一些defer了也无法recover的方法，比如fatalthrow,fatalpanic等，比如并发写入map时就会引起fatalthrow。</strong></p> 
+<h4><a id="panic_877"></a>panic实现</h4> 
+<p>panic 和 recover 的源码在 Go 源码的 src/runtime/panic.go 里，名为 gopanic 和 gorecover 的函数。</p> 
+<pre><code class="prism language-go"><span class="token comment">// go 1.16 gopanic 的代码，在 src/runtime/panic.go 第 884 行</span>
+
+<span class="token keyword">func</span> <span class="token function">gopanic</span><span class="token punctuation">(</span>e <span class="token keyword">interface</span><span class="token punctuation">{<!-- --></span><span class="token punctuation">}</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+	gp <span class="token operator">:=</span> <span class="token function">getg</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+	<span class="token operator">...</span>
+	<span class="token keyword">var</span> p _panic
+	p<span class="token punctuation">.</span>arg <span class="token operator">=</span> e
+	p<span class="token punctuation">.</span>link <span class="token operator">=</span> gp<span class="token punctuation">.</span>_panic
+	gp<span class="token punctuation">.</span>_panic <span class="token operator">=</span> <span class="token punctuation">(</span><span class="token operator">*</span>_panic<span class="token punctuation">)</span><span class="token punctuation">(</span><span class="token function">noescape</span><span class="token punctuation">(</span>unsafe<span class="token punctuation">.</span><span class="token function">Pointer</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>p<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">)</span>
+
+
+
+	<span class="token keyword">for</span> <span class="token punctuation">{<!-- --></span>
+		d <span class="token operator">:=</span> gp<span class="token punctuation">.</span>_defer
+		<span class="token keyword">if</span> d <span class="token operator">==</span> <span class="token boolean">nil</span> <span class="token punctuation">{<!-- --></span>
+			<span class="token keyword">break</span>
+		<span class="token punctuation">}</span>
+
+		d<span class="token punctuation">.</span>_panic <span class="token operator">=</span> <span class="token punctuation">(</span><span class="token operator">*</span>_panic<span class="token punctuation">)</span><span class="token punctuation">(</span><span class="token function">noescape</span><span class="token punctuation">(</span>unsafe<span class="token punctuation">.</span><span class="token function">Pointer</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>p<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">)</span>
+
+		<span class="token function">reflectcall</span><span class="token punctuation">(</span><span class="token boolean">nil</span><span class="token punctuation">,</span> unsafe<span class="token punctuation">.</span><span class="token function">Pointer</span><span class="token punctuation">(</span>d<span class="token punctuation">.</span>fn<span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token function">deferArgs</span><span class="token punctuation">(</span>d<span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token function">uint32</span><span class="token punctuation">(</span>d<span class="token punctuation">.</span>siz<span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token function">uint32</span><span class="token punctuation">(</span>d<span class="token punctuation">.</span>siz<span class="token punctuation">)</span><span class="token punctuation">)</span>
+
+		d<span class="token punctuation">.</span>_panic <span class="token operator">=</span> <span class="token boolean">nil</span>
+		d<span class="token punctuation">.</span>fn <span class="token operator">=</span> <span class="token boolean">nil</span>
+		gp<span class="token punctuation">.</span>_defer <span class="token operator">=</span> d<span class="token punctuation">.</span>link
+
+
+		pc <span class="token operator">:=</span> d<span class="token punctuation">.</span>pc
+		sp <span class="token operator">:=</span> unsafe<span class="token punctuation">.</span><span class="token function">Pointer</span><span class="token punctuation">(</span>d<span class="token punctuation">.</span>sp<span class="token punctuation">)</span> <span class="token comment">// must be pointer so it gets adjusted during stack copy</span>
+		<span class="token operator">...</span>
+		<span class="token function">freedefer</span><span class="token punctuation">(</span>d<span class="token punctuation">)</span>
+		<span class="token keyword">if</span> p<span class="token punctuation">.</span>recovered <span class="token punctuation">{<!-- --></span>
+		
+			<span class="token operator">...</span>
+			<span class="token comment">// Pass information about recovering frame to recovery.</span>
+			gp<span class="token punctuation">.</span>sigcode0 <span class="token operator">=</span> <span class="token function">uintptr</span><span class="token punctuation">(</span>sp<span class="token punctuation">)</span>
+			gp<span class="token punctuation">.</span>sigcode1 <span class="token operator">=</span> pc
+			<span class="token function">mcall</span><span class="token punctuation">(</span>recovery<span class="token punctuation">)</span>
+			<span class="token function">throw</span><span class="token punctuation">(</span><span class="token string">"recovery failed"</span><span class="token punctuation">)</span> <span class="token comment">// mcall should not return</span>
+		<span class="token punctuation">}</span>
+	<span class="token punctuation">}</span>
+
+	<span class="token function">fatalpanic</span><span class="token punctuation">(</span>gp<span class="token punctuation">.</span>_panic<span class="token punctuation">)</span>
+	<span class="token operator">*</span><span class="token punctuation">(</span><span class="token operator">*</span><span class="token builtin">int</span><span class="token punctuation">)</span><span class="token punctuation">(</span><span class="token boolean">nil</span><span class="token punctuation">)</span> <span class="token operator">=</span> <span class="token number">0</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<h5><a id="recovery_929"></a>recovery</h5> 
+<p>recovery 函数中，利用 g 中的两个状态码回溯<code>栈指针 sp</code> 并恢复<code>程序计数器 pc</code> 到调度器中，并调用 gogo 重新调度 g ，将 g 恢复到调用 recover 函数的位置， goroutine 继续执行。</p> 
+<pre><code class="prism language-go"><span class="token comment">// Unwind the stack after a deferred function calls recover</span>
+<span class="token comment">// after a panic. Then arrange to continue running as though</span>
+<span class="token comment">// the caller of the deferred function returned normally.</span>
+<span class="token keyword">func</span> <span class="token function">recovery</span><span class="token punctuation">(</span>gp <span class="token operator">*</span>g<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+	<span class="token comment">// Info about defer passed in G struct.</span>
+	sp <span class="token operator">:=</span> gp<span class="token punctuation">.</span>sigcode0
+	pc <span class="token operator">:=</span> gp<span class="token punctuation">.</span>sigcode1
+
+	<span class="token comment">// d's arguments need to be in the stack.</span>
+	<span class="token keyword">if</span> sp <span class="token operator">!=</span> <span class="token number">0</span> <span class="token operator">&amp;&amp;</span> <span class="token punctuation">(</span>sp <span class="token operator">&lt;</span> gp<span class="token punctuation">.</span>stack<span class="token punctuation">.</span>lo <span class="token operator">||</span> gp<span class="token punctuation">.</span>stack<span class="token punctuation">.</span>hi <span class="token operator">&lt;</span> sp<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token function">print</span><span class="token punctuation">(</span><span class="token string">"recover: "</span><span class="token punctuation">,</span> <span class="token function">hex</span><span class="token punctuation">(</span>sp<span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token string">" not in ["</span><span class="token punctuation">,</span> <span class="token function">hex</span><span class="token punctuation">(</span>gp<span class="token punctuation">.</span>stack<span class="token punctuation">.</span>lo<span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token string">", "</span><span class="token punctuation">,</span> <span class="token function">hex</span><span class="token punctuation">(</span>gp<span class="token punctuation">.</span>stack<span class="token punctuation">.</span>hi<span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token string">"]\n"</span><span class="token punctuation">)</span>
+		<span class="token function">throw</span><span class="token punctuation">(</span><span class="token string">"bad recovery"</span><span class="token punctuation">)</span>
+	<span class="token punctuation">}</span>
+
+	<span class="token comment">// Make the deferproc for this d return again,</span>
+	<span class="token comment">// this time returning 1. The calling function will</span>
+	<span class="token comment">// jump to the standard return epilogue.</span>
+	gp<span class="token punctuation">.</span>sched<span class="token punctuation">.</span>sp <span class="token operator">=</span> sp
+	gp<span class="token punctuation">.</span>sched<span class="token punctuation">.</span>pc <span class="token operator">=</span> pc
+	gp<span class="token punctuation">.</span>sched<span class="token punctuation">.</span>lr <span class="token operator">=</span> <span class="token number">0</span>
+	gp<span class="token punctuation">.</span>sched<span class="token punctuation">.</span>ret <span class="token operator">=</span> <span class="token number">1</span>
+	<span class="token function">gogo</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>gp<span class="token punctuation">.</span>sched<span class="token punctuation">)</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p><strong>runtime.gopanic该函数的执行过程包含以下几个步骤</strong></p> 
+<ul><li>创建新的 runtime._panic 并添加到所在 Goroutine 的 _panic 链表的最前面；</li><li>在循环中不断从当前 Goroutine 的 _defer 中链表获取 runtime._defer 并调用 runtime.reflectcall 运行延迟调用函数；</li><li>调用 runtime.fatalpanic 中止整个程序；</li><li></ul> 
+<p>打印崩溃消息后会调用 runtime.exit 退出当前程序并返回错误码 2，程序的正常退出也是通过 runtime.exit 实现的。</p> 
+<h4><a id="recover_973"></a>recover实现</h4> 
+<p>到这里我们已经掌握了 panic 退出程序的过程，接下来将分析 defer 中的 recover 是如何中止程序崩溃的。编译器会将关键字 <code>recover</code> 转换成 <code>runtime.gorecover</code>：</p> 
+<pre><code class="prism language-go"><span class="token comment">// go 1.16 gorecover 的代码，在 src/runtime/panic.go 第 1078 行</span>
+<span class="token comment">// The implementation of the predeclared function recover.</span>
+<span class="token comment">// Cannot split the stack because it needs to reliably</span>
+<span class="token comment">// find the stack segment of its caller.</span>
+<span class="token comment">//</span>
+<span class="token comment">// TODO(rsc): Once we commit to CopyStackAlways,</span>
+<span class="token comment">// this doesn't need to be nosplit.</span>
+<span class="token comment">//go:nosplit</span>
+<span class="token keyword">func</span> <span class="token function">gorecover</span><span class="token punctuation">(</span>argp <span class="token builtin">uintptr</span><span class="token punctuation">)</span> <span class="token keyword">interface</span><span class="token punctuation">{<!-- --></span><span class="token punctuation">}</span> <span class="token punctuation">{<!-- --></span>
+	<span class="token comment">// Must be in a function running as part of a deferred call during the panic.</span>
+	<span class="token comment">// Must be called from the topmost function of the call</span>
+	<span class="token comment">// (the function used in the defer statement).</span>
+	<span class="token comment">// p.argp is the argument pointer of that topmost deferred function call.</span>
+	<span class="token comment">// Compare against argp reported by caller.</span>
+	<span class="token comment">// If they match, the caller is the one who can recover.</span>
+	gp <span class="token operator">:=</span> <span class="token function">getg</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+	<span class="token comment">// 当前 Goroutine 有没有调用 panic</span>
+	p <span class="token operator">:=</span> gp<span class="token punctuation">.</span>_panic
+	<span class="token keyword">if</span> p <span class="token operator">!=</span> <span class="token boolean">nil</span> <span class="token operator">&amp;&amp;</span> <span class="token operator">!</span>p<span class="token punctuation">.</span>goexit <span class="token operator">&amp;&amp;</span> <span class="token operator">!</span>p<span class="token punctuation">.</span>recovered <span class="token operator">&amp;&amp;</span> argp <span class="token operator">==</span> <span class="token function">uintptr</span><span class="token punctuation">(</span>p<span class="token punctuation">.</span>argp<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+		p<span class="token punctuation">.</span>recovered <span class="token operator">=</span> <span class="token boolean">true</span>
+		<span class="token keyword">return</span> p<span class="token punctuation">.</span>arg
+	<span class="token punctuation">}</span>
+	<span class="token keyword">return</span> <span class="token boolean">nil</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>该函数的实现很简单，<mark>如果当前 Goroutine 没有调用 panic，那么该函数会直接返回 nil，这也是崩溃恢复在非 defer 中调用会失效的原因。</mark> 在正常情况下，它会修改 runtime._panic 的 recovered 字段，runtime.gorecover 函数中并不包含恢复程序的逻辑，程序的恢复是由 runtime.gopanic 函数负责的：</p> 
+<h4><a id="_1010"></a>总结</h4> 
+<p><strong>panic 内部主要流程：</strong></p> 
+<ul><li> <p>获取当前调用者所在的 g ，也就是 goroutine（指针）</p> </li><li> <p>初始化一个 panic 的基本单位 _panic 用作后续的操作。</p> </li><li> <p>遍历并执行 g 中的 defer 函数</p> 
+  <ul><li>若当前存在 defer 调用，则调用 reflectcall 方法去执行先前 defer 中延迟执行的代码</li><li>如果 defer 函数中有调用 gorecover方法 ，并发现已经发生了 panic ，则将 当前g._panic 标记为 recovered (<code>gorecover</code>函数实现)，则将调用栈修改到defer return，使得程序正常执行。</li><li>在遍历 defer 的过程中，如果发现已经被标记为 recovered ，则提取出该 defer 的 sp 与 pc，保存在 g 的两个状态码字段中(<code>recovery</code>函数实现)。</li><li>调用 <code>runtime.mcall</code> 切到 <code>m-&gt;g0</code> 并跳转到 <code>recovery</code> 函数，将前面获取的 g 作为参数传给 <code>recovery</code> 函数。</li></ul> </li><li> <p>中断程序结束前，调用 preprintpanics 方法打印出所涉及的 panic 消息。</p> </li><li> <p>最后调用 fatalpanic 中止应用程序，实际是执行 exit(2) 进行最终退出行为的。</p> </li></ul> 
+<p><strong>这里之所以要切到 m-&gt;g0 ，主要是因为 Go 的 runtime 环境是有自己的堆栈和 goroutine，而 recovery 是在 runtime 环境下执行的，所以要先调度到 m-&gt;g0 来执行 recovery 函数。</strong></p> 
+<p><img src="https://images2.imgbox.com/f5/74/AbIyZi3O_o.png" alt="在这里插入图片描述"></p> 
+<h4><a id="defer_recover__1032"></a>defer recover 小结</h4> 
+<p>通过分析上述代码，我们可以大致了解到其处理过程：</p> 
+<ul><li>获取指向当前 Goroutine 的指针。</li><li>初始化一个 panic 的基本单位 _panic 用作后续的操作。</li><li><strong>若当前存在 defer 调用，则调用 reflectcall 方法去执行先前 defer 中延迟执行的- 代码，若在执行过程中需要运行 recover 将会调用 gorecover 方法</strong>，则将调用栈修改到defer return，使得程序正常执行。</li><li>中断程序结束前，调用 preprintpanics 方法打印出所涉及的 panic 消息。</li><li>最后调用 fatalpanic 中止应用程序，实际是执行 exit(2) 进行最终退出行为的。</li></ul> 
+<p><strong>我们可得知在调用 panic 方法后，runtime.gopanic 方法实际上处理的是当前 Goroutine 上所挂载的 ._panic 链表（所以无法对其他 Goroutine 的异常事件响应），然后会对其所属的 defer 链表和 recover 进行检测并处理，最后调用退出命令中止应用程序。</strong></p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/ab3ff58517799b698c26f04173f684c2/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">DayDreamInGIS 之 ArcGIS Pro二次开发 锐角检查</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/c9457854fa944d38170693cd2932e867/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">【Go】深入理解 Go map：赋值和扩容迁移 ①</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

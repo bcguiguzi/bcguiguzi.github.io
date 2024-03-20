@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>TRICP点云配准 - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="TRICP点云配准" />
+<meta property="og:description" content="1、TRICP点云配准原理
+2、TRICP在pcl中的实现
+trimmed ICP在PCL的recognition模块中，具体实现在pcl\recognition\ransac_based\的trimmed_icp.h文件中。具体实现代码为align函数：
+inline void align (const PointCloud&amp; source_points, int num_source_points_to_use, Matrix4&amp; guess_and_result) const { int num_trimmed_source_points = num_source_points_to_use, num_source_points = static_cast&lt;int&gt; (source_points.size ()); if ( num_trimmed_source_points &gt;= num_source_points ) { printf (&#34;WARNING in &#39;TrimmedICP::%s()&#39;: the user-defined number of source points of interest is greater or equal to &#34; &#34;the total number of source points. Trimmed ICP will work correctly but won&#39;t be very efficient. Either set &#34; &#34;" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/6d23062463f34538b19667f94b9423b4/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2022-09-15T15:21:05+08:00" />
+<meta property="article:modified_time" content="2022-09-15T15:21:05+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">TRICP点云配准</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p><strong>1、TRICP点云配准原理</strong></p> 
+<p><img alt="" height="623" src="https://images2.imgbox.com/ab/c0/ytIBqEeN_o.png" width="1200"></p> 
+<p><img alt="" height="602" src="https://images2.imgbox.com/7b/5f/mIavj6VO_o.png" width="1200"></p> 
+<p><img alt="" height="445" src="https://images2.imgbox.com/1f/af/ThQ2oNpD_o.png" width="1200"></p> 
+<p><strong> 2、TRICP在pcl中的实现</strong></p> 
+<p>trimmed ICP在PCL的recognition模块中，具体实现在pcl\recognition\ransac_based\的trimmed_icp.h文件中。具体实现代码为align函数：</p> 
+<pre><code class="language-cpp">        inline void
+        align (const PointCloud&amp; source_points, int num_source_points_to_use, Matrix4&amp; guess_and_result) const
+        {
+          int num_trimmed_source_points = num_source_points_to_use, num_source_points = static_cast&lt;int&gt; (source_points.size ());
+
+          if ( num_trimmed_source_points &gt;= num_source_points )
+          {
+            printf ("WARNING in 'TrimmedICP::%s()': the user-defined number of source points of interest is greater or equal to "
+                    "the total number of source points. Trimmed ICP will work correctly but won't be very efficient. Either set "
+                    "the number of source points to use to a lower value or use standard ICP.\n", __func__);
+            num_trimmed_source_points = num_source_points;
+          }
+
+          // These are vectors containing source to target correspondences
+          pcl::Correspondences full_src_to_tgt (num_source_points), trimmed_src_to_tgt (num_trimmed_source_points);
+
+          // Some variables for the closest point search
+          pcl::PointXYZ transformed_source_point;
+          std::vector&lt;int&gt; target_index (1);
+          std::vector&lt;float&gt; sqr_dist_to_target (1);
+          float old_energy, energy = std::numeric_limits&lt;float&gt;::max ();
+
+//          printf ("\nalign\n");
+
+          do
+          {
+            // Update the correspondences
+            for ( int i = 0 ; i &lt; num_source_points ; ++i )
+            {
+              // Transform the i-th source point based on the current transform matrix
+              aux::transform (guess_and_result, source_points.points[i], transformed_source_point);
+
+              // Perform the closest point search
+              kdtree_.nearestKSearch (transformed_source_point, 1, target_index, sqr_dist_to_target);
+
+              // Update the i-th correspondence
+              full_src_to_tgt[i].index_query = i;
+              full_src_to_tgt[i].index_match = target_index[0];
+              full_src_to_tgt[i].distance = sqr_dist_to_target[0];
+            }
+
+            // Sort in ascending order according to the squared distance
+            std::sort (full_src_to_tgt.begin (), full_src_to_tgt.end (), TrimmedICP::compareCorrespondences);
+
+            old_energy = energy;
+            energy = 0.0f;
+
+            // Now, setup the trimmed correspondences used for the transform estimation
+            for ( int i = 0 ; i &lt; num_trimmed_source_points ; ++i )
+            {
+              trimmed_src_to_tgt[i].index_query = full_src_to_tgt[i].index_query;
+              trimmed_src_to_tgt[i].index_match = full_src_to_tgt[i].index_match;
+              energy += full_src_to_tgt[i].distance;
+            }
+
+            this-&gt;estimateRigidTransformation (source_points, *target_points_, trimmed_src_to_tgt, guess_and_result);
+
+//            printf ("energy = %f, energy diff. = %f, ratio = %f\n", energy, old_energy - energy, energy/old_energy);
+          }
+          while ( energy/old_energy &lt; new_to_old_energy_ratio_ ); // iterate if enough progress
+
+//          printf ("\n");
+        }
+</code></pre> 
+<p>函数参数：</p> 
+<pre><code class="language-cpp">source_points:待配准点云 
+num_source_points_to_use：重叠点云数量
+guess_and_result：变换矩阵初值
+</code></pre> 
+<p><img alt="" height="312" src="https://images2.imgbox.com/da/07/eYPNF8D2_o.png" width="1200"></p> 
+<p><strong>3、rmse值计算</strong></p> 
+<p>tricp没有相对应的rmse值对应的库函数调用，下面是rmse值计算的程序。</p> 
+<pre><code class="language-cpp">class ComputeRmse
+{
+public:
+    void ComupteRmse(PointT target_cloud, PointT after_registraed_cloud,double max_range)
+    {
+		pcl::registration::CorrespondenceEstimation&lt;pcl::PointXYZ, pcl::PointXYZ&gt;core;
+		core.setInputSource(after_registraed_cloud);
+		core.setInputTarget(target_cloud);
+		pcl::Correspondences all;
+		core.determineReciprocalCorrespondences(all);
+		float sum = 0.0, sum_x = 0.0, sum_y = 0.0, sum_z = 0.0, rmse, rmse_x, rmse_y, rmse_z;
+		std::vector&lt;float&gt;Co;
+		for (size_t j = 0; j &lt; all.size(); j++) {
+			sum += all[j].distance;
+			Co.push_back(all[j].distance);
+			sum_x += pow((target_cloud-&gt;points[all[j].index_match].x - after_registraed_cloud-&gt;points[all[j].index_query].x), 2);
+			sum_y += pow((target_cloud-&gt;points[all[j].index_match].y - after_registraed_cloud-&gt;points[all[j].index_query].y), 2);
+			sum_z += pow((target_cloud-&gt;points[all[j].index_match].z - after_registraed_cloud-&gt;points[all[j].index_query].z), 2);
+		}
+		rmse = sqrt(sum / all.size());     //均方根误差
+		rmse_x = sqrt(sum_x / all.size()); //X方向均方根误差
+		rmse_y = sqrt(sum_y / all.size()); //Y方向均方根误差
+		rmse_z = sqrt(sum_z / all.size()); //Z方向均方根误差
+		std::vector&lt;float&gt;::iterator max = max_element(Co.begin(), Co.end());//获取最大距离的对应点
+		std::vector&lt;float&gt;::iterator min = min_element(Co.begin(), Co.end());//获取最小距离的对应点
+		cout &lt;&lt; "匹配点对个数" &lt;&lt; all.size() &lt;&lt; endl;
+		cout &lt;&lt; "距离最大值" &lt;&lt; sqrt(*max) * 100 &lt;&lt; "厘米" &lt;&lt; endl;
+		cout &lt;&lt; "距离最小值" &lt;&lt; sqrt(*min) * 100 &lt;&lt; "厘米" &lt;&lt; endl;
+
+		cout &lt;&lt; "均方根误差" &lt;&lt; rmse &lt;&lt; "米" &lt;&lt; endl;
+		cout &lt;&lt; "X均方根误差" &lt;&lt; rmse_x &lt;&lt; "米" &lt;&lt; endl;
+		cout &lt;&lt; "Y均方根误差" &lt;&lt; rmse_y &lt;&lt; "米" &lt;&lt; endl;
+		cout &lt;&lt; "Z均方根误差" &lt;&lt; rmse_z &lt;&lt; "米" &lt;&lt; endl;
+    }
+};</code></pre> 
+<p> 主要利用的是Class pcl::registration::CorrespondenceEstimation&lt; PointSource, PointTarget, Scalar &gt;，类CorrespondenceEstimation是确定目标和查询点集(或特征)之间的对应关系的基类，输入为目标和源<a href="https://so.csdn.net/so/search?q=%E7%82%B9%E4%BA%91&amp;spm=1001.2101.3001.7020" title="点云">点云</a>，输出为点对，即输出两组点云之间对应点集合。</p> 
+<pre><code class="language-cpp">#include &lt;pcl/registration/correspondence_estimation.h&gt;
+CorrespondenceEstimation () 
+//  空构造函数
+virtual  ~CorrespondenceEstimation () 
+//  空析构函数
+virtual void  determineCorrespondences (pcl::Correspondences &amp;correspondences, double max_distance=std::numeric_limits&lt; double &gt;::max()) 
+//  确定输入点云和目标点云的对应关系:输入源点云和对应目标点云之间允许的最大距离max_distance,输出找到的对应关系(查询点索引、目标点索引和他们之间的距离)存储在correspondences中。
+virtual void  determineReciprocalCorrespondences (pcl::Correspondences &amp;correspondences, double max_distance=std::numeric_limits&lt; double &gt;::max()) 
+//  确定输入点云和目标点云的对应关系:输出找到的对应关系(查询点索引、目标点索引和他们之间的距离存储在correspondences中。该函数与上相同,但是查找的对应点是相互的。
+virtual boost::shared_ptr&lt; CorrespondenceEstimationBase&lt; PointSource, PointTarget, Scalar &gt; &gt;  clone () const 
+//  复制并强制转换为CorrespondenceEstimationBase。
+void  setInputTarget (const PointCloudTargetConstPtr &amp;cloud) 
+//  设置指向目标点云的指针cloud。
+void  setPointRepresentation (const PointRepresentationConstPtr &amp;point_representation) 
+//  当对点进行比较的时,设置指向PointRepresentation 的 boost库共享指针 point_representation,点的表示实现对点到n维特征向量的转化,进而在对应点集搜索时使用kdtree进行搜索。  
+
+
+</code></pre> 
+<p><strong>参考连接：</strong></p> 
+<p><a href="https://blog.csdn.net/xinxiangwangzhi_/article/details/124656354?ops_request_misc=&amp;request_id=&amp;biz_id=102&amp;utm_term=pcl::recognition::TrimmedICP&amp;utm_medium=distribute.pc_search_result.none-task-blog-2~all~sobaiduweb~default-0-124656354.142%5Ev47%5Epc_rank_34_default_23,201%5Ev3%5Eadd_ask&amp;spm=1018.2226.3001.4187" title="trimmed ICP及其在PCL代码解析与使用_xinxiangwangzhi_的博客-CSDN博客">trimmed ICP及其在PCL代码解析与使用_xinxiangwangzhi_的博客-CSDN博客</a></p> 
+<p><a href="https://blog.csdn.net/qq_36829039/article/details/121191472?ops_request_misc=&amp;request_id=&amp;biz_id=102&amp;utm_term=pcl::registration::Corresponde&amp;utm_medium=distribute.pc_search_result.none-task-blog-2~all~sobaiduweb~default-5-121191472.142%5Ev47%5Epc_rank_34_default_23,201%5Ev3%5Eadd_ask&amp;spm=1018.2226.3001.4187" title="PCL函数库摘要——点云配准_悠缘之空的博客-CSDN博客_pcl函数库">PCL函数库摘要——点云配准_悠缘之空的博客-CSDN博客_pcl函数库</a></p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/3d085d1db4bb7d6c336abaf2bf8b8b45/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">Educational Codeforces Round 125 (Rated for Div. 2) CD题解</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/5704e7cd1231d2c956c18d4bb1dc1ab6/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">剑指 Offer 53 - I. 在排序数组中查找数字 I（LeetCode 34. 在排序数组中查找元素的第一个和最后一个位置）——二分</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

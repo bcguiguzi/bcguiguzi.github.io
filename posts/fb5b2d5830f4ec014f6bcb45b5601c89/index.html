@@ -1,0 +1,716 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>【opencv3】详述PnP测距完整流程（附C&#43;&#43;代码） - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="【opencv3】详述PnP测距完整流程（附C&#43;&#43;代码）" />
+<meta property="og:description" content="文章目录 一、概述二、准备工作1.相机标定简介2.标定过程3.截取图像C&#43;&#43;代码4.标定C&#43;&#43;代码 三、PnP测距代码测试输出 一、概述 我们只要获得特征点的世界坐标（三维坐标）、2D坐标（像素坐标）、相机内参矩阵、相机畸变参数矩阵以上四个参数即可以解得相机与标志物之间的外参（旋转矩阵R、平移矩阵T），并以此求得相机的世界坐标（以标志物为世界坐标平面，且原点为标志物已知某一点）。
+Ref：
+PnP 单目相机位姿估计（二）：solvePnP利用二维码求解相机世界坐标
+相机内参矩阵、相机畸变参数矩阵可通过相机标定获取。
+最后由旋转向量和平移矩阵求出深度信息：
+先将旋转向量转化为旋转矩阵再转置，与平移矩阵相乘，得到的z坐标即深度信息。
+P = − i n v e r s e ( R ) ∗ T P = -inverse (R) * T P=−inverse(R)∗T
+二、准备工作 1.相机标定简介 1.为什么需要对摄像头进行标定？ ⭐️
+摄像头存在畸变，畸变可以拓宽视野，但会影响图像识别和测量的精度。
+2.摄像头参数： ⭐️
+1）相机矩阵：包括焦距（fx，fy），光学中心（Cx，Cy），完全取决于相机本身，是相机的固有属性，只需要计算一次，可用矩阵表示如下：[fx, 0, Cx; 0, fy, cy; 0,0,1];
+2) 畸变系数：畸变数学模型的5个参数 D = （k1，k2， P1， P2， k3）；
+3）相机内参：相机矩阵和畸变系数统称为相机内参，在不考虑畸变的时候，相机矩阵也会被称为相机内参；
+4） 相机外参：通过旋转和平移变换将3D的坐标转换为相机2维的坐标，其中的旋转矩阵和平移矩阵就被称为相机的外参；描述的是将世界坐标系转换成相机坐标系的过程。
+3.摄像头标定的流程： ⭐️
+相机的标定过程实际上就是在4个坐标系转化的过程中求出相机的内参和外参的过程。这4个坐标系分别是：世界坐标系（描述物体真实位置），相机坐标系（摄像头镜头中心），图像坐标系（图像传感器成像中心，图片中心，影布中心，单位mm），像素坐标系（图像左上角为原点，描述像素的位置，单位是多少行，多少列）。
+（1）世界坐标系 → 相机坐标系：等比例缩小，外加旋转平移，称之为刚体变换；求解摄像头外参（旋转和平移矩阵）；
+（2）相机坐标系 → 图像坐标系：称为投影；求解相机内参（摄像头矩阵和畸变系数）；
+（3）图像坐标系 → 像素坐标系：将图像坐标离散抽样；求解像素转化矩阵（可简单理解为原点从图片中心到左上角，单位厘米变行列）" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/fb5b2d5830f4ec014f6bcb45b5601c89/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-09-05T10:34:31+08:00" />
+<meta property="article:modified_time" content="2023-09-05T10:34:31+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">【opencv3】详述PnP测距完整流程（附C&#43;&#43;代码）</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-light">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p></p> 
+<div class="toc"> 
+ <h4>文章目录</h4> 
+ <ul><li><a href="#_1" rel="nofollow">一、概述</a></li><li><a href="#_16" rel="nofollow">二、准备工作</a></li><li><ul><li><a href="#1_17" rel="nofollow">1.相机标定简介</a></li><li><a href="#2_40" rel="nofollow">2.标定过程</a></li><li><a href="#3C_66" rel="nofollow">3.截取图像C++代码</a></li><li><a href="#4C_114" rel="nofollow">4.标定C++代码</a></li></ul> 
+  </li><li><a href="#PnP_434" rel="nofollow">三、PnP测距</a></li><li><ul><li><a href="#_435" rel="nofollow">代码</a></li><li><a href="#_524" rel="nofollow">测试</a></li><li><a href="#_530" rel="nofollow">输出</a></li></ul> 
+ </li></ul> 
+</div> 
+<p></p> 
+<h2><a id="_1"></a>一、概述</h2> 
+<blockquote> 
+ <p>我们只要获得<strong>特征点的世界坐标（三维坐标）、2D坐标（像素坐标）、相机内参矩阵、相机畸变参数矩阵</strong>以上四个参数即可以解得相机与标志物之间的外参（<strong>旋转矩阵R、平移矩阵T</strong>），并以此求得相机的世界坐标（以标志物为世界坐标平面，且原点为标志物已知某一点）。</p> 
+</blockquote> 
+<p>Ref：<br> <a href="https://blog.csdn.net/cocoaqin/article/details/77848588">PnP 单目相机位姿估计（二）：solvePnP利用二维码求解相机世界坐标</a></p> 
+<p>相机内参矩阵、相机畸变参数矩阵可通过<strong>相机标定</strong>获取。</p> 
+<p>最后由旋转向量和平移矩阵求出深度信息：<br> 先将旋转向量转化为旋转矩阵再转置，与平移矩阵相乘，得到的z坐标即深度信息。</p> 
+<p><span class="katex--display"><span class="katex-display"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          P 
+         
+        
+          = 
+         
+        
+          − 
+         
+        
+          i 
+         
+        
+          n 
+         
+        
+          v 
+         
+        
+          e 
+         
+        
+          r 
+         
+        
+          s 
+         
+        
+          e 
+         
+        
+          ( 
+         
+        
+          R 
+         
+        
+          ) 
+         
+        
+          ∗ 
+         
+        
+          T 
+         
+        
+       
+         P = -inverse (R) * T 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord mathnormal" style="margin-right: 0.1389em;">P</span><span class="mspace" style="margin-right: 0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mord">−</span><span class="mord mathnormal">in</span><span class="mord mathnormal" style="margin-right: 0.0359em;">v</span><span class="mord mathnormal">erse</span><span class="mopen">(</span><span class="mord mathnormal" style="margin-right: 0.0077em;">R</span><span class="mclose">)</span><span class="mspace" style="margin-right: 0.2222em;"></span><span class="mbin">∗</span><span class="mspace" style="margin-right: 0.2222em;"></span></span><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord mathnormal" style="margin-right: 0.1389em;">T</span></span></span></span></span></span></p> 
+<h2><a id="_16"></a>二、准备工作</h2> 
+<h3><a id="1_17"></a>1.相机标定简介</h3> 
+<blockquote> 
+ <p><strong>1.为什么需要对摄像头进行标定？</strong> ⭐️<br> 摄像头存在畸变，畸变可以拓宽视野，但会影响图像识别和测量的精度。<br> <strong>2.摄像头参数：</strong> ⭐️<br> 1）相机矩阵：包括焦距（fx，fy），光学中心（Cx，Cy），完全取决于相机本身，是相机的固有属性，只需要计算一次，可用矩阵表示如下：[fx, 0, Cx; 0, fy, cy; 0,0,1];<br> 2) 畸变系数：畸变数学模型的5个参数 D = （k1，k2， P1， P2， k3）；<br> 3）相机内参：相机矩阵和畸变系数统称为相机内参，在不考虑畸变的时候，相机矩阵也会被称为相机内参；<br> 4） 相机外参：通过旋转和平移变换将3D的坐标转换为相机2维的坐标，其中的旋转矩阵和平移矩阵就被称为相机的外参；描述的是将世界坐标系转换成相机坐标系的过程。<br> <strong>3.摄像头标定的流程：</strong> ⭐️<br> 相机的标定过程实际上就是在4个坐标系转化的过程中求出相机的内参和外参的过程。这4个坐标系分别是：<strong>世界坐标系</strong>（描述物体真实位置），<strong>相机坐标系</strong>（摄像头镜头中心），<strong>图像坐标系</strong>（图像传感器成像中心，图片中心，影布中心，单位mm），<strong>像素坐标系</strong>（图像左上角为原点，描述像素的位置，单位是多少行，多少列）。<br> （1）世界坐标系 → 相机坐标系：等比例缩小，外加旋转平移，称之为刚体变换；求解摄像头外参（旋转和平移矩阵）；<br> （2）相机坐标系 → 图像坐标系：称为投影；求解相机内参（摄像头矩阵和畸变系数）；<br> （3）图像坐标系 → 像素坐标系：将图像坐标离散抽样；求解像素转化矩阵（可简单理解为原点从图片中心到左上角，单位厘米变行列）<br> <strong>4.相机标定方法分类：</strong> ⭐️<br> 传统相机标定法、主动视觉相机标定法、相机自标定法。<strong>张正友相机标定法</strong>介于传统标定法和自标定法之间，但克服了传统标定法需要的高精度标定物的缺点。张氏标定法使用二维方格组成的标定板进行标定，采集标定板不同位姿图片，提取图片中角点像素坐标，通过单应矩阵计算出相机的内外参数初始值，利用非线性最小二乘法估计畸变系数，最后使用极大似然估计法优化参数。该方法操作简单，而且精度较高，可以满足大部分场合。</p> 
+</blockquote> 
+<p>Ref：</p> 
+<ul><li><a href="https://www.zhihu.com/question/29448299/answer/102658379" rel="nofollow">机器视觉的相机标定到底是什么？</a></li><li><a href="https://zhuanlan.zhihu.com/p/55648494" rel="nofollow">（五）单目摄像头标定与畸变矫正（C++，opencv）</a></li></ul> 
+<h3><a id="2_40"></a>2.标定过程</h3> 
+<p>（1）首先用摄像头拍摄一定数量的 <strong>标定板（棋盘图）</strong> 照片，大概10-20张左右，角度尽可能不同，拍照时要把完整的棋盘拍进去，不然找不到角点。</p> 
+<p>例如：<br> <img src="https://images2.imgbox.com/bf/a7/HgLDiwAo_o.jpg" alt="在这里插入图片描述"></p> 
+<ul><li>这部分需要用<strong>自己的摄像头</strong>进行测试，如果没有别的摄像头可以用笔记本自带的摄像头。</li></ul> 
+<pre><code class="prism language-cpp">VideoCapture <span class="token function">inputVideo</span><span class="token punctuation">(</span><span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+</code></pre> 
+<ul><li>openCV的安装目录中有标定用到的<strong>标定板（棋盘图 chessboard.png ）</strong>。<br> 我的 chessboard.png 路径：</li></ul> 
+<pre><code class="prism language-bash">E:<span class="token punctuation">\</span>openCV3.4.3<span class="token punctuation">\</span>opencv<span class="token punctuation">\</span>sources<span class="token punctuation">\</span>samples<span class="token punctuation">\</span>data
+</code></pre> 
+<p>chessboard.png：<br> <img src="https://images2.imgbox.com/6a/0d/FYNGwt5F_o.png" alt="请添加图片描述"><br> （2）拍摄之后进行相机内外参标定，这里我采用<strong>张正友相机标定法</strong>进行标定。</p> 
+<h3><a id="3C_66"></a>3.截取图像C++代码</h3> 
+<p>功能：拍摄一定数量的棋盘图照片，用于后续的相机标定。<br> 运行时，键盘按下 “<strong>k</strong>” 或者 “<strong>K</strong>” （注意是英文输入法下），截取一张图片；键盘按下 “<strong>q</strong>” 或者 “<strong>Q</strong>” ，退出程序运行，图像截取结束。截取的图片依次输出为 1.jpg、2.jpg、3.jpg…</p> 
+<pre><code class="prism language-cpp"><span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;opencv2/opencv.hpp&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;string&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;iostream&gt;</span></span>
+
+<span class="token keyword">using</span> <span class="token keyword">namespace</span> cv<span class="token punctuation">;</span>
+<span class="token keyword">using</span> <span class="token keyword">namespace</span> std<span class="token punctuation">;</span>
+
+<span class="token keyword">int</span> <span class="token function">main</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	VideoCapture <span class="token function">inputVideo</span><span class="token punctuation">(</span><span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span>inputVideo<span class="token punctuation">.</span><span class="token function">isOpened</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span>
+	<span class="token punctuation">{<!-- --></span>
+		cout <span class="token operator">&lt;&lt;</span> <span class="token string">"Could not open the input video "</span> <span class="token operator">&lt;&lt;</span> endl<span class="token punctuation">;</span>
+		<span class="token keyword">return</span> <span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+
+	Mat frame<span class="token punctuation">;</span>
+	string imgname<span class="token punctuation">;</span>
+	<span class="token keyword">int</span> f <span class="token operator">=</span> <span class="token number">1</span><span class="token punctuation">;</span>
+	<span class="token keyword">while</span> <span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">)</span> 
+	<span class="token punctuation">{<!-- --></span>
+		inputVideo <span class="token operator">&gt;&gt;</span> frame<span class="token punctuation">;</span>              
+		<span class="token keyword">if</span> <span class="token punctuation">(</span>frame<span class="token punctuation">.</span><span class="token function">empty</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span> 
+			<span class="token keyword">break</span><span class="token punctuation">;</span>        
+		<span class="token function">imshow</span><span class="token punctuation">(</span><span class="token string">"Camera"</span><span class="token punctuation">,</span> frame<span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token keyword">char</span> key <span class="token operator">=</span> <span class="token function">waitKey</span><span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token keyword">if</span> <span class="token punctuation">(</span>key <span class="token operator">==</span> <span class="token char">'q'</span> <span class="token operator">||</span> key <span class="token operator">==</span> <span class="token char">'Q'</span><span class="token punctuation">)</span> <span class="token comment">// 退出运行</span>
+			<span class="token keyword">break</span><span class="token punctuation">;</span>
+		<span class="token keyword">if</span> <span class="token punctuation">(</span>key <span class="token operator">==</span> <span class="token char">'k'</span> <span class="token operator">||</span> key <span class="token operator">==</span> <span class="token char">'K'</span><span class="token punctuation">)</span> <span class="token comment">// 截取图片</span>
+		<span class="token punctuation">{<!-- --></span>
+			cout <span class="token operator">&lt;&lt;</span> <span class="token string">"frame:"</span> <span class="token operator">&lt;&lt;</span> f <span class="token operator">&lt;&lt;</span> endl<span class="token punctuation">;</span>
+			imgname <span class="token operator">=</span> <span class="token function">to_string</span><span class="token punctuation">(</span>f<span class="token operator">++</span><span class="token punctuation">)</span> <span class="token operator">+</span> <span class="token string">".jpg"</span><span class="token punctuation">;</span>
+			<span class="token function">imwrite</span><span class="token punctuation">(</span>imgname<span class="token punctuation">,</span> frame<span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token punctuation">}</span>
+	<span class="token punctuation">}</span>
+	cout <span class="token operator">&lt;&lt;</span> <span class="token string">"Finished writing"</span> <span class="token operator">&lt;&lt;</span> endl<span class="token punctuation">;</span>
+	<span class="token keyword">return</span> <span class="token number">0</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>截取完毕后输出图片在VS当前工程目录下：<br> <img src="https://images2.imgbox.com/e1/60/HsaQuQKn_o.png" alt="在这里插入图片描述"></p> 
+<p>这里我拍摄了10张图片。</p> 
+<h3><a id="4C_114"></a>4.标定C++代码</h3> 
+<p>Ref：<br> <a href="https://blog.csdn.net/u012319493/article/details/77622053">openCV—相机内外参标定</a><br> <a href="https://blog.csdn.net/nyist_yangguang/article/details/122316891">【笔记】Opencv张正友相机标定傻瓜教程</a></p> 
+<p>首先新建文本文档 ”<strong>calibdata.txt</strong>”，将刚才输出的图片名写入文件 calibdata.txt 然后保存.</p> 
+<pre><code class="prism language-bash"><span class="token number">1</span>.jpg    
+<span class="token number">2</span>.jpg  
+<span class="token number">3</span>.jpg  
+<span class="token number">4</span>.jpg  
+<span class="token number">5</span>.jpg  
+<span class="token number">6</span>.jpg  
+<span class="token number">7</span>.jpg  
+<span class="token number">8</span>.jpg  
+<span class="token number">9</span>.jpg
+<span class="token number">10</span>.jpg  
+</code></pre> 
+<p>注意文件末尾不要留空行，否则会出现报错：</p> 
+<pre><code class="prism language-bash">Assertion failed <span class="token punctuation">(</span>dims <span class="token operator">&lt;=</span> <span class="token number">2</span> <span class="token operator">&amp;&amp;</span> step<span class="token punctuation">[</span><span class="token number">0</span><span class="token punctuation">]</span> <span class="token operator">&gt;</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token keyword">in</span> cv::Mat::locateROI
+</code></pre> 
+<p><strong>标定代码（C++）：</strong></p> 
+<pre><code class="prism language-cpp"><span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;iostream&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;sstream&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;time.h&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;stdio.h&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;fstream&gt;</span></span>
+
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;opencv2/core/core.hpp&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;opencv2/imgproc/imgproc.hpp&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;opencv2/calib3d/calib3d.hpp&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;opencv2/highgui/highgui.hpp&gt;</span></span>
+
+<span class="token keyword">using</span> <span class="token keyword">namespace</span> cv<span class="token punctuation">;</span>
+<span class="token keyword">using</span> <span class="token keyword">namespace</span> std<span class="token punctuation">;</span>
+
+<span class="token keyword">void</span> <span class="token function">main</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	ifstream <span class="token function">fin</span><span class="token punctuation">(</span><span class="token string">"calibdata.txt"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>             <span class="token comment">/* 标定所用图像文件的路径 */</span>
+	ofstream <span class="token function">fout</span><span class="token punctuation">(</span><span class="token string">"caliberation_result.txt"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>  <span class="token comment">/* 保存标定结果的文件 */</span>
+
+											   <span class="token comment">// 读取每一幅图像，从中提取出角点，然后对角点进行亚像素精确化</span>
+	<span class="token keyword">int</span> image_count <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>  <span class="token comment">/* 图像数量 */</span>
+	Size image_size<span class="token punctuation">;</span>      <span class="token comment">/* 图像的尺寸 */</span>
+	Size board_size <span class="token operator">=</span> <span class="token function">Size</span><span class="token punctuation">(</span><span class="token number">7</span><span class="token punctuation">,</span> <span class="token number">7</span><span class="token punctuation">)</span><span class="token punctuation">;</span>             <span class="token comment">/* 标定板上每行、列的角点数 */</span>
+	vector<span class="token operator">&lt;</span>Point2f<span class="token operator">&gt;</span> image_points_buf<span class="token punctuation">;</span>         <span class="token comment">/* 缓存每幅图像上检测到的角点 */</span>
+	vector<span class="token operator">&lt;</span>vector<span class="token operator">&lt;</span>Point2f<span class="token operator">&gt;&gt;</span> image_points_seq<span class="token punctuation">;</span> <span class="token comment">/* 保存检测到的所有角点 */</span>
+	string filename<span class="token punctuation">;</span>      <span class="token comment">// 图片名</span>
+	vector<span class="token operator">&lt;</span>string<span class="token operator">&gt;</span> filenames<span class="token punctuation">;</span>
+
+	<span class="token keyword">while</span> <span class="token punctuation">(</span><span class="token function">getline</span><span class="token punctuation">(</span>fin<span class="token punctuation">,</span> filename<span class="token punctuation">)</span><span class="token punctuation">)</span>
+	<span class="token punctuation">{<!-- --></span>
+		<span class="token operator">++</span>image_count<span class="token punctuation">;</span>
+		Mat imageInput <span class="token operator">=</span> <span class="token function">imread</span><span class="token punctuation">(</span>filename<span class="token punctuation">)</span><span class="token punctuation">;</span>
+		filenames<span class="token punctuation">.</span><span class="token function">push_back</span><span class="token punctuation">(</span>filename<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+		<span class="token comment">// 读入第一张图片时获取图片大小</span>
+		<span class="token keyword">if</span> <span class="token punctuation">(</span>image_count <span class="token operator">==</span> <span class="token number">1</span><span class="token punctuation">)</span>
+		<span class="token punctuation">{<!-- --></span>
+			image_size<span class="token punctuation">.</span>width <span class="token operator">=</span> imageInput<span class="token punctuation">.</span>cols<span class="token punctuation">;</span>
+			image_size<span class="token punctuation">.</span>height <span class="token operator">=</span> imageInput<span class="token punctuation">.</span>rows<span class="token punctuation">;</span>
+		<span class="token punctuation">}</span>
+
+		<span class="token comment">/* 提取角点 */</span>
+		<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token number">0</span> <span class="token operator">==</span> <span class="token function">findChessboardCorners</span><span class="token punctuation">(</span>imageInput<span class="token punctuation">,</span> board_size<span class="token punctuation">,</span> image_points_buf<span class="token punctuation">)</span><span class="token punctuation">)</span>
+		<span class="token punctuation">{<!-- --></span>
+			cout <span class="token operator">&lt;&lt;</span> <span class="token string">"can not find chessboard corners!\n"</span><span class="token punctuation">;</span>  <span class="token comment">// 找不到角点</span>
+			<span class="token function">exit</span><span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token punctuation">}</span>
+		<span class="token keyword">else</span>
+		<span class="token punctuation">{<!-- --></span>
+			Mat view_gray<span class="token punctuation">;</span>
+			<span class="token function">cvtColor</span><span class="token punctuation">(</span>imageInput<span class="token punctuation">,</span> view_gray<span class="token punctuation">,</span> CV_RGB2GRAY<span class="token punctuation">)</span><span class="token punctuation">;</span>  <span class="token comment">// 转灰度图</span>
+
+			<span class="token comment">/* 亚像素精确化 */</span>
+			<span class="token comment">// image_points_buf 初始的角点坐标向量，同时作为亚像素坐标位置的输出</span>
+			<span class="token comment">// Size(5,5) 搜索窗口大小</span>
+			<span class="token comment">// （-1，-1）表示没有死区</span>
+			<span class="token comment">// TermCriteria 角点的迭代过程的终止条件, 可以为迭代次数和角点精度两者的组合</span>
+			<span class="token function">cornerSubPix</span><span class="token punctuation">(</span>view_gray<span class="token punctuation">,</span> image_points_buf<span class="token punctuation">,</span> <span class="token function">Size</span><span class="token punctuation">(</span><span class="token number">5</span><span class="token punctuation">,</span> <span class="token number">5</span><span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token function">Size</span><span class="token punctuation">(</span><span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">,</span> <span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token function">TermCriteria</span><span class="token punctuation">(</span>CV_TERMCRIT_EPS <span class="token operator">+</span> CV_TERMCRIT_ITER<span class="token punctuation">,</span> <span class="token number">30</span><span class="token punctuation">,</span> <span class="token number">0.1</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+			image_points_seq<span class="token punctuation">.</span><span class="token function">push_back</span><span class="token punctuation">(</span>image_points_buf<span class="token punctuation">)</span><span class="token punctuation">;</span>  <span class="token comment">// 保存亚像素角点</span>
+
+			<span class="token comment">/* 在图像上显示角点位置 */</span>
+			<span class="token function">drawChessboardCorners</span><span class="token punctuation">(</span>view_gray<span class="token punctuation">,</span> board_size<span class="token punctuation">,</span> image_points_buf<span class="token punctuation">,</span> <span class="token boolean">false</span><span class="token punctuation">)</span><span class="token punctuation">;</span> <span class="token comment">// 用于在图片中标记角点</span>
+
+			<span class="token function">imshow</span><span class="token punctuation">(</span><span class="token string">"Camera Calibration"</span><span class="token punctuation">,</span> view_gray<span class="token punctuation">)</span><span class="token punctuation">;</span>       <span class="token comment">// 显示图片</span>
+
+			<span class="token function">waitKey</span><span class="token punctuation">(</span><span class="token number">500</span><span class="token punctuation">)</span><span class="token punctuation">;</span> <span class="token comment">//暂停0.5S      </span>
+		<span class="token punctuation">}</span>
+	<span class="token punctuation">}</span>
+	<span class="token keyword">int</span> CornerNum <span class="token operator">=</span> board_size<span class="token punctuation">.</span>width <span class="token operator">*</span> board_size<span class="token punctuation">.</span>height<span class="token punctuation">;</span>  <span class="token comment">// 每张图片上总的角点数</span>
+
+	<span class="token comment">//-------------以下是摄像机标定------------------</span>
+
+	<span class="token comment">/*棋盘三维信息*/</span>
+	Size square_size <span class="token operator">=</span> <span class="token function">Size</span><span class="token punctuation">(</span><span class="token number">10</span><span class="token punctuation">,</span> <span class="token number">10</span><span class="token punctuation">)</span><span class="token punctuation">;</span>         <span class="token comment">/* 实际测量得到的标定板上每个棋盘格的大小 */</span>
+	vector<span class="token operator">&lt;</span>vector<span class="token operator">&lt;</span>Point3f<span class="token operator">&gt;&gt;</span> object_points<span class="token punctuation">;</span>   <span class="token comment">/* 保存标定板上角点的三维坐标 */</span>
+
+	<span class="token comment">/*内外参数*/</span>
+	Mat cameraMatrix <span class="token operator">=</span> <span class="token function">Mat</span><span class="token punctuation">(</span><span class="token number">3</span><span class="token punctuation">,</span> <span class="token number">3</span><span class="token punctuation">,</span> CV_32FC1<span class="token punctuation">,</span> <span class="token class-name">Scalar</span><span class="token double-colon punctuation">::</span><span class="token function">all</span><span class="token punctuation">(</span><span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>  <span class="token comment">/* 摄像机内参数矩阵 */</span>
+	vector<span class="token operator">&lt;</span><span class="token keyword">int</span><span class="token operator">&gt;</span> point_counts<span class="token punctuation">;</span>   <span class="token comment">// 每幅图像中角点的数量</span>
+	Mat distCoeffs <span class="token operator">=</span> <span class="token function">Mat</span><span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">,</span> <span class="token number">5</span><span class="token punctuation">,</span> CV_32FC1<span class="token punctuation">,</span> <span class="token class-name">Scalar</span><span class="token double-colon punctuation">::</span><span class="token function">all</span><span class="token punctuation">(</span><span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>       <span class="token comment">/* 摄像机的5个畸变系数：k1,k2,p1,p2,k3 */</span>
+	vector<span class="token operator">&lt;</span>Mat<span class="token operator">&gt;</span> tvecsMat<span class="token punctuation">;</span>      <span class="token comment">/* 每幅图像的旋转向量 */</span>
+	vector<span class="token operator">&lt;</span>Mat<span class="token operator">&gt;</span> rvecsMat<span class="token punctuation">;</span>      <span class="token comment">/* 每幅图像的平移向量 */</span>
+
+	<span class="token comment">/* 初始化标定板上角点的三维坐标 */</span>
+	<span class="token keyword">int</span> i<span class="token punctuation">,</span> j<span class="token punctuation">,</span> t<span class="token punctuation">;</span>
+	<span class="token keyword">for</span> <span class="token punctuation">(</span>t <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span> t<span class="token operator">&lt;</span>image_count<span class="token punctuation">;</span> t<span class="token operator">++</span><span class="token punctuation">)</span>
+	<span class="token punctuation">{<!-- --></span>
+		vector<span class="token operator">&lt;</span>Point3f<span class="token operator">&gt;</span> tempPointSet<span class="token punctuation">;</span>
+		<span class="token keyword">for</span> <span class="token punctuation">(</span>i <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span> i<span class="token operator">&lt;</span>board_size<span class="token punctuation">.</span>height<span class="token punctuation">;</span> i<span class="token operator">++</span><span class="token punctuation">)</span>
+		<span class="token punctuation">{<!-- --></span>
+			<span class="token keyword">for</span> <span class="token punctuation">(</span>j <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span> j<span class="token operator">&lt;</span>board_size<span class="token punctuation">.</span>width<span class="token punctuation">;</span> j<span class="token operator">++</span><span class="token punctuation">)</span>
+			<span class="token punctuation">{<!-- --></span>
+				Point3f realPoint<span class="token punctuation">;</span>
+
+				<span class="token comment">/* 假设标定板放在世界坐标系中z=0的平面上 */</span>
+				realPoint<span class="token punctuation">.</span>x <span class="token operator">=</span> i <span class="token operator">*</span> square_size<span class="token punctuation">.</span>width<span class="token punctuation">;</span>
+				realPoint<span class="token punctuation">.</span>y <span class="token operator">=</span> j <span class="token operator">*</span> square_size<span class="token punctuation">.</span>height<span class="token punctuation">;</span>
+				realPoint<span class="token punctuation">.</span>z <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+				tempPointSet<span class="token punctuation">.</span><span class="token function">push_back</span><span class="token punctuation">(</span>realPoint<span class="token punctuation">)</span><span class="token punctuation">;</span>
+			<span class="token punctuation">}</span>
+		<span class="token punctuation">}</span>
+		object_points<span class="token punctuation">.</span><span class="token function">push_back</span><span class="token punctuation">(</span>tempPointSet<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+
+	<span class="token comment">/* 初始化每幅图像中的角点数量，假定每幅图像中都可以看到完整的标定板 */</span>
+	<span class="token keyword">for</span> <span class="token punctuation">(</span>i <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span> i<span class="token operator">&lt;</span>image_count<span class="token punctuation">;</span> i<span class="token operator">++</span><span class="token punctuation">)</span>
+	<span class="token punctuation">{<!-- --></span>
+		point_counts<span class="token punctuation">.</span><span class="token function">push_back</span><span class="token punctuation">(</span>board_size<span class="token punctuation">.</span>width <span class="token operator">*</span> board_size<span class="token punctuation">.</span>height<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+
+	<span class="token comment">/* 开始标定 */</span>
+	<span class="token comment">// object_points 世界坐标系中的角点的三维坐标</span>
+	<span class="token comment">// image_points_seq 每一个内角点对应的图像坐标点</span>
+	<span class="token comment">// image_size 图像的像素尺寸大小</span>
+	<span class="token comment">// cameraMatrix 输出，内参矩阵</span>
+	<span class="token comment">// distCoeffs 输出，畸变系数</span>
+	<span class="token comment">// rvecsMat 输出，旋转向量</span>
+	<span class="token comment">// tvecsMat 输出，位移向量</span>
+	<span class="token comment">// 0 标定时所采用的算法</span>
+	<span class="token function">calibrateCamera</span><span class="token punctuation">(</span>object_points<span class="token punctuation">,</span> image_points_seq<span class="token punctuation">,</span> image_size<span class="token punctuation">,</span> cameraMatrix<span class="token punctuation">,</span> distCoeffs<span class="token punctuation">,</span> rvecsMat<span class="token punctuation">,</span> tvecsMat<span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+	<span class="token comment">//------------------------标定完成------------------------------------</span>
+
+	<span class="token comment">// -------------------对标定结果进行评价------------------------------</span>
+
+	<span class="token keyword">double</span> total_err <span class="token operator">=</span> <span class="token number">0.0</span><span class="token punctuation">;</span>         <span class="token comment">/* 所有图像的平均误差的总和 */</span>
+	<span class="token keyword">double</span> err <span class="token operator">=</span> <span class="token number">0.0</span><span class="token punctuation">;</span>               <span class="token comment">/* 每幅图像的平均误差 */</span>
+	vector<span class="token operator">&lt;</span>Point2f<span class="token operator">&gt;</span> image_points2<span class="token punctuation">;</span>  <span class="token comment">/* 保存重新计算得到的投影点 */</span>
+	fout <span class="token operator">&lt;&lt;</span> <span class="token string">"每幅图像的标定误差：\n"</span><span class="token punctuation">;</span>
+
+	<span class="token keyword">for</span> <span class="token punctuation">(</span>i <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span> i<span class="token operator">&lt;</span>image_count<span class="token punctuation">;</span> i<span class="token operator">++</span><span class="token punctuation">)</span>
+	<span class="token punctuation">{<!-- --></span>
+		vector<span class="token operator">&lt;</span>Point3f<span class="token operator">&gt;</span> tempPointSet <span class="token operator">=</span> object_points<span class="token punctuation">[</span>i<span class="token punctuation">]</span><span class="token punctuation">;</span>
+
+		<span class="token comment">/* 通过得到的摄像机内外参数，对空间的三维点进行重新投影计算，得到新的投影点 */</span>
+		<span class="token function">projectPoints</span><span class="token punctuation">(</span>tempPointSet<span class="token punctuation">,</span> rvecsMat<span class="token punctuation">[</span>i<span class="token punctuation">]</span><span class="token punctuation">,</span> tvecsMat<span class="token punctuation">[</span>i<span class="token punctuation">]</span><span class="token punctuation">,</span> cameraMatrix<span class="token punctuation">,</span> distCoeffs<span class="token punctuation">,</span> image_points2<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+		<span class="token comment">/* 计算新的投影点和旧的投影点之间的误差*/</span>
+		vector<span class="token operator">&lt;</span>Point2f<span class="token operator">&gt;</span> tempImagePoint <span class="token operator">=</span> image_points_seq<span class="token punctuation">[</span>i<span class="token punctuation">]</span><span class="token punctuation">;</span>
+		Mat tempImagePointMat <span class="token operator">=</span> <span class="token function">Mat</span><span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">,</span> tempImagePoint<span class="token punctuation">.</span><span class="token function">size</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span> CV_32FC2<span class="token punctuation">)</span><span class="token punctuation">;</span>
+		Mat image_points2Mat <span class="token operator">=</span> <span class="token function">Mat</span><span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">,</span> image_points2<span class="token punctuation">.</span><span class="token function">size</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span> CV_32FC2<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+		<span class="token keyword">for</span> <span class="token punctuation">(</span><span class="token keyword">int</span> j <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span> j <span class="token operator">&lt;</span> tempImagePoint<span class="token punctuation">.</span><span class="token function">size</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span> j<span class="token operator">++</span><span class="token punctuation">)</span>
+		<span class="token punctuation">{<!-- --></span>
+			image_points2Mat<span class="token punctuation">.</span><span class="token generic-function"><span class="token function">at</span><span class="token generic class-name"><span class="token operator">&lt;</span>Vec2f<span class="token operator">&gt;</span></span></span><span class="token punctuation">(</span><span class="token number">0</span><span class="token punctuation">,</span> j<span class="token punctuation">)</span> <span class="token operator">=</span> <span class="token function">Vec2f</span><span class="token punctuation">(</span>image_points2<span class="token punctuation">[</span>j<span class="token punctuation">]</span><span class="token punctuation">.</span>x<span class="token punctuation">,</span> image_points2<span class="token punctuation">[</span>j<span class="token punctuation">]</span><span class="token punctuation">.</span>y<span class="token punctuation">)</span><span class="token punctuation">;</span>
+			tempImagePointMat<span class="token punctuation">.</span><span class="token generic-function"><span class="token function">at</span><span class="token generic class-name"><span class="token operator">&lt;</span>Vec2f<span class="token operator">&gt;</span></span></span><span class="token punctuation">(</span><span class="token number">0</span><span class="token punctuation">,</span> j<span class="token punctuation">)</span> <span class="token operator">=</span> <span class="token function">Vec2f</span><span class="token punctuation">(</span>tempImagePoint<span class="token punctuation">[</span>j<span class="token punctuation">]</span><span class="token punctuation">.</span>x<span class="token punctuation">,</span> tempImagePoint<span class="token punctuation">[</span>j<span class="token punctuation">]</span><span class="token punctuation">.</span>y<span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token punctuation">}</span>
+		err <span class="token operator">=</span> <span class="token function">norm</span><span class="token punctuation">(</span>image_points2Mat<span class="token punctuation">,</span> tempImagePointMat<span class="token punctuation">,</span> NORM_L2<span class="token punctuation">)</span><span class="token punctuation">;</span>
+		total_err <span class="token operator">+=</span> err <span class="token operator">/=</span> point_counts<span class="token punctuation">[</span>i<span class="token punctuation">]</span><span class="token punctuation">;</span>
+		fout <span class="token operator">&lt;&lt;</span> <span class="token string">"第"</span> <span class="token operator">&lt;&lt;</span> i <span class="token operator">+</span> <span class="token number">1</span> <span class="token operator">&lt;&lt;</span> <span class="token string">"幅图像的平均误差："</span> <span class="token operator">&lt;&lt;</span> err <span class="token operator">&lt;&lt;</span> <span class="token string">"像素"</span> <span class="token operator">&lt;&lt;</span> endl<span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+	fout <span class="token operator">&lt;&lt;</span> <span class="token string">"总体平均误差："</span> <span class="token operator">&lt;&lt;</span> total_err <span class="token operator">/</span> image_count <span class="token operator">&lt;&lt;</span> <span class="token string">"像素"</span> <span class="token operator">&lt;&lt;</span> endl <span class="token operator">&lt;&lt;</span> endl<span class="token punctuation">;</span>
+
+	<span class="token comment">//-------------------------评价完成---------------------------------------------</span>
+
+	<span class="token comment">//-----------------------保存定标结果------------------------------------------- </span>
+	Mat rotation_matrix <span class="token operator">=</span> <span class="token function">Mat</span><span class="token punctuation">(</span><span class="token number">3</span><span class="token punctuation">,</span> <span class="token number">3</span><span class="token punctuation">,</span> CV_32FC1<span class="token punctuation">,</span> <span class="token class-name">Scalar</span><span class="token double-colon punctuation">::</span><span class="token function">all</span><span class="token punctuation">(</span><span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>  <span class="token comment">/* 保存每幅图像的旋转矩阵 */</span>
+	fout <span class="token operator">&lt;&lt;</span> <span class="token string">"相机内参数矩阵："</span> <span class="token operator">&lt;&lt;</span> endl<span class="token punctuation">;</span>
+	fout <span class="token operator">&lt;&lt;</span> cameraMatrix <span class="token operator">&lt;&lt;</span> endl <span class="token operator">&lt;&lt;</span> endl<span class="token punctuation">;</span>
+	fout <span class="token operator">&lt;&lt;</span> <span class="token string">"畸变系数：\n"</span><span class="token punctuation">;</span>
+	fout <span class="token operator">&lt;&lt;</span> distCoeffs <span class="token operator">&lt;&lt;</span> endl <span class="token operator">&lt;&lt;</span> endl <span class="token operator">&lt;&lt;</span> endl<span class="token punctuation">;</span>
+	<span class="token keyword">for</span> <span class="token punctuation">(</span><span class="token keyword">int</span> i <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span> i<span class="token operator">&lt;</span>image_count<span class="token punctuation">;</span> i<span class="token operator">++</span><span class="token punctuation">)</span>
+	<span class="token punctuation">{<!-- --></span>
+		fout <span class="token operator">&lt;&lt;</span> <span class="token string">"第"</span> <span class="token operator">&lt;&lt;</span> i <span class="token operator">+</span> <span class="token number">1</span> <span class="token operator">&lt;&lt;</span> <span class="token string">"幅图像的旋转向量："</span> <span class="token operator">&lt;&lt;</span> endl<span class="token punctuation">;</span>
+		fout <span class="token operator">&lt;&lt;</span> tvecsMat<span class="token punctuation">[</span>i<span class="token punctuation">]</span> <span class="token operator">&lt;&lt;</span> endl<span class="token punctuation">;</span>
+
+		<span class="token comment">/* 将旋转向量转换为相对应的旋转矩阵 */</span>
+		<span class="token function">Rodrigues</span><span class="token punctuation">(</span>tvecsMat<span class="token punctuation">[</span>i<span class="token punctuation">]</span><span class="token punctuation">,</span> rotation_matrix<span class="token punctuation">)</span><span class="token punctuation">;</span>
+		fout <span class="token operator">&lt;&lt;</span> <span class="token string">"第"</span> <span class="token operator">&lt;&lt;</span> i <span class="token operator">+</span> <span class="token number">1</span> <span class="token operator">&lt;&lt;</span> <span class="token string">"幅图像的旋转矩阵："</span> <span class="token operator">&lt;&lt;</span> endl<span class="token punctuation">;</span>
+		fout <span class="token operator">&lt;&lt;</span> rotation_matrix <span class="token operator">&lt;&lt;</span> endl<span class="token punctuation">;</span>
+		fout <span class="token operator">&lt;&lt;</span> <span class="token string">"第"</span> <span class="token operator">&lt;&lt;</span> i <span class="token operator">+</span> <span class="token number">1</span> <span class="token operator">&lt;&lt;</span> <span class="token string">"幅图像的平移向量："</span> <span class="token operator">&lt;&lt;</span> endl<span class="token punctuation">;</span>
+		fout <span class="token operator">&lt;&lt;</span> rvecsMat<span class="token punctuation">[</span>i<span class="token punctuation">]</span> <span class="token operator">&lt;&lt;</span> endl <span class="token operator">&lt;&lt;</span> endl<span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+	fout <span class="token operator">&lt;&lt;</span> endl<span class="token punctuation">;</span>
+
+	<span class="token comment">//--------------------标定结果保存结束-------------------------------</span>
+
+	<span class="token comment">//----------------------显示定标结果--------------------------------</span>
+
+	Mat mapx <span class="token operator">=</span> <span class="token function">Mat</span><span class="token punctuation">(</span>image_size<span class="token punctuation">,</span> CV_32FC1<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	Mat mapy <span class="token operator">=</span> <span class="token function">Mat</span><span class="token punctuation">(</span>image_size<span class="token punctuation">,</span> CV_32FC1<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	Mat R <span class="token operator">=</span> <span class="token class-name">Mat</span><span class="token double-colon punctuation">::</span><span class="token function">eye</span><span class="token punctuation">(</span><span class="token number">3</span><span class="token punctuation">,</span> <span class="token number">3</span><span class="token punctuation">,</span> CV_32F<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	string imageFileName<span class="token punctuation">;</span>
+	std<span class="token double-colon punctuation">::</span>stringstream StrStm<span class="token punctuation">;</span>
+	<span class="token keyword">for</span> <span class="token punctuation">(</span><span class="token keyword">int</span> i <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span> i <span class="token operator">!=</span> image_count<span class="token punctuation">;</span> i<span class="token operator">++</span><span class="token punctuation">)</span>
+	<span class="token punctuation">{<!-- --></span>
+		<span class="token function">initUndistortRectifyMap</span><span class="token punctuation">(</span>cameraMatrix<span class="token punctuation">,</span> distCoeffs<span class="token punctuation">,</span> R<span class="token punctuation">,</span> cameraMatrix<span class="token punctuation">,</span> image_size<span class="token punctuation">,</span> CV_32FC1<span class="token punctuation">,</span> mapx<span class="token punctuation">,</span> mapy<span class="token punctuation">)</span><span class="token punctuation">;</span>
+		Mat imageSource <span class="token operator">=</span> <span class="token function">imread</span><span class="token punctuation">(</span>filenames<span class="token punctuation">[</span>i<span class="token punctuation">]</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+		Mat newimage <span class="token operator">=</span> imageSource<span class="token punctuation">.</span><span class="token function">clone</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token function">remap</span><span class="token punctuation">(</span>imageSource<span class="token punctuation">,</span> newimage<span class="token punctuation">,</span> mapx<span class="token punctuation">,</span> mapy<span class="token punctuation">,</span> INTER_LINEAR<span class="token punctuation">)</span><span class="token punctuation">;</span>
+		StrStm<span class="token punctuation">.</span><span class="token function">clear</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+		imageFileName<span class="token punctuation">.</span><span class="token function">clear</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+		StrStm <span class="token operator">&lt;&lt;</span> i <span class="token operator">+</span> <span class="token number">1</span><span class="token punctuation">;</span>
+		StrStm <span class="token operator">&gt;&gt;</span> imageFileName<span class="token punctuation">;</span>
+		imageFileName <span class="token operator">+=</span> <span class="token string">"_d.jpg"</span><span class="token punctuation">;</span>
+		<span class="token function">imwrite</span><span class="token punctuation">(</span>imageFileName<span class="token punctuation">,</span> newimage<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+
+	fin<span class="token punctuation">.</span><span class="token function">close</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	fout<span class="token punctuation">.</span><span class="token function">close</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token keyword">return</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>角点检测效果：<br> <img src="https://images2.imgbox.com/a2/9a/U2EWk79b_o.png" alt="在这里插入图片描述"></p> 
+<p>运行后VS当前工程目录下输出对应的标定后10张图片：<br> <img src="https://images2.imgbox.com/a5/08/U1fmiJqi_o.png" alt="在这里插入图片描述"></p> 
+<p>并且在 caliberation_result.txt 中得到标定结果：</p> 
+<pre><code class="prism language-bash">每幅图像的标定误差：
+第1幅图像的平均误差：0.013196像素
+第2幅图像的平均误差：0.0216657像素
+第3幅图像的平均误差：0.0217481像素
+第4幅图像的平均误差：0.0254981像素
+第5幅图像的平均误差：0.0239333像素
+第6幅图像的平均误差：0.017826像素
+第7幅图像的平均误差：0.0232136像素
+第8幅图像的平均误差：0.0231145像素
+第9幅图像的平均误差：0.0470236像素
+第10幅图像的平均误差：0.0154766像素
+总体平均误差：0.0232695像素
+
+相机内参数矩阵：
+<span class="token punctuation">[</span><span class="token number">505.1666120558573</span>, <span class="token number">0</span>, <span class="token number">310.1660811401983</span><span class="token punctuation">;</span>
+ <span class="token number">0</span>, <span class="token number">488.6105193422827</span>, <span class="token number">249.9495562500046</span><span class="token punctuation">;</span>
+ <span class="token number">0</span>, <span class="token number">0</span>, <span class="token number">1</span><span class="token punctuation">]</span>
+
+畸变系数：
+<span class="token punctuation">[</span><span class="token number">0.1311093141581356</span>, -0.9654453502019078, <span class="token number">0.001118708198552768</span>, -0.001126801336773416, <span class="token number">2.286059640823912</span><span class="token punctuation">]</span>
+
+
+第1幅图像的旋转向量：
+<span class="token punctuation">[</span>-37.91579109884059<span class="token punctuation">;</span>
+ -29.12008303891709<span class="token punctuation">;</span>
+ <span class="token number">145.038522323583</span><span class="token punctuation">]</span>
+第1幅图像的旋转矩阵：
+<span class="token punctuation">[</span>-0.2578169368901203, -0.8295425114162431, -0.4953681951900302<span class="token punctuation">;</span>
+ <span class="token number">0.9564626210175542</span>, -0.2917064863318113, -0.009304860459955183<span class="token punctuation">;</span>
+ -0.1367833383450855, -0.4762001129621674, <span class="token number">0.8686332774917115</span><span class="token punctuation">]</span>
+第1幅图像的平移向量：
+<span class="token punctuation">[</span><span class="token number">2.171107396538949</span><span class="token punctuation">;</span>
+ <span class="token number">2.104249697603109</span><span class="token punctuation">;</span>
+ <span class="token number">0.3380832402207642</span><span class="token punctuation">]</span>
+
+第2幅图像的旋转向量：
+<span class="token punctuation">[</span>-29.36929014204156<span class="token punctuation">;</span>
+ -30.43767724876516<span class="token punctuation">;</span>
+ <span class="token number">145.8627065313358</span><span class="token punctuation">]</span>
+第2幅图像的旋转矩阵：
+<span class="token punctuation">[</span><span class="token number">0.4953381063692663</span>, -0.8244703490881966, -0.2736581879880385<span class="token punctuation">;</span>
+ <span class="token number">0.8651086842696649</span>, <span class="token number">0.4967904900977356</span>, <span class="token number">0.06918217508622276</span><span class="token punctuation">;</span>
+ <span class="token number">0.07891213328581717</span>, -0.2710126425516693, <span class="token number">0.9593357195463131</span><span class="token punctuation">]</span>
+第2幅图像的平移向量：
+<span class="token punctuation">[</span><span class="token number">2.192414199084543</span><span class="token punctuation">;</span>
+ <span class="token number">2.167143157075016</span><span class="token punctuation">;</span>
+ -0.02241130380397732<span class="token punctuation">]</span>
+
+第3幅图像的旋转向量：
+<span class="token punctuation">[</span><span class="token number">43.41090882554612</span><span class="token punctuation">;</span>
+ -29.90585262472088<span class="token punctuation">;</span>
+ <span class="token number">130.4223820748588</span><span class="token punctuation">]</span>
+第3幅图像的旋转矩阵：
+<span class="token punctuation">[</span>-0.5974917709340989, -0.7122356798120717, <span class="token number">0.3684072747227861</span><span class="token punctuation">;</span>
+ <span class="token number">0.4805682690426949</span>, -0.6858362778564604, -0.5465187451179547<span class="token punctuation">;</span>
+ <span class="token number">0.641917223990245</span>, -0.1494956065529423, <span class="token number">0.7520594000250418</span><span class="token punctuation">]</span>
+第3幅图像的平移向量：
+<span class="token punctuation">[</span><span class="token number">0.06297801857808814</span><span class="token punctuation">;</span>
+ -2.912208294692916<span class="token punctuation">;</span>
+ -0.02236073998847246<span class="token punctuation">]</span>
+ 
+第4幅图像的旋转向量：
+<span class="token punctuation">[</span><span class="token number">22.3196598690343</span><span class="token punctuation">;</span>
+ -24.93883415944185<span class="token punctuation">;</span>
+ <span class="token number">120.89012963209</span><span class="token punctuation">]</span>
+第4幅图像的旋转矩阵：
+<span class="token punctuation">[</span><span class="token number">0.9753046439544359</span>, <span class="token number">0.2153626974780553</span>, <span class="token number">0.04898734546682917</span><span class="token punctuation">;</span>
+ -0.2171670754976463, <span class="token number">0.9755052657394266</span>, <span class="token number">0.03504194393081224</span><span class="token punctuation">;</span>
+ -0.04024068588767379, -0.04481500920033632, <span class="token number">0.9981845030602625</span><span class="token punctuation">]</span>
+第4幅图像的平移向量：
+<span class="token punctuation">[</span>-0.0839898065700953<span class="token punctuation">;</span>
+ -3.059111495460135<span class="token punctuation">;</span>
+ -0.651727632156657<span class="token punctuation">]</span>
+<span class="token punctuation">..</span>. 
+</code></pre> 
+<p>由此我们得到相机内参数矩阵和畸变系数，在后续的测距中将会用到（用相同的摄像头）。</p> 
+<h2><a id="PnP_434"></a>三、PnP测距</h2> 
+<h3><a id="_435"></a>代码</h3> 
+<p>本来想直接贴这部分的代码，毕竟前面的准备工作在网上搜一下有很多可以参考的，不过为了方便读者使用，还是简单介绍一下前面的部分。有不懂的可以看一下标注的注释。</p> 
+<p>版本：VS2015 + openCV3.4.3</p> 
+<pre><code class="prism language-cpp"><span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;opencv2/opencv.hpp&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;math.h&gt;</span></span>
+
+<span class="token keyword">using</span> <span class="token keyword">namespace</span> std<span class="token punctuation">;</span>
+<span class="token keyword">using</span> <span class="token keyword">namespace</span> cv<span class="token punctuation">;</span>
+
+<span class="token keyword">int</span> <span class="token function">main</span><span class="token punctuation">(</span><span class="token keyword">int</span> argc<span class="token punctuation">,</span> <span class="token keyword">char</span> <span class="token operator">*</span><span class="token operator">*</span>argv<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	Mat image <span class="token operator">=</span> <span class="token function">imread</span><span class="token punctuation">(</span><span class="token string">"14.jpg"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+	<span class="token comment">// 2D 特征点像素坐标，这里是用PS找出，也可以用鼠标事件画出特征点</span>
+	vector<span class="token operator">&lt;</span>Point2d<span class="token operator">&gt;</span> image_points<span class="token punctuation">;</span>
+	image_points<span class="token punctuation">.</span><span class="token function">push_back</span><span class="token punctuation">(</span><span class="token function">Point2d</span><span class="token punctuation">(</span><span class="token number">152</span><span class="token punctuation">,</span> <span class="token number">92</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	image_points<span class="token punctuation">.</span><span class="token function">push_back</span><span class="token punctuation">(</span><span class="token function">Point2d</span><span class="token punctuation">(</span><span class="token number">426</span><span class="token punctuation">,</span> <span class="token number">94</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	image_points<span class="token punctuation">.</span><span class="token function">push_back</span><span class="token punctuation">(</span><span class="token function">Point2d</span><span class="token punctuation">(</span><span class="token number">428</span><span class="token punctuation">,</span> <span class="token number">394</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	image_points<span class="token punctuation">.</span><span class="token function">push_back</span><span class="token punctuation">(</span><span class="token function">Point2d</span><span class="token punctuation">(</span><span class="token number">126</span><span class="token punctuation">,</span> <span class="token number">380</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+	<span class="token comment">// 画出四个特征点</span>
+	<span class="token keyword">for</span> <span class="token punctuation">(</span><span class="token keyword">int</span> i <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span> i <span class="token operator">&lt;</span> image_points<span class="token punctuation">.</span><span class="token function">size</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span> i<span class="token operator">++</span><span class="token punctuation">)</span>
+	<span class="token punctuation">{<!-- --></span>
+		<span class="token function">circle</span><span class="token punctuation">(</span>image<span class="token punctuation">,</span> image_points<span class="token punctuation">[</span>i<span class="token punctuation">]</span><span class="token punctuation">,</span> <span class="token number">3</span><span class="token punctuation">,</span> <span class="token function">Scalar</span><span class="token punctuation">(</span><span class="token number">0</span><span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">,</span> <span class="token number">255</span><span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+
+	<span class="token comment">// 3D 特征点世界坐标，与像素坐标对应，单位是mm</span>
+	std<span class="token double-colon punctuation">::</span>vector<span class="token operator">&lt;</span>Point3d<span class="token operator">&gt;</span> model_points<span class="token punctuation">;</span>
+	model_points<span class="token punctuation">.</span><span class="token function">push_back</span><span class="token punctuation">(</span><span class="token function">Point3d</span><span class="token punctuation">(</span><span class="token operator">-</span><span class="token number">42.5f</span><span class="token punctuation">,</span> <span class="token operator">-</span><span class="token number">42.5f</span><span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span> <span class="token comment">// 左上角(-42.5mm,-42.5mm)</span>
+	model_points<span class="token punctuation">.</span><span class="token function">push_back</span><span class="token punctuation">(</span><span class="token function">Point3d</span><span class="token punctuation">(</span><span class="token operator">+</span><span class="token number">42.5f</span><span class="token punctuation">,</span> <span class="token operator">-</span><span class="token number">42.5f</span><span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	model_points<span class="token punctuation">.</span><span class="token function">push_back</span><span class="token punctuation">(</span><span class="token function">Point3d</span><span class="token punctuation">(</span><span class="token operator">+</span><span class="token number">42.5f</span><span class="token punctuation">,</span> <span class="token operator">+</span><span class="token number">42.5f</span><span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	model_points<span class="token punctuation">.</span><span class="token function">push_back</span><span class="token punctuation">(</span><span class="token function">Point3d</span><span class="token punctuation">(</span><span class="token operator">-</span><span class="token number">42.5f</span><span class="token punctuation">,</span> <span class="token operator">+</span><span class="token number">42.5f</span><span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token comment">//　注意世界坐标和像素坐标要一一对应</span>
+
+	<span class="token comment">// 相机内参矩阵和畸变系数均由相机标定结果得出</span>
+	<span class="token comment">// 相机内参矩阵</span>
+	Mat camera_matrix <span class="token operator">=</span> <span class="token punctuation">(</span><span class="token generic-function"><span class="token function">Mat_</span><span class="token generic class-name"><span class="token operator">&lt;</span><span class="token keyword">double</span><span class="token operator">&gt;</span></span></span><span class="token punctuation">(</span><span class="token number">3</span><span class="token punctuation">,</span> <span class="token number">3</span><span class="token punctuation">)</span> <span class="token operator">&lt;&lt;</span> <span class="token number">505.1666120558573</span><span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">,</span> <span class="token number">310.1660811401983</span><span class="token punctuation">,</span>
+	<span class="token number">0</span><span class="token punctuation">,</span> <span class="token number">488.6105193422827</span><span class="token punctuation">,</span> <span class="token number">249.9495562500046</span><span class="token punctuation">,</span>
+	<span class="token number">0</span><span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">,</span> <span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token comment">// 相机畸变系数</span>
+	Mat dist_coeffs <span class="token operator">=</span> <span class="token punctuation">(</span><span class="token generic-function"><span class="token function">Mat_</span><span class="token generic class-name"><span class="token operator">&lt;</span><span class="token keyword">double</span><span class="token operator">&gt;</span></span></span><span class="token punctuation">(</span><span class="token number">5</span><span class="token punctuation">,</span> <span class="token number">1</span><span class="token punctuation">)</span> <span class="token operator">&lt;&lt;</span> <span class="token number">0.1311093141581356</span><span class="token punctuation">,</span> <span class="token operator">-</span><span class="token number">0.9654453502019078</span><span class="token punctuation">,</span>
+	<span class="token number">0.001118708198552768</span><span class="token punctuation">,</span> <span class="token operator">-</span><span class="token number">0.001126801336773416</span><span class="token punctuation">,</span> <span class="token number">2.286059640823912</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+	cout <span class="token operator">&lt;&lt;</span> <span class="token string">"Camera Matrix "</span> <span class="token operator">&lt;&lt;</span> endl <span class="token operator">&lt;&lt;</span> camera_matrix <span class="token operator">&lt;&lt;</span> endl <span class="token operator">&lt;&lt;</span> endl<span class="token punctuation">;</span>
+	<span class="token comment">// 旋转向量</span>
+	Mat rotation_vector<span class="token punctuation">;</span>
+	<span class="token comment">// 平移向量</span>
+	Mat translation_vector<span class="token punctuation">;</span>
+
+	<span class="token comment">// pnp求解</span>
+	<span class="token function">solvePnP</span><span class="token punctuation">(</span>model_points<span class="token punctuation">,</span> image_points<span class="token punctuation">,</span> camera_matrix<span class="token punctuation">,</span> dist_coeffs<span class="token punctuation">,</span> \
+		rotation_vector<span class="token punctuation">,</span> translation_vector<span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">,</span> CV_ITERATIVE<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token comment">// 默认ITERATIVE方法，可尝试修改为EPNP（CV_EPNP）,P3P（CV_P3P）</span>
+
+	cout <span class="token operator">&lt;&lt;</span> <span class="token string">"Rotation Vector "</span> <span class="token operator">&lt;&lt;</span> endl <span class="token operator">&lt;&lt;</span> rotation_vector <span class="token operator">&lt;&lt;</span> endl <span class="token operator">&lt;&lt;</span> endl<span class="token punctuation">;</span>
+	cout <span class="token operator">&lt;&lt;</span> <span class="token string">"Translation Vector"</span> <span class="token operator">&lt;&lt;</span> endl <span class="token operator">&lt;&lt;</span> translation_vector <span class="token operator">&lt;&lt;</span> endl <span class="token operator">&lt;&lt;</span> endl<span class="token punctuation">;</span>
+
+	Mat Rvec<span class="token punctuation">;</span>
+	Mat_<span class="token operator">&lt;</span><span class="token keyword">float</span><span class="token operator">&gt;</span> Tvec<span class="token punctuation">;</span>
+	rotation_vector<span class="token punctuation">.</span><span class="token function">convertTo</span><span class="token punctuation">(</span>Rvec<span class="token punctuation">,</span> CV_32F<span class="token punctuation">)</span><span class="token punctuation">;</span>  <span class="token comment">// 旋转向量转换格式</span>
+	translation_vector<span class="token punctuation">.</span><span class="token function">convertTo</span><span class="token punctuation">(</span>Tvec<span class="token punctuation">,</span> CV_32F<span class="token punctuation">)</span><span class="token punctuation">;</span> <span class="token comment">// 平移向量转换格式 </span>
+
+	Mat_<span class="token operator">&lt;</span><span class="token keyword">float</span><span class="token operator">&gt;</span> <span class="token function">rotMat</span><span class="token punctuation">(</span><span class="token number">3</span><span class="token punctuation">,</span> <span class="token number">3</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token function">Rodrigues</span><span class="token punctuation">(</span>Rvec<span class="token punctuation">,</span> rotMat<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token comment">// 旋转向量转成旋转矩阵</span>
+	cout <span class="token operator">&lt;&lt;</span> <span class="token string">"rotMat"</span> <span class="token operator">&lt;&lt;</span> endl <span class="token operator">&lt;&lt;</span> rotMat <span class="token operator">&lt;&lt;</span> endl <span class="token operator">&lt;&lt;</span> endl<span class="token punctuation">;</span>
+
+	Mat P_oc<span class="token punctuation">;</span>
+	P_oc <span class="token operator">=</span> <span class="token operator">-</span>rotMat<span class="token punctuation">.</span><span class="token function">inv</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">*</span> Tvec<span class="token punctuation">;</span>
+	<span class="token comment">// 求解相机的世界坐标，得出p_oc的第三个元素即相机到物体的距离即深度信息，单位是mm</span>
+	cout <span class="token operator">&lt;&lt;</span> <span class="token string">"P_oc"</span> <span class="token operator">&lt;&lt;</span> endl <span class="token operator">&lt;&lt;</span> P_oc <span class="token operator">&lt;&lt;</span> endl<span class="token punctuation">;</span>
+
+	<span class="token function">imshow</span><span class="token punctuation">(</span><span class="token string">"Output"</span><span class="token punctuation">,</span> image<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token function">waitKey</span><span class="token punctuation">(</span><span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<ul><li>注意相机内参数矩阵和畸变系数要根据自己的摄像头来调整；</li><li>2D 特征点像素坐标，我这里是用PS找出，也可以用鼠标事件找出特征点；</li><li>3D 特征点世界坐标也要根据实际物体大小调整。</li></ul> 
+<p>Ref：<br> <a href="https://blog.csdn.net/cocoaqin/article/details/77848588">PnP 单目相机位姿估计（二）：solvePnP利用二维码求解相机世界坐标</a></p> 
+<h3><a id="_524"></a>测试</h3> 
+<p>图片中物体距摄像头大概14cm，边长8.5cm<br> <img src="https://images2.imgbox.com/ed/79/b3EaRlfE_o.jpg" alt="请添加图片描述"></p> 
+<h3><a id="_530"></a>输出</h3> 
+<p><strong>ITERATIVE方法：</strong></p> 
+<pre><code class="prism language-bash">Camera Matrix
+<span class="token punctuation">[</span><span class="token number">505.1666120558573</span>, <span class="token number">0</span>, <span class="token number">310.1660811401983</span><span class="token punctuation">;</span>
+ <span class="token number">0</span>, <span class="token number">488.6105193422827</span>, <span class="token number">249.9495562500046</span><span class="token punctuation">;</span>
+ <span class="token number">0</span>, <span class="token number">0</span>, <span class="token number">1</span><span class="token punctuation">]</span>
+
+Rotation Vector
+<span class="token punctuation">[</span>-0.1157002831731034<span class="token punctuation">;</span>
+ <span class="token number">0.1179963668031952</span><span class="token punctuation">;</span>
+ <span class="token number">0.03141048973023804</span><span class="token punctuation">]</span>
+
+Translation Vector
+<span class="token punctuation">[</span>-9.106034353775875<span class="token punctuation">;</span>
+ -4.378822864319527<span class="token punctuation">;</span>
+ <span class="token number">144.5117521867436</span><span class="token punctuation">]</span>
+
+rotMat
+<span class="token punctuation">[</span><span class="token number">0.99256271</span>, -0.03807259, <span class="token number">0.11562786</span><span class="token punctuation">;</span>
+ <span class="token number">0.024452539</span>, <span class="token number">0.99283034</span>, <span class="token number">0.1170042</span><span class="token punctuation">;</span>
+ -0.11925349, -0.11330661, <span class="token number">0.9863773</span><span class="token punctuation">]</span>
+
+P_oc
+<span class="token punctuation">[</span><span class="token number">26.378914</span><span class="token punctuation">;</span>
+ <span class="token number">20.374874</span><span class="token punctuation">;</span>
+ -140.97787<span class="token punctuation">]</span>
+</code></pre> 
+<p>距离为 140.97787 mm</p> 
+<p><strong>EPNP方法：</strong></p> 
+<pre><code class="prism language-bash">Camera Matrix
+<span class="token punctuation">[</span><span class="token number">505.1666120558573</span>, <span class="token number">0</span>, <span class="token number">310.1660811401983</span><span class="token punctuation">;</span>
+ <span class="token number">0</span>, <span class="token number">488.6105193422827</span>, <span class="token number">249.9495562500046</span><span class="token punctuation">;</span>
+ <span class="token number">0</span>, <span class="token number">0</span>, <span class="token number">1</span><span class="token punctuation">]</span>
+
+Rotation Vector
+<span class="token punctuation">[</span>-0.1616954415750413<span class="token punctuation">;</span>
+ <span class="token number">0.06679582621203471</span><span class="token punctuation">;</span>
+ <span class="token number">0.03007409518085349</span><span class="token punctuation">]</span>
+
+Translation Vector
+<span class="token punctuation">[</span>-8.402766835187963<span class="token punctuation">;</span>
+ -5.11616207912305<span class="token punctuation">;</span>
+ <span class="token number">144.6472787556692</span><span class="token punctuation">]</span>
+
+rotMat
+<span class="token punctuation">[</span><span class="token number">0.99732399</span>, -0.03530252, <span class="token number">0.064020529</span><span class="token punctuation">;</span>
+ <span class="token number">0.024530273</span>, <span class="token number">0.98651057</span>, <span class="token number">0.16184933</span><span class="token punctuation">;</span>
+ -0.068870619, -0.15984578, <span class="token number">0.98473662</span><span class="token punctuation">]</span>
+
+P_oc
+<span class="token punctuation">[</span><span class="token number">18.467728</span><span class="token punctuation">;</span>
+ <span class="token number">27.871765</span><span class="token punctuation">;</span>
+ -141.07347<span class="token punctuation">]</span>
+</code></pre> 
+<p>距离为 141.07347 mm</p> 
+<p><strong>P3P方法：</strong></p> 
+<pre><code class="prism language-bash">Camera Matrix
+<span class="token punctuation">[</span><span class="token number">505.1666120558573</span>, <span class="token number">0</span>, <span class="token number">310.1660811401983</span><span class="token punctuation">;</span>
+ <span class="token number">0</span>, <span class="token number">488.6105193422827</span>, <span class="token number">249.9495562500046</span><span class="token punctuation">;</span>
+ <span class="token number">0</span>, <span class="token number">0</span>, <span class="token number">1</span><span class="token punctuation">]</span>
+
+Rotation Vector
+<span class="token punctuation">[</span><span class="token number">0.5013850510761655</span><span class="token punctuation">;</span>
+ <span class="token number">0.606438260299431</span><span class="token punctuation">;</span>
+ <span class="token number">0.03647540988139936</span><span class="token punctuation">]</span>
+
+Translation Vector
+<span class="token punctuation">[</span>-6.638223465259809<span class="token punctuation">;</span>
+ -3.076172335778562<span class="token punctuation">;</span>
+ <span class="token number">146.0742567050607</span><span class="token punctuation">]</span>
+
+rotMat
+<span class="token punctuation">[</span><span class="token number">0.82479835</span>, <span class="token number">0.11151069</span>, <span class="token number">0.55432212</span><span class="token punctuation">;</span>
+ <span class="token number">0.17714798</span>, <span class="token number">0.8800413</span>, -0.44061995<span class="token punctuation">;</span>
+ -0.53696018, <span class="token number">0.46161965</span>, <span class="token number">0.70610273</span><span class="token punctuation">]</span>
+
+P_oc
+<span class="token punctuation">[</span><span class="token number">84.456192</span><span class="token punctuation">;</span>
+ -63.983349<span class="token punctuation">;</span>
+ -100.81914<span class="token punctuation">]</span>
+</code></pre> 
+<p>距离为 100.81914 mm</p> 
+<p>误差有点大…</p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/36be98235dd16c46c3cdc3f9b08612f8/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">QWebEngine应用---基于QWebChannel实现网页与qt层交互</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/2fe8baf2c45bea0ec286ec43bc28987c/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">oneAPI黑客马拉松赛道二创意赛道-高精度胶质流体模拟预测方案</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

@@ -1,0 +1,451 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Mybatis 源码深度剖析 - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="Mybatis 源码深度剖析" />
+<meta property="og:description" content="文章目录 一、手写Mybatis二、Mybatis高级应用三、Mybatis源码1. MyBatis初始化过程2. MyBatis执行Sql过程3. MyBatis执行器executor4. MyBatis StatementHandler5. MyBatis的mapper代理方式getMapper()6. MyBatis的invoke方法7. 二级缓存7.1 cache标签7.2 执行流程7.3 生效机制7.4 刷新 8. 延迟加载8.1 如何应用8.1.1 局部延迟加载8.1.2 全局延迟加载 8.2 实现原理8.3 延迟加载源码-创建代理对象8.4 延迟加载源码-invoke方法执行 一、手写Mybatis 篇幅限制，我将其放在这篇文章中：https://blog.csdn.net/grd_java/article/details/122894621 二、Mybatis高级应用 篇幅限制，我将其放在这篇文章中：https://blog.csdn.net/grd_java/article/details/122927196 三、Mybatis源码 Mybatis架构原理 API接口层：提供给外部使用的接口API，开发人员通过这些本地API来操作数据库。接口层一接收到调用请求就会调用数据处理层来完成具体的数据处理。MyBatis和数据库的交互有两种方式： 使用传统MyBatis提供的API使用Mapper代理的方式 数据处理层：负责具体的SQL查找、SQL解析、SQL执行和执行结果映射处理等。主要目的是根据调用的请求完成一次数据库操作基础支持层：负责最基础的功能支撑，包括连接管理、事务管理、配置加载和缓存处理，这些都是共用的，将他们抽取出来作为最基础的组件，为上层数据处理层提供最基础的支撑 主要构件 构件描述SqlSession作为MyBatis工作的主要顶层API，表示和数据库交互的会话，完成必要数据库增删改查功能ExecutorMyBatis执行器，是MyBatis调度的核心，负责SQL语句的生成和查询缓存的维护StatementHandler封装了JDBC Statement操作，负责对JDBC statement的操作，如设置参数、将Statement结果集转换成List集合ParameterHandler负责对用户传递的参数转换成JDBC Statement所需要的参数ResultSetHandler负责将JDBC返回的ResultSet结果集对象转换成List类型集合TypeHandler负责Java数据类型和jdbc数据类型之间的映射和转换MappedStatement维护一条&lt; select/update/delete/insert&gt;结点的封装SqlSource负责根据用户传递的parameterObject，动态地生成SQL语句，将信息封装到BoundSql对象中，并返回BoundSql表示动态生成的SQL语句以及相应的参数信息 总体流程 加载配置并初始化(触发条件:加载配置文件) 配置来源为配置文件（核心配置文件.xml，mapper.xml），Java代码中的注解,将主配置文件内容解析封装到Configuration，将sql的配置信息加载成为一个mappedstatement对象，存储在内存之中。 接收调用请求（触发条件：调用MyBatis提供的API） 传入参数：SQL的ID和传入的参数对象处理过程：将请求传递给下层的请求处理层进行处理 处理操作请求（触发条件：API接口层传递请求过来，包括SQL的ID和参数对象） 根据SQL的ID查找对应的MappedStatement对象根据传入参数对象解析MappedStatement对象，得到最终要执行的SQL和执行传入参数获取数据库连接，根据得到的最终SQL语句和执行传入参数到数据库执行，并得到执行结果根据MappedStatement对象中的结果映射配置对得到的执行结果进行转换处理，并得到最终的处理结果。释放连接资源。 返回处理结果，将最终处理结果返回 1. MyBatis初始化过程 结论 Resources.getResourceAsStream(“sqlMapConfig.xml”);加载配置文件为字节输入了SqlSessionFactoryBuilder().build(resourceAsSteam);使用构建者模式，构建SqlSessionFactory对象构建SqlSessionFactory对象，需要Configuration对象（MyBatis核心配置类），所以通过解析XML文件，将配置信息全部封装到Configuration对象中。其中&lt; mapper&gt;标签映射的mapper.xml的映射文件内容，会封装到Configuration中的mappedStatements容器中mappedStatements是一个map，key是namespace.id，value是MappedStatement对象，此对象用于封装&lt;select/insert…&gt;这些标签构建好Configuration后，使用Configuration作为参数，构建了SqlSession工厂SqlSession工厂可以生产SqlSession对象，这是后面的步骤，到此初始化完成 传统方式 一般我们使用mybatis第一句代码就是读取xml核心配置文件,读成字节输入流 InputStream resourceAsSteam = Resources.getResourceAsStream(&#34;sqlMapConfig.xml&#34;); 第二句代码，就是解析字节输入流（配置文件），封装Configuration对象，创建DefaultSqlSessionFactory对象，mybatis使用构建者设计模式，经过多重重载，我们只看最终执行逻辑代码 SqlSessionFactory sqlSessionFactory = new SqlSessionFactoryBuilder().build(resourceAsSteam); build()方法，发现创建了XMLConfigBuilder对象，然后调用了parse()方法，又是构建者模式，parse()就是建造方法，构建Configuration对象，return build(parser.parse())，是重载方法，根据构建完成的Configuration对象，创建SqlSession工厂的实现类，然后实现类可以通过openSessionFromDataSource()方法，生成出SqlSession对象。当然这需要我们自己调用
+parse()方法，首先parsed变量，默认为false，用来标识是否已经解析过xml核心配置文件。如果没解析，就设置parsed为true标识已经解析，然后利用XPathParser对象获取根标签configuration，进入parseConfiguration()方法完成解析逻辑
+此方法会依次解析各种标签，并且可以看到，这里是按照特定顺序解析的，所以我们配置xml文件时，也要按照这个顺序
+具体如何解析，我们用propertiesElement(root.evalNode(“properties”));举例
+而我们这里需要关注一下解析&lt; mapper&gt;标签，这个标签配置了mapper." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/3063eaae9fb663107f6160b172e76692/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2022-02-17T16:00:30+08:00" />
+<meta property="article:modified_time" content="2022-02-17T16:00:30+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Mybatis 源码深度剖析</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-dracula">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p></p> 
+<div class="toc"> 
+ <h4>文章目录</h4> 
+ <ul><li><a href="#kbdMybatiskbd_1" rel="nofollow">一、<kbd>手写Mybatis</kbd></a></li><li><a href="#kbdMybatiskbd_5" rel="nofollow">二、<kbd>Mybatis高级应用</kbd></a></li><li><a href="#kbdMybatiskbd_9" rel="nofollow">三、<kbd>Mybatis源码</kbd></a></li><li><ul><li><a href="#1_kbdMyBatiskbd_51" rel="nofollow">1. <kbd>MyBatis初始化过程</kbd></a></li><li><a href="#2_kbdMyBatisSqlkbd_96" rel="nofollow">2. <kbd>MyBatis执行Sql过程</kbd></a></li><li><a href="#3_kbdMyBatisexecutorkbd_142" rel="nofollow">3. <kbd>MyBatis执行器executor</kbd></a></li><li><a href="#4_kbdMyBatis_StatementHandlerkbd_175" rel="nofollow">4. <kbd>MyBatis StatementHandler</kbd></a></li><li><a href="#5_kbdMyBatismappergetMapperkbd_208" rel="nofollow">5. <kbd>MyBatis的mapper代理方式getMapper()</kbd></a></li><li><a href="#6_kbdMyBatisinvokekbd_238" rel="nofollow">6. <kbd>MyBatis的invoke方法</kbd></a></li><li><a href="#7_kbdkbd_263" rel="nofollow">7. <kbd>二级缓存</kbd></a></li><li><ul><li><a href="#71_kbdcachekbd_270" rel="nofollow">7.1 <kbd>cache标签</kbd></a></li><li><a href="#72_kbdkbd_308" rel="nofollow">7.2 <kbd>执行流程</kbd></a></li><li><a href="#73_kbdkbd_387" rel="nofollow">7.3 <kbd>生效机制</kbd></a></li><li><a href="#74_kbdkbd_416" rel="nofollow">7.4 <kbd>刷新</kbd></a></li></ul> 
+   </li><li><a href="#8_kbdkbd_434" rel="nofollow">8. <kbd>延迟加载</kbd></a></li><li><ul><li><a href="#81_kbdkbd_447" rel="nofollow">8.1 <kbd>如何应用</kbd></a></li><li><ul><li><a href="#811_kbdkbd_464" rel="nofollow">8.1.1 <kbd>局部延迟加载</kbd></a></li><li><a href="#812_kbdkbd_471" rel="nofollow">8.1.2 <kbd>全局延迟加载</kbd></a></li></ul> 
+    </li><li><a href="#82_kbdkbd_475" rel="nofollow">8.2 <kbd>实现原理</kbd></a></li><li><a href="#83_kbdkbd_481" rel="nofollow">8.3 <kbd>延迟加载源码-创建代理对象</kbd></a></li><li><a href="#84_kbdinvokekbd_504" rel="nofollow">8.4 <kbd>延迟加载源码-invoke方法执行</kbd></a></li></ul> 
+  </li></ul> 
+ </li></ul> 
+</div> 
+<p></p> 
+<h2><a id="kbdMybatiskbd_1"></a>一、<kbd>手写Mybatis</kbd></h2> 
+<table><thead><tr><th>篇幅限制，我将其放在这篇文章中：<kbd><a href="https://blog.csdn.net/grd_java/article/details/122894621">https://blog.csdn.net/grd_java/article/details/122894621</a></kbd></th></tr></thead><tbody></tbody></table> 
+<h2><a id="kbdMybatiskbd_5"></a>二、<kbd>Mybatis高级应用</kbd></h2> 
+<table><thead><tr><th>篇幅限制，我将其放在这篇文章中：<kbd><a href="https://blog.csdn.net/grd_java/article/details/122927196">https://blog.csdn.net/grd_java/article/details/122927196</a></kbd></th></tr></thead><tbody></tbody></table> 
+<h2><a id="kbdMybatiskbd_9"></a>三、<kbd>Mybatis源码</kbd></h2> 
+<table><thead><tr><th>Mybatis架构原理</th></tr></thead><tbody></tbody></table> 
+<blockquote> 
+ <p><img src="https://images2.imgbox.com/bc/94/yjJY1Kpv_o.png" alt="在这里插入图片描述"></p> 
+ <ol><li>API接口层：提供给外部使用的接口API，开发人员通过这些本地API来操作数据库。接口层一接收到调用请求就会调用数据处理层来完成具体的数据处理。MyBatis和数据库的交互有两种方式：</li></ol> 
+ <blockquote> 
+  <ol><li>使用传统MyBatis提供的API</li><li>使用Mapper代理的方式</li></ol> 
+ </blockquote> 
+ <ol start="2"><li>数据处理层：负责具体的SQL查找、SQL解析、SQL执行和执行结果映射处理等。主要目的是根据调用的请求完成一次数据库操作</li><li>基础支持层：负责最基础的功能支撑，包括连接管理、事务管理、配置加载和缓存处理，这些都是共用的，将他们抽取出来作为最基础的组件，为上层数据处理层提供最基础的支撑</li></ol> 
+</blockquote> 
+<table><thead><tr><th>主要构件</th></tr></thead><tbody></tbody></table> 
+<blockquote> 
+ <p><img src="https://images2.imgbox.com/0a/a5/opKwZCHy_o.png" alt="在这里插入图片描述"></p> 
+</blockquote> 
+<table><thead><tr><th align="left">构件</th><th align="left">描述</th></tr></thead><tbody><tr><td align="left"><kbd>SqlSession</kbd></td><td align="left">作为MyBatis工作的主要顶层API，表示和数据库交互的会话，完成必要数据库增删改查功能</td></tr><tr><td align="left"><kbd>Executor</kbd></td><td align="left">MyBatis执行器，是MyBatis调度的核心，负责SQL语句的生成和查询缓存的维护</td></tr><tr><td align="left"><kbd>StatementHandler</kbd></td><td align="left">封装了JDBC Statement操作，负责对JDBC statement的操作，如设置参数、将Statement结果集转换成List集合</td></tr><tr><td align="left"><kbd>ParameterHandler</kbd></td><td align="left">负责对用户传递的参数转换成JDBC Statement所需要的参数</td></tr><tr><td align="left"><kbd>ResultSetHandler</kbd></td><td align="left">负责将JDBC返回的ResultSet结果集对象转换成List类型集合</td></tr><tr><td align="left"><kbd>TypeHandler</kbd></td><td align="left">负责Java数据类型和jdbc数据类型之间的映射和转换</td></tr><tr><td align="left"><kbd>MappedStatement</kbd></td><td align="left">维护一条&lt; select/update/delete/insert&gt;结点的封装</td></tr><tr><td align="left"><kbd>SqlSource</kbd></td><td align="left">负责根据用户传递的parameterObject，动态地生成SQL语句，将信息封装到BoundSql对象中，并返回</td></tr><tr><td align="left"><kbd>BoundSql</kbd></td><td align="left">表示动态生成的SQL语句以及相应的参数信息</td></tr></tbody></table> 
+<table><thead><tr><th>总体流程</th></tr></thead><tbody></tbody></table> 
+<blockquote> 
+ <ol><li>加载配置并初始化(触发条件:加载配置文件)</li></ol> 
+ <blockquote> 
+  <ol><li>配置来源为配置文件（核心配置文件.xml，mapper.xml），Java代码中的注解,将主配置文件内容解析封装到Configuration，将sql的配置信息加载成为一个mappedstatement对象，存储在内存之中。</li></ol> 
+ </blockquote> 
+ <ol start="2"><li>接收调用请求（触发条件：调用MyBatis提供的API）</li></ol> 
+ <blockquote> 
+  <ol><li>传入参数：SQL的ID和传入的参数对象</li><li>处理过程：将请求传递给下层的请求处理层进行处理</li></ol> 
+ </blockquote> 
+ <ol start="3"><li>处理操作请求（触发条件：API接口层传递请求过来，包括SQL的ID和参数对象）</li></ol> 
+ <blockquote> 
+  <ol><li>根据SQL的ID查找对应的MappedStatement对象</li><li>根据传入参数对象解析MappedStatement对象，得到最终要执行的SQL和执行传入参数</li><li>获取数据库连接，根据得到的最终SQL语句和执行传入参数到数据库执行，并得到执行结果</li><li>根据MappedStatement对象中的结果映射配置对得到的执行结果进行转换处理，并得到最终的处理结果。</li><li>释放连接资源。</li></ol> 
+ </blockquote> 
+ <ol start="4"><li>返回处理结果，将最终处理结果返回</li></ol> 
+</blockquote> 
+<h3><a id="1_kbdMyBatiskbd_51"></a>1. <kbd>MyBatis初始化过程</kbd></h3> 
+<table><thead><tr><th>结论</th></tr></thead><tbody></tbody></table> 
+<blockquote> 
+ <ol><li>Resources.getResourceAsStream(“sqlMapConfig.xml”);加载配置文件为字节输入了</li><li>SqlSessionFactoryBuilder().build(resourceAsSteam);使用构建者模式，构建SqlSessionFactory对象</li><li>构建SqlSessionFactory对象，需要Configuration对象（MyBatis核心配置类），所以通过解析XML文件，将配置信息全部封装到Configuration对象中。其中&lt; mapper&gt;标签映射的mapper.xml的映射文件内容，会封装到Configuration中的mappedStatements容器中</li><li>mappedStatements是一个map，key是namespace.id，value是MappedStatement对象，此对象用于封装&lt;select/insert…&gt;这些标签</li><li>构建好Configuration后，使用Configuration作为参数，构建了SqlSession工厂</li><li>SqlSession工厂可以生产SqlSession对象，这是后面的步骤，到此初始化完成</li></ol> 
+</blockquote> 
+<table><thead><tr><th>传统方式</th></tr></thead><tbody></tbody></table> 
+<blockquote> 
+ <ol><li>一般我们使用mybatis第一句代码就是读取xml核心配置文件,读成字节输入流</li></ol> 
+</blockquote> 
+<pre><code class="prism language-java"><span class="token class-name">InputStream</span> resourceAsSteam <span class="token operator">=</span> <span class="token class-name">Resources</span><span class="token punctuation">.</span><span class="token function">getResourceAsStream</span><span class="token punctuation">(</span><span class="token string">"sqlMapConfig.xml"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+</code></pre> 
+<blockquote> 
+ <p><img src="https://images2.imgbox.com/1a/fc/tMfTXkjw_o.png" alt="在这里插入图片描述"></p> 
+ <ol start="2"><li>第二句代码，就是解析字节输入流（配置文件），封装Configuration对象，创建DefaultSqlSessionFactory对象，mybatis使用构建者设计模式，经过多重重载，我们只看最终执行逻辑代码</li></ol> 
+</blockquote> 
+<pre><code class="prism language-java"> <span class="token class-name">SqlSessionFactory</span> sqlSessionFactory <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">SqlSessionFactoryBuilder</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">build</span><span class="token punctuation">(</span>resourceAsSteam<span class="token punctuation">)</span><span class="token punctuation">;</span>
+</code></pre> 
+<blockquote> 
+ <blockquote> 
+  <ol><li>build()方法，发现创建了XMLConfigBuilder对象，然后调用了parse()方法，又是构建者模式，parse()就是建造方法，构建Configuration对象，return build(parser.parse())，是重载方法，根据构建完成的Configuration对象，创建SqlSession工厂的实现类，然后实现类可以通过openSessionFromDataSource()方法，生成出SqlSession对象。当然这需要我们自己调用<br> <img src="https://images2.imgbox.com/30/0d/btGGXp3K_o.png" alt="在这里插入图片描述"><br> <img src="https://images2.imgbox.com/af/55/nFAUDFW8_o.png" alt="在这里插入图片描述"><br> <img src="https://images2.imgbox.com/55/14/5xwMbHD0_o.png" alt="在这里插入图片描述"><br> <img src="https://images2.imgbox.com/93/8a/SfttAr2C_o.png" alt="在这里插入图片描述"></li><li>parse()方法，首先parsed变量，默认为false，用来标识是否已经解析过xml核心配置文件。如果没解析，就设置parsed为true标识已经解析，然后利用XPathParser对象获取根标签configuration，进入parseConfiguration()方法完成解析逻辑<br> <img src="https://images2.imgbox.com/0c/da/EqJuKK6O_o.png" alt="在这里插入图片描述"></li><li>此方法会依次解析各种标签，并且可以看到，这里是按照特定顺序解析的，所以我们配置xml文件时，也要按照这个顺序<br> <img src="https://images2.imgbox.com/39/82/J1mB9PON_o.png" alt="在这里插入图片描述"><br> <img src="https://images2.imgbox.com/56/ee/LHoddMHB_o.png" alt="在这里插入图片描述"></li><li>具体如何解析，我们用propertiesElement(root.evalNode(“properties”));举例<br> <img src="https://images2.imgbox.com/2f/60/dSM32YMP_o.png" alt="在这里插入图片描述"></li><li>而我们这里需要关注一下解析&lt; mapper&gt;标签，这个标签配置了mapper.xml映射文件，也就是，这个方法，会解析mapper.xml映射文件</li><li>而我们也可以看到，最终他们都会封装到configuration对象(MyBatis核心配置类)中，我们看看configuration</li></ol> 
+  <blockquote> 
+   <ol><li>创建XMLConfigBuilder对象时，会创建Configuration对象<br> <img src="https://images2.imgbox.com/6c/f3/97ByY3x4_o.png" alt="在这里插入图片描述"></li></ol> 
+  </blockquote> 
+  <blockquote> 
+   <ol start="2"><li>它里面有很多参数，而我们现在需要关注的只有mappedStatements，可见它的KEY是$ {namespace}.${id}，而Value封装的就是MappedStatement对象。MappedStatement就是mapper.xml配置文件中的sql的标签封装对象<br> <img src="https://images2.imgbox.com/44/06/hT1oAZrO_o.png" alt="在这里插入图片描述"><br> <img src="https://images2.imgbox.com/b8/37/ny9EKQub_o.png" alt="在这里插入图片描述"></li></ol> 
+  </blockquote> 
+  <ol start="7"><li>我们看一下MappedStatement对象，就是每一个标签可以配置的属性值<br> <img src="https://images2.imgbox.com/b8/92/8djWI5m5_o.png" alt="在这里插入图片描述"><br> <img src="https://images2.imgbox.com/73/cf/xlIQ8jqb_o.png" alt="在这里插入图片描述"></li></ol> 
+ </blockquote> 
+</blockquote> 
+<h3><a id="2_kbdMyBatisSqlkbd_96"></a>2. <kbd>MyBatis执行Sql过程</kbd></h3> 
+<table><thead><tr><th>sqlSession</th></tr></thead><tbody></tbody></table> 
+<blockquote> 
+ <ol><li>一个接口，有两个实现类，DefaultSqlSession（默认），SqlSessionManager（已弃用）</li><li>用户和数据库交互的顶层类，通常与ThreadLocal绑定，一个会话使用一个SqlSession，使用完毕需要close</li><li>有两个重要对象，核心配置类Configuration（前面初始化就初始化了这个对象），执行器Executor</li></ol> 
+</blockquote> 
+<table><thead><tr><th>Executor</th></tr></thead><tbody></tbody></table> 
+<blockquote> 
+ <ol><li>一个接口，有3个常用实现类，充当执行器的角色</li><li>BatchExecutor，重用语句并执行批量更新</li><li>ReuseExecutor，重用预处理语句prepared statements</li><li>SimpleExecurot，普通执行器，默认</li></ol> 
+</blockquote> 
+<table><thead><tr><th>结论</th></tr></thead><tbody></tbody></table> 
+<blockquote> 
+ <ol><li>前面初始化完成，获取了sqlSession的工厂，我们可以调用方法，生产SqlSession了</li><li>SqlSession sqlSession = sqlSessionFactory.openSession();可以获取SqlSession对象，使用的就是openSessionFromDataSource()方法。传入了SimpleExecutor执行器，所以SimpleExecutor是默认执行器。并且openSession()默认事务不自动提交，openSession(true)，就表示开启事务自动提交</li><li>sqlSession就可以执行针对数据库的逻辑，我们可以直接传入statementId，让它执行指定sql，当然我们实战很少用这种方法。它主要负责通过statementId从Configuration中map集合获取MappedStatement对象，然后将任务委派给Executor执行器<br> <img src="https://images2.imgbox.com/eb/b5/MD12WvHz_o.png" alt="在这里插入图片描述"></li><li>而实际开发中我们一般通过代理的方式执行。而他底层就是通过动态代理获取statementId，然后调用上面的sqlSession.selectList(动态代理生成的stateId)<br> <img src="https://images2.imgbox.com/60/e1/3mzY2MvK_o.png" alt="在这里插入图片描述"></li><li>而使用代理的方式，我们的mapper.xml配置文件的namespace就必须是接口的全限定类名，&lt; select&gt;等标签的id必须是对应方法名。因为生成StatementId就是通过反射，获取接口全限定类名和方法名作为StatementId</li></ol> 
+</blockquote> 
+<table><thead><tr><th>生产sqlSession，然后执行接口</th></tr></thead><tbody></tbody></table> 
+<blockquote> 
+ <ol><li>SqlSession sqlSession = sqlSessionFactory.openSession();生产者模式，生产SqlSession对象，生产过程中，初始化了Executor执行器，并传递给SqlSession，SqlSession执行依靠执行器。设置事务不自动提交</li></ol> 
+ <blockquote> 
+  <ol><li>openSession()方法，调用openSessionFromDataSource方法，使用默认执行器SimpleExecutor，隔离级别level为null，也就是默认隔离级别。autoCommit（自动提交）为false，不自动提交。此方法有重载，可以openSession(true)，表示开启自动提交<br> <img src="https://images2.imgbox.com/de/0c/IPRRuoQr_o.png" alt="在这里插入图片描述"><br> <img src="https://images2.imgbox.com/47/35/sRtwHiPj_o.png" alt="在这里插入图片描述"><br> <img src="https://images2.imgbox.com/42/8e/iWPFFxsC_o.png" alt="在这里插入图片描述"></li><li>openSessionFromDataSource()方法，首先获取运行环境和事务对象，创建事务管理对象tx。然后根据tx和execType（SimpleExecutor）创建Executor执行器对象，然后创建了SqlSession对象（new了DefaultSqlSession，SqlSession的实现类）<br> <img src="https://images2.imgbox.com/75/d8/z2RG0aI3_o.png" alt="在这里插入图片描述"></li></ol> 
+ </blockquote> 
+ <ol start="2"><li>AccountMapper accountMapper = sqlSession.getMapper(AccountMapper.class);获取代理对象accountMapper（这个后面再说） ，然后通过代理对象执行操作List&lt; Account&gt; list = accountMapper.selectList();我们重点关注selectList()底层如何实现</li></ol> 
+ <blockquote> 
+  <ol><li>accountMapper执行，是代理执行，而代理类，就是SqlSession。这个后面再说，也就是说，selectList()最终会到sqlSession中执行，SqlSession中selectList方法作为入口即可<br> <img src="https://images2.imgbox.com/26/a0/2FKCRH2Y_o.png" alt="在这里插入图片描述"><br> <img src="https://images2.imgbox.com/3e/ee/DA325UM5_o.png" alt="在这里插入图片描述"></li><li>可以发现，sqlSession不是真正干活的，而是调用了executor执行器的query方法。这里的关键在于，MappedStatement对象的获取，它是mapper.xml映射文件中的sql语句标签&lt; select/insert…&gt;本身封装对象，我们知道他通过statementId作为key。<br> <img src="https://images2.imgbox.com/e3/62/RWgvnZ1b_o.png" alt="在这里插入图片描述"></li></ol> 
+  <blockquote> 
+   <ol><li>而我们并没有传入过statementId值，那么是如何获取的呢，答案还是动态代理，获取了我们接口的全限定类名，类名就是namespace，方法名就是id，组合起来就是statementId。这也是为什么我们mapper.xml的namespace要和接口全限定类名相同，标签id要和方法同名的原因<br> <img src="https://images2.imgbox.com/91/26/j6sDBjbP_o.png" alt="在这里插入图片描述"><br> <img src="https://images2.imgbox.com/50/e5/DVdX0PQG_o.png" alt="在这里插入图片描述"><br> <img src="https://images2.imgbox.com/33/ed/loWKSdS7_o.png" alt="在这里插入图片描述"></li></ol> 
+  </blockquote> 
+ </blockquote> 
+</blockquote> 
+<h3><a id="3_kbdMyBatisexecutorkbd_142"></a>3. <kbd>MyBatis执行器executor</kbd></h3> 
+<table><thead><tr><th>前面我们了解到，无论直接指定statementId调用SqlSession方法，还是动态代理，最终走到SqlSession方法。SqlSession都不是执行数据库业务逻辑的对象，而是调用Executor执行器的相关方法</th></tr></thead><tbody></tbody></table> 
+<table><thead><tr><th>虽然我们Executor默认是SimpleExecutor，但是我们不去这里看源码，而是去它的父类，BaseExecutor中看源码</th></tr></thead><tbody></tbody></table> 
+<blockquote> 
+ <p><img src="https://images2.imgbox.com/04/3f/IZZ3KabH_o.png" alt="在这里插入图片描述"></p> 
+</blockquote> 
+<table><thead><tr><th>结论</th></tr></thead><tbody></tbody></table> 
+<blockquote> 
+ <ol><li>SimpleExecutor负责构建StatementHandler对象，StatementHandler才是真正用JDBC操作数据库的对象</li><li>其它对于缓存，解析sql之类的操作，都在父类BaseExecutor完成。</li><li>SimpleExecutor，通过获取JDBC连接，和事务一些东西，获取了预编译对象Statement（JDBC操作执行的对象），然后将Statement传递给StatementHandler对象</li><li>这样StatementHandler就可以使用Statement预编译对象执行JDBC操作了</li></ol> 
+</blockquote> 
+<table><thead><tr><th>从BaseExecutor中的query方法下手</th></tr></thead><tbody></tbody></table> 
+<blockquote> 
+ <ol><li>可以看到此方法中，先是将sql语句进行了解析（mapper.xml中的动态sql是不能直接执行的，需要将#{id}之类的换成?），封装到BoundSql中，然后根据这些东西生成缓存key。然后进入重载的query方法<br> <img src="https://images2.imgbox.com/37/94/94ZIQChh_o.png" alt="在这里插入图片描述"></li></ol> 
+ <blockquote> 
+  <ol><li>BoundSql,封装了解析好的sql语句，参数列表或参数对象，返回结果集列表或对象<br> <img src="https://images2.imgbox.com/9b/be/svChOAI2_o.png" alt="在这里插入图片描述"></li></ol> 
+ </blockquote> 
+ <ol start="2"><li>重载的query，先是判断执行器是否被关闭，没关闭就处理缓存（如果查询栈为0，并要求清空缓存，就清空）。然后进行查询，查询栈+1，然后走一级缓存，如果一级缓存没有，就queryFromDatabase()，从数据库查<br> <img src="https://images2.imgbox.com/cb/a8/eXBhHAq9_o.png" alt="在这里插入图片描述"></li><li>queryFromDatabase()从数据库查数据，先是在缓存中占位（和延迟加载有关），就是我现在要查，先占个位置，查完了再往里面放东西。然后真正执行操作的，是doQuery方法，如果出错，把占位清除。成功就添加到缓存中<br> <img src="https://images2.imgbox.com/5c/ff/FrXJYWMX_o.png" alt="在这里插入图片描述"></li><li>doQuery(),是抽象方法，一个模板，留给子类去实现，也就是我们前面讲的子类，默认是SimpleExecutor<br> <img src="https://images2.imgbox.com/95/19/3dbZnAtG_o.png" alt="在这里插入图片描述"><br> <img src="https://images2.imgbox.com/d2/84/dIhgW1OA_o.png" alt="在这里插入图片描述"></li></ol> 
+ <blockquote> 
+  <ol><li>SimpleExecutor的doQuery()方法，先是拿到核心配置对象Configuration，然后创建StatementHandler（封装了JDBC Statement操作，负责对JDBC statement的操作，如设置参数、将Statement结果集转换成List集合），此对象也是可以拦截，然后执行我们插件逻辑的</li><li>也就是说，真正执行逻辑的也不说Executor，而是StatementHandler。然后作为参数，调用了prepareStatement()方法。这个方法用来构建StatementHandler。获取了数据库连接，创建预编译对象Statement或PrepareStatement，最终完成Sql动态参数的设置，最终将预编译对象返回<br> <img src="https://images2.imgbox.com/4f/82/iSF86Hkx_o.png" alt="在这里插入图片描述"></li><li>拿到预编译对象后，又调用return handler.&lt; E&gt;query(stmt, resultHandler);也就是，真正执行了逻辑<br> <img src="https://images2.imgbox.com/c0/26/QHjd4C9X_o.png" alt="在这里插入图片描述"></li></ol> 
+ </blockquote> 
+</blockquote> 
+<h3><a id="4_kbdMyBatis_StatementHandlerkbd_175"></a>4. <kbd>MyBatis StatementHandler</kbd></h3> 
+<table><thead><tr><th>它是实际办事的，但它也有帮手，上面我们构建Statement时，是调用StatementHandler的prepare。而紧接着，它又调用handler.parameterize(stmt);设置参数，就用到了parameterHandler这个帮手</th></tr></thead><tbody></tbody></table> 
+<blockquote> 
+ <p><img src="https://images2.imgbox.com/87/62/fioNjd0q_o.png" alt="在这里插入图片描述"></p> 
+</blockquote> 
+<table><thead><tr><th>结论</th></tr></thead><tbody></tbody></table> 
+<blockquote> 
+ <ol><li>StatementHandler是实际干事的,也就是执行JDBC操作，而执行动态sql需要指定参数（填充？）。他有帮手parameterHandler和TypeHandler配合来完成这件事。处理返回结果集，由帮手ResultSetHandler完成</li><li>parameterHandler负责对用户传递的参数转换成JDBC Statement所需要的参数</li><li>TypeHandler负责Java数据类型和jdbc数据类型之间的映射和转换</li><li>ResultSetHandler负责将JDBC返回的ResultSet结果集对象转换成List类型集合</li></ol> 
+</blockquote> 
+<table><thead><tr><th>如何设置参数，调用的是PreparedStatementHandler类的parametersize方法</th></tr></thead><tbody></tbody></table> 
+<blockquote> 
+ <p><img src="https://images2.imgbox.com/06/e5/oKIyqPrd_o.png" alt="在这里插入图片描述"></p> 
+</blockquote> 
+<blockquote> 
+ <ol><li>可以发现是使用ParameterHandler.setParameters()方法来完成，也就是说，设置参数，是ParameterHandler帮助完成</li></ol> 
+ <blockquote> 
+  <ol><li>进入方法，ParameterHandler的实现类里。发现它先是遍历参数（解析sql时都存储到了BoundSql对象的parameterMappings集合中）。做了一系列处理后，获取了TypeHandler（负责Java数据类型和jdbc数据类型之间的映射和转换）和JdbcType。然后让TypeHandler完成数据的映射（？占位符的参数设置）<br> <img src="https://images2.imgbox.com/b4/d2/fXugrF3x_o.png" alt="在这里插入图片描述"><br> <img src="https://images2.imgbox.com/2d/12/Yo86mQQ3_o.png" alt="在这里插入图片描述"></li></ol> 
+ </blockquote> 
+</blockquote> 
+<table><thead><tr><th>返回结果,我们上面已经知道，生产出Statement对象后，调用了StatementHandler的query方法完成操作（将Statement作为参数传递）</th></tr></thead><tbody></tbody></table> 
+<blockquote> 
+ <p><img src="https://images2.imgbox.com/2e/fa/0Mp2XYDi_o.png" alt="在这里插入图片描述"></p> 
+ <ol><li>可以发现，处理返回是使用ResultSetHandler调用handleResultSets()方法来完成<br> <img src="https://images2.imgbox.com/87/84/Bd6ORE5W_o.png" alt="在这里插入图片描述"><br> <img src="https://images2.imgbox.com/b1/db/NYnJdh8K_o.png" alt="在这里插入图片描述"></li></ol> 
+ <blockquote> 
+  <ol><li>可见它最终把结果集封装到了集合multipleResults中</li><li>存储的就是封装成ResultSetWrapper的ResultSet对象，使用方法getFirstResultSet()获取首个ResultSet，和getNextResultSet()获取下一个ResultSet来完成.</li></ol> 
+  <blockquote> 
+   <ol><li>为什么分为两个方法呢，因为ResultSet可能就一个，所以需要先获取首个进行判断<br> <img src="https://images2.imgbox.com/5a/bb/uCNOWvGW_o.png" alt="在这里插入图片描述"></li></ol> 
+  </blockquote> 
+ </blockquote> 
+ <ol start="3"><li>handleResultSet()负责将ResultSet放到集合中<br> <img src="https://images2.imgbox.com/1f/03/QcOqdp0C_o.png" alt="在这里插入图片描述"></li></ol> 
+</blockquote> 
+<h3><a id="5_kbdMyBatismappergetMapperkbd_208"></a>5. <kbd>MyBatis的mapper代理方式getMapper()</kbd></h3> 
+<table><thead><tr><th>初始化时，我们粗略的介绍了一些代理对象，接下来介绍具体流程，下面是总结</th></tr></thead><tbody></tbody></table> 
+<blockquote> 
+ <ol><li>如果使用代理，会在加载核心配置文件时，将其保存到Configuration核心配置类的mapperRegistry对象中，每个Mapper对应一个MapperProxyFactory工厂对象，可以生产代理对象</li><li>mapperRegistry对象，维护HashMap集合knownMappers，key为接口类型，值为MapperProxyFactory对象</li><li>而我们使用时，会传入接口的class对象。sqlSession.getMapper(AccountMapper.class);。而knownMappers的可以就是这个class对象，我们通过MapperProxyFactory生产代理对象时，就根据class类型来获取对应的MapperProxyFactory工厂</li><li>工厂通过JDK动态代理生成代理对象，代理类是MapperProxy</li></ol> 
+</blockquote> 
+<table><thead><tr><th>首先，初始化时，解析核心配置文件的&lt; mapper&gt;标签时，它会根据我们配置的不同，进行不一样的操作</th></tr></thead><tbody></tbody></table> 
+<blockquote> 
+ <p><img src="https://images2.imgbox.com/b9/f9/Gbm2UJKS_o.png" alt="在这里插入图片描述"></p> 
+ <ol><li>如果是package，就直接获取name的值，也就是包名，然后添加到Configuration中的mapperRegistry对象中<br> <img src="https://images2.imgbox.com/4b/87/Vo7l6Mqi_o.png" alt="在这里插入图片描述"><br> <img src="https://images2.imgbox.com/d0/3d/KWz2j6CD_o.png" alt="在这里插入图片描述"><br> <img src="https://images2.imgbox.com/b1/f1/MEYNmFjY_o.png" alt="在这里插入图片描述"></li><li>mapperRegistry对象，维护的就是HashMap。key是接口类型，存放的是MapperProxyFactory，见名知意，就是生产Mapper的代理对象的工厂。同时它具有getMapper方法，就是获取MapperProxyFactory对象的<br> <img src="https://images2.imgbox.com/cb/ed/HfXTLMg4_o.png" alt="在这里插入图片描述"></li></ol> 
+</blockquote> 
+<table><thead><tr><th>如何生成代理对象</th></tr></thead><tbody></tbody></table> 
+<blockquote> 
+ <ol><li>SqlSession的getMapper()方法，调用了Configuration核心配置类的getMapper<br> <img src="https://images2.imgbox.com/9e/41/A3mUJqWY_o.png" alt="在这里插入图片描述"><br> <img src="https://images2.imgbox.com/40/f5/eLDhTcj9_o.png" alt="在这里插入图片描述"></li><li>Configuration核心配置类的getMapper调用的是mapperRegistry的getMapper<br> <img src="https://images2.imgbox.com/be/6e/4Z4TuMB4_o.png" alt="在这里插入图片描述"></li><li>而这里，就是根据我们传过来接口类型，获取MapperProxyFactory工厂对象，然后通过工厂，生产代理实例,<br> <img src="https://images2.imgbox.com/17/de/Wa2OnyfJ_o.png" alt="在这里插入图片描述"></li><li>而真正生成实例的，是工厂的newInstance(sqlSession)方法。可见它创建了MapperProxy对象，然后调用重载newInstance方法，这里通过JDK原生动态代理，来创建代理对象，而代理类，就是mapperProxy<br> <img src="https://images2.imgbox.com/1d/a8/UoBdRu41_o.png" alt="在这里插入图片描述"></li></ol> 
+</blockquote> 
+<h3><a id="6_kbdMyBatisinvokekbd_238"></a>6. <kbd>MyBatis的invoke方法</kbd></h3> 
+<table><thead><tr><th>知道了如何生产代理对象，也知道了代理类是MapperProxy，接下来就是看invoke方法了，这是动态代理的核心，当我们通过代理对象执行任何方法时，都会进入invoke方法</th></tr></thead><tbody></tbody></table> 
+<blockquote> 
+ <p><img src="https://images2.imgbox.com/76/fa/vJiDgrzv_o.png" alt="在这里插入图片描述"></p> 
+</blockquote> 
+<table><thead><tr><th>结论</th></tr></thead><tbody></tbody></table> 
+<blockquote> 
+ <ol><li>MapperProxy传入了SqlSession，说明每个sqlSession代理对象不同</li><li>MapperProxy的invoke方法，执行了一系列增强逻辑后，原方法的执行，交个了MapperMethod的execute方法</li><li>MapperMethod的execute方法会判断方法类型（增删改查），然后交给sqlSession的相关方法。也就是最后真正执行的还是回到了一开始的sqlSession-&gt;executor-&gt;statementHandler</li><li>如果方法类型为查询SELECT，会做额外的返回值类型判断（空void、列表List、Map、下标Cursor、单个对象），返回值不同，执行逻辑不同，但是最终依然调用sqlSession相关方法</li></ol> 
+</blockquote> 
+<table><thead><tr><th>invoke方法</th></tr></thead><tbody></tbody></table> 
+<blockquote> 
+ <ol><li>如果不是Object方法，不是默认的方法，而是原原本本接口的方法，就获取MapperMethod对象（接口中方法的字节码对象），然后调用execute方法<br> <img src="https://images2.imgbox.com/75/c4/EfOLaC1n_o.png" alt="在这里插入图片描述"><br> <img src="https://images2.imgbox.com/b3/37/StUCTycD_o.png" alt="在这里插入图片描述"></li><li>可见execute方法中，先会判断方法类型，是插入，还是修改，还是查询。然后又调用sqlSession中的方法。而查询操作，会做额外的返回值判断，根据返回值类型（空void、列表List、Map、下标Cursor、单个对象）调用不同的方法<br> <img src="https://images2.imgbox.com/81/aa/NcNljloZ_o.png" alt="在这里插入图片描述"><br> <img src="https://images2.imgbox.com/dd/0b/cF7bSw3M_o.png" alt="在这里插入图片描述"><br> <img src="https://images2.imgbox.com/e2/31/tKOmY858_o.png" alt="在这里插入图片描述"></li><li>我们以返回值为集合为例，最终会进入executeForMany()方法。调用的依然是sqlSession中的方法<br> <img src="https://images2.imgbox.com/57/a4/W04FWCM4_o.png" alt="在这里插入图片描述"></li></ol> 
+</blockquote> 
+<h3><a id="7_kbdkbd_263"></a>7. <kbd>二级缓存</kbd></h3> 
+<table><thead><tr><th>二级缓存</th></tr></thead><tbody></tbody></table> 
+<blockquote> 
+ <ol><li>构建在一级缓存之上，收到查询请求时，MyBatis先查询二级，二级缓存没有命中，再查询一级，一级没有，去数据库查</li><li>二级缓存和具体命名空间绑定，一个Mapper中有一个Cache，相同Mapper中的MappedStatement共用一个Cache，一级缓存则和SqlSession绑定</li><li>二级缓存，默认只要进行增删改就会清空缓存，所以适用于不常常修改的数据，比如街道数据，国家行政区等。</li></ol> 
+</blockquote> 
+<h4><a id="71_kbdcachekbd_270"></a>7.1 <kbd>cache标签</kbd></h4> 
+<table><thead><tr><th>结论</th></tr></thead><tbody></tbody></table> 
+<blockquote> 
+ <ol><li>解析mapper.xml时通过XMLMapperBuilder对象的parse()方法</li><li>一个mapper只有一个&lt; cache&gt;标签，所以一个mapper只有一个二级缓存。并添加在configuration核心配置类对象中，另外构建缓存时，除了返回构建好的缓存，他还自己存了一份，到currentCache变量中</li><li>解析完成cache 标签后，会在解析select/insert等标签为MappedStatement对象时，将缓存对象一起包装，所以相同mapper中的MappedStatement共用一个Cache。这里就是通过上面保存的缓存currentCache，将缓存设置到MappedStatement中</li></ol> 
+</blockquote> 
+<table><thead><tr><th>我们知道在mapper.xml中加上cache标签，就会开启二级缓存（核心配置文件开启了二级缓存功能的前提下）。我们看一下解析xml时，解析cache标签做了什么处理</th></tr></thead><tbody></tbody></table> 
+<blockquote> 
+ <ol><li>解析&lt; mapper&gt;标签，它会判断我们是基于那种方式扫描包。package和class是根据接口，前面介绍代理的时候介绍过，我们这里看通过resource方式。可以发现，它new了一个XMLMapperBuilder对象，用parse()方法来解析Mapper.xml映射文件<br> <img src="https://images2.imgbox.com/91/84/cNiY3LAh_o.png" alt="在这里插入图片描述"><br> <img src="https://images2.imgbox.com/56/0c/lSFL3bRQ_o.png" alt="在这里插入图片描述"></li><li>parse()方法，configurationElement()方法解析mapper结点<br> <img src="https://images2.imgbox.com/40/a8/1gFxHLKY_o.png" alt="在这里插入图片描述"></li><li>configurationElement()方法，通过cacheElement()方法解析&lt; cache/&gt;标签<br> <img src="https://images2.imgbox.com/32/be/AMIwBo6A_o.png" alt="在这里插入图片描述"></li><li>cacheElement()方法，先解析type属性，如果我们指定了，就用指定的二级缓存实现类，没有就用默认的基于HashMap的二级缓存。然后依次解析其它属性，最后调用useNewCache()方法创建Cache对象<br> <img src="https://images2.imgbox.com/24/f0/jY9mgyWZ_o.png" alt="在这里插入图片描述"></li><li>useNewCache()方法，完成缓存构建，依然是构建者模式，new CacheBuilder()然后调用build()方法创建Cache对象，然后赋值给了成员变量currentCache，这个变量后面还会用<br> <img src="https://images2.imgbox.com/9d/14/YpKLVuQN_o.png" alt="在这里插入图片描述"><br> <img src="https://images2.imgbox.com/e1/f6/1wmurRoz_o.png" alt="在这里插入图片描述"><br> <img src="https://images2.imgbox.com/b4/bf/YGs78orN_o.png" alt="在这里插入图片描述"></li></ol> 
+</blockquote> 
+<table><thead><tr><th>相同的Mapper的MappedStatement共用一个二级缓存</th></tr></thead><tbody></tbody></table> 
+<blockquote> 
+ <ol><li>解析完cache标签后，最后会通过buildStatementFromContext()方法将Cache对象包装到MappedStatement（封装&lt; select/insert&gt;这些标签结点的对象）中<br> <img src="https://images2.imgbox.com/0e/b6/lL03yOGg_o.png" alt="在这里插入图片描述"></li><li>buildStatementFromContext()方法中，会调用重载，如果DatabaseId不为空会传递参数，否则传一个null。重载方法中，创建了XMLStatementBuilder()对象，然后调用parseStatementNode()方法解析，将执行语句转换为MappedStatement<br> <img src="https://images2.imgbox.com/cd/58/wRLX0hEr_o.png" alt="在这里插入图片描述"><br> <img src="https://images2.imgbox.com/24/1d/HipbhDWt_o.png" alt="在这里插入图片描述"></li><li>parseStatementNode()方法，它会解析各种属性，包括缓存相关的flushCache和useCache，最终调用builderAssistant.addMappedStatement创建MappedStatement对象<br> <img src="https://images2.imgbox.com/eb/a5/uzrDv1J6_o.png" alt="在这里插入图片描述"><br> <img src="https://images2.imgbox.com/02/f1/ULrubxAV_o.png" alt="在这里插入图片描述"><br> <img src="https://images2.imgbox.com/9e/ae/ArzOZezD_o.png" alt="在这里插入图片描述"><br> <img src="https://images2.imgbox.com/97/27/wM2aeTFU_o.png" alt="在这里插入图片描述"></li><li>addMappedStatement()方法，此方法中，将生成MappedStatement对象，然后放入configuration，key值为namespace.id.依然使用构建者模式，new MappedStatement.Builde(),这个构建是静态方法。我们关注最后的cache(currentCache)这个方法，它将创建好的缓存currentCache传入了cache()方法<br> <img src="https://images2.imgbox.com/16/8c/VO4OYpvI_o.png" alt="在这里插入图片描述"><br> <img src="https://images2.imgbox.com/19/ce/Pq1PKbFp_o.png" alt="在这里插入图片描述"></li></ol> 
+</blockquote> 
+<h4><a id="72_kbdkbd_308"></a>7.2 <kbd>执行流程</kbd></h4> 
+<table><thead><tr><th>我们知道，查询时，先走二级缓存，然后才走一级缓存。但是BaseExecutor中的query中，不是直接查的一级缓存么？SimpleExecutor也没有重写query方法。原来当我们开启二级缓存后，用的执行器就不是BaseExecutor了，而是CachingExecutor</th></tr></thead><tbody></tbody></table> 
+<blockquote> 
+ <p><img src="https://images2.imgbox.com/08/e3/ECu0HbCK_o.png" alt="在这里插入图片描述"></p> 
+</blockquote> 
+<table><thead><tr><th>结论</th></tr></thead><tbody></tbody></table> 
+<blockquote> 
+ <ol><li>开启二级缓存，不走BaseExecutor，走CachingExecutor</li><li>如果配置文件指定flushCache=true，则必定刷新缓存。</li><li>如果配置文件指定useCache=false，则不走缓存直接查数据库</li><li>如果配置文件指定useCache=true，则走二级缓存逻辑，查二级缓存，如果查到直接返回。如果没查到，交给SimpleExecutor执行器的query继续查，因为SimpleExecutor的query是父类BaseExecutor的，所以实际上调用的是BaseExecutor的query</li><li>所以先走二级缓存，然后SimpleExecutor执行器（实际上是父类BaseExecutor的query()方法），会再查一级缓存，没有，就查数据库了</li><li>查完数据库，先把数据放一级缓存，然后再放入二级缓存（useCache=true情况下）</li><li>二级缓存，为了处理线程同步，安全问题，为其加了事务控制。Cache是普通的缓存对象，TransactionalCache是加了事务的Cache对象，他继承了Cache。TransactionalCacheManager，维护Cache和TransactionalCache的映射关系</li><li>也就是说，缓存时Cache，但是实际干事的是TransactionalCache</li><li>TransactionalCache如何控制事务？</li></ol> 
+ <blockquote> 
+  <ol><li>里面有3个缓存</li></ol> 
+  <blockquote> 
+   <ol><li>真正的Cache对象delegate</li><li>Map集合entriesToAddOnCommit：事务提交前，数据库查询结果先缓存到这里</li><li>Set集合entriesMissedInCache：事务提交前，缓存未命中时，CacheKey先缓存到此集合</li></ol> 
+  </blockquote> 
+  <ol start="2"><li>put时，将查询结果放入entriesToAddOnCommit</li><li>获取时，直接从delegate，真正的缓存获取，如果没有获取到，将Cachekey存储到entriesMissedInCache这个Set集合</li><li>执行commit()方法，提交事务后，才会将entriesToAddOnCommit和entriesMissedInCache缓存的内容，刷入真正的缓存delegate中</li></ol> 
+ </blockquote> 
+</blockquote> 
+<table><thead><tr><th>query方法入手</th></tr></thead><tbody></tbody></table> 
+<blockquote> 
+ <ol><li>query入口方法和BaseExecutor相同，都是解析sql，然后创建缓存key，最后调用重载<br> <img src="https://images2.imgbox.com/ab/7b/ZLolXoan_o.png" alt="在这里插入图片描述"></li><li>重载中就和BaseExecutor不一样了，先是从MappedStatement（ms）中拿到Cache对象（上面我们已经讲了，cache标签解析后，创建Cache对象后，除了configuration，还会给MappedStatement封装一份）</li></ol> 
+ <blockquote> 
+  <ol><li>其中flushCacheIfRequired(ms)是判断flushCache是不是true，如果是true就刷新缓存。我们配置mapper.xml时，可以通过flushCache="true"指定，执行时必须刷新缓存</li><li>ms.isUseCache(),此方法就是判断useCache属性是不是为true，表示是否允许使用二级缓存，也是xml中配置的。不允许直接查数据库</li><li>tcm.getObject(cache,key)//cache是缓存，key是缓存key,就是真正的查询二级缓存了，而tcm是一个事务缓存管理器，它是缓存的一个管理者，防止线程安全问题，后面详细讲</li><li>缓存有值，直接返回值。如果没有值，会调用delegate的query方法，而delegate是SimpleExecutor。而SimpleExecutor是BaseExecutor子类。默认使用一级缓存的，所以，先二级缓存，再一级缓存，再数据库，结果再放到二级缓存中<br> <img src="https://images2.imgbox.com/01/b8/CMvQ9at7_o.png" alt="在这里插入图片描述"><br> <img src="https://images2.imgbox.com/88/49/jMPCWCut_o.png" alt="在这里插入图片描述"><br> <img src="https://images2.imgbox.com/a3/8b/tlYp7jdp_o.png" alt="在这里插入图片描述"><br> <img src="https://images2.imgbox.com/3e/a8/sooscVh8_o.png" alt="在这里插入图片描述"><br> <img src="https://images2.imgbox.com/da/2a/9Zq5PzKi_o.png" alt="在这里插入图片描述"></li></ol> 
+ </blockquote> 
+ <ol start="3"><li>查数据库后，做了什么呢？进入queryFromDatabase()方法，是熟悉的代码，先占位，然后查数据库，查完放缓存（localCache。一级缓存）<br> <img src="https://images2.imgbox.com/e1/da/Ce3uE4J8_o.png" alt="在这里插入图片描述"><br> <img src="https://images2.imgbox.com/54/b3/6dZeqOzP_o.png" alt="在这里插入图片描述"></li><li>然后return查询结果，最终调用putObject(cache,key,list);然而这一步并不是放入二级缓存，我们进入putObject看看<br> <img src="https://images2.imgbox.com/52/39/xVNg2N7F_o.png" alt="在这里插入图片描述"></li></ol> 
+ <blockquote> 
+  <ol><li>存入了TransactionalCache缓存中，TransactionalCacheManager是事务缓存管理器，它里面有一个存储Cache和TransactionalCache（真正办事的）的映射关系map集合transactionalCaches<br> <img src="https://images2.imgbox.com/ff/0f/VTT3CSCN_o.png" alt="在这里插入图片描述"><br> <img src="https://images2.imgbox.com/8f/54/Dz23Q2Dk_o.png" alt="在这里插入图片描述"></li></ol> 
+ </blockquote> 
+</blockquote> 
+<table><thead><tr><th>为什么不直接存到Cache，而是使用TransactionalCache，并存储到了TransactionalCacheManager中</th></tr></thead><tbody></tbody></table> 
+<blockquote> 
+ <ol><li>二级缓存从MappedStatement中获取，它存在于全局配置中，可以有多个CachingExecutor获取到，会出现线程安全问题</li><li>若不加以控制，多个事务共用一个缓存实例，会导致脏读</li><li>所以需要借助中间层来处理，就是我们用到的tcm变量TransactionalCacheManager事务缓存管理器，它会处理TransactionalCache对象和Cache对象</li><li>而TransactionalCache也是缓存控制器，可以对Cache缓存对象，加事务功能</li></ol> 
+</blockquote> 
+<table><thead><tr><th>TransactionalCacheManager逻辑</th></tr></thead><tbody></tbody></table> 
+<blockquote> 
+ <ol><li>可以看见无论是获取，还是放入，都调用了getTransactionCache(cache)<br> <img src="https://images2.imgbox.com/44/7a/34T4gRBG_o.png" alt="在这里插入图片描述"></li><li>getTransactionCache(cache)方法负责，根据传入Cache对象，获取对应TransactionalCache对象<br> <img src="https://images2.imgbox.com/1f/d6/5yMXgXD5_o.png" alt="在这里插入图片描述"></li><li>也就是说getTransactionCache(cache).putObject()调用的是TransactionalCache类的方法。<br> <img src="https://images2.imgbox.com/eb/46/7v2HbRJV_o.png" alt="在这里插入图片描述"></li></ol> 
+ <blockquote> 
+  <ol><li>而TransactionalCache实现了Cache接口，也就是说它就是一个缓存对象。并且，它里面用delegate属性表示Cache对象，并且有两个额外的缓存层</li></ol> 
+  <blockquote> 
+   <ol><li>Map集合entriesToAddOnCommit：事务提交前，数据库查询结果先缓存到这里</li><li>Set集合entriesMissedInCache：事务提交前，缓存未命中时，CacheKey先缓存到此集合<br> <img src="https://images2.imgbox.com/c1/01/XSTM6B0V_o.png" alt="在这里插入图片描述"><br> <img src="https://images2.imgbox.com/84/f4/l7kgAspF_o.png" alt="在这里插入图片描述"></li></ol> 
+  </blockquote> 
+ </blockquote> 
+ <ol start="4"><li>了解了上面的内容，我们再来看putObject方法和getObject方法<br> <img src="https://images2.imgbox.com/df/4c/hxlEbdG4_o.png" alt="在这里插入图片描述"><br> <img src="https://images2.imgbox.com/7e/52/F0FAwn7J_o.png" alt="在这里插入图片描述"></li></ol> 
+ <blockquote> 
+  <ol><li>put时它先是放入了entriesToAddOnCommit，也就是事务提交前的缓存，而没有存放到真正的缓存delegate中</li><li>而get时，直接从真正的Cache缓存（delegate）查，如果不存在，先将事务提交前的CacheKey放入entriesMissedInCache这个set集合中</li></ol> 
+ </blockquote> 
+ <ol start="5"><li>那么存的时候，放map中，取的时候取真正的缓存Cache中取，怎么能获取到呢？需要调用commit方法，也就是提交事务。它会调用flushPendingEntries()方法，将两个集合刷入Cache中<br> <img src="https://images2.imgbox.com/1e/1d/FOJ5xwet_o.png" alt="在这里插入图片描述"><br> <img src="https://images2.imgbox.com/2b/a1/9Hdd4kWS_o.png" alt="在这里插入图片描述"></li></ol> 
+</blockquote> 
+<table><thead><tr><th>这也是为什么我们测试二级缓存，需要提交事务</th></tr></thead><tbody></tbody></table> 
+<blockquote> 
+ <p><img src="https://images2.imgbox.com/84/20/BHcBxjJH_o.png" alt="在这里插入图片描述"></p> 
+</blockquote> 
+<h4><a id="73_kbdkbd_387"></a>7.3 <kbd>生效机制</kbd></h4> 
+<table><thead><tr><th>前面我们知道二级缓存不是直接操作缓存，而是由TransactionalCache进行了事务管理，并且只有commit提交了之后，才能真正获取到缓存中数据</th></tr></thead><tbody></tbody></table> 
+<table><thead><tr><th>结论</th></tr></thead><tbody></tbody></table> 
+<blockquote> 
+ <ol><li>sqlSession.commit()方法和close()方法，会调用TransactionalCache的commit()方法，让缓存生效</li><li>sqlSession.commit()先调用CachingExecutor的commit，CachingExecutor的commit再调用SimpleExecutor的commit，然后调用TransactionalCacheManager.commit()</li><li>TransactionalCacheManager.commit()会调用TransactionalCache的commit()</li><li>CachingExecutor和TransactionalCache都有变量delegate。CachingExecutor的delegate表示SimpleExecutor，TransactionalCache的delegate表示Cache缓存对象</li><li>而sqlSession.close()方法，也会调用CachingExecutor的close，CachingExecutor中，再执行器SimpleExecutor关闭之前，会tcm.commit()提交缓存事务</li></ol> 
+</blockquote> 
+<table><thead><tr><th>sqlSession.commit()源码</th></tr></thead><tbody></tbody></table> 
+<blockquote> 
+ <ol><li>sqlSession的commit调用了executor执行器的commit(),如果开启缓存，这个executor是CachingExecutor<br> <img src="https://images2.imgbox.com/74/8a/iPig18zx_o.png" alt="在这里插入图片描述"></li><li>先是执行CachingExecutor类中delegate变量的commit()方法。然后调用tcm.commit();TransactionalCacheManager。</li></ol> 
+ <blockquote> 
+  <ol><li>注意CachingExecutor类中的delegate是SimpleExecutor。TransactionalCache类中的delegate是Cache缓存<br> <img src="https://images2.imgbox.com/a8/be/mkcT84BX_o.png" alt="在这里插入图片描述"></li></ol> 
+ </blockquote> 
+ <ol start="3"><li>tcm.commit();调用了txCache.commit(),也就是TransactionalCache的commit()方法<br> <img src="https://images2.imgbox.com/93/f3/O4Ig0YcM_o.png" alt="在这里插入图片描述"></li></ol> 
+</blockquote> 
+<table><thead><tr><th>sqlSession.close()方法源码</th></tr></thead><tbody></tbody></table> 
+<blockquote> 
+ <ol><li>也是先调用执行器的close，只不过这里传了一个布尔值，默认为false，表示强制提交<br> <img src="https://images2.imgbox.com/1d/d2/qRcNMzEj_o.png" alt="在这里插入图片描述"></li><li>如果forceRollback为false，就强制tcm.commit()提交。最后执行delegate.close(),也就是SimpleExecutor的close方法<br> <img src="https://images2.imgbox.com/2a/9c/skDaYtxd_o.png" alt="在这里插入图片描述"></li></ol> 
+</blockquote> 
+<h4><a id="74_kbdkbd_416"></a>7.4 <kbd>刷新</kbd></h4> 
+<table><thead><tr><th>查询时会放入缓存，而增删改会清空（刷新）缓存</th></tr></thead><tbody></tbody></table> 
+<blockquote> 
+ <ol><li>依然sqlSession先交给executor处理</li><li>一上来，如果缓存存在，flushCache=true，那么就会调用tcm.clear(Cache)清空指定缓存</li><li>tcm.clear()会调用TransactionalCache的clear()方法，标记clearOnCommit = true，并清空Map集合</li></ol> 
+</blockquote> 
+<table><thead><tr><th>以update为例</th></tr></thead><tbody></tbody></table> 
+<blockquote> 
+ <ol><li>sqlSession依然将操作委派给执行器Executor，开启二级缓存，就是CachingExecutor<br> <img src="https://images2.imgbox.com/8c/50/RtrMv1B9_o.png" alt="在这里插入图片描述"></li><li>可见CachingExecutor一上来，就进行了清空操作（最终是否刷新，还得看用户是否配置了不刷新，默认是刷新）<br> <img src="https://images2.imgbox.com/bb/fc/GP3oMnv4_o.png" alt="在这里插入图片描述"></li><li>如果缓存存在并且用户配置flushCache = true（默认为true），才会真正刷新（清空），调用tcm.clear(指定缓存)<br> <img src="https://images2.imgbox.com/fd/6e/sas2Q9NM_o.png" alt="在这里插入图片描述"><br> <img src="https://images2.imgbox.com/02/f2/Vod2PzyI_o.png" alt="在这里插入图片描述"></li><li>最后执行TransactionalCache的clear()方法<br> <img src="https://images2.imgbox.com/77/6e/UOtp9rxb_o.png" alt="在这里插入图片描述"></li></ol> 
+</blockquote> 
+<h3><a id="8_kbdkbd_434"></a>8. <kbd>延迟加载</kbd></h3> 
+<table><thead><tr><th>延迟加载</th></tr></thead><tbody></tbody></table> 
+<blockquote> 
+ <ol><li>就是不直接加载，需要的时候再加载。也就是懒加载。适用于关联型数据的查询上（比如查询用户需要将订单信息查询出来。但是我们现在用不到订单信息，所以就可以使用延迟加载）<br> <img src="https://images2.imgbox.com/08/38/2eEpWHfc_o.png" alt="在这里插入图片描述"></li><li>优缺点<br> <img src="https://images2.imgbox.com/ff/2d/uwhzWE6j_o.png" alt="在这里插入图片描述"></li><li>基本上，就是一条sql变成两条sql。一次执行变成执行两次，只不过第二条sql，会在需要的时候去获取连接查询。相应的，数据库连接也变成了两次（多了一次）</li><li>一对多，多对多的场景下，确实提高第一次访问的响应速度。因为没有直接关联查询。</li></ol> 
+</blockquote> 
+<table><thead><tr><th>原理，就是让实体类，变成代理对象，当我们获取数据时，进入invoke()拦截方法，如果是懒加载，就执行sql，查询结果放入实体类中</th></tr></thead><tbody></tbody></table> 
+<h4><a id="81_kbdkbd_447"></a>8.1 <kbd>如何应用</kbd></h4> 
+<table><thead><tr><th>根据分析，我们要做的就是将联合查询，变成多个单表查询</th></tr></thead><tbody></tbody></table> 
+<blockquote> 
+ <p><img src="https://images2.imgbox.com/57/df/WCCLUdol_o.png" alt="在这里插入图片描述"></p> 
+</blockquote> 
+<table><thead><tr><th>1. 提供两个单表查询</th></tr></thead><tbody></tbody></table> 
+<blockquote> 
+ <p><img src="https://images2.imgbox.com/f5/fb/eGdHVaMe_o.png" alt="在这里插入图片描述"><br> <img src="https://images2.imgbox.com/58/c0/wcoGo3Ot_o.png" alt="在这里插入图片描述"></p> 
+</blockquote> 
+<table><thead><tr><th>2. 通过ResultMap，封装</th></tr></thead><tbody></tbody></table> 
+<blockquote> 
+ <ol><li>封装结果集时，用户所属订单在orderList中。也就是第二条sql要查询的内容，所以我们这里通过select指定第二条sql的位置，column指定第二条sql的查询条件<br> <img src="https://images2.imgbox.com/ac/39/GXEPU9lx_o.png" alt="在这里插入图片描述"></li><li>大体意思<br> <img src="https://images2.imgbox.com/d6/c6/lvJyE7rf_o.png" alt="在这里插入图片描述"></li></ol> 
+</blockquote> 
+<h5><a id="811_kbdkbd_464"></a>8.1.1 <kbd>局部延迟加载</kbd></h5> 
+<table><thead><tr><th>association和collection标签中，可以指定fetchType属性，他有两个属性值，lazy表示使用懒加载，eager表示立即加载，立即加载也是默认的加载策略</th></tr></thead><tbody></tbody></table> 
+<blockquote> 
+ <p><img src="https://images2.imgbox.com/e3/17/bi5fI2wD_o.png" alt="在这里插入图片描述"><br> <img src="https://images2.imgbox.com/3f/21/I8YayvSl_o.png" alt="在这里插入图片描述"><br> <img src="https://images2.imgbox.com/47/3a/621msSJL_o.png" alt="在这里插入图片描述"></p> 
+</blockquote> 
+<h5><a id="812_kbdkbd_471"></a>8.1.2 <kbd>全局延迟加载</kbd></h5> 
+<table><thead><tr><th>全局延迟加载，就是全部使用延迟加载，配置在核心配置文件中，但是注意，<code>全局和局部可以同时配置，局部优先级更高</code>。如果全局开启懒加载，而某个ResultMap局部配置立即加载，那么这个查询会采用立即加载策略</th></tr></thead><tbody></tbody></table> 
+<blockquote> 
+ <p><img src="https://images2.imgbox.com/4e/02/e65tFdRm_o.png" alt="在这里插入图片描述"></p> 
+</blockquote> 
+<h4><a id="82_kbdkbd_475"></a>8.2 <kbd>实现原理</kbd></h4> 
+<table><thead><tr><th>一般像这种增强功能，就是用动态代理实现的</th></tr></thead><tbody></tbody></table> 
+<blockquote> 
+ <ol><li>使用CGLIB或javassist(默认)创建目标对象的代理对象。当调用代理对象的延迟加载属性的getting方法时，进入拦截器方法<br> <img src="https://images2.imgbox.com/07/76/yl64SK2I_o.png" alt="在这里插入图片描述"></li><li>例如调用user.getOrder()方法，就会进入拦截器invoke()方法，发现user.getOrder()是需要延迟加载的，就会单独发送事先保存好的关联Order的sql，将结果查询，然后user.setOrder(order)将结果设置到user对象中</li></ol> 
+</blockquote> 
+<h4><a id="83_kbdkbd_481"></a>8.3 <kbd>延迟加载源码-创建代理对象</kbd></h4> 
+<table><thead><tr><th>首先，全局配置懒加载，有多个配置（我们上面只介绍了一个，开启懒加载），这些配置也会封装到Configuration核心配置类中。看源码时，会频繁用到</th></tr></thead><tbody></tbody></table> 
+<blockquote> 
+ <p><img src="https://images2.imgbox.com/24/e1/7pep4tGE_o.png" alt="在这里插入图片描述"></p> 
+</blockquote> 
+<table><thead><tr><th>MyBatis查询结果由ResultSetHandler接口的handleResultSets()方法处理的。ResultSetHandler接口只有一个实现，DefaultResultSetHandler。我们看源码入口就从这里找</th></tr></thead><tbody></tbody></table> 
+<blockquote> 
+ <ol><li>创建映射结果集对象方法createResultObject()，如果是内联查询，并且开启懒加载，会生成代理对象。也就是只要开启懒加载，最终返回的对象就会变成代理对象</li></ol> 
+ <blockquote> 
+  <ol><li>而它里面调用createResultObject()重载，创建出了返回结果对象，也就是User对象</li><li>创建完成之后，判断是否有内联查询，如果有，获取ResultMapping，进行ResultMap标签内容的遍历</li><li>遍历时，判断是否开启懒加载，如果开启懒加载，为其（User）创建代理对象（使用默认的代理工厂，就是configuration核心配置类中配置的）<br> <img src="https://images2.imgbox.com/f6/44/Ys2yAgSd_o.png" alt="在这里插入图片描述"></li></ol> 
+ </blockquote> 
+ <ol start="2"><li>生成代理对象，是获取的configuration中配置的默认代理工厂JavassistProxyFactory，然后调用createProxy方法<br> <img src="https://images2.imgbox.com/e1/31/hlrVEFeU_o.png" alt="在这里插入图片描述"><br> <img src="https://images2.imgbox.com/fb/41/89wXTCjl_o.png" alt="在这里插入图片描述"></li><li>而最终调用的是EnhancedResultObjectProxyImpl.createProxy()静态方法</li></ol> 
+ <blockquote> 
+  <ol><li>显示new了EnhancedResultObjectProxyImpl实现类，也就是代理类，实现invoke()方法的类</li><li>createProxy()是创建代理对象的类，需要代理类EnhancedResultObjectProxyImpl<br> <img src="https://images2.imgbox.com/8e/19/8g5rVd3f_o.png" alt="在这里插入图片描述"></li></ol> 
+ </blockquote> 
+ <ol start="4"><li>进入createProxy()方法，创建了javassist ProxyFactory工厂对象enhancer，然后通过enhancer.create()方法，生成了代理对象</li></ol> 
+ <blockquote> 
+  <ol><li>((Proxy)enhanced).setHandler(callback);设置代理对象执行器，就是代理类，invoke实现类，EnhancedResultObjectProxyImpl<br> <img src="https://images2.imgbox.com/8e/bf/aDbMltUO_o.png" alt="在这里插入图片描述"><br> <img src="https://images2.imgbox.com/77/3b/5KXPvhBz_o.png" alt="在这里插入图片描述"></li></ol> 
+ </blockquote> 
+</blockquote> 
+<h4><a id="84_kbdinvokekbd_504"></a>8.4 <kbd>延迟加载源码-invoke方法执行</kbd></h4> 
+<table><thead><tr><th>官方文档中，的懒加载配置属性，我们下面源码中会用</th></tr></thead><tbody></tbody></table> 
+<blockquote> 
+ <p><img src="https://images2.imgbox.com/d0/f5/n9sY03bi_o.png" alt="在这里插入图片描述"></p> 
+</blockquote> 
+<table><thead><tr><th>上面我们知道，创建代理对象，默认通过javassist ProxyFactory，配置在Configuration中，而代理类是EnhancedResultObjectProxyImpl，所以我们invoke()方法，就看这个类里面的就可以了</th></tr></thead><tbody></tbody></table> 
+<blockquote> 
+ <ol><li>EnhancedResultObjectProxyImpl是JavassistProxyFactory的静态成员内部类<br> <img src="https://images2.imgbox.com/d3/e2/HsBVAHMG_o.png" alt="在这里插入图片描述"><br> <img src="https://images2.imgbox.com/fc/21/d2Fda37C_o.png" alt="在这里插入图片描述"><br> <img src="https://images2.imgbox.com/57/86/5lAJAQwZ_o.png" alt="在这里插入图片描述"></li><li>我们直接看懒加载相关的</li></ol> 
+ <blockquote> 
+  <ol><li>先是判断懒加载属性（什么意思看上面我给出的官方文档解释），aggressive是否为true，如果为true，会懒加载全部的属性。如果为false，会判断当前调用方法，是否是toString等Object类方法，如果是，直接懒加载全部内容<br> <img src="https://images2.imgbox.com/d2/32/wIyD749g_o.png" alt="在这里插入图片描述"></li><li>而else if(PropertyNamer.isSetter()),判断当前是否调用的是setter方法，如果是，就不会再懒加载了</li><li>else if(PropertyNamer.isGetter()),判断是否是getter方法，如果是就进行懒加载</li></ol> 
+  <blockquote> 
+   <ol><li>先是根据方法名，获取具体的属性</li><li>根据属性判断是否需要懒加载，如果是，就懒加载，不是就不进行懒加载</li><li>最后执行原方法<br> <img src="https://images2.imgbox.com/22/e8/F270jc1m_o.png" alt="在这里插入图片描述"></li></ol> 
+  </blockquote> 
+ </blockquote> 
+</blockquote>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/f626b87186e75fb552cfbe1c5ad91206/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">蓝桥杯——车的放置 (C&#43;&#43;)</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/b7fd6df247d6a5f24bcaee863ffa9a01/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">试题 算法训练 车的放置</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

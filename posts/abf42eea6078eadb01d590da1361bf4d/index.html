@@ -1,0 +1,1298 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>ARM64启动过程分析 - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="ARM64启动过程分析" />
+<meta property="og:description" content="文章目录 arm64 启动过程分析1 启动约定（boot protocol）2 内核启动第一步2.1 preserve_boot_args2.2 el2_setup2.3 set_cpu_boot_mode_flag 3 创建启动阶段页表4 为开启mmu进行的cpu初始化5 开启 mmu6 进入 start_kernel7 启动中一些其他功能实现7.1 spin_table 启动从核7.2 psci 启动从核7.3 secondary_startup 从核进入内核 arm64 启动过程分析 参考：DDI0487F_b_armv8_arm.pdf
+1 启动约定（boot protocol） arm64 启动涉及到的实际内容较为复杂也多，这里分析主要在主流程上，使用的 Linux 版本为 linux-5.0。
+在系统启动过程中，首先由 bootloader 执行一系列操作，并最终将控制权交由 kernel。
+这里的 bootloader 对于服务器常见是的 bios/uefi 加载，对于嵌入式典型的则是 u-boot，当然也可能是 Hypervisor 和 secure monitor，或者可能只是准备最小引导环境的少量指令。
+不论 bootloader 是什么，arm64 linux 在引导阶段对 bootloader 提出以下要求：
+设置并初始化RAM（必须）准备好合适的设备树文件到 RAM 中，并提供 dtb 首地址给 kernel（必须）解压内核镜像（可选）将控制权交由kernel（必须） 在将控制权交由 kernel 时 Image 头部自身包含 64-byte header 信息，如下：" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/abf42eea6078eadb01d590da1361bf4d/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-10-25T10:53:21+08:00" />
+<meta property="article:modified_time" content="2023-10-25T10:53:21+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">ARM64启动过程分析</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-light">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p></p> 
+<div class="toc"> 
+ <h4>文章目录</h4> 
+ <ul><li><ul><li><a href="#arm64__1" rel="nofollow">arm64 启动过程分析</a></li><li><ul><li><a href="#1_boot_protocol_3" rel="nofollow">1 启动约定（boot protocol）</a></li><li><a href="#2__70" rel="nofollow">2 内核启动第一步</a></li><li><ul><li><a href="#21_preserve_boot_args_108" rel="nofollow">2.1 preserve_boot_args</a></li><li><a href="#22_el2_setup_133" rel="nofollow">2.2 el2_setup</a></li><li><a href="#23_set_cpu_boot_mode_flag_385" rel="nofollow">2.3 set_cpu_boot_mode_flag</a></li></ul> 
+    </li><li><a href="#3__441" rel="nofollow">3 创建启动阶段页表</a></li><li><a href="#4_mmucpu_768" rel="nofollow">4 为开启mmu进行的cpu初始化</a></li><li><a href="#5__mmu_945" rel="nofollow">5 开启 mmu</a></li><li><a href="#6__start_kernel_1031" rel="nofollow">6 进入 start_kernel</a></li><li><a href="#7__1120" rel="nofollow">7 启动中一些其他功能实现</a></li><li><ul><li><a href="#71_spin_table__1130" rel="nofollow">7.1 spin_table 启动从核</a></li><li><a href="#72_psci__1212" rel="nofollow">7.2 psci 启动从核</a></li><li><a href="#73_secondary_startup__1305" rel="nofollow">7.3 secondary_startup 从核进入内核</a></li></ul> 
+   </li></ul> 
+  </li></ul> 
+ </li></ul> 
+</div> 
+<p></p> 
+<h3><a id="arm64__1"></a>arm64 启动过程分析</h3> 
+<p>参考：DDI0487F_b_armv8_arm.pdf</p> 
+<h4><a id="1_boot_protocol_3"></a>1 启动约定（boot protocol）</h4> 
+<p>arm64 启动涉及到的实际内容较为复杂也多，这里分析主要在主流程上，使用的 Linux 版本为 linux-5.0。</p> 
+<p>在系统启动过程中，首先由 bootloader 执行一系列操作，并最终将控制权交由 kernel。</p> 
+<p>这里的 bootloader 对于服务器常见是的 bios/uefi 加载，对于嵌入式典型的则是 u-boot，当然也可能是 Hypervisor 和 secure monitor，或者可能只是准备最小引导环境的少量指令。</p> 
+<p>不论 bootloader 是什么，arm64 linux 在引导阶段对 bootloader 提出以下要求：</p> 
+<ol><li>设置并初始化RAM（必须）</li><li>准备好合适的设备树文件到 RAM 中，并提供 dtb 首地址给 kernel（必须）</li><li>解压内核镜像（可选）</li><li>将控制权交由kernel（必须）</li></ol> 
+<p>在将控制权交由 kernel 时 Image 头部自身包含 64-byte header 信息，如下：</p> 
+<pre><code class="prism language-c">  u32 code0<span class="token punctuation">;</span>			<span class="token comment">/* Executable code */</span>
+  u32 code1<span class="token punctuation">;</span>			<span class="token comment">/* Executable code */</span>
+  u64 text_offset<span class="token punctuation">;</span>		<span class="token comment">/* Image load offset, little endian */</span>
+  u64 image_size<span class="token punctuation">;</span>		<span class="token comment">/* Effective Image size, little endian */</span>
+  u64 flags<span class="token punctuation">;</span>			<span class="token comment">/* kernel flags, little endian */</span>
+  u64 res2	<span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>		<span class="token comment">/* reserved */</span>
+  u64 res3	<span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>		<span class="token comment">/* reserved */</span>
+  u64 res4	<span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>		<span class="token comment">/* reserved */</span>
+  u32 magic	<span class="token operator">=</span> <span class="token number">0x644d5241</span><span class="token punctuation">;</span>	<span class="token comment">/* Magic number, little endian, "ARM\x64" */</span>
+  u32 res5<span class="token punctuation">;</span>			<span class="token comment">/* reserved (used for PE COFF offset) */</span>
+</code></pre> 
+<ol><li>code0/code1指向stext段，kernel执行代码的开始。</li><li>当支持EFI格式启动时，code0/code1将会被跳过，res5将是PE header偏移。</li><li>flags 字段是小端的 64bit 组合，包含如下信息：</li></ol> 
+<pre><code class="prism language-c">BIT <span class="token number">0</span>：kernel字节序。<span class="token number">1</span>是BE，<span class="token number">0</span>是LE。
+BIT <span class="token number">1</span><span class="token operator">-</span><span class="token number">2</span>：kernel页大小。
+<span class="token number">0</span> <span class="token operator">-</span> 未指定
+<span class="token number">1</span> <span class="token operator">-</span> <span class="token number">4</span>K
+<span class="token number">2</span> <span class="token operator">-</span> <span class="token number">16</span>K
+<span class="token number">3</span> <span class="token operator">-</span> <span class="token number">64</span>K
+BIT <span class="token number">3</span>：kernel物理位置
+<span class="token number">0</span> <span class="token operator">-</span> <span class="token number">2</span>MB对齐应尽可能接近RAM低地址底部，因为后面内存不能通过线性映射访问。
+<span class="token number">1</span> <span class="token operator">-</span> <span class="token number">2</span>MB对齐可以在物理内存的任意位置。
+</code></pre> 
+<p>在第四步控制权交给 kernel 时，对 CPU 状态，cache 也有以下要求：</p> 
+<ol><li>主CPU通用寄存器设置<br> x0 = 设备树首地址的物理地址<br> x1 = 0<br> x2 = 0<br> x3 = 0</li><li>CPU模式<br> 所有中断都必须在 PSTATE 中被屏蔽，DAIF（debug，SError，IRQ 和 FIQ）<br> CPU 必须处于 EL2（为了访问虚拟化拓展，建议使用 EL2）或者非安全EL1中。</li><li>Cache，MMUs<br> MMU 必须是关闭状态。<br> Icache 可以是关也可以是开。<br> Dcache 必须是关闭，这是为了保证加载的内核镜像的地址范围是clean to Poc的。</li></ol> 
+<p>内核中对上述描述的注释：</p> 
+<pre><code class="prism language-c">The requirements are<span class="token operator">:</span>   
+  MMU <span class="token operator">=</span> off<span class="token punctuation">,</span> D<span class="token operator">-</span>cache <span class="token operator">=</span> off<span class="token punctuation">,</span> I<span class="token operator">-</span>cache <span class="token operator">=</span> on or off<span class="token punctuation">,</span>
+  x0 <span class="token operator">=</span> physical address to the FDT blob<span class="token punctuation">.</span>
+</code></pre> 
+<ol start="4"><li>另一个未说明但实际需要保证的要求：<br> 在所有CPU上，CNTFRQ必须设置好，CNTVOFF必须是关闭。</li></ol> 
+<p>完成上述步骤即可将 cpu 控制权交由内核。</p> 
+<h4><a id="2__70"></a>2 内核启动第一步</h4> 
+<p>linux arm64 启动代码位于<code>arch/arm64/kernel/head.S</code>，入口代码如下：</p> 
+<pre><code class="prism language-asm">	/*
+	 * The following callee saved general purpose registers are used on the
+	 * primary lowlevel boot path:
+	 *
+	 *  Register   Scope                      Purpose
+	 *  x21        stext() .. start_kernel()  FDT pointer passed at boot in x0
+	 *  x23        stext() .. start_kernel()  physical misalignment/KASLR offset
+	 *  x28        __create_page_tables()     callee preserved temp register
+	 *  x19/x20    __primary_switch()         callee preserved temp registers
+	 */
+ENTRY(stext)
+	bl	preserve_boot_args
+	bl	el2_setup			// Drop to EL1, w0=cpu_boot_mode
+	adrp	x23, __PHYS_OFFSET
+	and	x23, x23, MIN_KIMG_ALIGN - 1	// KASLR offset, defaults to 0
+	bl	set_cpu_boot_mode_flag
+	bl	__create_page_tables
+	/*
+	 * The following calls CPU setup code, see arch/arm64/mm/proc.S for
+	 * details.
+	 * On return, the CPU will be ready for the MMU to be turned on and
+	 * the TCR will have been set.
+	 */
+	bl	__cpu_setup			// initialise processor
+	b	__primary_switch
+ENDPROC(stext)
+</code></pre> 
+<p>可以看到通过 <code>b stext</code> 进入 stext 段后，一共可以分为六个部分：</p> 
+<ol><li>preserve_boot_args boot 参数的保存</li><li>el2_setup 异常级别的切换以及不同级别的部分控制寄存器设置</li><li>boot 级别的标记保存，后续会使用相关变量来判断启动级别来做一些不同的初始化</li><li>__create_page_tables 配置和初始化启动阶段的页表，包括 idmap_pg_dir 和 init_pg_dir</li><li>__cpu_setup 对整个系统的工作的相关寄存器进行初始化及配置，包括控制寄存器，TCR 寄存器等</li><li>__primary_switch 剩余的所有初始化，包括开启 mmu，设置 sp，异常向量表，地址重定向，地址随机化等，最后进入 start_kernel</li></ol> 
+<h5><a id="21_preserve_boot_args_108"></a>2.1 preserve_boot_args</h5> 
+<pre><code class="prism language-asm">/*
+ * Preserve the arguments passed by the bootloader in x0 .. x3
+ */
+preserve_boot_args:
+	mov	x21, x0				// 将fdt首地址暂时存放至x21，释放x0用于其他使用
+
+	adr_l	x0, boot_args			// x0保存boot_args变量地址
+	stp	x21, x1, [x0]			// 这两步将x21，x1，x2，x3依次保存至boot_args中
+	stp	x2, x3, [x0, #16]
+
+	dmb	sy				// needed before dc ivac with
+						// MMU off
+
+	mov	x1, #0x20			// x0和x1是传递给__inval_cache_range的参数
+	b	__inval_dcache_area		// tail call
+ENDPROC(preserve_boot_args)
+</code></pre> 
+<p>由于 MMU=off，D-cache=off，因此写入<code>boot_args</code>变量的操作都是 no cache 的，直接写入 sram 中。为了安全起见（也许 bootloader 中打开了 D-cache 并操作了<code>boot_args</code>这段memory，从而在各个级别的<code>data cache</code>和<code>unified cache</code>有了一些旧的，没有意义的数据），需要将<code>boot_args</code>变量对应的 cache line 设置为无效。在调用<code>__inval_cache_range</code>之前，x0是<code>boot_args</code>这段 memory 的首地址，x1 是末尾的地址（<code>boot_args</code>变量长度是<code>4x8byte＝32byte</code>，也就是 0x20 了）。<br> 为何要保存<code>x0～x3</code>这四个寄存器呢？因为 ARM64 boot protocol 对启动时候的<code>x0～x3</code>这四个寄存器有严格的限制：x0 是 dtb 的物理地址，x1～x3 必须是 0（非零值是保留将来使用）。在后续<code>setup_arch</code>函数执行的时候会访问<code>boot_args</code>并进行校验。</p> 
+<p>还有一个小细节是如何访问<code>boot_args</code>这个符号的，这个符号是一个虚拟地址，但是，现在没有建立好页表，也没有打开 MMU，如何访问它呢？这是通过<code>adr_l</code>这个宏来完成的。这个宏实际上是通过<code>adrp</code>这个汇编指令完成，通过该指令可以将符号地址变成运行时地址（通过PC relative offset形式），因此，当运行的 MMU OFF mode 下，通过<code>adrp</code>指令可以获取符号的物理地址。不过<code>adrp</code>是 page 对齐的（adrp 中的 p 就是 page 的意思），<code>boot_args</code>这个符号当然不会是<code>page size</code>对齐的，因此不能直接使用<code>adrp</code>，而是使用<code>adr_l</code>(通过计算页内偏移再在这个地址上加上偏移实现)这个宏进行处理。</p> 
+<p>这里使用<code>dmb sy</code>指令，在 armv8 手册中说明：除了<code>dc zva</code>外，所有指定地址的数据缓存指令都可以按照任意顺序执行，在任何 device 属性地址，或者不可缓存的普通内存属性必须在指令之间执行<code>dmb</code>或者<code>dsb</code>保证顺序执行。</p> 
+<h5><a id="22_el2_setup_133"></a>2.2 el2_setup</h5> 
+<p>根据上面描述知道，cpu 此时必须处于 EL2 或者 EL1，这一段将会完成 cpu 对虚拟拓展和基本系统控制的设定，并最终将 cpu 退回至 el1（如果开启 VHE 并且处理器支持虚拟化拓展，那么 kernel 将不会切换回 EL1，而是保持 EL2 运行，以便为 KVM 提供更好服务），此部分代码较长，分成四段。<br> 第一段如下：</p> 
+<pre><code class="prism language-asm">/*
+ * If we're fortunate enough to boot at EL2, ensure that the world is
+ * sane before dropping to EL1.
+ *
+ * Returns either BOOT_CPU_MODE_EL1 or BOOT_CPU_MODE_EL2 in w0 if
+ * booted in EL1 or EL2 respectively.
+ */
+ENTRY(el2_setup)
+	msr	SPsel, #1			// We want to use SP_EL{1,2} --（1）
+	mrs	x0, CurrentEL 		
+	cmp	x0, #CurrentEL_EL2 ------- 判断当前cpu是否处于el2
+	b.eq	1f ------------------- 如果是处于el2则跳转至往后标号1：处执行
+	mov_q	x0, (SCTLR_EL1_RES1 | ENDIAN_SET_EL1) 
+	msr	sctlr_el1, x0 -------------------------------------（2）
+	mov	w0, #BOOT_CPU_MODE_EL1		// This cpu booted in EL1
+	isb
+	ret
+
+1:	mov_q	x0, (SCTLR_EL2_RES1 | ENDIAN_SET_EL2) ----------（3）
+	msr	sctlr_el2, x0
+
+#ifdef CONFIG_ARM64_VHE
+	/*
+	 * Check for VHE being present. For the rest of the EL2 setup,
+	 * x2 being non-zero indicates that we do have VHE, and that the
+	 * kernel is intended to run at EL2.
+	 */
+	mrs	x2, id_aa64mmfr1_el1 --------------------------------（4）
+	ubfx	x2, x2, #8, #4
+#else
+	mov	x2, xzr -----------这里使用xzr而不是#0，其实是armv8架构pipe上的一种性能优化手段
+#endif
+
+	/* Hyp configuration. */
+	mov_q	x0, HCR_HOST_NVHE_FLAGS
+	cbz	x2, set_hcr -----------------------------------------（5）
+	mov_q	x0, HCR_HOST_VHE_FLAGS
+set_hcr:
+	msr	hcr_el2, x0
+	isb
+</code></pre> 
+<p>（1）设置<code>SPsel</code> bit0 为 1，允许使用<code>sp_elx</code>寄存器，否则只能使用<code>sp_el0</code>。<br> （2）当 cpu 处于 el1 时则无法配置虚拟化拓展相关内容则只需配置<code>sctlr_el1</code>后，并设置 x0 为BOOT_CPU_MODE_EL1 后返回。</p> 
+<p>首先看看sctlr_el1寄存器定义(具体 bit 含义不贴出)：</p> 
+<pre><code class="prism language-c">SCTLR_EL1<span class="token punctuation">,</span> System Control <span class="token function">Register</span> <span class="token punctuation">(</span>EL1<span class="token punctuation">)</span>
+Provides top level control of the system<span class="token punctuation">,</span> including its memory system<span class="token punctuation">,</span> at EL1 and EL0<span class="token punctuation">.</span>
+</code></pre> 
+<p><code>sctlr_el1</code>控制着整个系统行为。</p> 
+<p><code>SCTLR_EL1_RES1</code>宏定义如下：<code>（arch/arm64/include/asm/sysreg.h）</code></p> 
+<pre><code class="prism language-c=">#define SCTLR_EL1_RES1	((_BITUL(11)) | (_BITUL(20)) | (_BITUL(22)) | (_BITUL(28)) | \
+			 (_BITUL(29)))
+</code></pre> 
+<p>这些 BIT 为预留位并且默认为 1。</p> 
+<p><code>ENDIAN_SET_EL1</code>宏定义如下：<code>（arch/arm64/include/asm/sysreg.h）</code></p> 
+<pre><code class="prism language-c=">#ifdef CONFIG_CPU_BIG_ENDIAN
+#define ENDIAN_SET_EL1		(SCTLR_EL1_E0E | SCTLR_ELx_EE)
+#define ENDIAN_CLEAR_EL1	0
+#else
+#define ENDIAN_SET_EL1		0
+#define ENDIAN_CLEAR_EL1	(SCTLR_EL1_E0E | SCTLR_ELx_EE)
+#endif
+</code></pre> 
+<p>根据配置上述两个标志控制着系统大小端字节序。</p> 
+<p>综上可以知道当 cpu 处于 el1 阶段时则只配置 cpu 字节序后则返回。</p> 
+<p>（3）同样的，当cpu处于 el2 时将 el2，el1，el0 配置为小端字节序。</p> 
+<p>（4）当配置了支持虚拟化拓展时，首先通过<code>id_aa64mmfr1_el1</code>寄存的<code>VH</code>字段获悉 cpu 是否支持Virtualization Host Extensions。</p> 
+<p>并将结果写入x2，如果没有配置则默认x2 = 0表示不支持此功能。</p> 
+<p>这里ubfx意思是从x2寄存器的第8bit开始提取4个bit数据并将结果写入x2。此字段对应VH feild。1表示cpu支持，0表示不支持。</p> 
+<p>（5）根据从<code>id_aa64mmfr1_el1</code>获取到的 cpu 是否对 Virtualization Host Extensions 提供支持来设置<code>hcr_el2</code>系统寄存器，该寄存器主要提供虚拟化控制配置以及陷入el2设置（具体 bit 不贴出）<br> <code>HCR_HOST_NVHE_FLAGS</code> 宏定义如下：<code>（arch/arm64/include/asm/kvm_arm.h）</code></p> 
+<pre><code class="prism language-c=">#define HCR_HOST_NVHE_FLAGS (HCR_RW | HCR_API | HCR_APK)
+
+#define HCR_RW_SHIFT	31
+#define HCR_RW		(UL(1) &lt;&lt; HCR_RW_SHIFT) //设置1，el1 执行状态为 aarch64，el0执行状态由 PSTATE 值决定
+
+#define HCR_API		(UL(1) &lt;&lt; 41) //设置1，身份认证相关指令不会陷入el2
+
+#define HCR_APK		(UL(1) &lt;&lt; 40) //同上，认证相关’KEY‘值不会陷入el2
+</code></pre> 
+<p><code>HCR_HOST_VHE_FLAGS</code>宏定义如下：<code>（arch/arm64/include/asm/kvm_arm.h）</code></p> 
+<pre><code class="prism language-c=">#define HCR_HOST_VHE_FLAGS (HCR_RW | HCR_TGE | HCR_E2H)
+
+#define HCR_TGE		(UL(1) &lt;&lt; 27) //控制el0上异常捕捉相关，在el2安全状态激活时会对el0上某些指定捕捉并路由陷入到el2
+
+#define HCR_E2H		(UL(1) &lt;&lt; 34) //设置1，Host虚拟机操作系统运行在el2上被激活
+</code></pre> 
+<p>最终根据x2的值判断是否支持虚拟化而设置hcr_el2系统寄存器，并同步指定执行。</p> 
+<p>第二段如下：</p> 
+<pre><code class="prism language-asm">	/*
+	 * Allow Non-secure EL1 and EL0 to access physical timer and counter.
+	 * This is not necessary for VHE, since the host kernel runs in EL2,
+	 * and EL0 accesses are configured in the later stage of boot process.
+	 * Note that when HCR_EL2.E2H == 1, CNTHCTL_EL2 has the same bit layout
+	 * as CNTKCTL_EL1, and CNTKCTL_EL1 accessing instructions are redefined
+	 * to access CNTHCTL_EL2. This allows the kernel designed to run at EL1
+	 * to transparently mess with the EL0 bits via CNTKCTL_EL1 access in
+	 * EL2.
+	 */
+	cbnz	x2, 1f
+	mrs	x0, cnthctl_el2
+	orr	x0, x0, #3			// Enable EL1 physical timers
+	msr	cnthctl_el2, x0 --------------------------------------------（1）
+1:
+	msr	cntvoff_el2, xzr		// 将虚拟计数counter清零保持与物理counter一致的计数值。
+
+#ifdef CONFIG_ARM_GIC_V3 // 在允许cpu对gic v3直接访问时，配置cpu对gic v3的访问支持。
+	/* GICv3 system register access */
+	mrs	x0, id_aa64pfr0_el1
+	ubfx	x0, x0, #24, #4 -----------------------------------------（2）
+	cbz	x0, 3f // 不支持对gic v3 cpu接口访问则跳过对gic v3的配置。
+
+	mrs_s	x0, SYS_ICC_SRE_EL2
+	orr	x0, x0, #ICC_SRE_EL2_SRE	// Set ICC_SRE_EL2.SRE==1 启用el1和el2访问ICH_*和ICC_*寄存器支持。
+	orr	x0, x0, #ICC_SRE_EL2_ENABLE	// Set ICC_SRE_EL2.Enable==1 非安全el1访问ICC_SRE_EL1不会陷入el2。
+	msr_s	SYS_ICC_SRE_EL2, x0
+	isb					// Make sure SRE is now set
+	mrs_s	x0, SYS_ICC_SRE_EL2		// Read SRE back,
+	tbz	x0, #0, 3f			// and check that it sticks 检查设置情况
+	msr_s	SYS_ICH_HCR_EL2, xzr		// Reset ICC_HCR_EL2 to defaults 若未成功设置，则复位ICH_HCR_EL2为0。
+
+3:
+#endif
+
+	/* Populate ID registers. */
+	mrs	x0, midr_el1 // 提供PE的定义信息和设备id号。
+	mrs	x1, mpidr_el1 // 提供PE多处理器表示ID和分组等信息。
+	msr	vpidr_el2, x0
+	msr	vmpidr_el2, x1 // 这里将midr_el1和mpidr_el1的信息写入到了虚拟配置里供虚拟化使用。
+
+#ifdef CONFIG_COMPAT
+	msr	hstr_el2, xzr			// Disable CP15 traps to EL2 当配置支持aarch32时，兼容aarch32访问cp15不会陷入el2。
+#endif
+</code></pre> 
+<p>（1）当不支持虚拟化相关功能时，配置<code>cnthctl_el2</code>系统寄存器低两位为1表示非安全模式下el1和el0支持访问physical timer registers和physical counter register。</p> 
+<p>当支持虚拟化相关功能时，则是对el0的physical timer registers和physical counter register 访问配置，这里没有设置。</p> 
+<p>（2）<code>id_aa64pfr0_el1</code>寄存器主要提供对 pe 实现特性的一些信息。ubfx 提取位是对 gic 支持的信息，为1表示支持系统寄存器在3.0/4.0版本的gic cpu接口访问。</p> 
+<p>第三段如下：</p> 
+<pre><code class="prism language-asm">	/* EL2 debug */
+	mrs	x1, id_aa64dfr0_el1		// Check ID_AA64DFR0_EL1 PMUVer 提供top level debug系统在aarch64的状态信息
+	sbfx	x0, x1, #8, #4 // sbfx同理ubfx，u表示无符号，sbfx则是有符号位提供，此域提供对PMU支持情况信息
+	cmp	x0, #1
+	b.lt	4f				// Skip if no PMU present
+	mrs	x0, pmcr_el0			// Disable debug access traps
+	ubfx	x0, x0, #11, #5			// to EL2 and allow access to
+4:
+	csel	x3, xzr, x0, lt			// all PMU counters from EL1
+
+	/* Statistical profiling */
+	ubfx	x0, x1, #32, #4			// Check ID_AA64DFR0_EL1 PMSVer
+	cbz	x0, 7f				// Skip if SPE not present
+	cbnz	x2, 6f				// VHE?
+	mrs_s	x4, SYS_PMBIDR_EL1		// If SPE available at EL2,
+	and	x4, x4, #(1 &lt;&lt; SYS_PMBIDR_EL1_P_SHIFT)
+	cbnz	x4, 5f				// then permit sampling of physical
+	mov	x4, #(1 &lt;&lt; SYS_PMSCR_EL2_PCT_SHIFT | \
+		      1 &lt;&lt; SYS_PMSCR_EL2_PA_SHIFT)
+	msr_s	SYS_PMSCR_EL2, x4		// addresses and physical counter
+5:
+	mov	x1, #(MDCR_EL2_E2PB_MASK &lt;&lt; MDCR_EL2_E2PB_SHIFT)
+	orr	x3, x3, x1			// If we don't have VHE, then
+	b	7f				// use EL1&amp;0 translation.
+6:						// For VHE, use EL2 translation
+	orr	x3, x3, #MDCR_EL2_TPMS		// and disable access from EL1
+7:
+	msr	mdcr_el2, x3			// Configure debug traps
+
+	/* LORegions */
+	mrs	x1, id_aa64mmfr1_el1
+	ubfx	x0, x1, #ID_AA64MMFR1_LOR_SHIFT, 4
+	cbz	x0, 1f
+	msr_s	SYS_LORC_EL1, xzr
+1:
+
+	/* Stage-2 translation */
+	msr	vttbr_el2, xzr // 将虚拟vttbr清空属于虚拟化注册功能组和内存虚拟化控制功能组相关内容。
+
+	cbz	x2, install_el2_stub // 如果 支持了虚拟化则直接返回，后续在kvm配置虚拟化相关内容，并设置 cpu boot 在 el2 值保存在x0，后续 kernel 工作在 EL2。
+
+	mov	w0, #BOOT_CPU_MODE_EL2		// This CPU booted in EL2
+	isb
+	ret
+
+install_el2_stub:
+</code></pre> 
+<p><code>el2_setup</code>最后一段：</p> 
+<pre><code class="prism language-asm">// 在不支持虚拟化拓展时，KVM 需要下面这段配置并切换回 el1，后续 KVM 功能通过 hvc 来访问。
+install_el2_stub: // 这里最后在el2对el2和el1早期配置进行设置，并切换至el1。
+	/*
+	 * When VHE is not in use, early init of EL2 and EL1 needs to be
+	 * done here.
+	 * When VHE _is_ in use, EL1 will not be used in the host and
+	 * requires no configuration, and all non-hyp-specific EL2 setup
+	 * will be done via the _EL1 system register aliases in __cpu_setup.
+	 */
+	mov_q	x0, (SCTLR_EL1_RES1 | ENDIAN_SET_EL1)
+	msr	sctlr_el1, x0 // 同处于el1一样，需要在el2时设置好sctlr_el1的值，主要配置大小端字节序。
+
+	/* Coprocessor traps. */ //协处理器访问陷阱设置
+	mov	x0, #0x33ff // 其中大部分位为预留值，主要配置CPACR,CPACR_EL1 SIMD访问时是否陷入el2，这里设置为都不陷入el2。
+	msr	cptr_el2, x0			// Disable copro. traps to EL2
+
+	/* SVE register access */ //可伸缩矢量拓展相关设置
+	mrs	x1, id_aa64pfr0_el1
+	ubfx	x1, x1, #ID_AA64PFR0_SVE_SHIFT, #4
+	cbz	x1, 7f
+
+	bic	x0, x0, #CPTR_EL2_TZ		// Also disable SVE traps
+	msr	cptr_el2, x0			// Disable copro. traps to EL2
+	isb
+	mov	x1, #ZCR_ELx_LEN_MASK		// SVE: Enable full vector
+	msr_s	SYS_ZCR_EL2, x1			// length for EL1.
+
+	/* Hypervisor stub */
+7:	adr_l	x0, __hyp_stub_vectors // __hyp_stub_vectors虚拟化管理异常向量表入口
+	msr	vbar_el2, x0 // 将虚拟化管理异常向量表写入Vector Base Address Register el2
+
+	/* spsr */
+	mov	x0, #(PSR_F_BIT | PSR_I_BIT | PSR_A_BIT | PSR_D_BIT |\
+		      PSR_MODE_EL1h) //mask Debug，SError，IRQ，FIQ，设置了spsr_el2的初始值
+	msr	spsr_el2, x0
+	msr	elr_el2, lr // 当使用eret指令时将会切换至低异常等级，，此时将返回地址写入异常返回指针elr_el2中
+	mov	w0, #BOOT_CPU_MODE_EL2		// This CPU booted in EL2
+	eret // 从此处返回后，cpu将工作在el1级别
+ENDPROC(el2_setup)
+</code></pre> 
+<h5><a id="23_set_cpu_boot_mode_flag_385"></a>2.3 set_cpu_boot_mode_flag</h5> 
+<p>完成<code>el2_setup</code>相关设置后 cpu 此时已经工作在el1等级上（开启虚拟化拓展工作在 el2），并且x0保存了是从 el1 还是 el2 boot 的状态，如下：</p> 
+<pre><code class="prism language-asm=">/*
+ * We need to find out the CPU boot mode long after boot, so we need to
+ * store it in a writable variable.
+ *
+ * This is not in .bss, because we set it sufficiently early that the boot-time
+ * zeroing of .bss would clobber it.
+ */
+ENTRY(__boot_cpu_mode)
+	.long	BOOT_CPU_MODE_EL2 // .long 声明一组数组，每个数占用32位
+	.long	BOOT_CPU_MODE_EL1
+   
+#define BOOT_CPU_MODE_EL1	(0xe11)
+#define BOOT_CPU_MODE_EL2	(0xe12)
+</code></pre> 
+<p>哪一个boot则会在对应地址写入0xe11或者0xe12。<br> 接下来是<code>set_cpu_boot_mode_flag</code>，如下：</p> 
+<pre><code class="prism language-asm">/*
+ * Sets the __boot_cpu_mode flag depending on the CPU boot mode passed
+ * in w0. See arch/arm64/include/asm/virt.h for more info.
+ */
+set_cpu_boot_mode_flag:
+	adr_l	x1, __boot_cpu_mode
+	cmp	w0, #BOOT_CPU_MODE_EL2
+	b.ne	1f
+	add	x1, x1, #4
+1:	str	w0, [x1]			// This CPU has booted in EL1
+	dmb	sy
+	dc	ivac, x1			// Invalidate potentially stale cache line
+	ret
+ENDPROC(set_cpu_boot_mode_flag)
+</code></pre> 
+<p>这个段功能主要是如上面描述通过x0保存的值判断cpu boot时是从el1还是el2，写入完成后，最终可在 c代码中通过下面代码访问 boot 级别，同样的还有判断是否支持 kvm：</p> 
+<pre><code class="prism language-c"><span class="token comment">/* Reports the availability of HYP mode */</span>
+<span class="token keyword">static</span> <span class="token keyword">inline</span> bool <span class="token function">is_hyp_mode_available</span><span class="token punctuation">(</span><span class="token keyword">void</span><span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token keyword">return</span> <span class="token punctuation">(</span>__boot_cpu_mode<span class="token punctuation">[</span><span class="token number">0</span><span class="token punctuation">]</span> <span class="token operator">==</span> BOOT_CPU_MODE_EL2 <span class="token operator">&amp;&amp;</span>
+		__boot_cpu_mode<span class="token punctuation">[</span><span class="token number">1</span><span class="token punctuation">]</span> <span class="token operator">==</span> BOOT_CPU_MODE_EL2<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+<span class="token comment">/* Check if the bootloader has booted CPUs in different modes */</span>
+<span class="token keyword">static</span> <span class="token keyword">inline</span> bool <span class="token function">is_hyp_mode_mismatched</span><span class="token punctuation">(</span><span class="token keyword">void</span><span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token keyword">return</span> __boot_cpu_mode<span class="token punctuation">[</span><span class="token number">0</span><span class="token punctuation">]</span> <span class="token operator">!=</span> __boot_cpu_mode<span class="token punctuation">[</span><span class="token number">1</span><span class="token punctuation">]</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+<span class="token keyword">static</span> <span class="token keyword">inline</span> bool <span class="token function">is_kernel_in_hyp_mode</span><span class="token punctuation">(</span><span class="token keyword">void</span><span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token keyword">return</span> <span class="token function">read_sysreg</span><span class="token punctuation">(</span>CurrentEL<span class="token punctuation">)</span> <span class="token operator">==</span> CurrentEL_EL2<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<h4><a id="3__441"></a>3 创建启动阶段页表</h4> 
+<p>当从 bootloader 进入 kernel 时根据 protocol 规定mmu和d-cahe是关闭的，为了提升性能，加快初始化速度，内核需要在某个阶段尽快开启mmu和cache，而在开启之前必须先设定好页表。</p> 
+<p>通常情况下，按照传统来 arm64 的设定是4K页表，48 bit 位的设定，此部分也是按照这个设定来进行分析。</p> 
+<p>关于mmu和cache相关详细描述可以参考：<a href="http://www.wowotech.net/armv8a_arch/create_page_tables.html" rel="nofollow">蜗窝科技的创建启动阶段的页表</a>。</p> 
+<p>在启动阶段主要有三个页表需要建立，第一个是<code>idmap_pg_dir</code>，这个建立一致性映射，也就是为了从物理地址平滑切换至虚拟地址时所做的映射段，第二个是<code>init_pg_dir</code>，这个建立整个内核镜像的映射包括text段，data，rodata，bss等。这样后续所有内核代码可以正常运行。第三个是<code>swapper_pg_dir</code>，这个主要是在boot从cpu激活mmu时及后续fixmap用的映射,也是内核的真正工作页表，这里我们不用关心。</p> 
+<p>在arm64内核配置中kernel支持4K和64K，3级及4级页表配置（同时也支持 16KB 映射，不常用），如下：</p> 
+<pre><code class="prism language-shell">AArch64 Linux memory layout with 4KB pages + <span class="token number">3</span> levels:
+
+Start			End			Size		Use
+-----------------------------------------------------------------------
+0000000000000000	0000007fffffffff	 512GB		user
+ffffff8000000000	ffffffffffffffff	 512GB		kernel
+
+
+AArch64 Linux memory layout with 4KB pages + <span class="token number">4</span> levels:
+
+Start			End			Size		Use
+-----------------------------------------------------------------------
+0000000000000000	0000ffffffffffff	 256TB		user
+ffff000000000000	ffffffffffffffff	 256TB		kernel
+
+
+AArch64 Linux memory layout with 64KB pages + <span class="token number">2</span> levels:
+
+Start			End			Size		Use
+-----------------------------------------------------------------------
+0000000000000000	000003ffffffffff	   4TB		user
+fffffc0000000000	ffffffffffffffff	   4TB		kernel
+
+
+AArch64 Linux memory layout with 64KB pages + <span class="token number">3</span> levels:
+
+Start			End			Size		Use
+-----------------------------------------------------------------------
+0000000000000000	0000ffffffffffff	 256TB		user
+ffff000000000000	ffffffffffffffff	 256TB		kernel
+
+    
+Translation table lookup with 4KB pages:
+
++--------+--------+--------+--------+--------+--------+--------+--------+
+<span class="token operator">|</span><span class="token number">63</span>    <span class="token number">56</span><span class="token operator">|</span><span class="token number">55</span>    <span class="token number">48</span><span class="token operator">|</span><span class="token number">47</span>    <span class="token number">40</span><span class="token operator">|</span><span class="token number">39</span>    <span class="token number">32</span><span class="token operator">|</span><span class="token number">31</span>    <span class="token number">24</span><span class="token operator">|</span><span class="token number">23</span>    <span class="token number">16</span><span class="token operator">|</span><span class="token number">15</span>     <span class="token number">8</span><span class="token operator">|</span><span class="token number">7</span>      <span class="token number">0</span><span class="token operator">|</span>
++--------+--------+--------+--------+--------+--------+--------+--------+
+ <span class="token operator">|</span>                 <span class="token operator">|</span>         <span class="token operator">|</span>         <span class="token operator">|</span>         <span class="token operator">|</span>         <span class="token operator">|</span>
+ <span class="token operator">|</span>                 <span class="token operator">|</span>         <span class="token operator">|</span>         <span class="token operator">|</span>         <span class="token operator">|</span>         <span class="token function">v</span>
+ <span class="token operator">|</span>                 <span class="token operator">|</span>         <span class="token operator">|</span>         <span class="token operator">|</span>         <span class="token operator">|</span>   <span class="token punctuation">[</span><span class="token number">11</span>:0<span class="token punctuation">]</span>  in-page offset
+ <span class="token operator">|</span>                 <span class="token operator">|</span>         <span class="token operator">|</span>         <span class="token operator">|</span>         +-<span class="token operator">&gt;</span> <span class="token punctuation">[</span><span class="token number">20</span>:12<span class="token punctuation">]</span> L3 index
+ <span class="token operator">|</span>                 <span class="token operator">|</span>         <span class="token operator">|</span>         +-----------<span class="token operator">&gt;</span> <span class="token punctuation">[</span><span class="token number">29</span>:21<span class="token punctuation">]</span> L2 index
+ <span class="token operator">|</span>                 <span class="token operator">|</span>         +---------------------<span class="token operator">&gt;</span> <span class="token punctuation">[</span><span class="token number">38</span>:30<span class="token punctuation">]</span> L1 index
+ <span class="token operator">|</span>                 +-------------------------------<span class="token operator">&gt;</span> <span class="token punctuation">[</span><span class="token number">47</span>:39<span class="token punctuation">]</span> L0 index
+ +-------------------------------------------------<span class="token operator">&gt;</span> <span class="token punctuation">[</span><span class="token number">63</span><span class="token punctuation">]</span> TTBR0/1
+
+
+Translation table lookup with 64KB pages:
+
++--------+--------+--------+--------+--------+--------+--------+--------+
+<span class="token operator">|</span><span class="token number">63</span>    <span class="token number">56</span><span class="token operator">|</span><span class="token number">55</span>    <span class="token number">48</span><span class="token operator">|</span><span class="token number">47</span>    <span class="token number">40</span><span class="token operator">|</span><span class="token number">39</span>    <span class="token number">32</span><span class="token operator">|</span><span class="token number">31</span>    <span class="token number">24</span><span class="token operator">|</span><span class="token number">23</span>    <span class="token number">16</span><span class="token operator">|</span><span class="token number">15</span>     <span class="token number">8</span><span class="token operator">|</span><span class="token number">7</span>      <span class="token number">0</span><span class="token operator">|</span>
++--------+--------+--------+--------+--------+--------+--------+--------+
+ <span class="token operator">|</span>                 <span class="token operator">|</span>    <span class="token operator">|</span>               <span class="token operator">|</span>              <span class="token operator">|</span>
+ <span class="token operator">|</span>                 <span class="token operator">|</span>    <span class="token operator">|</span>               <span class="token operator">|</span>              <span class="token function">v</span>
+ <span class="token operator">|</span>                 <span class="token operator">|</span>    <span class="token operator">|</span>               <span class="token operator">|</span>            <span class="token punctuation">[</span><span class="token number">15</span>:0<span class="token punctuation">]</span>  in-page offset
+ <span class="token operator">|</span>                 <span class="token operator">|</span>    <span class="token operator">|</span>               +----------<span class="token operator">&gt;</span> <span class="token punctuation">[</span><span class="token number">28</span>:16<span class="token punctuation">]</span> L3 index
+ <span class="token operator">|</span>                 <span class="token operator">|</span>    +--------------------------<span class="token operator">&gt;</span> <span class="token punctuation">[</span><span class="token number">41</span>:29<span class="token punctuation">]</span> L2 index
+ <span class="token operator">|</span>                 +-------------------------------<span class="token operator">&gt;</span> <span class="token punctuation">[</span><span class="token number">47</span>:42<span class="token punctuation">]</span> L1 index
+ +-------------------------------------------------<span class="token operator">&gt;</span> <span class="token punctuation">[</span><span class="token number">63</span><span class="token punctuation">]</span> TTBR0/1
+</code></pre> 
+<p>我们使用48bit位和4K页表则共需要PGD,PUD,PMD,PTE四级。页表创建第一段代码如下：</p> 
+<pre><code class="prism language-asm">/*
+ * Setup the initial page tables. We only setup the barest amount which is
+ * required to get the kernel running. The following sections are required:
+ *   - identity mapping to enable the MMU (low address, TTBR0)
+ *   - first few MB of the kernel linear mapping to jump to once the MMU has
+ *     been enabled
+ */
+__create_page_tables:
+	mov	x28, lr
+
+	/*
+	 * Invalidate the init page tables to avoid potential dirty cache lines
+	 * being evicted. Other page tables are allocated in rodata as part of
+	 * the kernel image, and thus are clean to the PoC per the boot
+	 * protocol.
+	 */
+	adrp	x0, init_pg_dir 
+	adrp	x1, init_pg_end
+	sub	x1, x1, x0  			// 首先无效化init_pg_dir所在的cache line。
+	bl	__inval_dcache_area
+
+	/*
+	 * Clear the init page tables.
+	 */
+	adrp	x0, init_pg_dir
+	adrp	x1, init_pg_end
+	sub	x1, x1, x0
+1:	stp	xzr, xzr, [x0], #16
+	stp	xzr, xzr, [x0], #16
+	stp	xzr, xzr, [x0], #16
+	stp	xzr, xzr, [x0], #16
+	subs	x1, x1, #64 // 循环清空pgd init_pg_dir
+	b.ne	1b
+
+	mov	x7, SWAPPER_MM_MMUFLAGS --------------------------------------（1）
+</code></pre> 
+<p>（1）<code>SWAPPER_MM_MMUFLAGS</code>宏定义如下：<code>（arch/arm64/include/asm/kernel-pgtable.h）</code></p> 
+<pre><code class="prism language-c"><span class="token comment">/*
+ * The linear mapping and the start of memory are both 2M aligned (per
+ * the arm64 booting.txt requirements). Hence we can use section mapping
+ * with 4K (section size = 2M) but not with 16K (section size = 32M) or
+ * 64K (section size = 512M).
+ */</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">ifdef</span> <span class="token expression">CONFIG_ARM64_4K_PAGES</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name">ARM64_SWAPPER_USES_SECTION_MAPS</span> <span class="token expression"><span class="token number">1</span> <span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span>（<span class="token number">2</span>）</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">else</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name">ARM64_SWAPPER_USES_SECTION_MAPS</span> <span class="token expression"><span class="token number">0</span></span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">if</span> <span class="token expression">ARM64_SWAPPER_USES_SECTION_MAPS</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name">SWAPPER_MM_MMUFLAGS</span>	<span class="token expression"><span class="token punctuation">(</span><span class="token function">PMD_ATTRINDX</span><span class="token punctuation">(</span>MT_NORMAL<span class="token punctuation">)</span> <span class="token operator">|</span> SWAPPER_PMD_FLAGS<span class="token punctuation">)</span> <span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">-</span>（<span class="token number">3</span>）</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">else</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name">SWAPPER_MM_MMUFLAGS</span>	<span class="token expression"><span class="token punctuation">(</span><span class="token function">PTE_ATTRINDX</span><span class="token punctuation">(</span>MT_NORMAL<span class="token punctuation">)</span> <span class="token operator">|</span> SWAPPER_PTE_FLAGS<span class="token punctuation">)</span></span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+
+<span class="token comment">/*
+ * Initial memory map attributes.
+ */</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name">SWAPPER_PTE_FLAGS</span>	<span class="token expression"><span class="token punctuation">(</span>PTE_TYPE_PAGE <span class="token operator">|</span> PTE_AF <span class="token operator">|</span> PTE_SHARED<span class="token punctuation">)</span>	<span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">-</span>（<span class="token number">4</span>）</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name">SWAPPER_PMD_FLAGS</span>	<span class="token expression"><span class="token punctuation">(</span>PMD_TYPE_SECT <span class="token operator">|</span> PMD_SECT_AF <span class="token operator">|</span> PMD_SECT_S<span class="token punctuation">)</span>  <span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span>（<span class="token number">4</span>）</span></span>
+</code></pre> 
+<p>（2）当我们使用4K page时则映射时可使用段映射也就是说，当对内核进行映射时可在pmd设置页表属性为block pagetable这样就可以提前结束地址翻译并使每一个条目寻址可达2M方便内核映射。<br> （3）内核使用的几种memory属性如下：</p> 
+<pre><code class="prism language-c"><span class="token comment">/*
+ * Memory types available.
+ */</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name">MT_DEVICE_nGnRnE</span>    <span class="token expression"><span class="token number">0</span> <span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">-</span> <span class="token number">0x00</span></span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name">MT_DEVICE_nGnRE</span>     <span class="token expression"><span class="token number">1</span> <span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">-</span> <span class="token number">0x04</span></span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name">MT_DEVICE_GRE</span>       <span class="token expression"><span class="token number">2</span> <span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">-</span> <span class="token number">0x0c</span></span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name">MT_NORMAL_NC</span>        <span class="token expression"><span class="token number">3</span> <span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">-</span> <span class="token number">0x44</span></span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name">MT_NORMAL</span>           <span class="token expression"><span class="token number">4</span> <span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">-</span> <span class="token number">0xff</span></span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name">MT_NORMAL_WT</span>        <span class="token expression"><span class="token number">5</span> <span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">-</span> <span class="token number">0xbb</span> <span class="token punctuation">(</span>inner<span class="token operator">/</span>outer Write<span class="token operator">-</span>Through<span class="token punctuation">)</span></span></span>
+</code></pre> 
+<p><code>MT_DEVICE_*</code>属性的不会经过cache并可设置G，R，E相关属性具体同样参考上面链接。最终上述几种属性在页表中通过页表attr[4,2]来设置访问。</p> 
+<p>（4）<code>SWAPPER_PTE_FLAGS</code>定义为<code>#define PMD_TYPE_SECT (_AT(pmdval_t, 1) &lt;&lt; 0)</code>也就是说页表的 bit0 设置为1，bit1 为 0 表示此页表可用并且为block pagetable（bit1为1是Table descriptor）所以当使用段映射内核时在PMD设置页表为block pagetable则后面不需要pte表，所以在<code>vmlinux.lds.S</code>中<code>idmap_pg_dir</code>只分配了三个页表即可。而<code>SWAPPER_PTE_FLAGS</code>定义正好是bit1 为1表示</p> 
+<p><code>PTE_AF</code>和<code>PMD_SECT_AF</code>都是指向bit10为1 access flag的意思表示该memory block（或者page）是否被最近被访问过。当然，这需要软件的协助。如果该bit被设置为0，当程序第一次访问的时候会产生异常，软件需要将给bit设置为1，之后再访问该page的时候，就不会产生异常了。不过当软件认为该page已经old enough的时候，也可以clear这个bit，表示最近都没有访问该page。这个flag是硬件对page reclaim算法的支持，找到最近不常访问的那些page。当然在这个场景下，我们没有必要enable这个特性，因此将其设定为1。</p> 
+<p><code>PTE_SHARED</code>和<code>PMD_SECT_S</code>都是指向bit8 bit9为3表示inner/outer都为Write-Back Cacheable。</p> 
+<p>至此<code>SWAPPER_MM_MMUFLAGS</code>在这里就表示完了，这个值会写入x7寄存器并在<code>map_memory</code>时写入block pagetable对应位置以设置block描述符属性。</p> 
+<p>关于 arm64 页表配置，属性，相关stage 1和stage 2描述可以参考<a href="https://blog.csdn.net/wujianyongw4/article/details/104590950">armv8虚拟内存架构简述</a>。<br> 页表创建的第二段：</p> 
+<pre><code class="prism language-asm">	/*
+	 * Create the identity mapping.
+	 */
+	adrp	x0, idmap_pg_dir
+	adrp	x3, __idmap_text_start		// __pa(__idmap_text_start) ------------- （1）
+
+#ifdef CONFIG_ARM64_USER_VA_BITS_52 // 虚拟地址支持 52 bit，未分析此配置
+	mrs_s	x6, SYS_ID_AA64MMFR2_EL1
+	and	x6, x6, #(0xf &lt;&lt; ID_AA64MMFR2_LVA_SHIFT)
+	mov	x5, #52
+	cbnz	x6, 1f
+#endif
+	mov	x5, #VA_BITS
+1:
+	adr_l	x6, vabits_user
+	str	x5, [x6] // 将使用多少位bit VA_BITS保存在变量vabits_user里。
+	dmb	sy
+	dc	ivac, x6		// Invalidate potentially stale cache line
+
+	/*
+	 * VA_BITS may be too small to allow for an ID mapping to be created
+	 * that covers system RAM if that is located sufficiently high in the
+	 * physical address space. So for the ID map, use an extended virtual
+	 * range in that case, and configure an additional translation level
+	 * if needed.
+	 *
+	 * Calculate the maximum allowed value for TCR_EL1.T0SZ so that the
+	 * entire ID map region can be mapped. As T0SZ == (64 - #bits used),
+	 * this number conveniently equals the number of leading zeroes in
+	 * the physical address of __idmap_text_end.
+	 */
+	adrp	x5, __idmap_text_end
+	clz	x5, x5
+	cmp	x5, TCR_T0SZ(VA_BITS)	// default T0SZ small enough? 这里用于获取t0sz大小是否满足当前映射
+	b.ge	1f			// .. then skip VA range extension
+
+	adr_l	x6, idmap_t0sz
+	str	x5, [x6]
+	dmb	sy
+	dc	ivac, x6		// Invalidate potentially stale cache line
+
+#if (VA_BITS &lt; 48) // 未分析不是BIT 48情况
+#define EXTRA_SHIFT	(PGDIR_SHIFT + PAGE_SHIFT - 3)
+#define EXTRA_PTRS	(1 &lt;&lt; (PHYS_MASK_SHIFT - EXTRA_SHIFT))
+
+	/*
+	 * If VA_BITS &lt; 48, we have to configure an additional table level.
+	 * First, we have to verify our assumption that the current value of
+	 * VA_BITS was chosen such that all translation levels are fully
+	 * utilised, and that lowering T0SZ will always result in an additional
+	 * translation level to be configured.
+	 */
+#if VA_BITS != EXTRA_SHIFT
+#error "Mismatch between VA_BITS and page size/number of translation levels"
+#endif
+
+	mov	x4, EXTRA_PTRS
+	create_table_entry x0, x3, EXTRA_SHIFT, x4, x5, x6
+#else
+	/*
+	 * If VA_BITS == 48, we don't have to configure an additional
+	 * translation level, but the top-level table has more entries.
+	 */
+	mov	x4, #1 &lt;&lt; (PHYS_MASK_SHIFT - PGDIR_SHIFT)
+	str_l	x4, idmap_ptrs_per_pgd, x5
+#endif
+1: -----------------------------------------------------------------------（2）
+</code></pre> 
+<p>（1）这里将<code>__idmap_text_start</code>的物理地址取出，并在<code>map_memory</code>中将<code>__idmap_text_start</code>的虚拟地址设置为和物理地址一致建立一致性映射。<br> （2）当我们使用 48bit 并满足映射条件时，会跳转至此标号开始<code>map_memory</code></p> 
+<p>页表创建的最后一段：</p> 
+<pre><code class="prism language-asm">1:
+	ldr_l	x4, idmap_ptrs_per_pgd
+	mov	x5, x3				// __pa(__idmap_text_start)
+	adr_l	x6, __idmap_text_end		// __pa(__idmap_text_end)
+
+	map_memory x0, x1, x3, x6, x7, x3, x4, x10, x11, x12, x13, x14 ----------------（1）
+
+	/*
+	 * Map the kernel image (starting with PHYS_OFFSET).
+	 */
+	adrp	x0, init_pg_dir
+	mov_q	x5, KIMAGE_VADDR + TEXT_OFFSET	// compile time __va(_text)
+	add	x5, x5, x23			// add KASLR displacement
+	mov	x4, PTRS_PER_PGD
+	adrp	x6, _end			// runtime __pa(_end)
+	adrp	x3, _text			// runtime __pa(_text)
+	sub	x6, x6, x3			// _end - _text
+	add	x6, x6, x5			// runtime __va(_end)
+
+	map_memory x0, x1, x5, x6, x7, x3, x4, x10, x11, x12, x13, x14 ----------------（1）
+
+	/*
+	 * Since the page tables have been populated with non-cacheable
+	 * accesses (MMU disabled), invalidate the idmap and swapper page
+	 * tables again to remove any speculatively loaded cache lines.
+	 */
+	adrp	x0, idmap_pg_dir
+	adrp	x1, init_pg_end
+	sub	x1, x1, x0
+	dmb	sy
+	bl	__inval_dcache_area
+
+	ret	x28 ----------------------------------------------------------------------（3）
+ENDPROC(__create_page_tables)
+	.ltorg
+</code></pre> 
+<p>（1）此处完成一致性<code>idmap_pg_dir</code>映射，具体映射算法可参见<code>（arch/arm64/kernel/head.S）</code>中定义宏。带入寄存器参数描述：</p> 
+<pre><code class="prism language-asm">/*
+ * Map memory for specified virtual address range. Each level of page table needed supports
+ * multiple entries. If a level requires n entries the next page table level is assumed to be
+ * formed from n pages.
+ *
+ *	tbl:	location of page table
+ *	rtbl:	address to be used for first level page table entry (typically tbl + PAGE_SIZE)
+ *	vstart:	start address to map
+ *	vend:	end address to map - we map [vstart, vend]
+ *	flags:	flags to use to map last level entries
+ *	phys:	physical address corresponding to vstart - physical memory is contiguous
+ *	pgds:	the number of pgd entries
+ *
+ * Temporaries:	istart, iend, tmp, count, sv - these need to be different registers
+ * Preserves:	vstart, vend, flags
+ * Corrupts:	tbl, rtbl, istart, iend, tmp, count, sv
+ */
+.macro map_memory, tbl, rtbl, vstart, vend, flags, phys, pgds, istart, iend, tmp, count, sv
+ 
+idmap_pg_dir map：
+map_memory x0, x1, x3, x6, x7, x3, x4, x10, x11, x12, x13, x14
+x0 idmap_pg_dir (phy)
+x1 init_pg_end (phy)
+x5 __idmap_text_start (phy)
+x6 __idmap_text_end (phy)
+x7 SWAPPER_MM_MMUFLAGS (flags)
+x3 __idmap_text_start (phy)
+x4 idmap_ptrs_per_pgd (页表条目数)
+x10
+x11
+x12
+x13
+x14
+</code></pre> 
+<p>（2）此处完成内核映射，具体映射算法可参见<code>（arch/arm64/kernel/head.S）</code>中定义宏。带入寄存器参数描述：</p> 
+<pre><code class="prism language-asm">map_memory x0, x1, x5, x6, x7, x3, x4, x10, x11, x12, x13, x14
+x0 init_pg_dir (phy)
+x1 
+x5 _text (virt)
+x6 _end (virt)
+x7 SWAPPER_MM_MMUFLAGS (flags)
+x3 _text (phy)
+x4 PTRS_PER_PGD
+x10
+x11
+x12
+x13
+x14
+</code></pre> 
+<p>（3）完成上述两段映射后即可返回继续后续cpu初始化并开启mmu和cache。</p> 
+<p>此处有一个<code>.ltorg</code>伪指令，LTORG伪指令通常放在无条件跳转指令之后，或者子程序返回指令之后，这样处理器就不会错误的将文字池中的数据当作指令来执行了。</p> 
+<h4><a id="4_mmucpu_768"></a>4 为开启mmu进行的cpu初始化</h4> 
+<p>在设置好页表后，需要对<code>tcr_el1</code>进行配置以便开启mmu，首先是代码：</p> 
+<pre><code class="prism language-asm">/*
+ *	__cpu_setup
+ *
+ *	Initialise the processor for turning the MMU on.  Return in x0 the
+ *	value of the SCTLR_EL1 register.
+ */
+	.pushsection ".idmap.text", "awx"
+ENTRY(__cpu_setup)
+	tlbi	vmalle1				// Invalidate local TLB --------------------------------（1）
+	dsb	nsh
+
+	mov	x0, #3 &lt;&lt; 20
+	msr	cpacr_el1, x0			// Enable FP/ASIMD ------------------------------------（2）
+	mov	x0, #1 &lt;&lt; 12			// Reset mdscr_el1 and disable
+	msr	mdscr_el1, x0			// access to the DCC from EL0 --------------------------（3）
+	isb					// Unmask debug exceptions now,
+	enable_dbg				// since this is per-cpu -----------------------------------（4）
+	reset_pmuserenr_el0 x0			// Disable PMU access from EL0 ---------------------（5）
+	/*
+	 * Memory region attributes for LPAE:
+	 *
+	 *   n = AttrIndx[2:0]
+	 *			n	MAIR
+	 *   DEVICE_nGnRnE	000	00000000
+	 *   DEVICE_nGnRE	001	00000100
+	 *   DEVICE_GRE		010	00001100
+	 *   NORMAL_NC		011	01000100
+	 *   NORMAL		100	11111111
+	 *   NORMAL_WT		101	10111011
+	 */
+	ldr	x5, =MAIR(0x00, MT_DEVICE_nGnRnE) | \
+		     MAIR(0x04, MT_DEVICE_nGnRE) | \
+		     MAIR(0x0c, MT_DEVICE_GRE) | \
+		     MAIR(0x44, MT_NORMAL_NC) | \
+		     MAIR(0xff, MT_NORMAL) | \
+		     MAIR(0xbb, MT_NORMAL_WT) ------------------------------------------------（6）
+	msr	mair_el1, x5
+	/*
+	 * Prepare SCTLR
+	 */
+	mov_q	x0, SCTLR_EL1_SET --------------------------------------------------------（7）
+	/*
+	 * Set/prepare TCR and TTBR. We use 512GB (39-bit) address range for
+	 * both user and kernel.
+	 */
+	ldr	x10, =TCR_TxSZ(VA_BITS) | TCR_CACHE_FLAGS | TCR_SMP_FLAGS | \
+			TCR_TG_FLAGS | TCR_KASLR_FLAGS | TCR_ASID16 | \
+			TCR_TBI0 | TCR_A1 | TCR_KASAN_FLAGS --------------------------------------（8）
+
+#ifdef CONFIG_ARM64_USER_VA_BITS_52 // 未使用未分析
+	ldr_l		x9, vabits_user
+	sub		x9, xzr, x9
+	add		x9, x9, #64
+#else
+	ldr_l		x9, idmap_t0sz
+#endif
+	tcr_set_t0sz	x10, x9 // tcr_set_t0sz是一个宏作用是将x9中低6位放入x10低六位，也就是更新VA_BITS的值。
+
+	/*
+	 * Set the IPS bits in TCR_EL1.
+	 */
+	tcr_compute_pa_size x10, #TCR_IPS_SHIFT, x5, x6 -----------------------------------（9）
+#ifdef CONFIG_ARM64_HW_AFDBM ----------------------------------------------------------（10）
+	/*
+	 * Enable hardware update of the Access Flags bit.
+	 * Hardware dirty bit management is enabled later,
+	 * via capabilities.
+	 */
+	mrs	x9, ID_AA64MMFR1_EL1
+	and	x9, x9, #0xf
+	cbz	x9, 1f
+	orr	x10, x10, #TCR_HA		// hardware Access flag update
+1:
+#endif	/* CONFIG_ARM64_HW_AFDBM */
+	msr	tcr_el1, x10 ------------------------------------------------------------------（11）
+	ret					// return to head.S
+ENDPROC(__cpu_setup)
+</code></pre> 
+<p>（1）无效化本cpu所有条目tlbs，包括Global entries和Non-global entries with any ASID。<br> （2）与SIMD相关配置，当执行浮点计算相关指令时不会陷入el1。（el0 访问 Q0, Q1…Qx 等寄存器不会陷入 el1）<br> （3）支持从el0访问DCC寄存器<br> （4）<code>enable_dbg</code>是一个宏功能就是把DAIF中D清除以支持debug功能。</p> 
+<pre><code class="prism language-c">	<span class="token punctuation">.</span>macro	enable_dbg
+	msr	daifclr<span class="token punctuation">,</span> #<span class="token number">8</span>
+	<span class="token punctuation">.</span>endm
+</code></pre> 
+<p>（5）同样的，关闭从el0访问pmu相关寄存器，访问会陷入el1。<br> （6）此表在第三部分讲述了含义，页表通过attr[2:0]来访问memory属性，如下：<br> <img src="https://images2.imgbox.com/5f/49/7gVbFQqA_o.png" alt="在这里插入图片描述"></p> 
+<p>（7）<code>SCTLR_EL1_SET</code>这是一个预备的<code>sctlr_el1</code>值会在后续设置，<code>SCTLR_EL1_SET</code>定义如下：<code>（arch/arm64/include/asm/sysreg.h）</code></p> 
+<pre><code class="prism language-c"><span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name">SCTLR_EL1_SET</span>	<span class="token expression"><span class="token punctuation">(</span>SCTLR_ELx_M    <span class="token operator">|</span> SCTLR_ELx_C    <span class="token operator">|</span> SCTLR_ELx_SA   <span class="token operator">|</span></span><span class="token punctuation">\</span>
+			 <span class="token expression">SCTLR_EL1_SA0  <span class="token operator">|</span> SCTLR_EL1_SED  <span class="token operator">|</span> SCTLR_ELx_I    <span class="token operator">|</span></span><span class="token punctuation">\</span>
+			 <span class="token expression">SCTLR_EL1_DZE  <span class="token operator">|</span> SCTLR_EL1_UCT                   <span class="token operator">|</span></span><span class="token punctuation">\</span>
+			 <span class="token expression">SCTLR_EL1_NTWE <span class="token operator">|</span> SCTLR_ELx_IESB <span class="token operator">|</span> SCTLR_EL1_SPAN <span class="token operator">|</span></span><span class="token punctuation">\</span>
+			 <span class="token expression">ENDIAN_SET_EL1 <span class="token operator">|</span> SCTLR_EL1_UCI  <span class="token operator">|</span> SCTLR_EL1_RES1<span class="token punctuation">)</span></span></span>
+
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name">SCTLR_ELx_M</span>	<span class="token expression"><span class="token punctuation">(</span><span class="token function">_BITUL</span><span class="token punctuation">(</span><span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">)</span> </span><span class="token comment">// 激活mmu</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name">SCTLR_ELx_C</span>	<span class="token expression"><span class="token punctuation">(</span><span class="token function">_BITUL</span><span class="token punctuation">(</span><span class="token number">2</span><span class="token punctuation">)</span><span class="token punctuation">)</span> </span><span class="token comment">// 激活D-cahce</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name">SCTLR_ELx_SA</span>	<span class="token expression"><span class="token punctuation">(</span><span class="token function">_BITUL</span><span class="token punctuation">(</span><span class="token number">3</span><span class="token punctuation">)</span><span class="token punctuation">)</span> </span><span class="token comment">// 激活el1 sp对齐检查（16byte对齐）</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name">SCTLR_EL1_SA0</span>		<span class="token expression"><span class="token punctuation">(</span><span class="token function">_BITUL</span><span class="token punctuation">(</span><span class="token number">4</span><span class="token punctuation">)</span><span class="token punctuation">)</span> </span><span class="token comment">// 激活el0 sp对齐检查（16byte对齐）</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name">SCTLR_EL1_SED</span>		<span class="token expression"><span class="token punctuation">(</span><span class="token function">_BITUL</span><span class="token punctuation">(</span><span class="token number">8</span><span class="token punctuation">)</span><span class="token punctuation">)</span> </span><span class="token comment">// 在el0不能使用aarch32指令</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name">SCTLR_ELx_I</span>	<span class="token expression"><span class="token punctuation">(</span><span class="token function">_BITUL</span><span class="token punctuation">(</span><span class="token number">12</span><span class="token punctuation">)</span><span class="token punctuation">)</span> </span><span class="token comment">// 激活I-cache</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name">SCTLR_EL1_DZE</span>		<span class="token expression"><span class="token punctuation">(</span><span class="token function">_BITUL</span><span class="token punctuation">(</span><span class="token number">14</span><span class="token punctuation">)</span><span class="token punctuation">)</span> </span><span class="token comment">// 允许el0使用dc zva</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name">SCTLR_EL1_UCT</span>		<span class="token expression"><span class="token punctuation">(</span><span class="token function">_BITUL</span><span class="token punctuation">(</span><span class="token number">15</span><span class="token punctuation">)</span><span class="token punctuation">)</span> </span><span class="token comment">// 允许el0访问ctr_el0</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name">SCTLR_EL1_NTWE</span>		<span class="token expression"><span class="token punctuation">(</span><span class="token function">_BITUL</span><span class="token punctuation">(</span><span class="token number">18</span><span class="token punctuation">)</span><span class="token punctuation">)</span> </span><span class="token comment">// 允许el0使用wfe指令</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name">SCTLR_ELx_IESB</span>	<span class="token expression"><span class="token punctuation">(</span><span class="token function">_BITUL</span><span class="token punctuation">(</span><span class="token number">21</span><span class="token punctuation">)</span><span class="token punctuation">)</span> </span><span class="token comment">// 隐式访问同步错误事件激活</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name">SCTLR_EL1_SPAN</span>		<span class="token expression"><span class="token punctuation">(</span><span class="token function">_BITUL</span><span class="token punctuation">(</span><span class="token number">23</span><span class="token punctuation">)</span><span class="token punctuation">)</span> </span><span class="token comment">// 在el1异常时，PSTATE.PAN的值不变</span></span>
+
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">ifdef</span> <span class="token expression">CONFIG_CPU_BIG_ENDIAN</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name">ENDIAN_SET_EL1</span>		<span class="token expression"><span class="token punctuation">(</span>SCTLR_EL1_E0E <span class="token operator">|</span> SCTLR_ELx_EE<span class="token punctuation">)</span> </span><span class="token comment">//el1和el0大小端设置</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name">ENDIAN_CLEAR_EL1</span>	<span class="token expression"><span class="token number">0</span></span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">else</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name">ENDIAN_SET_EL1</span>		<span class="token expression"><span class="token number">0</span></span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name">ENDIAN_CLEAR_EL1</span>	<span class="token expression"><span class="token punctuation">(</span>SCTLR_EL1_E0E <span class="token operator">|</span> SCTLR_ELx_EE<span class="token punctuation">)</span></span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name">SCTLR_EL1_UCI</span>		<span class="token expression"><span class="token punctuation">(</span><span class="token function">_BITUL</span><span class="token punctuation">(</span><span class="token number">26</span><span class="token punctuation">)</span><span class="token punctuation">)</span> </span><span class="token comment">// el0使用高速缓存指令不会陷入el1。</span></span>
+
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name">SCTLR_EL1_RES1</span>	<span class="token expression"><span class="token punctuation">(</span><span class="token punctuation">(</span><span class="token function">_BITUL</span><span class="token punctuation">(</span><span class="token number">11</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token operator">|</span> <span class="token punctuation">(</span><span class="token function">_BITUL</span><span class="token punctuation">(</span><span class="token number">20</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token operator">|</span> <span class="token punctuation">(</span><span class="token function">_BITUL</span><span class="token punctuation">(</span><span class="token number">22</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token operator">|</span> <span class="token punctuation">(</span><span class="token function">_BITUL</span><span class="token punctuation">(</span><span class="token number">28</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token operator">|</span> </span><span class="token punctuation">\</span>
+			 <span class="token expression"><span class="token punctuation">(</span><span class="token function">_BITUL</span><span class="token punctuation">(</span><span class="token number">29</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">)</span> </span><span class="token comment">// 预留值</span></span>
+</code></pre> 
+<p>（8）此配置是对mmu等相关的配置tcr_el1，（寄存器描述不贴出）宏定义描述如下：</p> 
+<pre><code class="prism language-c"><span class="token function">TCR_TxSZ</span><span class="token punctuation">(</span>VA_BITS<span class="token punctuation">)</span> 根据VA_BSTS值设置T0SZ和T1SZ设置虚拟内存寻址<span class="token number">2</span><span class="token operator">^</span><span class="token punctuation">(</span><span class="token number">48</span><span class="token punctuation">)</span> TXSZ <span class="token operator">=</span> <span class="token number">64</span> <span class="token operator">-</span> VA_BITS
+TCR_CACHE_FLAGS 设置IRGN0和IRGN1，IRGN0和IRGN1，TLB访问属性为Normal memory<span class="token punctuation">,</span> Outer Write<span class="token operator">-</span>Back Read<span class="token operator">-</span>Allocate Write<span class="token operator">-</span>Allocate Cacheable，Normal memory<span class="token punctuation">,</span> Inner Write<span class="token operator">-</span>Back Read<span class="token operator">-</span>Allocate Write<span class="token operator">-</span>Allocate Cacheable。
+TCR_SMP_FLAGS 共享内存属性配置为Inner Shareable。不与其他PE共享。
+
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">ifdef</span> <span class="token expression">CONFIG_ARM64_64K_PAGES</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name">TCR_TG_FLAGS</span>	<span class="token expression">TCR_TG0_64K <span class="token operator">|</span> TCR_TG1_64K</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">elif</span> <span class="token expression"><span class="token function">defined</span><span class="token punctuation">(</span>CONFIG_ARM64_16K_PAGES<span class="token punctuation">)</span></span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name">TCR_TG_FLAGS</span>	<span class="token expression">TCR_TG0_16K <span class="token operator">|</span> TCR_TG1_16K</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">else</span> <span class="token comment">/* CONFIG_ARM64_4K_PAGES */</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name">TCR_TG_FLAGS</span>	<span class="token expression">TCR_TG0_4K <span class="token operator">|</span> TCR_TG1_4K</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+根据<span class="token number">4</span>K，<span class="token number">16</span>K，<span class="token number">64</span>K，来配置TG0，TG1。
+    
+TCR_KASLR_FLAGS随机化配置支持 BIT54默认未开启。
+
+TCR_ASID16 设置ASID为<span class="token number">16</span>bit。
+    
+TCR_TBI0 忽略TTBR0_EL1中top bit使其用于应用使用。
+
+TCR_A1 TTBR1_EL1<span class="token punctuation">.</span>ASID定义
+
+TCR_KASAN_FLAGS top btye忽略在ttbr1_el1此功能与是否配置CONFIG_KASAN_SW_TAGS有关
+</code></pre> 
+<p>（9）<code>tcr_compute_pa_size</code>宏定义如下：<code>（arch/arm64/include/asm/assembler.h）</code></p> 
+<pre><code class="prism language-c"><span class="token comment">/*
+ * tcr_compute_pa_size - set TCR.(I)PS to the highest supported
+ * ID_AA64MMFR0_EL1.PARange value
+ *
+ *	tcr:		register with the TCR_ELx value to be updated
+ *	pos:		IPS or PS bitfield position
+ *	tmp{0,1}:	temporary registers
+ */</span>
+	<span class="token punctuation">.</span>macro	tcr_compute_pa_size<span class="token punctuation">,</span> tcr<span class="token punctuation">,</span> pos<span class="token punctuation">,</span> tmp0<span class="token punctuation">,</span> tmp1
+	mrs	\tmp0<span class="token punctuation">,</span> ID_AA64MMFR0_EL1
+	<span class="token comment">// Narrow PARange to fit the PS field in TCR_ELx</span>
+	ubfx	\tmp0<span class="token punctuation">,</span> \tmp0<span class="token punctuation">,</span> #ID_AA64MMFR0_PARANGE_SHIFT<span class="token punctuation">,</span> #<span class="token number">3</span>
+	mov	\tmp1<span class="token punctuation">,</span> #ID_AA64MMFR0_PARANGE_MAX
+	cmp	\tmp0<span class="token punctuation">,</span> \tmp1
+	csel	\tmp0<span class="token punctuation">,</span> \tmp1<span class="token punctuation">,</span> \tmp0<span class="token punctuation">,</span> hi
+	bfi	\tcr<span class="token punctuation">,</span> \tmp0<span class="token punctuation">,</span> \pos<span class="token punctuation">,</span> #<span class="token number">3</span>
+	<span class="token punctuation">.</span>endm
+</code></pre> 
+<p>这个宏作用是根据配置最大 VA_BITS 和 cpu 支持的最大物理地址来获取当前配置使用的支持物理地址大小并将这个设置值写入<code>tcr_el1</code>的IPS位。<br> （10）根据硬件是否支持更新页表中af标志位，来设置tcr_el1中的HA位，以此支持在stage 1阶段可以自动更新af标志。<br> （11）至此便完成了翻译控制tcr_el1相关的设置并将设置好的x10值写入tcr_el1并返回head.S中去准备开启mmu。</p> 
+<h4><a id="5__mmu_945"></a>5 开启 mmu</h4> 
+<p>完成页表翻译相关设置后，就是需要开启 mmu，这也是进入<code>start_kernel</code>最后一步，代码如下：</p> 
+<pre><code class="prism language-asm">__primary_switch:
+#ifdef CONFIG_RANDOMIZE_BASE // 随机化地址未分析
+	mov	x19, x0				// preserve new SCTLR_EL1 value
+	mrs	x20, sctlr_el1			// preserve old SCTLR_EL1 value
+#endif
+
+	adrp	x1, init_pg_dir // 已知x0为sctlr_el1预设好的值，x1为init_pg_dir pgd的物理基地址。
+	bl	__enable_mmu --------------------------------------------------------------（1）
+#ifdef CONFIG_RELOCATABLE // 未使用未分析
+	bl	__relocate_kernel
+#ifdef CONFIG_RANDOMIZE_BASE // 未使用未分析
+	ldr	x8, =__primary_switched
+	adrp	x0, __PHYS_OFFSET
+	blr	x8
+
+	/*
+	 * If we return here, we have a KASLR displacement in x23 which we need
+	 * to take into account by discarding the current kernel mapping and
+	 * creating a new one.
+	 */
+	pre_disable_mmu_workaround
+	msr	sctlr_el1, x20			// disable the MMU
+	isb
+	bl	__create_page_tables		// recreate kernel mapping
+
+	tlbi	vmalle1				// Remove any stale TLB entries
+	dsb	nsh
+
+	msr	sctlr_el1, x19			// re-enable the MMU
+	isb
+	ic	iallu				// flush instructions fetched
+	dsb	nsh				// via old mapping
+	isb
+
+	bl	__relocate_kernel
+#endif
+#endif
+	ldr	x8, =__primary_switched
+	adrp	x0, __PHYS_OFFSET
+	br	x8 // 跳转至__primary_switched，进行最后栈及异常向量表设置后进入start_kernel。
+ENDPROC(__primary_switch)
+</code></pre> 
+<p>（1）__enable_mmu，代码如下：</p> 
+<pre><code class="prism language-asm">/*
+ * Enable the MMU.
+ *
+ *  x0  = SCTLR_EL1 value for turning on the MMU.
+ *  x1  = TTBR1_EL1 value
+ *
+ * Returns to the caller via x30/lr. This requires the caller to be covered
+ * by the .idmap.text section.
+ *
+ * Checks if the selected granule size is supported by the CPU.
+ * If it isn't, park the CPU
+ */
+ENTRY(__enable_mmu)
+	mrs	x2, ID_AA64MMFR0_EL1
+	ubfx	x2, x2, #ID_AA64MMFR0_TGRAN_SHIFT, 4
+	cmp	x2, #ID_AA64MMFR0_TGRAN_SUPPORTED // 判断ID_AA64MMFR0_EL1中相应的TGRAN是否支持对应的粒度（4k or 16k or 64k）。
+	b.ne	__no_granule_support // 如果不支持，那cpu会进入wfe，wfi状态并死循环。
+	update_early_cpu_boot_status 0, x2, x3 // 每个新 boot 起来的 cpu 通过向该地址写入对应值表明自己的 boot 状态，比如 CPU_BOOT_SUCCESS，定义在`arch/arm64/include/asm/smp.h` 中。
+	adrp	x2, idmap_pg_dir // 将x2设置为idmap_pg_dir pgd的物理基地址。
+	phys_to_ttbr x1, x1 // phys_to_ttbr这个操作因为如果是52bit的需要进行一个转换后才能写入ttbr中，在48bit这个x1的值没有变化。
+	phys_to_ttbr x2, x2
+	msr	ttbr0_el1, x2			// load TTBR0 将idmap_pg_dir pgd写入ttbr0_el1
+	offset_ttbr1 x1
+	msr	ttbr1_el1, x1			// load TTBR1 将init_pg_dir pgd写入ttbr1_el1
+	isb
+	msr	sctlr_el1, x0 // 将预设的系统行为控制寄存器值x0写入sctlr_el1，在这一步前后都有同步指令及清I-cahce操作，之后便是虚拟地址世界。
+	isb
+	/*
+	 * Invalidate the local I-cache so that any instructions fetched
+	 * speculatively from the PoC are discarded, since they may have
+	 * been dynamically patched at the PoU.
+	 */
+	ic	iallu
+	dsb	nsh
+	isb
+	ret
+ENDPROC(__enable_mmu)
+</code></pre> 
+<p>当 <code>__enable_mmu</code> 返回后 mmu 就已经开启了，此时的 pc 地址还是一致性映射地址(idmap)，也就是在使用 idmap_pg_dir pgd。后续通过 bx 跳转到内核 <code>0xffffx00...</code>的地址中去（该区域通过 init_pg_dir pgd 映射）。 通过将开启mmu这段代码放在 idmap.text 实现了物理地址到虚拟地址的平滑过渡。</p> 
+<h4><a id="6__start_kernel_1031"></a>6 进入 start_kernel</h4> 
+<p>在第五部分开启 mmu 后，使用bx命令跳转至<code>__primary_switched</code>，进行栈设置和异常向量表设置后进入<code>start_kernel</code>，代码如下：</p> 
+<pre><code class="prism language-asm">/*
+ * The following fragment of code is executed with the MMU enabled.
+ *
+ *   x0 = __PHYS_OFFSET
+ */
+__primary_switched:
+	adrp	x4, init_thread_union
+	add	sp, x4, #THREAD_SIZE
+	adr_l	x5, init_task
+	msr	sp_el0, x5			// Save thread_info ----------------------------------------------（1）
+
+	adr_l	x8, vectors			// load VBAR_EL1 with virtual
+	msr	vbar_el1, x8			// vector table address --------------------------------------（2）
+	isb
+
+	stp	xzr, x30, [sp, #-16]!
+	mov	x29, sp ------------------------------------------------------------------------------（3）
+
+	str_l	x21, __fdt_pointer, x5		// Save FDT pointer ----------------------------------（4）
+
+	ldr_l	x4, kimage_vaddr		// Save the offset between
+	sub	x4, x4, x0			// the kernel virtual and
+	str_l	x4, kimage_voffset, x5		// physical mappings ----------------------------------（5）
+
+	// Clear BSS
+	adr_l	x0, __bss_start
+	mov	x1, xzr
+	adr_l	x2, __bss_stop
+	sub	x2, x2, x0
+	bl	__pi_memset ---------------------------------------------------------------------------（6）
+	dsb	ishst				// Make zero page visible to PTW
+
+#ifdef CONFIG_KASAN // 未使用为分析
+	bl	kasan_early_init
+#endif
+#ifdef CONFIG_RANDOMIZE_BASE // 未使用为分析
+	tst	x23, ~(MIN_KIMG_ALIGN - 1)	// already running randomized?
+	b.ne	0f
+	mov	x0, x21				// pass FDT address in x0
+	bl	kaslr_early_init		// parse FDT for KASLR options
+	cbz	x0, 0f				// KASLR disabled? just proceed
+	orr	x23, x23, x0			// record KASLR offset
+	ldp	x29, x30, [sp], #16		// we must enable KASLR, return
+	ret					// to __primary_switch()
+0:
+#endif
+	add	sp, sp, #16
+	mov	x29, #0
+	mov	x30, #0
+	b	start_kernel ------------------------------------------------------------------------（7）
+ENDPROC(__primary_switched)
+</code></pre> 
+<p>（1）首先内核对 sp_el1 和 sp_el0 进行了配置。内核使用的 stack 借用了<code>init_task</code>的栈空间也就是<code>thread_info</code>，部分定义如下：</p> 
+<pre><code class="prism language-asm">#define INIT_TASK_DATA(align)						\
+	. = ALIGN(align);						\
+	__start_init_task = .;						\
+	init_thread_union = .;						\ &lt;---------------------------------------------------------
+	init_stack = .;							\
+	KEEP(*(.data..init_task))					\
+	KEEP(*(.data..init_thread_info))				\
+	. = __start_init_task + THREAD_SIZE;				\
+	__end_init_task = .;
+</code></pre> 
+<p>也就是从<code>init_task + THREAD_SIZE</code>作为内核的栈顶，也是作为第一个 init 线程的内核栈。arm64 内核中对当前进程结构体的引用存放在 sp_el0 中，即内核中的 current 的引用，对于 arm64 就是 sp_el0，这个 sp_el0 当在用户态时是用户态的栈指针，当发生异常或者中断陷入内核时，arm64 保存完用户的上下文信息后使用 sp_el0 存放当前任务的任务结构体以便内核中通过 current 快速访问当前任务。这里设置 sp_el0 为 init_task，表示内核 current 是 init 任务。后续完成 init 的 fork 后，init_task 这个静态结构体变为第一个cpu 内核的 idle task。</p> 
+<p>（2）将<code>vectors</code>异常向量表入口设置到<code>vbar_el1</code>系统寄存器中，后续异常发生通过该寄存器获取到异常向量表并根据异常类型进行跳转。arm64 的异常可查看 armv8 手册。</p> 
+<p>（3）这里需要说明一下：</p> 
+<pre><code class="prism language-c">x0 <span class="token operator">-</span> x30 <span class="token number">64</span>bit 通用寄存器，只用低<span class="token number">32</span>bit则是 w0 <span class="token operator">-</span> w30
+<span class="token function">FP</span> <span class="token punctuation">(</span>X29<span class="token punctuation">)</span> <span class="token number">64</span>bit 栈底指针
+<span class="token function">LR</span> <span class="token punctuation">(</span>X30<span class="token punctuation">)</span> <span class="token number">64</span>bit x30通常称为程序链接寄存器，保存跳转返回信息地址
+XZR <span class="token number">64</span>bit ZERO寄存器，写入此寄存器的数据被忽略，读出数据全为<span class="token number">0</span> （WZR为 <span class="token number">32</span>bit形式）
+</code></pre> 
+<p>即将 x0 和 lr 地址依次写入<code>sp - 16</code>地址处，<code>sp = sp - 16</code>。并将当前 sp 设置为 FP（x29），这里主要是为了后面调用<code>kasan_early_init</code>和<code>kaslr_early_init</code>而使用，对于进入<code>start_kernel</code>不需要这样设置。</p> 
+<p>（4）将x21（fdt首地址）物理地址写入<code>__fdt_pointer</code>变量中，x5 为一个临时变量用于暂存4k页中<code>__fdt_pointer</code>的偏移地址。</p> 
+<p>（5）将虚拟地址物理地址偏移写入变量<code>kimage_voffset</code>中，供后续代码使用。</p> 
+<p>（6）最后就是清零 bss 段，这里使用了<code>__pi_memset</code>函数，这个函数是一个宏定义函数，具体实现在<code>（arch/arm64/lib/memset.S）</code>中，为了保证函数地址无关，即在激活虚拟映射之前可以安全的调用不会出现问题而使用，这里已经开启了 mmu 但还是使用了<code>__pi_memset</code>函数。</p> 
+<p>（7）这里再次将之前设置的<code>fp，lr</code>清空恢复到了<code>thread_info</code>顶部，并调用<code>b start_kernel</code>彻底离开汇编，进入c代码世界。<br> （注意，这里将 fp,lr 清零不是非必须的，但是这样做符合标准调用，在 libc 中<code>_start</code> 进入 <code>__libc_init_xx</code>之前同样将 fp 和 lr 清零，表明调用函数返回已经是最顶层目录。这里猜测或许以后可以为某些情况做出一些判断。）</p> 
+<h4><a id="7__1120"></a>7 启动中一些其他功能实现</h4> 
+<p>到这里，arm64 主 cpu 的启动流程分析基本完毕，但在<code>head.S</code>中还涉及到了一些其他函数没有调用或设置没有用上，比如<code>UEFI</code>相关配置，关于<code>EFI</code>相关内容可以参考<a href="http://www.wowotech.net/armv8a_arch/UEFI.html" rel="nofollow">这篇文章</a>。</p> 
+<ul><li> <p>kaslr，内核地址空间布局随机化相关内容没有分析，这里没有深入了解过也是跳过分析。</p> </li><li> <p>kasan，动态检测内存错误，与全局变量，栈，堆分配越界检测相关，没有深入了解也是跳过分析。</p> </li><li> <p>kvm，虚拟化拓展相关的内容基本部分在<code>el2_setup</code>中设置，并在后续会调用kvm相关的汇编初始化，这里也是直接略过。</p> </li><li> <p>second cpu boot<br> 当在<code>start_kernel</code> 中调用 <code>smp_init</code> 时会去唤醒其他 cpu 进入内核，而进入内核的入口点也是在 <code>head.S</code> 中，arm64 的多核启动分为 spin_table 和 psci 两种方式。</p> </li></ul> 
+<h5><a id="71_spin_table__1130"></a>7.1 spin_table 启动从核</h5> 
+<p>其中 spin_table 是一种比较简单的方式，主要可以用于嵌入式前期的调试阶段使用，逻辑也非常简单。主要原理是让从核 cpu 在内核之外通过 wfe 指令保持自旋，内核通过解析设备树获取到从核信息并通过 sev 指令唤醒从核。从核通过读取特定地址数据来判断是否进入内核，该特定地址保持为 0，当内核向该地址写入从核进入内核的地址后，从核读取到该地址并跳转到该地址进入内核。</p> 
+<p>设备树示例如下：</p> 
+<pre><code class="prism language-dts">		cpu2: cpu@2 {
+			device_type = "cpu";
+			compatible = "arm,cortex-a53";
+			reg = &lt;2&gt;;
+			enable-method = "spin-table";
+			cpu-release-addr = &lt;0x0 0x000000e8&gt;;
+		};
+</code></pre> 
+<p>“enable-method” 记录了从核启动方式，这里是 spin-table。<br> “cpu-release-addr” 记录了从核在内核外自旋时读取的地址位置。该地址不一定是像上面描述的 “0x000000e8”，该地址可能会由 bootloader 进行修改并通过 libfdt 的 fdt_setproperty 写回。bootloader 修改的理由和我们的 boot 参数，加载配置相关。<br> 内核唤醒从核代码如下：</p> 
+<pre><code class="prism language-c=">static int smp_spin_table_cpu_prepare(unsigned int cpu)
+{
+	__le64 __iomem *release_addr;
+
+	if (!cpu_release_addr[cpu])
+		return -ENODEV;
+
+	/*
+	 * The cpu-release-addr may or may not be inside the linear mapping.
+	 * As ioremap_cache will either give us a new mapping or reuse the
+	 * existing linear mapping, we can use it to cover both cases. In
+	 * either case the memory will be MT_NORMAL.
+	 */
+	release_addr = ioremap_cache(cpu_release_addr[cpu],
+				     sizeof(*release_addr)); ----------------- (1)
+	if (!release_addr)
+		return -ENOMEM;
+
+	/*
+	 * We write the release address as LE regardless of the native
+	 * endianess of the kernel. Therefore, any boot-loaders that
+	 * read this address need to convert this address to the
+	 * boot-loader's endianess before jumping. This is mandated by
+	 * the boot protocol.
+	 */ ----------------------------------------------------------------(2)
+	writeq_relaxed(__pa_symbol(secondary_holding_pen), release_addr);
+	__flush_dcache_area((__force void *)release_addr,
+			    sizeof(*release_addr));
+
+	/*
+	 * Send an event to wake up the secondary CPU.
+	 */
+	sev(); ------------------------------------------------------(3)
+
+	iounmap(release_addr);
+
+	return 0;
+}
+</code></pre> 
+<p>（1） 通过解析设备树后获取到 “cpu-release-addr” 节点存放的地址存放在 cpu_release_addr[nr_cpu] 中，并进行 ioremap 映射，让内核可以访问该地址。<br> （2）将 secondary_holding_pen 的地址写入 release_addr，通知对应从核它的入口在哪里。<br> secondary_holding_pen 在 head.S 中定义：</p> 
+<pre><code class="prism language-asm=">ENTRY(secondary_holding_pen)
+	bl	el2_setup			// Drop to EL1, w0=cpu_boot_mode
+	bl	set_cpu_boot_mode_flag
+	mrs	x0, mpidr_el1
+	mov_q	x1, MPIDR_HWID_BITMASK
+	and	x0, x0, x1
+	adr_l	x3, secondary_holding_pen_release
+pen:	ldr	x4, [x3]
+	cmp	x4, x0
+	b.eq	secondary_startup
+	wfe
+	b	pen
+ENDPROC(secondary_holding_pen)
+</code></pre> 
+<p>逻辑也很简单，同主 cpu 类似，首先是 el2_setup，接着 set_cpu_boot_mode_flag，<br> 最后继续和在内核外自旋一样在，这里读取 secondary_holding_pen_release 地址进行自旋等待内核的进一步唤醒，直到内核再次调用 sev 进入下一步的初始化。</p> 
+<p>这里使用 <code>__flush_dcache_area</code> 将 release_addr 的 dcache 刷新，确保从核同步访问。</p> 
+<p>（3）调用 sev指令，将内核外自旋的 cpu 唤醒。<br> 注意 sev 会唤醒所有从核 cpu，这里只有对应的 cpu 才能从自己对应的 release_addr 中读取到值并跳转，其他非唤醒 cpu 读到为 0 会继续进入低功耗等待。</p> 
+<h5><a id="72_psci__1212"></a>7.2 psci 启动从核</h5> 
+<p>PSCI, Power State Coordination Interface，由 arm 定义的电源管理接口规范，通常由 firmware 来实现，而 linux 通过 smc/hvc 指令进入不同异常级别，从而调用对应的电源管理功能，其中常见的包括，cpu 唤醒， cpu 挂起，cpu 恢复，cpu 停止，这里从核启动将会使用 psci 的 cpu boot 能力。<br> psci 固件的实现常用的是 el3 的 atf，通过 atf 完成 sercure world 配置并接管 el3 的事件，对于 secure world 则会将在可信固件到 el2 或者 el1，此时的处理器处于 secure mode。这里对于服务器不常用，但在嵌入式上，如手机则可以是安全支付指纹识别等 app。同样的对于 kernel，atf 会将内核加载到 el2 或者 el1，此时的处理器处于 non secure world。两个世界均通过 smc 切换到 el3，再由 el3 切换安全模式调用不同侧的能力。</p> 
+<p>而对于 linux 的 psci 使用，原理也是通过设备树或者 acpi 接口获取到 psci 定义的信息，如下是一个通过读取设备树获取 psci 信息的节点信息：</p> 
+<pre><code class="prism language-dts=">		cpu2: cpu@2 {
+			device_type = "cpu";
+			compatible = "arm,cortex-a9";
+			reg = &lt;2&gt;;
+			clocks = &lt;&amp;sys_clk 32&gt;;
+			enable-method = "psci";
+			next-level-cache = &lt;&amp;l2&gt;;
+			operating-points-v2 = &lt;&amp;cpu_opp&gt;;
+			#cooling-cells = &lt;2&gt;;
+		};
+</code></pre> 
+<p>可以看到首先是在设备树的 cpu 节点定义 “enable-method” 为 psci。接着寻找 psci 节点，节点如下：</p> 
+<pre><code class="prism language-dts=">	psci {
+		compatible = "arm,psci-0.2", "arm,psci";
+		method = "smc";
+		cpu_suspend = &lt;0x84000001&gt;;
+		cpu_off = &lt;0x84000002&gt;;
+		cpu_on = &lt;0x84000003&gt;;
+	};
+
+or
+
+	psci {
+		compatible = "arm,psci-0.2";
+		method = "smc";
+	};
+</code></pre> 
+<p>有两种 psci 定义，这个与 psci 固件版本有关，早期使用 compatible = “arm,psci” 定义 psci 支持 0.1 版本 psci 协议，此时支持的 psci 可能具体不完整能力，所有的 cpu_suspend，cpu_off，cpu_on 显示定义了 cpu 具体有调用能力，这里有挂起，停机，启动。每个能力有着自己对应命令号。并且定义了调用指令为 smc，那么内核通过 smc，加上 x0 = commnad，x1… 参数。即可去调用对应功能，比如 cpu on:</p> 
+<pre><code class="prism language-c=">static int psci_cpu_on(unsigned long cpuid, unsigned long entry_point)
+{
+	int err;
+	u32 fn;
+
+	fn = psci_function_id[PSCI_FN_CPU_ON];
+	err = invoke_psci_fn(fn, cpuid, entry_point, 0);
+	return psci_to_linux_errno(err);
+}
+</code></pre> 
+<p>首先 x0 是 command，对应 cpu_on 则是 0x84000003。<br> 接着 x1 是 cpuid，即唤醒哪个cpu。<br> 最后 x2 是 entry_point，即cpu的入口地址。<br> 通过 smc 完成调用后即可唤醒从核。</p> 
+<p>当然还有 psci 0.2 1.0 版本，这是不再需要在设备树中显式定义 cpu_off/on 等命令，而是有统一的调用值。该值在 <code>include/uapi/linux/psci.h</code> 中定义：</p> 
+<pre><code class="prism language-c=">/* PSCI v0.2 interface */
+#define PSCI_0_2_FN_BASE			0x84000000
+#define PSCI_0_2_FN(n)				(PSCI_0_2_FN_BASE + (n))
+#define PSCI_0_2_64BIT				0x40000000
+#define PSCI_0_2_FN64_BASE			\
+					(PSCI_0_2_FN_BASE + PSCI_0_2_64BIT)
+#define PSCI_0_2_FN64(n)			(PSCI_0_2_FN64_BASE + (n))
+
+#define PSCI_0_2_FN_PSCI_VERSION		PSCI_0_2_FN(0)
+#define PSCI_0_2_FN_CPU_SUSPEND			PSCI_0_2_FN(1)
+#define PSCI_0_2_FN_CPU_OFF			PSCI_0_2_FN(2)
+#define PSCI_0_2_FN_CPU_ON			PSCI_0_2_FN(3)
+#define PSCI_0_2_FN_AFFINITY_INFO		PSCI_0_2_FN(4)
+#define PSCI_0_2_FN_MIGRATE			PSCI_0_2_FN(5)
+#define PSCI_0_2_FN_MIGRATE_INFO_TYPE		PSCI_0_2_FN(6)
+#define PSCI_0_2_FN_MIGRATE_INFO_UP_CPU		PSCI_0_2_FN(7)
+#define PSCI_0_2_FN_SYSTEM_OFF			PSCI_0_2_FN(8)
+#define PSCI_0_2_FN_SYSTEM_RESET		PSCI_0_2_FN(9)
+...
+...
+</code></pre> 
+<p>同样的，对于 arm64 entry_point 是 <code>secondary_entry</code> 定义在 head.S 中：</p> 
+<pre><code class="prism language-c=">static int cpu_psci_cpu_boot(unsigned int cpu)
+{
+	int err = psci_ops.cpu_on(cpu_logical_map(cpu), __pa_symbol(secondary_entry));
+	if (err)
+		pr_err("failed to boot CPU%d (%d)\n", cpu, err);
+
+	return err;
+}
+
+ENTRY(secondary_entry)
+	bl	el2_setup			// Drop to EL1
+	bl	set_cpu_boot_mode_flag
+	b	secondary_startup
+ENDPROC(secondary_entry)
+</code></pre> 
+<p>逻辑和 <code>spin_table</code> 一样，<code>el2_setup</code>,<code>set_cpu_boot_mode_flag</code>，之后进入 <code>secondary_startup</code>。</p> 
+<h5><a id="73_secondary_startup__1305"></a>7.3 secondary_startup 从核进入内核</h5> 
+<pre><code class="prism language-asm=">secondary_startup:
+	/*
+	 * Common entry point for secondary CPUs.
+	 */
+	bl	__cpu_secondary_check52bitva
+	bl	__cpu_setup			// initialise processor
+	adrp	x1, swapper_pg_dir
+	bl	__enable_mmu
+	ldr	x8, =__secondary_switched
+	br	x8
+ENDPROC(secondary_startup)
+</code></pre> 
+<p>逻辑和主 cpu 一样，同样需要调用<code>__cpu_setup</code> 对开启mmu前cpu 进行配置<br> 接着这里直接使用 <code>swapper_pg_dir</code> 页表，因为做从核启动时已经完成了除设备驱动初始化外的大部分初始化了。</p> 
+<p>最终进入 <code>__secondary_switched</code>：</p> 
+<pre><code class="prism language-asm=">__secondary_switched:
+	adr_l	x5, vectors
+	msr	vbar_el1, x5
+	isb
+
+	adr_l	x0, secondary_data
+	ldr	x1, [x0, #CPU_BOOT_STACK]	// get secondary_data.stack
+	mov	sp, x1
+	ldr	x2, [x0, #CPU_BOOT_TASK]
+	msr	sp_el0, x2
+	mov	x29, #0
+	mov	x30, #0
+	b	secondary_start_kernel
+ENDPROC(__secondary_switched)
+</code></pre> 
+<p>在进行从核启动时 secondary_data 中保存了当前启动的从核 cpu 的栈顶指针已经对应的 task（这时的 task 就是 idle task），那么完成异常表设置，sp 设置，current 设置后，即可调用 <code>secondary_start_kernel</code> 进入 C 代码端，并进行一些其他初始化工作，最终进入 idle loop 状态等待任务调度。</p> 
+<p>最后还有 armv8 拓展功能相关 sve，Statistical profiling，LORegions，Debug，Performance Monitors 这些都是提了一下略过细节。</p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/c4eb2b725ce60f537d85fca104eb2f1b/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">2023.3.21</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/d02a63d19830895caabad309de7c883c/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">Flutter bugly 傻瓜式操作，上传崩溃日志与符号表解析之IOS</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

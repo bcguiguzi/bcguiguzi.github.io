@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>评估数据库服务器负载 - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="评估数据库服务器负载" />
+<meta property="og:description" content="--评估数据库服务器负载 --使用脚本来获取数据库的服务器负载。 --通过查询v$metric视图来获取当前度量值。
+SYS@PROD1&gt; start host_load_setup.sql SYS@PROD1&gt; SYS@PROD1&gt; SYS@PROD1&gt; CREATE TYPE t_host_load AS OBJECT ( 2 begin_time DATE, 3 duration NUMBER, 4 db_fg_cpu NUMBER, 5 db_bg_cpu NUMBER, 6 non_db_cpu NUMBER, 7 os_load NUMBER, 8 num_cpu NUMBER 9 ); 10 / SYS@PROD1&gt; SYS@PROD1&gt; CREATE TYPE t_host_load_tab IS TABLE OF t_host_load; 2 / SYS@PROD1&gt; SYS@PROD1&gt; CREATE OR REPLACE FUNCTION host_load(p_count IN NUMBER DEFAULT 1) -- number of samples (1 sample per minute) 2 RETURN t_host_load_tab	-- set p_count to 0 to loop forever 3 PIPELINED 4 AS 5 l_begin_time DATE; 6 l_duration NUMBER; 7 l_db_fg_cpu NUMBER; 8 l_db_bg_cpu NUMBER; 9 l_non_db_cpu NUMBER; 10 l_os_load NUMBER; 11 l_num_cpu NUMBER; 12 l_samples INTEGER := 0; 13 l_previous_time DATE := sysdate-1; 14 BEGIN 15 BEGIN 16 SELECT value INTO l_num_cpu 17 FROM v$osstat 18 WHERE stat_name = &#39;NUM_CPU_CORES&#39;; 19 EXCEPTION 20 WHEN no_data_found THEN 21 SELECT value INTO l_num_cpu 22 FROM v$osstat 23 WHERE stat_name = &#39;NUM_CPUS&#39;; 24 END; 25 LOOP 26 SELECT begin_time, 27 duration, 28 db_fg, 29 db_bg, 30 host - db_fg - db_bg AS non_db, 31 os_load 32 INTO l_begin_time, 33 l_duration, 34 l_db_fg_cpu, 35 l_db_bg_cpu, 36 l_non_db_cpu, 37 l_os_load 38 FROM ( 39 SELECT begin_time, 40 intsize_csec/100 AS duration, 41 sum(case when metric_name = &#39;Host CPU Usage Per Sec&#39; then value/100 else 0 end) AS host, 42 sum(case when metric_name = &#39;CPU Usage Per Sec&#39; then value/100 else 0 end) AS db_fg, 43 sum(case when metric_name = &#39;Background CPU Usage Per Sec&#39; then value/100 else 0 end) AS db_bg, 44 sum(case when metric_name = &#39;Current OS Load&#39; then value else 0 end) AS os_load 45 FROM v$metric 46 WHERE group_id = (SELECT group_id FROM v$metricgroup WHERE name = &#39;System Metrics Long Duration&#39;) 47 AND metric_name IN (&#39;CPU Usage Per Sec&#39;, 48 &#39;Background CPU Usage Per Sec&#39;, 49 &#39;Host CPU Usage Per Sec&#39;, 50 &#39;Current OS Load&#39;) 51 GROUP BY begin_time, intsize_csec 52 ) 53 ORDER BY begin_time; 54 IF l_previous_time &lt; l_begin_time 55 THEN 56 PIPE ROW(t_host_load(l_begin_time, 57 l_duration, 58 l_db_fg_cpu, 59 l_db_bg_cpu, 60 l_non_db_cpu, 61 l_os_load, 62 l_num_cpu)); 63 l_samples := l_samples &#43; 1; 64 END IF; 65 EXIT WHEN l_samples = p_count; 66 l_previous_time := l_begin_time; 67 dbms_lock." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/d923ccb9738d0e65f6e717b99c75f432/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2017-03-08T19:53:15+08:00" />
+<meta property="article:modified_time" content="2017-03-08T19:53:15+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">评估数据库服务器负载</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    --评估数据库服务器负载 
+<br> 
+<br> 
+<br> --使用脚本来获取数据库的服务器负载。 
+<br> 
+<p>--通过查询v$metric视图来获取当前度量值。</p> 
+<p><br> </p> 
+<p></p> 
+<pre><code class="language-sql">SYS@PROD1&gt; start host_load_setup.sql
+SYS@PROD1&gt; 
+SYS@PROD1&gt; 
+SYS@PROD1&gt; CREATE TYPE t_host_load AS OBJECT (
+  2  	     begin_time DATE,
+  3  	     duration NUMBER,
+  4  	     db_fg_cpu NUMBER,
+  5  	     db_bg_cpu NUMBER,
+  6  	     non_db_cpu NUMBER,
+  7  	     os_load NUMBER,
+  8  	     num_cpu NUMBER
+  9  );
+ 10  /
+SYS@PROD1&gt; 
+SYS@PROD1&gt; CREATE TYPE t_host_load_tab IS TABLE OF t_host_load;
+  2  /
+SYS@PROD1&gt; 
+SYS@PROD1&gt; CREATE OR REPLACE FUNCTION host_load(p_count IN NUMBER DEFAULT 1) -- number of samples (1 sample per minute)
+  2    RETURN t_host_load_tab					       -- set p_count to 0 to loop forever
+  3    PIPELINED
+  4  AS
+  5  	     l_begin_time DATE;
+  6  	     l_duration NUMBER;
+  7  	     l_db_fg_cpu NUMBER;
+  8  	     l_db_bg_cpu NUMBER;
+  9  	     l_non_db_cpu NUMBER;
+ 10  	     l_os_load NUMBER;
+ 11  	     l_num_cpu NUMBER;
+ 12  	     l_samples INTEGER := 0;
+ 13  	     l_previous_time DATE := sysdate-1;
+ 14  BEGIN
+ 15    BEGIN
+ 16  	 SELECT value INTO l_num_cpu
+ 17  	 FROM v$osstat
+ 18  	 WHERE stat_name = 'NUM_CPU_CORES';
+ 19    EXCEPTION
+ 20  	 WHEN no_data_found THEN
+ 21  	   SELECT value INTO l_num_cpu
+ 22  	   FROM v$osstat
+ 23  	   WHERE stat_name = 'NUM_CPUS';
+ 24    END;
+ 25    LOOP
+ 26  	 SELECT begin_time,
+ 27  		duration,
+ 28  		db_fg,
+ 29  		db_bg,
+ 30  		host - db_fg - db_bg AS non_db,
+ 31  		os_load
+ 32  	     INTO l_begin_time,
+ 33  		  l_duration,
+ 34  		  l_db_fg_cpu,
+ 35  		  l_db_bg_cpu,
+ 36  		  l_non_db_cpu,
+ 37  		  l_os_load
+ 38  	 FROM (
+ 39  	   SELECT begin_time,
+ 40  		  intsize_csec/100 AS duration,
+ 41  		  sum(case when metric_name = 'Host CPU Usage Per Sec' then value/100 else 0 end) AS host,
+ 42  		  sum(case when metric_name = 'CPU Usage Per Sec' then value/100 else 0 end) AS db_fg,
+ 43  		  sum(case when metric_name = 'Background CPU Usage Per Sec' then value/100 else 0 end) AS db_bg,
+ 44  		  sum(case when metric_name = 'Current OS Load' then value else 0 end) AS os_load
+ 45  	   FROM v$metric
+ 46  	   WHERE group_id = (SELECT group_id FROM v$metricgroup WHERE name = 'System Metrics Long Duration')
+ 47  	   AND metric_name IN ('CPU Usage Per Sec',
+ 48  			       'Background CPU Usage Per Sec',
+ 49  			       'Host CPU Usage Per Sec',
+ 50  			       'Current OS Load')
+ 51  	   GROUP BY begin_time, intsize_csec
+ 52  	 )
+ 53  	 ORDER BY begin_time;
+ 54  	 IF l_previous_time &lt; l_begin_time
+ 55  	 THEN
+ 56  	   PIPE ROW(t_host_load(l_begin_time,
+ 57  				l_duration,
+ 58  				l_db_fg_cpu,
+ 59  				l_db_bg_cpu,
+ 60  				l_non_db_cpu,
+ 61  				l_os_load,
+ 62  				l_num_cpu));
+ 63  	   l_samples := l_samples + 1;
+ 64  	 END IF;
+ 65  	 EXIT WHEN l_samples = p_count;
+ 66  	 l_previous_time := l_begin_time;
+ 67  	 dbms_lock.sleep(5);
+ 68    END LOOP;
+ 69    RETURN;
+ 70  END host_load;
+ 71  /
+SYS@PROD1&gt; 
+SYS@PROD1&gt; SHOW ERROR
+No errors.
+SYS@PROD1&gt; 
+SYS@PROD1&gt; CREATE PUBLIC SYNONYM host_load FOR host_load;
+SYS@PROD1&gt; 
+SYS@PROD1&gt; GRANT EXECUTE ON host_load TO PUBLIC;
+SYS@PROD1&gt; start host_load.sql 15
+SYS@PROD1&gt; SET ECHO OFF
+
+			  PROD1 / 2017-03-08
+
+BEGIN_TIME DURATION DB_FG_CPU DB_BG_CPU NON_DB_CPU OS_LOAD NUM_CPU
+---------- -------- --------- --------- ---------- ------- -------
+16:00:04      60.08	 0.01	   0.00       0.06    0.10	 1
+16:01:04      60.08	 0.01	   0.00       0.06    0.04	 1
+16:02:05      60.09	 0.01	   0.01       0.05    0.01	 1
+16:03:06      60.08	 0.03	   0.00       0.06    0.13	 1
+16:04:06      60.07	 0.03	   0.01       0.08    1.17	 1
+16:05:07      60.32	 0.09	   0.06       0.08    2.52	 1
+16:06:34      59.34	 0.08	   0.06       0.07    3.49	 1
+16:07:53      60.53	 0.07	   0.05       0.08    3.57	 1
+16:09:06      59.99	 0.08	   0.06       0.08    4.14	 1
+16:10:17      59.87	 0.08	   0.05       0.08    4.01	 1
+16:11:28      60.15	 0.02	   0.01       0.05    2.00	 1
+16:12:32      60.34	 0.01	   0.05       0.06    1.18	 1
+16:13:33      59.09	 0.00	   0.07       0.03    0.58	 1
+16:14:38      60.27	 0.01	   0.00       0.05    0.29	 1
+16:15:38      60.43	 0.01	   0.00       0.05    0.11	 1
+
+</code></pre> 
+<br> 
+<br> 
+<p></p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/6a1c573c745a054582b8ebf4201039b1/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">onclick和闭包</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/37c447bafbe2d72817f59358d77f3ca4/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">Matlab制作视频并转换成gif动态图的两种方法</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

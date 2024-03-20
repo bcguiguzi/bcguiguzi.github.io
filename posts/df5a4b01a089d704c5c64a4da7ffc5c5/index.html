@@ -1,0 +1,1172 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>RocketMQ(六)producer发送单向、同步、异步消息源码 - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="RocketMQ(六)producer发送单向、同步、异步消息源码" />
+<meta property="og:description" content="针对RocketMQ三种发送消息的具体源码进行了梳理。
+之前已经根据(20条消息) RocketMQ(五)producer发送消息的总体流程_代码---小白的博客-CSDN博客
+梳理了Producer发送消息的总体流程，现在来梳理一下内部具体的一个发送消息的源码。
+当一切准备就绪，最终单向、同步、异步发送模式都会调用MQClientAPIImpl#sendMessage方法发送消息，该方法是真正的发起请求的方法。
+这个方法的逻辑就相对比较简单：
+1. 首先构建发送消息命令对象RemotingCommand，此时会判断是否需要更换轻量级消息头，如果sendSmartMsg属性为true（默认为true）或者是批量消息，则使用轻量级消息头。SendMessageRequestHeaderV2相比于requestHeader，其field 全为 a,b,c,d 等短变量名，可以加快FastJson反序列化过程。
+2. 根据发送模式执行不同的发送逻辑。单向发送模式调用RemotingClient#invokeOneway方法；异步发送模式调用MQClientAPIImpl#sendMessageAsync方法；同步发送模式调用MQClientAPIImpl#sendMessageSync方法。在异步和同步模式发送方法的调用前还会再检查是否超时，如果超时则不再调用。
+/** * MQClientInstance的方法 * 单向、同步、异步消息的最终发送消息的方法 * @param addr broker地址 * @param brokerName brokerName * @param msg msg * @param requestHeader requestHeader * @param timeoutMillis 剩余超发时间 * @param communicationMode 发送模式 * @param sendCallback 发送回调函数 * @param topicPublishInfo topic信息 * @param instance MQClientInstance * @param retryTimesWhenSendFailed 异步发送失败时的重试次数，默认2次 * @param context 发送消息上下文 * @param producer DefaultMQProducerImpl * @return * @throws RemotingException * @throws MQBrokerException * @throws InterruptedException */ public SendResult sendMessage( final String addr, final String brokerName, final Message msg, final SendMessageRequestHeader requestHeader, final long timeoutMillis, final CommunicationMode communicationMode, final SendCallback sendCallback, final TopicPublishInfo topicPublishInfo, final MQClientInstance instance, final int retryTimesWhenSendFailed, final SendMessageContext context, final DefaultMQProducerImpl producer ) throws RemotingException, MQBrokerException, InterruptedException { long beginStartTime = System." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/df5a4b01a089d704c5c64a4da7ffc5c5/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2022-12-14T11:01:57+08:00" />
+<meta property="article:modified_time" content="2022-12-14T11:01:57+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">RocketMQ(六)producer发送单向、同步、异步消息源码</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p>针对RocketMQ三种发送消息的具体源码进行了梳理。</p> 
+<p>之前已经根据<a href="https://blog.csdn.net/djdjdxieuej/article/details/128307332?spm=1001.2014.3001.5501" title="(20条消息) RocketMQ(五)producer发送消息的总体流程_代码---小白的博客-CSDN博客">(20条消息) RocketMQ(五)producer发送消息的总体流程_代码---小白的博客-CSDN博客</a></p> 
+<p>梳理了Producer发送消息的总体流程，现在来梳理一下内部具体的一个发送消息的源码。</p> 
+<p><strong>当一切准备就绪，最终单向、同步、异步发送模式都会调用MQClientAPIImpl#sendMessage方法发送消息，该方法是真正的发起请求的方法。</strong></p> 
+<p>这个方法的逻辑就相对比较简单：</p> 
+<p>       1. 首先构建发送消息命令对象RemotingCommand，此时会判断是否需要更换轻量级消息头，如果sendSmartMsg属性为true（默认为true）或者是批量消息，则使用轻量级消息头。SendMessageRequestHeaderV2相比于requestHeader，其field 全为 a,b,c,d 等短变量名，可以加快FastJson反序列化过程。<br>         2. 根据发送模式执行不同的发送逻辑。单向发送模式调用RemotingClient#invokeOneway方法；异步发送模式调用MQClientAPIImpl#sendMessageAsync方法；同步发送模式调用MQClientAPIImpl#sendMessageSync方法。在异步和同步模式发送方法的调用前还会再检查是否超时，如果超时则不再调用。</p> 
+<pre><code class="language-java">  /**
+     * MQClientInstance的方法
+     * 单向、同步、异步消息的最终发送消息的方法
+     * @param addr                          broker地址
+     * @param brokerName                    brokerName
+     * @param msg                           msg
+     * @param requestHeader                 requestHeader
+     * @param timeoutMillis                 剩余超发时间
+     * @param communicationMode             发送模式
+     * @param sendCallback                  发送回调函数
+     * @param topicPublishInfo              topic信息
+     * @param instance                      MQClientInstance
+     * @param retryTimesWhenSendFailed      异步发送失败时的重试次数，默认2次
+     * @param context                       发送消息上下文
+     * @param producer                      DefaultMQProducerImpl
+     * @return
+     * @throws RemotingException
+     * @throws MQBrokerException
+     * @throws InterruptedException
+     */
+    public SendResult sendMessage(
+        final String addr,
+        final String brokerName,
+        final Message msg,
+        final SendMessageRequestHeader requestHeader,
+        final long timeoutMillis,
+        final CommunicationMode communicationMode,
+        final SendCallback sendCallback,
+        final TopicPublishInfo topicPublishInfo,
+        final MQClientInstance instance,
+        final int retryTimesWhenSendFailed,
+        final SendMessageContext context,
+        final DefaultMQProducerImpl producer
+    ) throws RemotingException, MQBrokerException, InterruptedException {
+        long beginStartTime = System.currentTimeMillis();
+        RemotingCommand request = null;
+        //获取消息的类型
+        String msgType = msg.getProperty(MessageConst.PROPERTY_MESSAGE_TYPE);
+        //是否重试消息
+        boolean isReply = msgType != null &amp;&amp; msgType.equals(MixAll.REPLY_MESSAGE_FLAG);
+        /**
+         * 1. 构建发送消息命令对象RemotingCommand，更换轻量级消息头
+         *
+         * sendSmartMsg表示是否使用更轻量级的消息头SendMessageRequestHeaderV2
+         * 相比图requestHeader，其field 全为a、b、c、d等短变量名，可以加快FastJson反序列化进程
+         */
+        if (isReply) {
+            //sendSmartMsg默认为true
+            if (sendSmartMsg) {
+                //构建轻量级消息头 SendMessageRequestHeaderV2
+                SendMessageRequestHeaderV2 requestHeaderV2 = SendMessageRequestHeaderV2.createSendMessageRequestHeaderV2(requestHeader);
+                //创建发送消息命令对象，RequestCode为SEND_REPLY_MESSAGE_V2
+                request = RemotingCommand.createRequestCommand(RequestCode.SEND_REPLY_MESSAGE_V2, requestHeaderV2);
+            } else {
+                //创建发送消息命令对象，RequestCode为SEND_REPLY_MESSAGE
+                request = RemotingCommand.createRequestCommand(RequestCode.SEND_REPLY_MESSAGE, requestHeader);
+            }
+        } else {
+            if (sendSmartMsg || msg instanceof MessageBatch) {
+                //构建轻量级消息头
+                SendMessageRequestHeaderV2 requestHeaderV2 = SendMessageRequestHeaderV2.createSendMessageRequestHeaderV2(requestHeader);
+                //如果是批量消息，则RequestCode为SEND_BATCH_MESSAGE，否则为SEND_MESSAGE_V2
+                request = RemotingCommand.createRequestCommand(msg instanceof MessageBatch ? RequestCode.SEND_BATCH_MESSAGE : RequestCode.SEND_MESSAGE_V2, requestHeaderV2);
+            } else {
+                //创建发送消息命令对象，RequestCode为SEND_MESSAGE
+                request = RemotingCommand.createRequestCommand(RequestCode.SEND_MESSAGE, requestHeader);
+            }
+        }
+        //设置body
+        request.setBody(msg.getBody());
+
+        /**
+         * 2. 根据发送模式执行不同的发送逻辑
+         */
+        switch (communicationMode) {
+            /**
+             * 单向发送，调用该方法之后不在接收返回值，直接返回null
+             */
+            case ONEWAY:
+                this.remotingClient.invokeOneway(addr, request, timeoutMillis);
+                return null;
+            /**
+             * 异步发送，调用该方法后不在接收返回值，直接返回null
+             */
+            case ASYNC:
+                //异步消息重试计数器
+                final AtomicInteger times = new AtomicInteger();
+                //计算是否超时，如果超时则不再发送
+                long costTimeAsync = System.currentTimeMillis() - beginStartTime;
+                if (timeoutMillis &lt; costTimeAsync) {
+                    throw new RemotingTooMuchRequestException("sendMessage call timeout");
+                }
+                this.sendMessageAsync(addr, brokerName, msg, timeoutMillis - costTimeAsync, request, sendCallback, topicPublishInfo, instance,
+                    retryTimesWhenSendFailed, times, context, producer);
+                return null;
+            /**
+             * 同步发送，调用该方法之后阻塞直至收回返回值
+              */
+            case SYNC:
+                //计算是否超时，如果超时则不再发送
+                long costTimeSync = System.currentTimeMillis() - beginStartTime;
+                if (timeoutMillis &lt; costTimeSync) {
+                    throw new RemotingTooMuchRequestException("sendMessage call timeout");
+                }
+                return this.sendMessageSync(addr, brokerName, msg, timeoutMillis - costTimeSync, request);
+            default:
+                assert false;
+                break;
+        }
+
+        return null;
+    }</code></pre> 
+<h2> 1 invokeOneway单向发送</h2> 
+<p> 该模式下，消息只会发送一次，且不会返回任何结果，即只管发送不管结果。</p> 
+<pre><code class="language-java">  /**
+     *  MQClientInstance的方法
+     *  单向发送消息的通方法
+     *  invokeOneway方法：只向客户端发送消息，而不处理客户端返回的消息
+     *  invokeOneway方法首先通过broker地址查找生产者与broker服务器之间的连接，如果连接不为null或者正常，在发送消息之前执行钩子，然后调用invokeOneImpl方法发送单向的消息。如果连接不正常或者发送消息失败就关闭连接。
+     * @param addr              服务器地址
+     * @param request           请求命令对象
+     * @param timeoutMillis     超时时间
+     * @throws InterruptedException
+     * @throws RemotingConnectException
+     * @throws RemotingTooMuchRequestException
+     * @throws RemotingTimeoutException
+     * @throws RemotingSendRequestException
+     */
+    @Override
+    public void invokeOneway(String addr, RemotingCommand request, long timeoutMillis) throws InterruptedException,
+        RemotingConnectException, RemotingTooMuchRequestException, RemotingTimeoutException, RemotingSendRequestException {
+        /**
+         * getAndCreateChannel():先尝试从缓存中获取一个连接，如果获取不到，再根据NameServer的地址创建一个
+         */
+        final Channel channel = this.getAndCreateChannel(addr);
+        //连接正常
+        if (channel != null &amp;&amp; channel.isActive()) {
+            try {
+                //发送消息之前执行Rpc钩子方法doBeforeRequest
+                doBeforeRpcHooks(addr, request);
+                /**
+                 * 调用另一个invokeOnewayImpl方法，发送单向消息
+                 */
+                this.invokeOnewayImpl(channel, request, timeoutMillis);
+            } catch (RemotingSendRequestException e) {
+                LOGGER.warn("invokeOneway: send request exception, so close the channel[{}]", addr);
+                this.closeChannel(addr, channel);
+                throw e;
+            }
+        } else {
+            //不正常就关闭连接
+            this.closeChannel(addr, channel);
+            throw new RemotingConnectException(addr);
+        }
+    }</code></pre> 
+<p>首先会调用getAndCreateChannel方法，尝试获取此broker的通道，如果没有获取到，那么会创建一个通道，即连接。然后执行rpcHook的前置方法doBeforeRequest，随后调用另一个invokeOnewayImpl方法，发送单向消息。</p> 
+<h3> 1.1 invokeOnewayImpl单向调用</h3> 
+<p> 这个方法是单向发送消息的真正发送方法，消息发送的最底层了。</p> 
+<p>        单向发送请求的逻辑: 将消息发送以后，就不管发送结果了，只要将消息发送出去就行，也不会进行重试； 从源码中也可以看出，消息发送出去以后，只要释放信号量，当发送不成功就打印日志，不管消息发送的结果如何。</p> 
+<p>invokeOnewayImpl方法大致步骤：</p> 
+<p>        1. 首先将请求标记为单向发送；</p> 
+<p>        2. 然后获取Semaphore信号量；</p> 
+<p>        3. 获取到信号量资源，就利用netty连接将消息发送给broker服务器，当发送完成后，就释放信号量，如果发送不成功，就打印日志； 发送消息异常就释放信号量，抛出发送消息异常信息。 获取信号量不成功，也抛出发送消息异常的信息。</p> 
+<p>        这里有个重要的知识点：单向发送信息的信号量最大请求为65535（即单向消息最大并发为65535），当超过这个数字就不能进行发送消息了。 同时，只有获取到信号量才能进行发送消息，这么做就是为了避免请求过多，导致RocketMQ的压力过大而出现性能问题，也起到了限流作用，保护RocketMQ</p> 
+<pre><code class="language-java"> /**
+     * 单向发送请求的逻辑:
+     *      将消息发送以后，就不管发送结果了，只要将消息发送出去就行，也不会进行重试；
+     *      从源码中也可以看出，消息发送出去以后，只要释放信号量，当发送不成功就打印日志，不管消息发送的结果如何。
+     *
+     * invokeOnewayImpl方法大致步骤：
+     * 1. 首先将请求标记为单向发送；
+     * 2. 然后获取Semaphore信号量；
+     * 3. 获取到信号量资源，就利用netty连接将消息发送给broker服务器，当发送完成后，就释放信号量，如果发送不成功，就打印日志；
+     *      发送消息异常就释放信号量，抛出发送消息异常信息。
+     *      获取信号量不成功，也抛出发送消息异常的信息。
+     *
+     * 这里有个重要的知识点：单向发送信息的信号量最大请求为65535（即单向消息最大并发为65535），当超过这个数字就不能进行发送消息了。
+     * 同时，只有获取到信号量才能进行发送消息，这么做就是为了避免请求过多，导致RocketMQ的压力过大而出现性能问题，也起到了限流作用，保护RocketMQ
+     * @param channel           通道
+     * @param request           请求
+     * @param timeoutMillis     超时时间
+     * @throws InterruptedException
+     * @throws RemotingTooMuchRequestException
+     * @throws RemotingTimeoutException
+     * @throws RemotingSendRequestException
+     */
+    public void invokeOnewayImpl(final Channel channel, final RemotingCommand request, final long timeoutMillis)
+        throws InterruptedException, RemotingTooMuchRequestException, RemotingTimeoutException, RemotingSendRequestException {
+        //标记为单向发送
+        request.markOnewayRPC();
+        //基于Semaphore信号量尝试获取单向发送的资源，通过信号量控制单向消息并发发送的消息数，从而保护系统内存占用。
+        //客户端单向发送的Semaphore信号量默认为65535
+        boolean acquired = this.semaphoreOneway.tryAcquire(timeoutMillis, TimeUnit.MILLISECONDS);
+        //如果获取到了信号量资源
+        if (acquired) {
+            //构建SemaphoreReleaseOnlyOnce对象，保证信号量本次只被释放一次，防止并发操作引起线程安全问题
+            final SemaphoreReleaseOnlyOnce once = new SemaphoreReleaseOnlyOnce(this.semaphoreOneway);
+            try {
+                //基于Netty的Channel组件，将请求发出去
+                channel.writeAndFlush(request).addListener((ChannelFutureListener) f -&gt; {
+                    //释放信号量
+                    once.release();
+                    //如果发送失败，仅仅是打印一行warn日志，然后就不管了，这就是单向发送
+                    if (!f.isSuccess()) {
+                        log.warn("send a request command to channel &lt;" + channel.remoteAddress() + "&gt; failed.");
+                    }
+                });
+            } catch (Exception e) {
+                //释放信号量
+                once.release();
+                log.warn("write send a request command to channel &lt;" + channel.remoteAddress() + "&gt; failed.");
+                throw new RemotingSendRequestException(RemotingHelper.parseChannelRemoteAddr(channel), e);
+            }
+        } else {
+            //如果没有获取到信号量资源，已经超时，则抛出异常
+            if (timeoutMillis &lt;= 0) {
+                throw new RemotingTooMuchRequestException("invokeOnewayImpl invoke too fast");
+            } else {
+                String info = String.format(
+                    "invokeOnewayImpl tryAcquire semaphore timeout, %dms, waiting thread nums: %d semaphoreOnewayValue: %d",
+                    timeoutMillis,
+                    this.semaphoreOneway.getQueueLength(),
+                    this.semaphoreOneway.availablePermits()
+                );
+                log.warn(info);
+                throw new RemotingTimeoutException(info);
+            }
+        }
+    }</code></pre> 
+<h2> 2 sendMessageSync同步发送</h2> 
+<p>该模式下，发送之后会同步阻塞，直到结果返回。</p> 
+<pre><code class="language-java">   /**
+     * MQClientInstance的方法
+     * 消息的同步发送：不仅需要将消息发送出去，还要处理消息发送的响应结果，
+     */
+    private SendResult sendMessageSync(
+        final String addr,
+        final String brokerName,
+        final Message msg,
+        final long timeoutMillis,
+        final RemotingCommand request
+    ) throws RemotingException, MQBrokerException, InterruptedException {
+        /**
+         * 发送同步消息
+         */
+        RemotingCommand response = this.remotingClient.invokeSync(addr, request, timeoutMillis);
+        assert response != null;
+        /**
+         * 处理消息发送响应结果
+         */
+        return this.processSendResponse(brokerName, msg, response, addr);
+    }</code></pre> 
+<p>其内部调用NettyRemotingClient#invokeSync方法执行同步调用，然后调用processSendResponse方法处理响应结果。</p> 
+<h2> 2.1 invokeSync同步调用</h2> 
+<p>该方法执行同步调用。首先获取或者创建通道，即连接。然后在发送消息前后执行<strong>rpcHook</strong>钩子方法，即<strong>RPCHook#doBeforeRequest</strong>方法，通过调用<strong>invokeSyncImpl</strong>方法发起同步调用并获取响应结果返回</p> 
+<pre><code class="language-java">  /**
+     * NettyRemotingClient的方法
+     * 该方法执行同步调用。
+     * 1. 首先获取或者创建通道，即连接。
+     * 2. 然后在发送消息前后执行rpcHook钩子方法，即RPCHook#doBeforeRequest方法，
+     * 3. 通过调用invokeSyncImpl方法发起同步调用并获取响应结果返回。
+     *
+     * @param addr
+     * @param request
+     * @param timeoutMillis
+     * @return
+     * @throws InterruptedException
+     * @throws RemotingConnectException
+     * @throws RemotingSendRequestException
+     * @throws RemotingTimeoutException
+     */
+    @Override
+    public RemotingCommand invokeSync(String addr, final RemotingCommand request, long timeoutMillis)
+        throws InterruptedException, RemotingConnectException, RemotingSendRequestException, RemotingTimeoutException {
+        long beginStartTime = System.currentTimeMillis();
+        /**
+         *  根据addr建立连接，获取Channel
+         */
+        final Channel channel = this.getAndCreateChannel(addr);
+
+        if (channel != null &amp;&amp; channel.isActive()) {
+            try {
+                //在执行发送消息之前，执行Rpc钩子的doBeforeRequest方法
+                doBeforeRpcHooks(addr, request);
+                //检查超时，如果超时则抛出异常
+                long costTime = System.currentTimeMillis() - beginStartTime;
+                if (timeoutMillis &lt; costTime) {
+                    throw new RemotingTimeoutException("invokeSync call the addr[" + addr + "] timeout");
+                }
+                /**
+                 * 这里才是真正的发送请求
+                 * 执行同步远程调用，或者调用结果
+                 */
+                RemotingCommand response = this.invokeSyncImpl(channel, request, timeoutMillis - costTime);
+                //接收到消息之后，执行Rpc钩子方法doAfterRpcHooks
+                doAfterRpcHooks(RemotingHelper.parseChannelRemoteAddr(channel), request, response);
+                this.updateChannelLastResponseTime(addr);
+                return response;
+            } catch (RemotingSendRequestException e) {
+                LOGGER.warn("invokeSync: send request exception, so close the channel[{}]", addr);
+                this.closeChannel(addr, channel);
+                throw e;
+            } catch (RemotingTimeoutException e) {
+                if (nettyClientConfig.isClientCloseSocketIfTimeout()) {
+                    this.closeChannel(addr, channel);
+                    LOGGER.warn("invokeSync: close socket because of timeout, {}ms, {}", timeoutMillis, addr);
+                }
+                LOGGER.warn("invokeSync: wait response timeout exception, the channel[{}]", addr);
+                throw e;
+            }
+        } else {
+            this.closeChannel(addr, channel);
+            throw new RemotingConnectException(addr);
+        }
+    }</code></pre> 
+<h4> 2.1.1 invokeSyncImpl同步调用实现</h4> 
+<p>invokeSyncImpl方法发起同步调用并获取响应结果。</p> 
+<p>主要执行步骤：</p> 
+<p>1. 首先创建ResponseFuture（ResponseFuture是保存请求响应结果的，opaque是请求id，将请求id与response的对应关系保存在responseTable（map）中，通过请求id就可以找到对应的response了。）</p> 
+<p>2. 然后利用netty的Channel连接组件，将消息以同步的方式发送出去，并且添加一个监听器，监听消息是否成功发送，消息发送完毕后会执行回调；</p> 
+<p>3. ChannelFutureListener回调的时候会进行判断，如果消息成功发送，就设置发送成功并返回，否则设置发送失败的标志和失败原因，并且设置响应结果为null，唤醒阻塞的responseFuture</p> 
+<p>4. responseFuture被唤醒后会进行一系列判断。如果响应结果为null，那么会根据不同的情况抛出不同的异常，如果响应结果不为null，那么返回响应结果。</p> 
+<p>5. 最后再finally块中从responseTable中移除响应结果缓存</p> 
+<pre><code class="language-java"> /**
+     * NettyRemotingAbstract的方法
+     * 执行同步调用
+     * 主要执行步骤：
+     * 1. 首先创建ResponseFuture（ResponseFuture是保存请求响应结果的，opaque是请求id，将请求id与response的对应关系保存在responseTable（map）中，通过请求id就可以找到对应的response了。）
+     * 2. 然后利用netty的Channel连接组件，将消息以同步的方式发送出去，并且添加一个监听器，监听消息是否成功发送，消息发送完毕后会执行回调；
+     * 3. ChannelFutureListener回调的时候会进行判断，如果消息成功发送，就设置发送成功并返回，否则设置发送失败的标志和失败原因，并且设置响应结果为null，唤醒阻塞的responseFuture
+     * 4. responseFuture被唤醒后会进行一系列判断。如果响应结果为null，那么会根据不同的情况抛出不同的异常，如果响应结果不为null，那么返回响应结果。
+     * 5. 最后再finally块中从responseTable中移除响应结果缓存
+     *
+     * @param channel
+     * @param request
+     * @param timeoutMillis
+     * @return
+     * @throws InterruptedException
+     * @throws RemotingSendRequestException
+     * @throws RemotingTimeoutException
+     */
+    public RemotingCommand invokeSyncImpl(final Channel channel, final RemotingCommand request,
+        final long timeoutMillis)
+        throws InterruptedException, RemotingSendRequestException, RemotingTimeoutException {
+        //get the request id
+        //请求id，通过该id可以找到该请求的响应结果
+        final int opaque = request.getOpaque();
+
+        try {
+            //创建一个Future的map成员ResponseFuture
+            final ResponseFuture responseFuture = new ResponseFuture(channel, opaque, timeoutMillis, null, null);
+            //将请求id与响应结果的对应关系保存在responseTable（map）缓存中
+            this.responseTable.put(opaque, responseFuture);
+            final SocketAddress addr = channel.remoteAddress();
+            /**
+             * 基于Netty的Channel组件，将请求发出去，添加一个ChannelFutureListener，消息发送完毕后会进行回调
+             */
+            channel.writeAndFlush(request).addListener((ChannelFutureListener) f -&gt; {
+                //消息发送成功，那么设置responseFuture发送成功并返回
+                if (f.isSuccess()) {
+                    responseFuture.setSendRequestOK(true);
+                    return;
+                }
+
+                //发送失败
+                responseFuture.setSendRequestOK(false);
+                //如果发送失败，那么从responseTable移除该缓存
+                responseTable.remove(opaque);
+                //设置失败的原因
+                responseFuture.setCause(f.cause());
+                //设置响应结果为null，唤醒阻塞的responseFuture
+                //其内部调用了countDownLatch，countDown()方法
+                responseFuture.putResponse(null);
+                log.warn("Failed to write a request command to {}, caused by underlying I/O operation failure", addr);
+            });
+
+            /**
+             * responseFuture同步阻塞等待直到得到响应结果或者到达超时时间
+             * 其内部调用了countDownLatch.await(timeoutMillis, TimeUnit.MILLISECONDS);
+             */
+            RemotingCommand responseCommand = responseFuture.waitResponse(timeoutMillis);
+            //如果响应结果为null
+            if (null == responseCommand) {
+                //如果是发送成功，但是没有响应，表示等待响应超时，那么抛出超时异常
+                if (responseFuture.isSendRequestOK()) {
+                    throw new RemotingTimeoutException(RemotingHelper.parseSocketAddressAddr(addr), timeoutMillis,
+                        responseFuture.getCause());
+                } else {
+                    //如果是发送失败，排除发送失败异常
+                    throw new RemotingSendRequestException(RemotingHelper.parseSocketAddressAddr(addr), responseFuture.getCause());
+                }
+            }
+
+            //返回响应结果
+            return responseCommand;
+        } finally {
+            //最后从responseTable中移除响应结果缓存
+            this.responseTable.remove(opaque);
+        }
+    }
+</code></pre> 
+<p><strong> 2.1.1.1 请求的阻塞和唤醒</strong></p> 
+<p>从上面的源码可以得知，同步发送消息的请求可能会经历短暂的阻塞状态。<strong>responseFuture</strong>通过<strong>waitResponse</strong>方法阻塞当前线程，直到得到响应结果或者到达超时时间。进入该方法，可以发现其阻塞使用的工具其实就是<strong>CountDownLatch</strong>。</p> 
+<pre><code class="language-java">  /**
+     * ResponseFuture的方法
+     * 同步等待响应结果：
+     *      CountDownLatch也被称为闭锁，它一般用来确保某些活动直到其他活动都完成才继续执行；
+     *      ResponseFuture中的CountDownLatch的倒计数只有1。
+     *      那么什么时候计数变为0那？那就是调用putResponse方法的时候
+     * @param timeoutMillis     超时时间
+     * @return
+     * @throws InterruptedException
+     */
+    public RemotingCommand waitResponse(final long timeoutMillis) throws InterruptedException {
+        //使用countDownLatch等待给定的时间
+        this.countDownLatch.await(timeoutMillis, TimeUnit.MILLISECONDS);
+        return this.responseCommand;
+    }</code></pre> 
+<p><a href="https://blog.csdn.net/weixin_43767015/article/details/108035192" title="CountDownLatch">CountDownLatch</a>也被称为闭锁，它一般用来确保某些活动直到其他活动都完成才继续执行，ResponseFuture中的CountDownLatch的倒计数只有1。</p> 
+<pre><code class="language-java">private final CountDownLatch countDownLatch = new CountDownLatch(1);</code></pre> 
+<p>那么什么时候计数变为0呢，那就是调用putResponse方法的时候，该方法有两个调用点，一个是在ChannelFutureListener中判断请求发送失败的时候，直接设置一个null进去，另一个就是请求正常处理完毕的时候，在processResponseCommand方法中会将执行结果设置进去。</p> 
+<p> putResponse方法源码如下：</p> 
+<pre><code class="language-java">  /**
+     * 存入响应结果并且唤醒等待的线程
+     *
+     * 调用该方法使得ResponseFuture中的CountDownLatch的倒计数变为0；
+     * 该方法有两个调用点：
+     *      一个是在ChannelFutureListener中判断请求发送失败的时候，直接设置一个null进去；
+     *      另一个就是请求正常处理完毕的时候，在processResponseCommand方法中会将执行结果设置进去。
+     *
+     * @param responseCommand       响应结果
+     */
+    public void putResponse(final RemotingCommand responseCommand) {
+        //存入结果
+        this.responseCommand = responseCommand;
+        //倒计数减去1，唤醒等待的线程
+        this.countDownLatch.countDown();
+    }</code></pre> 
+<p><strong>putResponse方法中会调用countDownLatch#countDown方法，此时倒计数为0，此前阻塞的请求线程将会被唤醒。</strong></p> 
+<h4>2.1.2 processSendResponse处理响应结果</h4> 
+<p>获得响应之后，调用processSendResponse方法处理响应结果，主要就是进行响应码的对应封装操作，然后对发送正常和异常情况分别进行不同的处理并返回sendResult对象。</p> 
+<p>从源码中可以看到，sendResult的构造器中，将会设置客户端生成的uniqMsgId为msgId属性，设置broker生成的MsgId为offsetMsgId属性。</p> 
+<pre><code class="language-java">/**
+     * MQClientInstance的方法
+     * 处理响应结果：
+     *      主要就是进行响应码的对应封装操作，然后对发送正常和异常情况分别进行不同的处理并返回sendResult对象
+     * @param brokerName
+     * @param msg
+     * @param response
+     * @param addr
+     * @return
+     * @throws MQBrokerException
+     * @throws RemotingCommandException
+     */
+    protected SendResult processSendResponse(
+        final String brokerName,
+        final Message msg,
+        final RemotingCommand response,
+        final String addr
+    ) throws MQBrokerException, RemotingCommandException {
+        SendStatus sendStatus;
+        //根据responseCode设置对应的SendStatus
+        switch (response.getCode()) {
+            case ResponseCode.FLUSH_DISK_TIMEOUT: {
+                sendStatus = SendStatus.FLUSH_DISK_TIMEOUT;
+                break;
+            }
+            case ResponseCode.FLUSH_SLAVE_TIMEOUT: {
+                sendStatus = SendStatus.FLUSH_SLAVE_TIMEOUT;
+                break;
+            }
+            case ResponseCode.SLAVE_NOT_AVAILABLE: {
+                sendStatus = SendStatus.SLAVE_NOT_AVAILABLE;
+                break;
+            }
+            case ResponseCode.SUCCESS: {
+                sendStatus = SendStatus.SEND_OK;
+                break;
+            }
+            default: {
+                throw new MQBrokerException(response.getCode(), response.getRemark(), addr);
+            }
+        }
+
+        //获取响应头
+        SendMessageResponseHeader responseHeader =
+            (SendMessageResponseHeader) response.decodeCommandCustomHeader(SendMessageResponseHeader.class);
+
+        //If namespace not null , reset Topic without namespace.
+        //如果命名空间不为null，重置不带命名空间的topic
+        String topic = msg.getTopic();
+        if (StringUtils.isNotEmpty(this.clientConfig.getNamespace())) {
+            topic = NamespaceUtil.withoutNamespace(topic, this.clientConfig.getNamespace());
+        }
+
+        //新建一个MessageQueue，设置属性
+        MessageQueue messageQueue = new MessageQueue(topic, brokerName, responseHeader.getQueueId());
+
+        //获取客户端生成的uniqId
+        String uniqMsgId = MessageClientIDSetter.getUniqID(msg);
+        if (msg instanceof MessageBatch &amp;&amp; responseHeader.getBatchUniqId() == null) {
+            // This means it is not an inner batch
+            StringBuilder sb = new StringBuilder();
+            for (Message message : (MessageBatch) msg) {
+                sb.append(sb.length() == 0 ? "" : ",").append(MessageClientIDSetter.getUniqID(message));
+            }
+            uniqMsgId = sb.toString();
+        }
+        //新建SendResult对象，即最终返回的对象，设置客户端生成的uniqMsgId为为msgId属性，设置broker生成的MsgId为offsetMsgId属性
+        SendResult sendResult = new SendResult(sendStatus,
+            uniqMsgId,
+            responseHeader.getMsgId(), messageQueue, responseHeader.getQueueOffset());
+        //设置事务id
+        sendResult.setTransactionId(responseHeader.getTransactionId());
+        //设置regionId和traceOn
+        String regionId = response.getExtFields().get(MessageConst.PROPERTY_MSG_REGION);
+        String traceOn = response.getExtFields().get(MessageConst.PROPERTY_TRACE_SWITCH);
+        if (regionId == null || regionId.isEmpty()) {
+            regionId = MixAll.DEFAULT_TRACE_REGION_ID;
+        }
+        if (traceOn != null &amp;&amp; traceOn.equals("false")) {
+            sendResult.setTraceOn(false);
+        } else {
+            sendResult.setTraceOn(true);
+        }
+        sendResult.setRegionId(regionId);
+        return sendResult;
+    }</code></pre> 
+<h2>3 sendMessageAsync异步发送消息 </h2> 
+<p><strong>该模式下，调用该方法之后不接收返回值，直接返回null，执行完毕之后会自动执行回调函数operationComplete。异步发送同样支持重试。</strong></p> 
+<p>调用异步发送方法传递的<strong>SendCallback</strong>对象并不会被直接调用，而是会被封装为另一个内部回调对象InvokeCallback，当异步请求获得响应结果，或者超时时间到了之后，会回调它的operationComplete方法。 </p> 
+<p>该方法中会调用<strong>processSendResponse</strong>方法解析响应结果为SendResult，如果是响应成功的状态，那么接着执行sendCallback的onSuccess方法，这里的sendCallback就是发送消息时传入的回调函数。</p> 
+<p>随后会调用<strong>updateFaultItem</strong>更新本地更新本地错误表缓存数据，用于延迟时间的故障转移的功能。</p> 
+<p><strong>如果抛出了异常，或者没有获取到broker的返回值，那么调用onExceptionImpl方法处理异常，该方法中会继续重试异步调用，这就是异步发送消息重试的逻辑。</strong></p> 
+<pre><code class="language-java">  /**
+     * MQClientInstance的方法
+     * 异步发送的主要调用逻辑：
+     *      调用invokeAsync方法发送异步消息 ，将响应结果交给InvokeCallback类进行回调处理。
+     *      为了避免消息异步发送失败，将消息保存在容器表中，供重试发送，当消息发送出现异常时，调用onExceptionImpl方法处理异常，实际上onExceptionImpl方法也是将消息重试发送，直到消息被成功发送。
+     *
+     * 发送消息是通过异步的方式发送，然后进行等待消息的响应结果，那么这里是如何进行等待的那？
+     *      利用countDownLath.await()方法等待，达到阻塞的目的，当超时就返回响应。
+     *      响应返回之后，就需要对响应进行处理。大致逻辑就是根据响应的状态码，设置发送的结果状态，设置发送结果，最后将发送结果返回。
+     * @param addr
+     * @param brokerName
+     * @param msg
+     * @param timeoutMillis
+     * @param request
+     * @param sendCallback
+     * @param topicPublishInfo
+     * @param instance
+     * @param retryTimesWhenSendFailed      异步胸袭发送失败重试次数
+     * @param times                         重试计数器
+     * @param context
+     * @param producer
+     */
+    private void sendMessageAsync(
+        final String addr,
+        final String brokerName,
+        final Message msg,
+        final long timeoutMillis,
+        final RemotingCommand request,
+        final SendCallback sendCallback,
+        final TopicPublishInfo topicPublishInfo,
+        final MQClientInstance instance,
+        final int retryTimesWhenSendFailed,
+        final AtomicInteger times,
+        final SendMessageContext context,
+        final DefaultMQProducerImpl producer
+    ) {
+        //起始时间
+        final long beginStartTime = System.currentTimeMillis();
+        try {
+            /**
+             * 发送异步消息，设置一个InvokeCallback回调对象
+             *
+             * InvokeCallback#operationComplete方法将会在得到结果之后进行回调
+             */
+            this.remotingClient.invokeAsync(addr, request, timeoutMillis, new InvokeCallback() {
+                /**
+                 * 异步执行的回调方法
+                 * @param responseFuture
+                 */
+                @Override
+                public void operationComplete(ResponseFuture responseFuture) {
+                    //花费的时间
+                    long cost = System.currentTimeMillis() - beginStartTime;
+                    RemotingCommand response = responseFuture.getResponseCommand();
+                    //如果没有设置回调函数
+                    if (null == sendCallback &amp;&amp; response != null) {
+
+                        try {
+                            //调用processSendResponse方法处理响应结果
+                            SendResult sendResult = MQClientAPIImpl.this.processSendResponse(brokerName, msg, response, addr);
+                            if (context != null &amp;&amp; sendResult != null) {
+                                context.setSendResult(sendResult);
+                                context.getProducer().executeSendMessageHookAfter(context);
+                            }
+                        } catch (Throwable e) {
+                        }
+
+                        //放入容错表中，更新本地错误表缓存数据，用于延迟时间的故障转移的功能
+                        producer.updateFaultItem(brokerName, System.currentTimeMillis() - responseFuture.getBeginTimestamp(), false);
+                        return;
+                    }
+
+                    //如果存在响应结果
+                    if (response != null) {
+                        try {
+                            //调用processSendResponse方法处理响应结果
+                            SendResult sendResult = MQClientAPIImpl.this.processSendResponse(brokerName, msg, response, addr);
+                            assert sendResult != null;
+                            if (context != null) {
+                                context.setSendResult(sendResult);
+                                //执行消息发送之前的钩子函数，即SendMessageHook#sendMessageAfter方法
+                                context.getProducer().executeSendMessageHookAfter(context);
+                            }
+
+                            try {
+                                //响应成功时调用，执行sendCallback的onSuccess方法
+                                //这里的的sendCallback就是发送消息时候传入的回调函数
+                                sendCallback.onSuccess(sendResult);
+                            } catch (Throwable e) {
+                            }
+
+                            //放入容错表中，更新本地错误表缓存数据，用于延迟时间的故障转移的功能
+                            producer.updateFaultItem(brokerName, System.currentTimeMillis() - responseFuture.getBeginTimestamp(), false);
+                        } catch (Exception e) {
+                            producer.updateFaultItem(brokerName, System.currentTimeMillis() - responseFuture.getBeginTimestamp(), true);
+                            //异常处理，不需要重试
+                            onExceptionImpl(brokerName, msg, timeoutMillis - cost, request, sendCallback, topicPublishInfo, instance,
+                                retryTimesWhenSendFailed, times, e, context, false, producer);
+                        }
+                    } else {
+                        //放入容错表中，更新本地错误表缓存数据，用于延迟时间的故障转移的功能
+                        producer.updateFaultItem(brokerName, System.currentTimeMillis() - responseFuture.getBeginTimestamp(), true);
+                        //异常处理，需要重试，发送失败
+                        if (!responseFuture.isSendRequestOK()) {
+                            MQClientException ex = new MQClientException("send request failed", responseFuture.getCause());
+                            onExceptionImpl(brokerName, msg, timeoutMillis - cost, request, sendCallback, topicPublishInfo, instance,
+                                retryTimesWhenSendFailed, times, ex, context, true, producer);
+                        } else if (responseFuture.isTimeout()) {
+                            //超时，代码同发送不成功一样
+                            MQClientException ex = new MQClientException("wait response timeout " + responseFuture.getTimeoutMillis() + "ms",
+                                responseFuture.getCause());
+                            onExceptionImpl(brokerName, msg, timeoutMillis - cost, request, sendCallback, topicPublishInfo, instance,
+                                retryTimesWhenSendFailed, times, ex, context, true, producer);
+                        } else {
+                            //其他异常，代码同发送不成功一样
+                            MQClientException ex = new MQClientException("unknow reseaon", responseFuture.getCause());
+                            onExceptionImpl(brokerName, msg, timeoutMillis - cost, request, sendCallback, topicPublishInfo, instance,
+                                retryTimesWhenSendFailed, times, ex, context, true, producer);
+                        }
+                    }
+                }
+            });
+        } catch (Exception ex) {
+            long cost = System.currentTimeMillis() - beginStartTime;
+            //放入容错表中，更新本地错误表缓存数据，用于延迟时间的故障转移的功能
+            producer.updateFaultItem(brokerName, cost, true);
+            //异常处理
+            onExceptionImpl(brokerName, msg, timeoutMillis - cost, request, sendCallback, topicPublishInfo, instance,
+                retryTimesWhenSendFailed, times, ex, context, true, producer);
+        }
+    }
+</code></pre> 
+<h3>3.1 invokeAsync异步调用</h3> 
+<p>该方法执行异步调用。首先获取或者创建生产者与broker通道，即连接。然后在发送消息前后执行rpcHook钩子方法，即RPCHook#doBeforeRequest方法，最后通过调用invokeAsyncImpl方法发起异步调用。</p> 
+<pre><code class="language-java"> /**
+     * MQClientInstance的方法
+     * 异步发送消息主要步骤：
+     * 1. 获取或者创建生产者与broker通道，即连接
+     * 2. 如果连接正常，在消息发送之前调用rpcHook钩子方法，即RPCHook#doBeforeRequest方法。此时要是已经超时，则直接抛出异常，就不发送消息了。
+     * 3. 最后通过调用invokeAsyncImpl方法发起异步调用。
+     * 在发送消息过程要是发生了异常，先关闭连接，然后把异常抛出。
+     * @param addr
+     * @param request
+     * @param timeoutMillis
+     * @param invokeCallback
+     * @throws InterruptedException
+     * @throws RemotingConnectException
+     * @throws RemotingTooMuchRequestException
+     * @throws RemotingTimeoutException
+     * @throws RemotingSendRequestException
+     */
+    @Override
+    public void invokeAsync(String addr, RemotingCommand request, long timeoutMillis, InvokeCallback invokeCallback)
+        throws InterruptedException, RemotingConnectException, RemotingTooMuchRequestException, RemotingTimeoutException,
+        RemotingSendRequestException {
+        //开始时间
+        long beginStartTime = System.currentTimeMillis();
+        //获取或创建一个与broker的连接
+        final Channel channel = this.getAndCreateChannel(addr);
+        //如果连接可用（不为空并且活跃）
+        if (channel != null &amp;&amp; channel.isActive()) {
+            try {
+                //执行rpc钩子的doBeforeRequest方法
+                doBeforeRpcHooks(addr, request);
+                long costTime = System.currentTimeMillis() - beginStartTime;
+                //如果超时，抛出异常，不再执行
+                if (timeoutMillis &lt; costTime) {
+                    throw new RemotingTooMuchRequestException("invokeAsync call the addr[" + addr + "] timeout");
+                }
+                //执行异步远程调用
+                this.invokeAsyncImpl(channel, request, timeoutMillis - costTime, new InvokeCallbackWrapper(invokeCallback, addr));
+            } catch (RemotingSendRequestException e) {
+                LOGGER.warn("invokeAsync: send request exception, so close the channel[{}]", addr);
+                this.closeChannel(addr, channel);
+                throw e;
+            }
+        } else {
+            this.closeChannel(addr, channel);
+            throw new RemotingConnectException(addr);
+        }
+    }</code></pre> 
+<h4>3.1.1 invokeAsyncImpl异步调用实现</h4> 
+<p>invokeAsyncImpl方法发起异步调用。该方法和单向发送的方法一样，都会基于Semaphore信号量尝试获取异步发送的资源，通过信号量控制异步消息并发发送的消息数，从而保护系统内存占用。客户端单向发送的Semaphore信号量默认为65535，即异步消息最大并发为65535，可通过配置"com.rocketmq.remoting.clientAsyncSemaphoreValue"系统变量更改。</p> 
+<p>在获取到了信号量资源之后。构建SemaphoreReleaseOnlyOnce对象，保证信号量本次只被释放一次，防止并发操作引起线程安全问题，然后就通过channel发送请求即可。</p> 
+<p>然后创建一个ResponseFuture，设置超时时间、回调函数。然后将本次请求id和respone存入responseTable缓存。</p> 
+<p>随后执行调用，并添加一个ChannelFutureListener，消息发送完毕会进行回调。当ChannelFutureListener回调的时候会判断如果消息发送成功，那么设置发送成功并返回，否则如果发送失败了，则移除缓存、设置false、并且执行InvokeCallback#operationComplete回调。</p> 
+<p>如果发送成功了，那么InvokeCallback#operationComplete回调会执行吗，当让会了，当请求正常处理完毕的时候，在processResponseCommand方法中会将执行InvokeCallback#operationComplete回调</p> 
+<pre><code class="language-java">  /**
+     * NettyRemotingAbatract的方法
+     * 异步调用实现：
+     * invokeAsyncImpl，也和单向发送方式一样
+     * 1. 基于Semaphore信号量尝试获取异步发送的资源，通过信号量控制异步消息并发发送的消息数，从而保护系统内存占用。
+     *    客户端单向发送的Semaphore信号量默认为65535，即异步消息最大并发为65535
+     * 2. 在获取到了信号量资源后，构建SemaphoreReleaseOnlyOnce对象，保证信号量本次只被释放一次，防止并发操作引起线程安全问题，然后就通过channel发送请求即可。
+     * 3. 然后创建一个ResponseFuture，设置超时时间，回调函数，然后将本次请求id和respone存入responseTable缓存。
+     * 4. 随后执行调用，并添加一个ChannelFutureListener，消息发送完毕会进行回调。
+     * 5. 当ChannelFutureListener回调的时候会判断如果消息发送成功，那么设置发送成功并返回，否则如果发送失败了，则移除缓存、设置false、并且执行InvokeCallback#operationComplete回调。
+     * @param channel
+     * @param request
+     * @param timeoutMillis
+     * @param invokeCallback
+     * @throws InterruptedException
+     * @throws RemotingTooMuchRequestException
+     * @throws RemotingTimeoutException
+     * @throws RemotingSendRequestException
+     */
+    public void invokeAsyncImpl(final Channel channel, final RemotingCommand request, final long timeoutMillis,
+        final InvokeCallback invokeCallback)
+        throws InterruptedException, RemotingTooMuchRequestException, RemotingTimeoutException, RemotingSendRequestException {
+        //起始时间
+        long beginStartTime = System.currentTimeMillis();
+        //获取请求id，通过id可以获取请求结果
+        final int opaque = request.getOpaque();
+        //基于Semaphore信号量超时获取异步发送的资源，通过信号量控制异步消息并发发送的消息数，从而保护系统占用
+        //客户端异步发送的Semaphore信号量默认为65535
+        boolean acquired = this.semaphoreAsync.tryAcquire(timeoutMillis, TimeUnit.MILLISECONDS);
+        //如果获取到了信号量资源
+        if (acquired) {
+            //构建SemaphoreReleaseOnlyOnce对象，保证信号量本次只被释放一次，防止并发操作引起线程安全
+            final SemaphoreReleaseOnlyOnce once = new SemaphoreReleaseOnlyOnce(this.semaphoreAsync);
+            long costTime = System.currentTimeMillis() - beginStartTime;
+            //如果超时，则不发送，抛出异常
+            if (timeoutMillis &lt; costTime) {
+                once.release();
+                throw new RemotingTimeoutException("invokeAsyncImpl call timeout");
+            }
+
+            //创建一个Future的map成员ResponseFuture，设置超时时间、回调函数
+            final ResponseFuture responseFuture = new ResponseFuture(channel, opaque, timeoutMillis - costTime, invokeCallback, once);
+            //将请求id和responseFuture存入responseTable缓存中
+            this.responseTable.put(opaque, responseFuture);
+            try {
+                //发送请求，添加一个ChannelFutureListener，消息发送完毕会进行回调
+                channel.writeAndFlush(request).addListener((ChannelFutureListener) f -&gt; {
+                    //如果消息发送成功，那么设置responseFuture发送成功并返回
+                    if (f.isSuccess()) {
+                        responseFuture.setSendRequestOK(true);
+                        return;
+                    }
+                    // 如果发送失败，则移除缓存、设置false、并且执行InvokeCallback#operationComplete回调
+                    requestFail(opaque);
+                    log.warn("send a request command to channel &lt;{}&gt; failed.", RemotingHelper.parseChannelRemoteAddr(channel));
+                });
+            } catch (Exception e) {
+                //释放信号量
+                responseFuture.release();
+                log.warn("send a request command to channel &lt;" + RemotingHelper.parseChannelRemoteAddr(channel) + "&gt; Exception", e);
+                throw new RemotingSendRequestException(RemotingHelper.parseChannelRemoteAddr(channel), e);
+            }
+        } else {
+            //没有没有获取到信号量资源，那么直接抛出异常即可，并且不再发送
+            if (timeoutMillis &lt;= 0) {
+                throw new RemotingTooMuchRequestException("invokeAsyncImpl invoke too fast");
+            } else {
+                String info =
+                    String.format("invokeAsyncImpl tryAcquire semaphore timeout, %dms, waiting thread nums: %d semaphoreAsyncValue: %d",
+                        timeoutMillis,
+                        this.semaphoreAsync.getQueueLength(),
+                        this.semaphoreAsync.availablePermits()
+                    );
+                log.warn(info);
+                throw new RemotingTimeoutException(info);
+            }
+        }
+    }</code></pre> 
+<h3>3.2 onExceptionImpl异常处理</h3> 
+<p>异步调用如果发生了异常，例如broker返回了错入的响应，或者没有获得响应，那会会执行onExceptionImpl这个异常处理方法。</p> 
+<p>可以看到，所谓的重试实际上就是重复的调用sendMessageAsync方法。重试之前，首先会判断本次重试的次数是否大于重试总次数，参数为retryTimesWhenSendFailed，默认2次。如果超过了最大重试次数，那么便不会重试，而是执行sendCallback#onException方法。</p> 
+<pre><code class="language-java">  /**
+     * MQClientAPIImpl
+     * 异步发送消息的异常处理的方法，包含重试的逻辑：
+     *        所谓的重试实际上就是重复的调用sendMessageAsync方法。
+     *        重试之前，首先会判断本次重试的次数是否大于重试总次数，参数为retryTimesWhenSendFailed，默认2次。
+     *        如果超过了最大重试次数，那么便不会重试，而是执行sendCallback#onException方法。
+     * @param brokerName
+     * @param msg
+     * @param timeoutMillis
+     * @param request
+     * @param sendCallback
+     * @param topicPublishInfo
+     * @param instance
+     * @param timesTotal            异步发送失败重试次数
+     * @param curTimes              重试计数器
+     * @param e                     抛出的异常
+     * @param context
+     * @param needRetry             是否需要重试
+     * @param producer
+     */
+    private void onExceptionImpl(final String brokerName,
+        final Message msg,
+        final long timeoutMillis,
+        final RemotingCommand request,
+        final SendCallback sendCallback,
+        final TopicPublishInfo topicPublishInfo,
+        final MQClientInstance instance,
+        final int timesTotal,
+        final AtomicInteger curTimes,
+        final Exception e,
+        final SendMessageContext context,
+        final boolean needRetry,
+        final DefaultMQProducerImpl producer
+    ) {
+        //重试次数加1并获取
+        int tmp = curTimes.incrementAndGet();
+        /**
+         * 如果需要重试，并且本次重试次数小于等于总次数
+         */
+        if (needRetry &amp;&amp; tmp &lt;= timesTotal) {
+            //保存brokerName， 异步重试将会发送到相同的broker
+            String retryBrokerName = brokerName;//by default, it will send to the same broker
+            if (topicPublishInfo != null) { //select one message queue accordingly, in order to determine which broker to send
+                //选择一个消息队列
+                MessageQueue mqChosen = producer.selectOneMessageQueue(topicPublishInfo, brokerName);
+                retryBrokerName = instance.getBrokerNameFromMessageQueue(mqChosen);
+            }
+            String addr = instance.findBrokerAddressInPublish(retryBrokerName);
+            log.warn("async send msg by retry {} times. topic={}, brokerAddr={}, brokerName={}", tmp, msg.getTopic(), addr,
+                retryBrokerName, e);
+            //设置请求id，通过id可以获取请求结果
+            request.setOpaque(RemotingCommand.createNewRequestId());
+            //调用sendMessageAsync再次发送异步消息
+            sendMessageAsync(addr, retryBrokerName, msg, timeoutMillis, request, sendCallback, topicPublishInfo, instance,
+                timesTotal, curTimes, context, producer);
+        } else {
+            //如果本次重试次数大于总次数
+            if (context != null) {
+                context.setException(e);
+                context.getProducer().executeSendMessageHookAfter(context);
+            }
+
+            try {
+                //最后执行sendCallback的onException方法
+                sendCallback.onException(e);
+            } catch (Exception ignored) {
+            }
+        }
+    }</code></pre> 
+<h2>4 NettyClientHandler处理服务端消息</h2> 
+<p>RocketMQ在启动的时候，在MQClientInstance的start方法中，会创建一个netty客户端，然后会添加一个处理器NettyClientHandler。</p> 
+<p>这个NettyClientHandler用于处理RemotingCommand消息，即来处理自服务端的请求消息，或者客户端发出去的请求消息后，服务的返回来的响应消息。</p> 
+<pre><code class="language-java">  /**
+     * NettyRemotingClient的内部类
+     * 用于处理RemotingCommand消息，即来处理自服务端的请求消息，或者客户端发出去的请求消息后，服务的返回来的响应消息。
+     */
+    class NettyClientHandler extends SimpleChannelInboundHandler&lt;RemotingCommand&gt; {
+
+        /**
+         * 处理来自服务端的RemotingCommand消息
+         */
+        @Override
+        protected void channelRead0(ChannelHandlerContext ctx, RemotingCommand msg) throws Exception {
+            processMessageReceived(ctx, msg);
+        }
+    }</code></pre> 
+<p>NettyClientHandler通过processMessageReceived方法处理RemotingCommand消息。 </p> 
+<pre><code class="language-java">  /**
+     * Entry of incoming command processing.
+     *
+     * &lt;p&gt;
+     * &lt;strong&gt;Note:&lt;/strong&gt;
+     * The incoming remoting command may be
+     * &lt;ul&gt;
+     * &lt;li&gt;An inquiry request from a remote peer component;&lt;/li&gt;
+     * &lt;li&gt;A response to a previous request issued by this very participant.&lt;/li&gt;
+     * &lt;/ul&gt;
+     * &lt;/p&gt;
+     *
+     * @param ctx Channel handler context.
+     * @param msg incoming remoting command.
+     */
+    /**
+     * NettyRemotingAbstract的方法
+     * 处理RemotingCommand命令消息，传入的远程处理命令可能是：
+     * 1. 来自远程对等组件的查询需求
+     * 2. 对该参与者之前发出的请求的响应
+     * @param ctx
+     * @param msg
+     */
+    public void processMessageReceived(ChannelHandlerContext ctx, RemotingCommand msg) {
+        if (msg != null) {
+            switch (msg.getType()) {
+                //处理来源服务器的请求request
+                case REQUEST_COMMAND:
+                    processRequestCommand(ctx, msg);
+                    break;
+                //处理来源服务器端的响应
+                case RESPONSE_COMMAND:
+                    //客户端发送消息之后服务端的响应会被processResponseCommand方法处理
+                    processResponseCommand(ctx, msg);
+                    break;
+                default:
+                    break;
+            }
+        }
+    }</code></pre> 
+<p>这里我们主要看<strong>processResponseCommand</strong>方法，即客户端发送消息之后服务端的响应会被<strong>processResponseCommand</strong>方法处理。</p> 
+<h3>4.1 processResponseCommand处理响应 </h3> 
+<p>客户端发送消息之后服务端的响应会被processResponseCommand方法处理。消息发送请求的响应处理也是该方法完成的。其大概流程为：</p> 
+<p>1. 先根据请求id找到之前放到responseTable的ResponseFuture，然后从responseTable中移除ResponseFuture缓存。<br> 2. 判断如果存在回调函数，即异步请求，那么调用executeInvokeCallback方法，该方法会执行回调函数的方法。<br> 3. 如果没有回调函数，则调用putResponse方法。该方法将响应数据设置到responseCommand，然后调用countDownLatch.countDown，即倒计数减去1，唤醒等待的线程。</p> 
+<pre><code class="language-java">  /**
+     * Process response from remote peer to the previous issued requests.
+     *
+     * @param ctx channel handler context.
+     * @param cmd response command instance.
+     */
+    /**
+     *  NettyRemotingAbstract的方法
+     *  客户端发送消息之后服务端的响应会被processResponseCommand方法处理
+     *  方法主要步骤：
+     *  1. 先根据请求id找到之前放到responseTable的ResponseFuture，然后从responseTable中移除ResponseFuture
+     *  2. 判断如果存在回调函数，即异步请求，那么调用executeInvokeCallback方法，该方法会执行回调函数的方法
+     *  3. 如果没有回调函数，则调用putResponse方法。该方法将响应数据设置到responseCommand中，然后调用countDownLatch.countDown，即倒计数减去1，唤醒等待的线程
+     * @param ctx
+     * @param cmd
+     */
+    public void processResponseCommand(ChannelHandlerContext ctx, RemotingCommand cmd) {
+        //获取请求id，通过id可以获取请求结果
+        final int opaque = cmd.getOpaque();
+        //根据请求标识id找到之前放到responseTable的ResponseFuture
+        final ResponseFuture responseFuture = responseTable.get(opaque);
+        if (responseFuture != null) {
+            responseFuture.setResponseCommand(cmd);
+
+            //从responseTable中移除该响应
+            responseTable.remove(opaque);
+
+            //如果存在回调函数，即异步请求
+            if (responseFuture.getInvokeCallback() != null) {
+                //那么调用回调函数的方法
+                executeInvokeCallback(responseFuture);
+            } else {
+                //如果是同步请求，则调用putResponse方法
+                //该方法将响应数据设置到responseCommand，然后调用countDownLatch.countDown，即倒计数减去1，唤醒等待的线程
+                responseFuture.putResponse(cmd);
+                responseFuture.release();
+            }
+        } else {
+            log.warn("receive response, but not matched any request, " + RemotingHelper.parseChannelRemoteAddr(ctx.channel()));
+            log.warn(cmd.toString());
+        }
+    }
+</code></pre> 
+<h4>4.1.1 executeInvokeCallback执行回调函数</h4> 
+<p>该方法主要是在异步请求的时候被调用，例如之前的异步发送消息，之前我们知道，异步请求发送的时候，会同时指定一个回调函数。而当前获得来自服务端的响应之后，就会调用了该回调函数。</p> 
+<p>该方法尝试在回调执行器中执行回调操作，如果回调执行器为null，则在当前线程中执行回调。</p> 
+<pre><code class="language-java">  /**
+     * Execute callback in callback executor. If callback executor is null, run directly in current thread
+     */
+    /**
+     * NettyRemotingAbstract的方法
+     * 在回调执行器中执行回调操作，如果回调执行器为null，则在当前线程中执行回调
+     * @param responseFuture
+     */
+    private void executeInvokeCallback(final ResponseFuture responseFuture) {
+        boolean runInThisThread = false;
+        //获取回调执行器，如果没有设置回调执行器callbackExecutor（默认没有），那么使用publicExecutor
+        ExecutorService executor = this.getCallbackExecutor();
+        if (executor != null &amp;&amp; !executor.isShutdown()) {
+            try {
+                executor.submit(() -&gt; {
+                    try {
+                        //通过线程池异步的执行回调操作
+                        responseFuture.executeInvokeCallback();
+                    } catch (Throwable e) {
+                        log.warn("execute callback in executor exception, and callback throw", e);
+                    } finally {
+                        responseFuture.release();
+                    }
+                });
+            } catch (Exception e) {
+                runInThisThread = true;
+                log.warn("execute callback in executor exception, maybe executor busy", e);
+            }
+        } else {
+            runInThisThread = true;
+        }
+
+        //在本线程中执行回调操作
+        if (runInThisThread) {
+            try {
+                responseFuture.executeInvokeCallback();
+            } catch (Throwable e) {
+                log.warn("executeInvokeCallback Exception", e);
+            } finally {
+                responseFuture.release();
+            }
+        }
+    }</code></pre> 
+<p><strong> 4.1.1.1 executeInvokeCallback指定回调</strong></p> 
+<p>该方法将会调用<strong>invokeCallback.operationComplete</strong>回调方法，这个方法我们之前在异步发送请求的时候就讲过了。</p> 
+<pre><code class="language-java">   /**
+     * ResponseFuture的方法
+     */
+    public void executeInvokeCallback() {
+        if (invokeCallback != null) {
+            //通过cas保证只允许一次使用
+            if (this.executeCallbackOnlyOnce.compareAndSet(false, true)) {
+                //执行回调器的回调方法operationComplete
+                invokeCallback.operationComplete(this);
+            }
+        }
+    }</code></pre> 
+<h4> 4.1.2 putResponse存入响应</h4> 
+<p>该方法主要是在同步请求的时候被调用，例如之前的同步发送消息，之前我们知道，同步请求发送之后，请求线程会阻塞。而当前获得来自服务端的响应之后，就会调用了该方法。</p> 
+<p>该方法将响应数据设置到responseCommand，然后调用countDownLatch.countDown，即倒计数减去1，唤醒等待的线程。</p> 
+<pre><code class="language-java">  /**
+     * 存入响应结果并且唤醒等待的线程
+     *
+     * 调用该方法使得ResponseFuture中的CountDownLatch的倒计数变为0；
+     * 该方法有两个调用点：
+     *      一个是在ChannelFutureListener中判断请求发送失败的时候，直接设置一个null进去；
+     *      另一个就是请求正常处理完毕的时候，在processResponseCommand方法中会将执行结果设置进去。
+     *
+     * @param responseCommand       响应结果
+     */
+    public void putResponse(final RemotingCommand responseCommand) {
+        //存入结果
+        this.responseCommand = responseCommand;
+        //倒计数减去1，唤醒等待的线程
+        this.countDownLatch.countDown();
+    }</code></pre> 
+<h2>5 总结</h2> 
+<p>本次我们讲解了重要的发送消息的内部方法MQClientAPIImpl#sendMessage的源码，该方法内部又会根据发送模式执行不同的发送逻辑。单向发送模式调用RemotingClient#invokeOneway方法；异步发送模式调用MQClientAPIImpl#sendMessageAsync方法；同步发送模式调用MQClientAPIImpl#sendMessageSync方法。在异步和同步模式发送方法的调用前还会再检查是否超时，如果超时则不再调用。</p> 
+<p>同步发送模式内部采用CountDownLatch工具实现线程的阻塞和唤醒，当发送了同步消息之后，当前线程阻塞，当服务端响应返回之后，将会通过CountDownLatch减少倒计数来唤醒阻塞的线程。发送请求和响应怎么对应上的呢？发送请求的时候会生成并带上本次请求的请求Id，客户端返回响应中带有对应的请求的请求Id，这样就能对应上了。</p> 
+<p>同步发送和异步发送模式都会有消息重试，消息发送过程中如果抛出了RemotingException、MQClientException、以及部分MQBrokerException异常时，那么会进行重试，默认重试2次。如果抛出了InterruptedException，或者因为超时则不再重试。</p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/4afe81b97eaf214f50875283b629e540/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">MapReduce 案例倒排索引</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/673eddd2934808c1a53374ec220f6867/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">安卓逆向so篇（一）：so文件调用</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

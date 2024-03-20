@@ -1,0 +1,1098 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Android -- WiFi的NUD检测机制浅析 - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="Android -- WiFi的NUD检测机制浅析" />
+<meta property="og:description" content="Android -- WiFi的NUD检测机制浅析 这段时间遇到几次WiFi连接后，突然断连的问题，最后发现是由于Android的NUD检测机制导致的。NUD(Neighbor Unreachable Detection,邻居不可达检测)的底层实现还是依赖kernel，Android层有服务建立通信，当kernel检测到当前网络与周边的neighbor不可达时，就会发送消息通知上层，上层处理msg、最后WiFi会transfer到Disconnect STATE，最后导致网络自己断开，这会影响用户体验，让用户产生困扰。
+这里我们主要介绍一下Android FWK中关于NUD的流程，以便加深对这个流程的了解，这样可以方便我们后续解决相关的问题，或者加些小定制。
+当用户点击WiFi开关，打开WiFi后，WiFiStateMachine会进入ConnectMode，准备处理用户的连接请求：
+class ConnectModeState extends State { @Override public void enter() { Log.d(TAG, &#34;entering ConnectModeState: ifaceName = &#34; &#43; mInterfaceName); mOperationalMode = CONNECT_MODE; setupClientMode(); if (!mWifiNative.removeAllNetworks(mInterfaceName)) { loge(&#34;Failed to remove networks on entering connect mode&#34;); } mScanRequestProxy.enableScanningForHiddenNetworks(true); mWifiInfo.reset(); mWifiInfo.setSupplicantState(SupplicantState.DISCONNECTED); mWifiInjector.getWakeupController().reset(); mNetworkInfo.setIsAvailable(true); if (mNetworkAgent != null) mNetworkAgent.sendNetworkInfo(mNetworkInfo); // initialize network state setNetworkDetailedState(DetailedState.DISCONNECTED); // Inform WifiConnectivityManager that Wifi is enabled mWifiConnectivityManager.setWifiEnabled(true); // Inform metrics that Wifi is Enabled (but not yet connected) mWifiMetrics." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/15cee53ea12082579ab6cf7e9432163c/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2021-12-13T09:45:00+08:00" />
+<meta property="article:modified_time" content="2021-12-13T09:45:00+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Android -- WiFi的NUD检测机制浅析</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <h2 style="text-align:center;">Android -- WiFi的NUD检测机制浅析</h2> 
+<p>       这段时间遇到几次WiFi连接后，突然断连的问题，最后发现是由于Android的NUD检测机制导致的。NUD(Neighbor Unreachable Detection,邻居不可达检测)的底层实现还是依赖kernel，Android层有服务建立通信，当kernel检测到当前网络与周边的neighbor不可达时，就会发送消息通知上层，上层处理msg、最后WiFi会transfer到Disconnect STATE，最后导致网络自己断开，这会影响用户体验，让用户产生困扰。</p> 
+<p>    这里我们主要介绍一下Android FWK中关于NUD的流程，以便加深对这个流程的了解，这样可以方便我们后续解决相关的问题，或者加些小定制。</p> 
+<p>    当用户点击WiFi开关，打开WiFi后，WiFiStateMachine会进入ConnectMode，准备处理用户的连接请求：</p> 
+<pre><code class="language-java">    class ConnectModeState extends State {
+
+        @Override
+        public void enter() {
+            Log.d(TAG, "entering ConnectModeState: ifaceName = " + mInterfaceName);
+            mOperationalMode = CONNECT_MODE;
+            setupClientMode();
+            if (!mWifiNative.removeAllNetworks(mInterfaceName)) {
+                loge("Failed to remove networks on entering connect mode");
+            }
+            mScanRequestProxy.enableScanningForHiddenNetworks(true);
+            mWifiInfo.reset();
+            mWifiInfo.setSupplicantState(SupplicantState.DISCONNECTED);
+
+            mWifiInjector.getWakeupController().reset();
+
+            mNetworkInfo.setIsAvailable(true);
+            if (mNetworkAgent != null) mNetworkAgent.sendNetworkInfo(mNetworkInfo);
+
+            // initialize network state
+            setNetworkDetailedState(DetailedState.DISCONNECTED);
+
+            // Inform WifiConnectivityManager that Wifi is enabled
+            mWifiConnectivityManager.setWifiEnabled(true);
+            // Inform metrics that Wifi is Enabled (but not yet connected)
+            mWifiMetrics.setWifiState(WifiMetricsProto.WifiLog.WIFI_DISCONNECTED);
+            // Inform p2p service that wifi is up and ready when applicable
+            p2pSendMessage(WifiStateMachine.CMD_ENABLE_P2P);
+            // Inform sar manager that wifi is Enabled
+            mSarManager.setClientWifiState(WifiManager.WIFI_STATE_ENABLED);
+        }
+......
+}</code></pre> 
+<p>ClientMode是Station模式，setupClientMode()会为后续的网络连接做一些准备工作：</p> 
+<pre><code class="language-java">   /**
+     * Helper method to start other services and get state ready for client mode
+     */
+    private void setupClientMode() {
+        Log.d(TAG, "setupClientMode() ifacename = " + mInterfaceName);
+        mWifiStateTracker.updateState(WifiStateTracker.INVALID);
+
+        if (mWifiConnectivityManager == null) {
+            synchronized (mWifiReqCountLock) {
+                mWifiConnectivityManager =
+                        mWifiInjector.makeWifiConnectivityManager(mWifiInfo,
+                                                                  hasConnectionRequests());
+                mWifiConnectivityManager.setUntrustedConnectionAllowed(mUntrustedReqCount &gt; 0);
+                mWifiConnectivityManager.handleScreenStateChanged(mScreenOn);
+            }
+        }
+
+        mIpClient = mFacade.makeIpClient(mContext, mInterfaceName, new IpClientCallback());
+        mIpClient.setMulticastFilter(true);
+        registerForWifiMonitorEvents();
+        mWifiInjector.getWifiLastResortWatchdog().clearAllFailureCounts();
+        setSupplicantLogLevel();
+
+        // reset state related to supplicant starting
+        mSupplicantStateTracker.sendMessage(CMD_RESET_SUPPLICANT_STATE);
+        // Initialize data structures
+        mLastBssid = null;
+        mLastNetworkId = WifiConfiguration.INVALID_NETWORK_ID;
+        mLastSignalLevel = -1;
+        mWifiInfo.setMacAddress(mWifiNative.getMacAddress(mInterfaceName));
+        // Attempt to migrate data out of legacy store.
+        if (!mWifiConfigManager.migrateFromLegacyStore()) {
+            Log.e(TAG, "Failed to migrate from legacy config store");
+        }
+        // TODO: b/79504296 This broadcast has been deprecated and should be removed
+        sendSupplicantConnectionChangedBroadcast(true);
+
+        mWifiNative.setExternalSim(mInterfaceName, true);
+
+        setRandomMacOui();
+        mCountryCode.setReadyForChange(true);
+
+        mWifiDiagnostics.startLogging(mVerboseLoggingEnabled);
+        mIsRunning = true;
+        updateBatteryWorkSource(null);
+
+        /**
+         * Enable bluetooth coexistence scan mode when bluetooth connection is active.
+         * When this mode is on, some of the low-level scan parameters used by the
+         * driver are changed to reduce interference with bluetooth
+         */
+        mWifiNative.setBluetoothCoexistenceScanMode(mInterfaceName, mBluetoothConnectionActive);
+
+        // initialize network state
+        setNetworkDetailedState(DetailedState.DISCONNECTED);
+
+        // Disable legacy multicast filtering, which on some chipsets defaults to enabled.
+        // Legacy IPv6 multicast filtering blocks ICMPv6 router advertisements which breaks IPv6
+        // provisioning. Legacy IPv4 multicast filtering may be re-enabled later via
+        // IpClient.Callback.setFallbackMulticastFilter()
+        mWifiNative.stopFilteringMulticastV4Packets(mInterfaceName);
+        mWifiNative.stopFilteringMulticastV6Packets(mInterfaceName);
+
+        // Set the right suspend mode settings
+        mWifiNative.setSuspendOptimizations(mInterfaceName, mSuspendOptNeedsDisabled == 0
+                &amp;&amp; mUserWantsSuspendOpt.get());
+
+        mWifiNative.setPowerSave(mInterfaceName, true);
+
+        if (mP2pSupported) {
+            p2pSendMessage(WifiStateMachine.CMD_ENABLE_P2P);
+        }
+
+        // Disable wpa_supplicant from auto reconnecting.
+        mWifiNative.enableStaAutoReconnect(mInterfaceName, false);
+        // STA has higher priority over P2P
+        mWifiNative.setConcurrencyPriority(true);
+    }</code></pre> 
+<p>setupClientMode()函数内容较多，这里我们比较关心两点：</p> 
+<p>1、WifiConnectivityManager：它主要管理WiFi相关的扫描动作，比如扫描、获取扫描结果，以及扫描完成后的autoconnect动作，主要逻辑都在其中</p> 
+<p>2、FrameworkFacade::makeIpClient()：通过FrameworkFacade创建IpClient，我们知道IpClient跟触发DHCP相关，而我们的NUD机制的注册会通过IpClient完成，看它带入的Callback实现：</p> 
+<pre><code class="language-java">    class IpClientCallback extends IpClient.Callback {
+        @Override
+        public void onPreDhcpAction() {
+            sendMessage(DhcpClient.CMD_PRE_DHCP_ACTION);
+        }
+
+        @Override
+        public void onPostDhcpAction() {
+            sendMessage(DhcpClient.CMD_POST_DHCP_ACTION);
+        }
+
+        @Override
+        public void onNewDhcpResults(DhcpResults dhcpResults) {
+            if (dhcpResults != null) {
+                sendMessage(CMD_IPV4_PROVISIONING_SUCCESS, dhcpResults);
+            } else {
+                sendMessage(CMD_IPV4_PROVISIONING_FAILURE);
+                mWifiInjector.getWifiLastResortWatchdog().noteConnectionFailureAndTriggerIfNeeded(
+                        getTargetSsid(), mTargetRoamBSSID,
+                        WifiLastResortWatchdog.FAILURE_CODE_DHCP);
+            }
+        }
+
+        @Override
+        public void onProvisioningSuccess(LinkProperties newLp) {
+            mWifiMetrics.logStaEvent(StaEvent.TYPE_CMD_IP_CONFIGURATION_SUCCESSFUL);
+            sendMessage(CMD_UPDATE_LINKPROPERTIES, newLp);
+            sendMessage(CMD_IP_CONFIGURATION_SUCCESSFUL);
+        }
+
+        @Override
+        public void onProvisioningFailure(LinkProperties newLp) {
+            mWifiMetrics.logStaEvent(StaEvent.TYPE_CMD_IP_CONFIGURATION_LOST);
+            sendMessage(CMD_IP_CONFIGURATION_LOST);
+        }
+
+        @Override
+        public void onLinkPropertiesChange(LinkProperties newLp) {
+            sendMessage(CMD_UPDATE_LINKPROPERTIES, newLp);
+        }
+
+        @Override
+        public void onReachabilityLost(String logMsg) {
+            mWifiMetrics.logStaEvent(StaEvent.TYPE_CMD_IP_REACHABILITY_LOST);
+            sendMessage(CMD_IP_REACHABILITY_LOST, logMsg);
+        }
+
+        @Override
+        public void installPacketFilter(byte[] filter) {
+            sendMessage(CMD_INSTALL_PACKET_FILTER, filter);
+        }
+
+        @Override
+        public void startReadPacketFilter() {
+            sendMessage(CMD_READ_PACKET_FILTER);
+        }
+
+        @Override
+        public void setFallbackMulticastFilter(boolean enabled) {
+            sendMessage(CMD_SET_FALLBACK_PACKET_FILTERING, enabled);
+        }
+
+        @Override
+        public void setNeighborDiscoveryOffload(boolean enabled) {
+            sendMessage(CMD_CONFIG_ND_OFFLOAD, (enabled ? 1 : 0));
+        }
+    }</code></pre> 
+<p>其中onReachabilityLost()这个回调，会在收到kernel通知后被调用，然后发送CMD_IP_REACHABILITY_LOST msg去通知WiFi fwk断连WiFi。</p> 
+<p>继续看IpClient的构造过程：</p> 
+<pre><code class="language-java">    @VisibleForTesting
+    IpClient(Context context, String ifName, Callback callback, Dependencies deps) {
+        super(IpClient.class.getSimpleName() + "." + ifName);
+        Preconditions.checkNotNull(ifName);
+        Preconditions.checkNotNull(callback);
+
+        mTag = getName();
+
+        mContext = context;
+        mInterfaceName = ifName;
+        mClatInterfaceName = CLAT_PREFIX + ifName;
+        mCallback = new LoggingCallbackWrapper(callback);
+        mDependencies = deps;
+        mShutdownLatch = new CountDownLatch(1);
+        mNwService = deps.getNMS();
+
+        sSmLogs.putIfAbsent(mInterfaceName, new SharedLog(MAX_LOG_RECORDS, mTag));
+        mLog = sSmLogs.get(mInterfaceName);
+        sPktLogs.putIfAbsent(mInterfaceName, new LocalLog(MAX_PACKET_RECORDS));
+        mConnectivityPacketLog = sPktLogs.get(mInterfaceName);
+        mMsgStateLogger = new MessageHandlingLogger();
+
+        // TODO: Consider creating, constructing, and passing in some kind of
+        // InterfaceController.Dependencies class.
+        mInterfaceCtrl = new InterfaceController(mInterfaceName, mNwService, deps.getNetd(), mLog);
+
+        mNetlinkTracker = new NetlinkTracker(
+                mInterfaceName,
+                new NetlinkTracker.Callback() {
+                    @Override
+                    public void update() {
+                        sendMessage(EVENT_NETLINK_LINKPROPERTIES_CHANGED);
+                    }
+                }) {
+            @Override
+            public void interfaceAdded(String iface) {
+                super.interfaceAdded(iface);
+                if (mClatInterfaceName.equals(iface)) {
+                    mCallback.setNeighborDiscoveryOffload(false);
+                } else if (!mInterfaceName.equals(iface)) {
+                    return;
+                }
+
+                final String msg = "interfaceAdded(" + iface +")";
+                logMsg(msg);
+            }
+
+            @Override
+            public void interfaceRemoved(String iface) {
+                super.interfaceRemoved(iface);
+                // TODO: Also observe mInterfaceName going down and take some
+                // kind of appropriate action.
+                if (mClatInterfaceName.equals(iface)) {
+                    // TODO: consider sending a message to the IpClient main
+                    // StateMachine thread, in case "NDO enabled" state becomes
+                    // tied to more things that 464xlat operation.
+                    mCallback.setNeighborDiscoveryOffload(true);
+                } else if (!mInterfaceName.equals(iface)) {
+                    return;
+                }
+
+                final String msg = "interfaceRemoved(" + iface +")";
+                logMsg(msg);
+            }
+
+            private void logMsg(String msg) {
+                Log.d(mTag, msg);
+                getHandler().post(() -&gt; { mLog.log("OBSERVED " + msg); });
+            }
+        };
+
+        mLinkProperties = new LinkProperties();
+        mLinkProperties.setInterfaceName(mInterfaceName);
+
+        mProvisioningTimeoutAlarm = new WakeupMessage(mContext, getHandler(),
+                mTag + ".EVENT_PROVISIONING_TIMEOUT", EVENT_PROVISIONING_TIMEOUT);
+        mDhcpActionTimeoutAlarm = new WakeupMessage(mContext, getHandler(),
+                mTag + ".EVENT_DHCPACTION_TIMEOUT", EVENT_DHCPACTION_TIMEOUT);
+
+        // Anything the StateMachine may access must have been instantiated
+        // before this point.
+        configureAndStartStateMachine();
+
+        // Anything that may send messages to the StateMachine must only be
+        // configured to do so after the StateMachine has started (above).
+        startStateMachineUpdaters();
+    }
+.......
+    // Use a wrapper class to log in order to ensure complete and detailed
+    // logging. This method is lighter weight than annotations/reflection
+    // and has the following benefits:
+    //
+    //     - No invoked method can be forgotten.
+    //       Any new method added to IpClient.Callback must be overridden
+    //       here or it will never be called.
+    //
+    //     - No invoking call site can be forgotten.
+    //       Centralized logging in this way means call sites don't need to
+    //       remember to log, and therefore no call site can be forgotten.
+    //
+    //     - No variation in log format among call sites.
+    //       Encourages logging of any available arguments, and all call sites
+    //       are necessarily logged identically.
+    //
+    // TODO: Find an lighter weight approach.
+    private class LoggingCallbackWrapper extends Callback {
+        private static final String PREFIX = "INVOKE ";
+        private Callback mCallback;
+
+        public LoggingCallbackWrapper(Callback callback) {
+            mCallback = callback;
+        }
+
+        private void log(String msg) {
+            mLog.log(PREFIX + msg);
+        }
+
+        @Override
+        public void onPreDhcpAction() {
+            mCallback.onPreDhcpAction();
+            log("onPreDhcpAction()");
+        }
+        @Override
+        public void onPostDhcpAction() {
+            mCallback.onPostDhcpAction();
+            log("onPostDhcpAction()");
+        }
+        @Override
+        public void onNewDhcpResults(DhcpResults dhcpResults) {
+            mCallback.onNewDhcpResults(dhcpResults);
+            log("onNewDhcpResults({" + dhcpResults + "})");
+        }
+        @Override
+        public void onProvisioningSuccess(LinkProperties newLp) {
+            mCallback.onProvisioningSuccess(newLp);
+            log("onProvisioningSuccess({" + newLp + "})");
+        }
+        @Override
+        public void onProvisioningFailure(LinkProperties newLp) {
+            mCallback.onProvisioningFailure(newLp);
+            log("onProvisioningFailure({" + newLp + "})");
+        }
+        @Override
+        public void onLinkPropertiesChange(LinkProperties newLp) {
+            mCallback.onLinkPropertiesChange(newLp);
+            log("onLinkPropertiesChange({" + newLp + "})");
+        }
+        @Override
+        public void onReachabilityLost(String logMsg) {
+            mCallback.onReachabilityLost(logMsg);
+            log("onReachabilityLost(" + logMsg + ")");
+        }
+        @Override
+        public void onQuit() {
+            mCallback.onQuit();
+            log("onQuit()");
+        }
+        @Override
+        public void installPacketFilter(byte[] filter) {
+            mCallback.installPacketFilter(filter);
+            log("installPacketFilter(byte[" + filter.length + "])");
+        }
+        @Override
+        public void startReadPacketFilter() {
+            mCallback.startReadPacketFilter();
+            log("startReadPacketFilter()");
+        }
+        @Override
+        public void setFallbackMulticastFilter(boolean enabled) {
+            mCallback.setFallbackMulticastFilter(enabled);
+            log("setFallbackMulticastFilter(" + enabled + ")");
+        }
+        @Override
+        public void setNeighborDiscoveryOffload(boolean enable) {
+            mCallback.setNeighborDiscoveryOffload(enable);
+            log("setNeighborDiscoveryOffload(" + enable + ")");
+        }
+    }</code></pre> 
+<p>IpClient会封装一次传进来的Callback参数，但只是简单的wrapper，我们最关心的onReachabilityLost()回调也是。</p> 
+<p>这里相关的初始化准备工作就完成了。NUD肯定要在用户连接了网络之后，检测才会有意义；当获取IP开始后，会进入IpClient::RunningState：</p> 
+<pre><code class="language-java">    class RunningState extends State {
+        private ConnectivityPacketTracker mPacketTracker;
+        private boolean mDhcpActionInFlight;
+
+        @Override
+        public void enter() {
+            ApfFilter.ApfConfiguration apfConfig = new ApfFilter.ApfConfiguration();
+            apfConfig.apfCapabilities = mConfiguration.mApfCapabilities;
+            apfConfig.multicastFilter = mMulticastFiltering;
+            // Get the Configuration for ApfFilter from Context
+            apfConfig.ieee802_3Filter =
+                    mContext.getResources().getBoolean(R.bool.config_apfDrop802_3Frames);
+            apfConfig.ethTypeBlackList =
+                    mContext.getResources().getIntArray(R.array.config_apfEthTypeBlackList);
+            mApfFilter = ApfFilter.maybeCreate(mContext, apfConfig, mInterfaceParams, mCallback);
+            // TODO: investigate the effects of any multicast filtering racing/interfering with the
+            // rest of this IP configuration startup.
+            if (mApfFilter == null) {
+                mCallback.setFallbackMulticastFilter(mMulticastFiltering);
+            }
+
+            mPacketTracker = createPacketTracker();
+            if (mPacketTracker != null) mPacketTracker.start(mConfiguration.mDisplayName);
+
+            if (mConfiguration.mEnableIPv6 &amp;&amp; !startIPv6()) {
+                doImmediateProvisioningFailure(IpManagerEvent.ERROR_STARTING_IPV6);
+                transitionTo(mStoppingState);
+                return;
+            }
+
+            if (mConfiguration.mEnableIPv4 &amp;&amp; !startIPv4()) {
+                doImmediateProvisioningFailure(IpManagerEvent.ERROR_STARTING_IPV4);
+                transitionTo(mStoppingState);
+                return;
+            }
+
+            final InitialConfiguration config = mConfiguration.mInitialConfig;
+            if ((config != null) &amp;&amp; !applyInitialConfig(config)) {
+                // TODO introduce a new IpManagerEvent constant to distinguish this error case.
+                doImmediateProvisioningFailure(IpManagerEvent.ERROR_INVALID_PROVISIONING);
+                transitionTo(mStoppingState);
+                return;
+            }
+
+            if (mConfiguration.mUsingMultinetworkPolicyTracker) {
+                mMultinetworkPolicyTracker = new MultinetworkPolicyTracker(
+                        mContext, getHandler(),
+                        () -&gt; { mLog.log("OBSERVED AvoidBadWifi changed"); });
+                mMultinetworkPolicyTracker.start();
+            }
+
+            if (mConfiguration.mUsingIpReachabilityMonitor &amp;&amp; !startIpReachabilityMonitor()) {
+                doImmediateProvisioningFailure(
+                        IpManagerEvent.ERROR_STARTING_IPREACHABILITYMONITOR);
+                transitionTo(mStoppingState);
+                return;
+            }
+        }
+......
+}</code></pre> 
+<p>其中会调用startIpReachabilityMonitor()，去创建IpReachabilityMonitor对象，NUD相关的操作都会分派给它处理：</p> 
+<pre><code class="language-java">    private boolean startIpReachabilityMonitor() {
+        try {
+            mIpReachabilityMonitor = new IpReachabilityMonitor(
+                    mContext,
+                    mInterfaceParams,
+                    getHandler(),
+                    mLog,
+                    new IpReachabilityMonitor.Callback() {
+                        @Override
+                        public void notifyLost(InetAddress ip, String logMsg) {
+                            mCallback.onReachabilityLost(logMsg);
+                        }
+                    },
+                    mMultinetworkPolicyTracker);
+        } catch (IllegalArgumentException iae) {
+            // Failed to start IpReachabilityMonitor. Log it and call
+            // onProvisioningFailure() immediately.
+            //
+            // See http://b/31038971.
+            logError("IpReachabilityMonitor failure: %s", iae);
+            mIpReachabilityMonitor = null;
+        }
+
+        return (mIpReachabilityMonitor != null);
+    }</code></pre> 
+<p>构造IpReachabilityMonitor对象时，实现了一个IpReachabilityMonitor.Callback()回调接口，它会调用IpClient的Callback wrapper通知onReachabilityLost()事件。</p> 
+<p>NUD是为了探测周边neighbor的可达性，所以它在一次WiFi网络连接完成、拿到连接信息之后，再去开始触发探测比较正常，WiFi连接之后，ConnectModeState收到wpa_supplicant通知的连接完成事件：</p> 
+<pre><code class="language-java">                case WifiMonitor.SUPPLICANT_STATE_CHANGE_EVENT:
+                    SupplicantState state = handleSupplicantStateChange(message);
+
+                    // Supplicant can fail to report a NETWORK_DISCONNECTION_EVENT
+                    // when authentication times out after a successful connection,
+                    // we can figure this from the supplicant state. If supplicant
+                    // state is DISCONNECTED, but the mNetworkInfo says we are not
+                    // disconnected, we need to handle a disconnection
+                    if (state == SupplicantState.DISCONNECTED
+                            &amp;&amp; mNetworkInfo.getState() != NetworkInfo.State.DISCONNECTED) {
+                        if (mVerboseLoggingEnabled) {
+                            log("Missed CTRL-EVENT-DISCONNECTED, disconnect");
+                        }
+                        handleNetworkDisconnect();
+                        transitionTo(mDisconnectedState);
+                    }
+
+                    // If we have COMPLETED a connection to a BSSID, start doing
+                    // DNAv4/DNAv6 -style probing for on-link neighbors of
+                    // interest (e.g. routers); harmless if none are configured.
+                    if (state == SupplicantState.COMPLETED) {
+                        mIpClient.confirmConfiguration();
+                        mWifiScoreReport.noteIpCheck();
+                    }
+                    break;</code></pre> 
+<p>会调用IpClient::confirmConfiguration()确认网络配置，然后开启NUD的kernel probe：</p> 
+<pre><code>IpClient:
+  
+  public void IpClient::confirmConfiguration() {
+        sendMessage(CMD_CONFIRM);
+    }
+
+
+IpClient::RunningState {
+
+......
+        @Override
+        public boolean processMessage(Message msg) {
+            switch (msg.what) {
+                case CMD_STOP:
+                    transitionTo(mStoppingState);
+                    break;
+
+                case CMD_START:
+                    logError("ALERT: START received in StartedState. Please fix caller.");
+                    break;
+
+                case CMD_CONFIRM:
+                    // TODO: Possibly introduce a second type of confirmation
+                    // that both probes (a) on-link neighbors and (b) does
+                    // a DHCPv4 RENEW.  We used to do this on Wi-Fi framework
+                    // roams.
+                    if (mIpReachabilityMonitor != null) {
+                        mIpReachabilityMonitor.probeAll();
+                    }
+                    break;
+......
+       }
+}</code></pre> 
+<p>这里会发现所有的操作都会由IpReachabilityMonitor处理，我们再回头看它的构造实现：</p> 
+<pre><code class="language-java">    @VisibleForTesting
+    IpReachabilityMonitor(InterfaceParams ifParams, Handler h, SharedLog log, Callback callback,
+            MultinetworkPolicyTracker tracker, Dependencies dependencies) {
+        if (ifParams == null) throw new IllegalArgumentException("null InterfaceParams");
+
+        mInterfaceParams = ifParams;
+        mLog = log.forSubComponent(TAG);
+        mCallback = callback;
+        mMultinetworkPolicyTracker = tracker;
+        mDependencies = dependencies;
+
+        mIpNeighborMonitor = new IpNeighborMonitor(h, mLog,
+                (NeighborEvent event) -&gt; {
+                    if (mInterfaceParams.index != event.ifindex) return;
+                    if (!mNeighborWatchList.containsKey(event.ip)) return;
+
+                    final NeighborEvent prev = mNeighborWatchList.put(event.ip, event);
+
+                    // TODO: Consider what to do with other states that are not within
+                    // NeighborEvent#isValid() (i.e. NUD_NONE, NUD_INCOMPLETE).
+                    if (event.nudState == StructNdMsg.NUD_FAILED) {
+                        mLog.w("ALERT neighbor went from: " + prev + " to: " + event);
+                        handleNeighborLost(event);
+                    }
+                });
+        mIpNeighborMonitor.start();
+    }</code></pre> 
+<p>mCallback保存了我们传入的Callback对象，它实现了notifyLost()函数；IpNeighborMonitor会接受、解析来自kernel的packet，包含了我们需要monitor哪些IP，以及接收NUD lost的结果，并调用handleNeighborLost()进行接下去通知WiFi fwk NUD lost结果的处理。</p> 
+<pre><code class="language-java">/**
+ * IpNeighborMonitor.
+ *
+ * Monitors the kernel rtnetlink neighbor notifications and presents to callers
+ * NeighborEvents describing each event. Callers can provide a consumer instance
+ * to both filter (e.g. by interface index and IP address) and handle the
+ * generated NeighborEvents.
+ *
+ * @hide
+ */
+public class IpNeighborMonitor extends PacketReader {
+......
+ public static class NeighborEvent {
+        final long elapsedMs;
+        final short msgType;
+        final int ifindex;
+        final InetAddress ip;
+        final short nudState;
+        final MacAddress macAddr;
+
+        public NeighborEvent(long elapsedMs, short msgType, int ifindex, InetAddress ip,
+                short nudState, MacAddress macAddr) {
+            this.elapsedMs = elapsedMs;
+            this.msgType = msgType;
+            this.ifindex = ifindex;
+            this.ip = ip;
+            this.nudState = nudState;
+            this.macAddr = macAddr;
+        }
+
+        boolean isConnected() {
+            return (msgType != RTM_DELNEIGH) &amp;&amp; StructNdMsg.isNudStateConnected(nudState);
+        }
+
+        boolean isValid() {
+            return (msgType != RTM_DELNEIGH) &amp;&amp; StructNdMsg.isNudStateValid(nudState);
+        }
+
+        @Override
+        public String toString() {
+            final StringJoiner j = new StringJoiner(",", "NeighborEvent{", "}");
+            return j.add("@" + elapsedMs)
+                    .add(stringForNlMsgType(msgType))
+                    .add("if=" + ifindex)
+                    .add(ip.getHostAddress())
+                    .add(StructNdMsg.stringForNudState(nudState))
+                    .add("[" + macAddr + "]")
+                    .toString();
+        }
+    }
+
+    public interface NeighborEventConsumer {
+        // Every neighbor event received on the netlink socket is passed in
+        // here. Subclasses should filter for events of interest.
+        public void accept(NeighborEvent event);
+    }
+
+    private final SharedLog mLog;
+    private final NeighborEventConsumer mConsumer;
+
+    public IpNeighborMonitor(Handler h, SharedLog log, NeighborEventConsumer cb) {
+        super(h, NetlinkSocket.DEFAULT_RECV_BUFSIZE);
+        mLog = log.forSubComponent(TAG);
+        mConsumer = (cb != null) ? cb : (event) -&gt; { /* discard */ };
+    }
+
+    @Override
+    protected FileDescriptor createFd() {
+        FileDescriptor fd = null;
+
+        try {
+            fd = NetlinkSocket.forProto(OsConstants.NETLINK_ROUTE);
+            Os.bind(fd, (SocketAddress)(new NetlinkSocketAddress(0, OsConstants.RTMGRP_NEIGH)));
+            Os.connect(fd, (SocketAddress)(new NetlinkSocketAddress(0, 0)));
+
+            if (VDBG) {
+                final NetlinkSocketAddress nlAddr = (NetlinkSocketAddress) Os.getsockname(fd);
+                Log.d(TAG, "bound to sockaddr_nl{"
+                        + BitUtils.uint32(nlAddr.getPortId()) + ", "
+                        + nlAddr.getGroupsMask()
+                        + "}");
+            }
+        } catch (ErrnoException|SocketException e) {
+            logError("Failed to create rtnetlink socket", e);
+            IoUtils.closeQuietly(fd);
+            return null;
+        }
+
+        return fd;
+    }
+......
+}</code></pre> 
+<p>IpNeighborMonitor接收来自IpReachabilityMonitor的处理，创建IpNeighborMonitor的时候，传入了一个用lambda表达式创建的NeighborEventConsumer对象，它实现了accept函数，主要处理：</p> 
+<p>1、解析从kernel上报的需要监听的IP地址集，它保存在mNeighborWatchList集合中</p> 
+<p>2、判断当前的event是不是通知NUD_FAILED，如果是就调用handleNeighborLost()处理：</p> 
+<p>IpNeighborMonitor.start()主要是创建监听的socket，并开始等待接收packet、并将其解析处理：</p> 
+<pre><code>/**
+ * This class encapsulates the mechanics of registering a file descriptor
+ * with a thread's Looper and handling read events (and errors).
+ *
+ * Subclasses MUST implement createFd() and SHOULD override handlePacket().
+
+ * Subclasses can expect a call life-cycle like the following:
+ *
+ *     [1] start() calls createFd() and (if all goes well) onStart()
+ *
+ *     [2] yield, waiting for read event or error notification:
+ *
+ *             [a] readPacket() &amp;&amp; handlePacket()
+ *
+ *             [b] if (no error):
+ *                     goto 2
+ *                 else:
+ *                     goto 3
+ *
+ *     [3] stop() calls onStop() if not previously stopped
+ *
+ * The packet receive buffer is recycled on every read call, so subclasses
+ * should make any copies they would like inside their handlePacket()
+ * implementation.
+ *
+ * All public methods MUST only be called from the same thread with which
+ * the Handler constructor argument is associated.
+ *
+ * TODO: rename this class to something more correctly descriptive (something
+ * like [or less horrible than] FdReadEventsHandler?).
+ *
+ * @hide
+ */
+public abstract class PacketReader {
+......  
+  public final void start() {
+        if (onCorrectThread()) {
+            createAndRegisterFd();
+        } else {
+            mHandler.post(() -&gt; {
+                logError("start() called from off-thread", null);
+                createAndRegisterFd();
+            });
+        }
+    }
+......
+    private void createAndRegisterFd() {
+        if (mFd != null) return;
+
+        try {
+            mFd = createFd();
+            if (mFd != null) {
+                // Force the socket to be non-blocking.
+                IoUtils.setBlocking(mFd, false);
+            }
+        } catch (Exception e) {
+            logError("Failed to create socket: ", e);
+            closeFd(mFd);
+            mFd = null;
+            return;
+        }
+......
+}
+
+
+/**
+ * IpNeighborMonitor.
+ *
+ * Monitors the kernel rtnetlink neighbor notifications and presents to callers
+ * NeighborEvents describing each event. Callers can provide a consumer instance
+ * to both filter (e.g. by interface index and IP address) and handle the
+ * generated NeighborEvents.
+ *
+ * @hide
+ */
+public class IpNeighborMonitor extends PacketReader {
+......
+    @Override
+    protected FileDescriptor createFd() {
+        FileDescriptor fd = null;
+
+        try {
+            fd = NetlinkSocket.forProto(OsConstants.NETLINK_ROUTE);
+            Os.bind(fd, (SocketAddress)(new NetlinkSocketAddress(0, OsConstants.RTMGRP_NEIGH)));
+            Os.connect(fd, (SocketAddress)(new NetlinkSocketAddress(0, 0)));
+
+            if (VDBG) {
+                final NetlinkSocketAddress nlAddr = (NetlinkSocketAddress) Os.getsockname(fd);
+                Log.d(TAG, "bound to sockaddr_nl{"
+                        + BitUtils.uint32(nlAddr.getPortId()) + ", "
+                        + nlAddr.getGroupsMask()
+                        + "}");
+            }
+        } catch (ErrnoException|SocketException e) {
+            logError("Failed to create rtnetlink socket", e);
+            IoUtils.closeQuietly(fd);
+            return null;
+        }
+
+        return fd;
+    }
+......
+}
+
+
+/**
+ * NetlinkSocket
+ *
+ * A small static class to assist with AF_NETLINK socket operations.
+ *
+ * @hide
+ */
+public class NetlinkSocket {
+......
+    public static FileDescriptor forProto(int nlProto) throws ErrnoException {
+        final FileDescriptor fd = Os.socket(AF_NETLINK, SOCK_DGRAM, nlProto);
+        Os.setsockoptInt(fd, SOL_SOCKET, SO_RCVBUF, SOCKET_RECV_BUFSIZE);
+        return fd;
+    }
+......
+}</code></pre> 
+<p>具体解析packet的过程这里不再看了，有需要可以分析下IpNeighborMonitor以及起父类PacketReader的代码即可。</p> 
+<p>再看下前面还未分析的IpReachabilityMonitor::probeAll()调用：</p> 
+<pre><code class="language-java">    public void probeAll() {
+        final List&lt;InetAddress&gt; ipProbeList = new ArrayList&lt;&gt;(mNeighborWatchList.keySet());
+
+        if (!ipProbeList.isEmpty()) {
+            // Keep the CPU awake long enough to allow all ARP/ND
+            // probes a reasonable chance at success. See b/23197666.
+            //
+            // The wakelock we use is (by default) refcounted, and this version
+            // of acquire(timeout) queues a release message to keep acquisitions
+            // and releases balanced.
+            mDependencies.acquireWakeLock(getProbeWakeLockDuration());
+        }
+
+        for (InetAddress ip : ipProbeList) {
+            final int rval = IpNeighborMonitor.startKernelNeighborProbe(mInterfaceParams.index, ip);
+            mLog.log(String.format("put neighbor %s into NUD_PROBE state (rval=%d)",
+                     ip.getHostAddress(), rval));
+            logEvent(IpReachabilityEvent.PROBE, rval);
+        }
+        mLastProbeTimeMs = SystemClock.elapsedRealtime();
+    }</code></pre> 
+<p>probeAll()中会遍历mNeighborWatchList的IP地址，分别对其进行NUD检测：</p> 
+<pre><code class="language-java">
+/**
+ * IpNeighborMonitor.
+ *
+ * Monitors the kernel rtnetlink neighbor notifications and presents to callers
+ * NeighborEvents describing each event. Callers can provide a consumer instance
+ * to both filter (e.g. by interface index and IP address) and handle the
+ * generated NeighborEvents.
+ *
+ * @hide
+ */
+public class IpNeighborMonitor extends PacketReader {
+......
+    /**
+     * Make the kernel perform neighbor reachability detection (IPv4 ARP or IPv6 ND)
+     * for the given IP address on the specified interface index.
+     *
+     * @return 0 if the request was successfully passed to the kernel; otherwise return
+     *         a non-zero error code.
+     */
+    public static int startKernelNeighborProbe(int ifIndex, InetAddress ip) {
+        final String msgSnippet = "probing ip=" + ip.getHostAddress() + "%" + ifIndex;
+        if (DBG) { Log.d(TAG, msgSnippet); }
+
+        final byte[] msg = RtNetlinkNeighborMessage.newNewNeighborMessage(
+                1, ip, StructNdMsg.NUD_PROBE, ifIndex, null);
+
+        try {
+            NetlinkSocket.sendOneShotKernelMessage(OsConstants.NETLINK_ROUTE, msg);
+        } catch (ErrnoException e) {
+            Log.e(TAG, "Error " + msgSnippet + ": " + e);
+            return -e.errno;
+        }
+
+        return 0;
+    }
+......
+}</code></pre> 
+<p>通过Netlink机制请求kernel进行probe后，FWK能做的就是等待结果了；如果kernel检测遇到了NUD失败，这个信息经过packet解析、封装成event之后，会由IpNeighborMonitor::NeighborEventConsumer mConsumer处理：</p> 
+<pre><code>/**
+ * IpNeighborMonitor.
+ *
+ * Monitors the kernel rtnetlink neighbor notifications and presents to callers
+ * NeighborEvents describing each event. Callers can provide a consumer instance
+ * to both filter (e.g. by interface index and IP address) and handle the
+ * generated NeighborEvents.
+ *
+ * @hide
+ */
+public class IpNeighborMonitor extends PacketReader {
+......  
+  private void evaluateRtNetlinkNeighborMessage(
+            RtNetlinkNeighborMessage neighMsg, long whenMs) {
+        final short msgType = neighMsg.getHeader().nlmsg_type;
+        final StructNdMsg ndMsg = neighMsg.getNdHeader();
+        if (ndMsg == null) {
+            mLog.e("RtNetlinkNeighborMessage without ND message header!");
+            return;
+        }
+
+        final int ifindex = ndMsg.ndm_ifindex;
+        final InetAddress destination = neighMsg.getDestination();
+        final short nudState =
+                (msgType == RTM_DELNEIGH)
+                ? StructNdMsg.NUD_NONE
+                : ndMsg.ndm_state;
+
+        final NeighborEvent event = new NeighborEvent(
+                whenMs, msgType, ifindex, destination, nudState,
+                getMacAddress(neighMsg.getLinkLayerAddress()));
+
+        if (VDBG) {
+            Log.d(TAG, neighMsg.toString());
+        }
+        if (DBG) {
+            Log.d(TAG, event.toString());
+        }
+
+        mConsumer.accept(event);
+    }
+......
+}</code></pre> 
+<p>mConsumer也就是IpReachabilityMonitor创建IpNeighborMonitor时，用lambda表达式创建的对象：</p> 
+<pre><code class="language-java">        mIpNeighborMonitor = new IpNeighborMonitor(h, mLog,
+                (NeighborEvent event) -&gt; {
+                    if (mInterfaceParams.index != event.ifindex) return;
+                    if (!mNeighborWatchList.containsKey(event.ip)) return;
+
+                    final NeighborEvent prev = mNeighborWatchList.put(event.ip, event);
+
+                    // TODO: Consider what to do with other states that are not within
+                    // NeighborEvent#isValid() (i.e. NUD_NONE, NUD_INCOMPLETE).
+                    if (event.nudState == StructNdMsg.NUD_FAILED) {
+                        mLog.w("ALERT neighbor went from: " + prev + " to: " + event);
+                        handleNeighborLost(event);
+                    }
+                });
+        mIpNeighborMonitor.start();</code></pre> 
+<p>如果NeighborEvent的msg是NUD_FAILED，说明NUD检测失败，需要通知给上层这个事件：</p> 
+<pre><code>public class IpReachabilityMonitor {
+......
+
+    private void handleNeighborLost(NeighborEvent event) {
+        final LinkProperties whatIfLp = new LinkProperties(mLinkProperties);
+
+        InetAddress ip = null;
+        for (Map.Entry&lt;InetAddress, NeighborEvent&gt; entry : mNeighborWatchList.entrySet()) {
+            // TODO: Consider using NeighborEvent#isValid() here; it's more
+            // strict but may interact badly if other entries are somehow in
+            // NUD_INCOMPLETE (say, during network attach).
+            if (entry.getValue().nudState != StructNdMsg.NUD_FAILED) continue;
+
+            ip = entry.getKey();
+            for (RouteInfo route : mLinkProperties.getRoutes()) {
+                if (ip.equals(route.getGateway())) {
+                    whatIfLp.removeRoute(route);
+                }
+            }
+
+            if (avoidingBadLinks() || !(ip instanceof Inet6Address)) {
+                // We should do this unconditionally, but alas we cannot: b/31827713.
+                whatIfLp.removeDnsServer(ip);
+            }
+        }
+
+        final ProvisioningChange delta = LinkProperties.compareProvisioning(
+                mLinkProperties, whatIfLp);
+
+        if (delta == ProvisioningChange.LOST_PROVISIONING) {
+            final String logMsg = "FAILURE: LOST_PROVISIONING, " + event;
+            Log.w(TAG, logMsg);
+            if (mCallback != null) {
+                // TODO: remove |ip| when the callback signature no longer has
+                // an InetAddress argument.
+                mCallback.notifyLost(ip, logMsg);
+            }
+        }
+        logNudFailed(delta);
+    }
+......
+}
+</code></pre> 
+<p>随之会通过LinkProperties.compareProvisioning()比较当前两个IP的配置信息来判断，连接是否已经不可达了，如果是就会通过mCallback对象回调notifyLost()通知上层，由前面可知这个Callback对象经过了几次封装，为了节省时间我们直接看,WifiStateMachine中最原始的那个Callback实现：</p> 
+<pre><code>WifiStateMachine:
+   
+class IpClientCallback extends IpClient.Callback {
+        @Override
+        public void onPreDhcpAction() {
+            sendMessage(DhcpClient.CMD_PRE_DHCP_ACTION);
+        }
+......
+
+        @Override
+        public void onReachabilityLost(String logMsg) {
+            mWifiMetrics.logStaEvent(StaEvent.TYPE_CMD_IP_REACHABILITY_LOST);
+            sendMessage(CMD_IP_REACHABILITY_LOST, logMsg);
+        }
+
+
+......
+    }</code></pre> 
+<p>IpClientCallback::onReachabilityLost()会被调用，并发送CMD_IP_REACHABILITY_LOST msg，看该msg的处理过程：</p> 
+<pre><code>   class L2ConnectedState extends State {
+
+       @Override
+        public boolean processMessage(Message message) {
+        ......
+
+                case CMD_IP_REACHABILITY_LOST:
+                    if (mVerboseLoggingEnabled &amp;&amp; message.obj != null) log((String) message.obj);
+                    if (mIpReachabilityDisconnectEnabled) {
+                        handleIpReachabilityLost();
+                        transitionTo(mDisconnectingState);
+                    } else {
+                        logd("CMD_IP_REACHABILITY_LOST but disconnect disabled -- ignore");
+                    }
+        ......
+        }
+
+        ......
+    }</code></pre> 
+<p>L2ConnectedState会处理CMD_IP_REACHABILITY_LOST msg，如果mIpReachabilityDisconnectEnabled变量为true，就会去主动disconnect WiFi，并将状态transfer到DisconnectingState处理WiFi断连过程：</p> 
+<pre><code class="language-java">public class WifiStateMachine extends StateMachine {
+
+......    
+
+private boolean mIpReachabilityDisconnectEnabled = true;
+......
+
+    // TODO: De-duplicated this and handleIpConfigurationLost().
+    private void handleIpReachabilityLost() {
+        mWifiInfo.setInetAddress(null);
+        mWifiInfo.setMeteredHint(false);
+
+        // TODO: Determine whether to call some form of mWifiConfigManager.handleSSIDStateChange().
+
+        // Disconnect via supplicant, and let autojoin retry connecting to the network.
+        mWifiNative.disconnect(mInterfaceName);
+    }
+
+......
+}
+</code></pre> 
+<p>调用WifiNative::disconnect()之后，WiFi触发断连，WiFiStateMachine监听wpa_supplicat状态，最后会transfer到DisconnectedState，整个过程结束。</p> 
+<p></p> 
+<p>上面我们梳理了下NUD检测导致WiFi自动断连的流程，这里我们只要把</p> 
+<pre><code>    private boolean mIpReachabilityDisconnectEnabled = true;</code></pre> 
+<p>改成false就可以了，这样就会忽略NUD的检测结果不去断开WiFi连接了，避免对用户产生困扰；当然也可以加一些其他的流程来进行处理，也是可以的。</p> 
+<p></p> 
+<p></p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/5e048f96220157127231dbbf8fb83ec2/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">c#foreach语句中break 和continue的区别</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/7e356dffdf5f6c09e2a44a0c8a6c5859/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">大数据面试要点</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

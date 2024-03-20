@@ -1,0 +1,318 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>探讨大世界游戏的制作流程及技术——大场景制作技术概况篇 - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="探讨大世界游戏的制作流程及技术——大场景制作技术概况篇" />
+<meta property="og:description" content="接上文，我们接下来了解一下大世界场景制作技术有哪些，本篇旨在给大家过一遍目前业界的做法，能让大家有一个宏观的知识蓝图。实际上，针对不同的游戏类型和美术风格，制作技术在细节上有着非常大的不同，业界目前也很难说有一套标准且高效的流程，所以一些细碎的技术点将会在其他篇章逐一讨论。
+说到大世界，到底多大的地图尺寸才能算的上大世界呢？下面给大家列举一下目前市面上的大世界游戏地图尺寸，详细的介绍可以看这个视频。
+堡垒之夜：5.5 k㎡，~2k x 3 k漫威蜘蛛侠：11 k㎡，~ 2k x 5k地平线 零之曙光 ：22 k㎡，~ 4k x 5k绝地求生：64 k㎡，~ 8k x 8k塞尔达 荒野之息：72 k㎡，~ 8k x 9k荒野大镖客2：75k㎡ ~8k x 9k
+最后说一下我最近在玩的《刺客信条 奥德赛》，全地图 256 k㎡（16k x 16k），其中陆地面积占40%左右，也就是100 k㎡，高度峰值为800~1000米（个人跑图目测的估值）
+创建地形
+对于创建如此庞大的地形，显然不可能直接使用3DMAX等建模软件制作的静态模型文件，一般来说引擎都会有一套地形系统（Landscape）来支持地形的生成和渲染。
+引擎的地形系统根据高度图来构造地形，对于相同的顶点密度，模型数据形式的地形占用的内存是高度图的6-7倍。而且地形系统还提供强大的LOD功能，远处的地形网格顶点会被优化减少，分块渲染等等功能。
+分块管理是大世界制作的核心前提。
+世界由多个关卡组成，每个关卡控制各自内部的资源加载和显示，一般一个关卡包含一个landscape地形。
+按照Unreal的地形系统来说，就是一个landscape地形由多个component组成，component是渲染的基本单位，也就是说地形是按照component分布，一块一块地渲染的。
+合理规划好每个关卡的地形尺寸，每个地形部件数量和大小，部件的顶点数组成，每个顶点间隔代表游戏世界多少米，对游戏性能有着重要的影响。
+说一下Far Cay 5 的标准：
+一个关卡地形大小为1024mx1024m，部件大小为64mx64m，也就是说地形每64平方米为一个渲染批次，一个关卡内大概有400左右个地形批次。
+0.5m对应高度一个像素，也就是说一个关卡地形使用的高度图、Splat图的尺寸是2048x2048。
+地形工作流
+目前比较流行的工作流：worldmachine-&gt;houdini-&gt;游戏引擎
+如果非要让我一句话概括地形制作的工作流程，我想会是这样的：
+worldmachine就是一个做地的(特点是：快)；到了houdini阶段就是在worldmachine的结果上继续加工，自动化完成worldmachine做不到的事情(特点是：自动)；最后到达游戏引擎，这里就是广大美工们默默耕耘一点点细化场景的地方（特点是：手工、细节）
+注意：这里用一使用worldmachine一词指代地形制作软件，其实还有很多优秀的地形制作软件比如world creator、Terragen 3.
+分层概念：制作游戏是一个反复迭代的过程，在制作初期，我们会尝试游戏中的各种各样的新想法，并可以快速地还原和重做。因此，《幽灵行动 荒野》提出了分层的概念，就是类似于PS的图层的意思。
+对于这个分层的概念，个人认为其实只是制作过程中形成的一种流程概念，实际开发中并不会局限于这些条条框框，不过了解一下还是很有好处的。
+Base层：WorldMachine制作的原始资源(高度图和weight map等)我们定义为base层。WorldMachine提供了一套完整专业的工具集，用它来构建世界原型进行快速验证是个不错的选择。
+Macro层：在worldmachine解算的基础上，通过笔刷等手段手工地对地形的宏观结构进行调整，这一层的调整内容为macro层。如果编辑结果不令人满意，则可以轻松擦除Macro图层内容，以返回到高度图的原始状态。软件方面使用World Creator是个不错的选择。
+macro翻译为“宏观”的意思。
+DCC层：然后进入houdini环节，通过各种程序化的工具细化我们的地形，例如生成道路网、河道、村落分布，这些输出内容我们定义为DCC层。在此阶段，我们还会完成其他重要的工作：例如根据坡度，高度，粗糙度和WorldMachine的其他遮罩（如flow map、smoothness）来定义地形的材质分布；例如根据坡度，高度，地表材质，密度，向阳面等规则来生成生物群落的分布；自动化生成峭壁；这些稍后讨论。
+Micro层：最后，这三层导入到引擎中。我们完成了大规模宏观视角下的工作后，自然也需要对微观细节进行手工调整，这一阶段的修改，定义为micro层。
+micro翻译为“微观”的意思。
+WorldMachine阶段" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/2c8bc73e3d852909fbabb2df371a1659/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2024-03-13T09:46:29+08:00" />
+<meta property="article:modified_time" content="2024-03-13T09:46:29+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">探讨大世界游戏的制作流程及技术——大场景制作技术概况篇</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p>接上文，我们接下来了解一下大世界场景制作技术有哪些，本篇旨在给大家过一遍目前业界的做法，能让大家有一个宏观的知识蓝图。实际上，针对不同的游戏类型和美术风格，制作技术在细节上有着非常大的不同，业界目前也很难说有一套标准且高效的流程，所以一些细碎的技术点将会在其他篇章逐一讨论。</p> 
+<p>说到大世界，到底多大的地图尺寸才能算的上大世界呢？下面给大家列举一下目前市面上的大世界游戏地图尺寸，详细的介绍可以看这个视频。</p> 
+<p>堡垒之夜：5.5 k㎡，~2k x 3 k漫威蜘蛛侠：11 k㎡，~ 2k x 5k地平线 零之曙光 ：22 k㎡，~ 4k x 5k绝地求生：64 k㎡，~ 8k x 8k塞尔达 荒野之息：72 k㎡，~ 8k x 9k荒野大镖客2：75k㎡ ~8k x 9k</p> 
+<p>最后说一下我最近在玩的《刺客信条 奥德赛》，全地图 256 k㎡（16k x 16k），其中陆地面积占40%左右，也就是100 k㎡，高度峰值为800~1000米（个人跑图目测的估值）</p> 
+<p></p> 
+<p class="img-center"><img alt="" height="648" src="https://images2.imgbox.com/4b/1d/GFC8FyCb_o.jpg" width="640"></p> 
+<p>创建地形</p> 
+<p>对于创建如此庞大的地形，显然不可能直接使用3DMAX等建模软件制作的静态模型文件，一般来说引擎都会有一套地形系统（Landscape）来支持地形的生成和渲染。</p> 
+<p>引擎的地形系统根据高度图来构造地形，对于相同的顶点密度，模型数据形式的地形占用的内存是高度图的6-7倍。而且地形系统还提供强大的LOD功能，远处的地形网格顶点会被优化减少，分块渲染等等功能。</p> 
+<p></p> 
+<p class="img-center"><img alt="" height="312" src="https://images2.imgbox.com/a4/03/7AV7qu7p_o.jpg" width="640"></p> 
+<p>分块管理是大世界制作的核心前提。</p> 
+<p>世界由多个关卡组成，每个关卡控制各自内部的资源加载和显示，一般一个关卡包含一个landscape地形。</p> 
+<p>按照Unreal的地形系统来说，就是一个landscape地形由多个component组成，component是渲染的基本单位，也就是说地形是按照component分布，一块一块地渲染的。</p> 
+<p>合理规划好每个关卡的地形尺寸，每个地形部件数量和大小，部件的顶点数组成，每个顶点间隔代表游戏世界多少米，对游戏性能有着重要的影响。</p> 
+<p></p> 
+<p class="img-center"><img alt="" height="334" src="https://images2.imgbox.com/a0/69/XXSf7PmJ_o.jpg" width="640"></p> 
+<p>说一下Far Cay 5 的标准：</p> 
+<p>一个关卡地形大小为1024mx1024m，部件大小为64mx64m，也就是说地形每64平方米为一个渲染批次，一个关卡内大概有400左右个地形批次。</p> 
+<p>0.5m对应高度一个像素，也就是说一个关卡地形使用的高度图、Splat图的尺寸是2048x2048。</p> 
+<p>地形工作流</p> 
+<p>目前比较流行的工作流：worldmachine-&gt;houdini-&gt;游戏引擎</p> 
+<p>如果非要让我一句话概括地形制作的工作流程，我想会是这样的：</p> 
+<p>worldmachine就是一个做地的(特点是：快)；到了houdini阶段就是在worldmachine的结果上继续加工，自动化完成worldmachine做不到的事情(特点是：自动)；最后到达游戏引擎，这里就是广大美工们默默耕耘一点点细化场景的地方（特点是：手工、细节）</p> 
+<p>注意：这里用一使用worldmachine一词指代地形制作软件，其实还有很多优秀的地形制作软件比如world creator、Terragen 3.</p> 
+<p>分层概念：制作游戏是一个反复迭代的过程，在制作初期，我们会尝试游戏中的各种各样的新想法，并可以快速地还原和重做。因此，《幽灵行动 荒野》提出了分层的概念，就是类似于PS的图层的意思。</p> 
+<p>对于这个分层的概念，个人认为其实只是制作过程中形成的一种流程概念，实际开发中并不会局限于这些条条框框，不过了解一下还是很有好处的。</p> 
+<p>Base层：WorldMachine制作的原始资源(高度图和weight map等)我们定义为base层。WorldMachine提供了一套完整专业的工具集，用它来构建世界原型进行快速验证是个不错的选择。</p> 
+<p>Macro层：在worldmachine解算的基础上，通过笔刷等手段手工地对地形的宏观结构进行调整，这一层的调整内容为macro层。如果编辑结果不令人满意，则可以轻松擦除Macro图层内容，以返回到高度图的原始状态。软件方面使用World Creator是个不错的选择。</p> 
+<p>macro翻译为“宏观”的意思。</p> 
+<p>DCC层：然后进入houdini环节，通过各种程序化的工具细化我们的地形，例如生成道路网、河道、村落分布，这些输出内容我们定义为DCC层。在此阶段，我们还会完成其他重要的工作：例如根据坡度，高度，粗糙度和WorldMachine的其他遮罩（如flow map、smoothness）来定义地形的材质分布；例如根据坡度，高度，地表材质，密度，向阳面等规则来生成生物群落的分布；自动化生成峭壁；这些稍后讨论。</p> 
+<p>Micro层：最后，这三层导入到引擎中。我们完成了大规模宏观视角下的工作后，自然也需要对微观细节进行手工调整，这一阶段的修改，定义为micro层。</p> 
+<p>micro翻译为“微观”的意思。</p> 
+<p></p> 
+<p class="img-center"><img alt="" height="361" src="https://images2.imgbox.com/9c/6a/C0bXOlIc_o.jpg" width="640"></p> 
+<p>WorldMachine阶段</p> 
+<p>通常选择WorldMachine工作流开始创建地形。</p> 
+<p></p> 
+<p class="img-center"><img alt="" height="360" src="https://images2.imgbox.com/dc/f4/YF8fW8ni_o.jpg" width="640"></p> 
+<p>从NASA等网站导入展示地形数据Heightmap，配合分型噪点功能，然后进行应用侵蚀建模细化地形。</p> 
+<p>WorldMachine除了输出HeightMap，还能分层导出多种有用信息；权重图SplatMap（也叫Weight Map）是初步纹理化的依据，此外还能导出高精度全局地图Visa Map。</p> 
+<p>权重图（也称为splat map或者weight map）是一组一个或多个RGBA位图，其通道充当归一化的权重，用于控制世界上任何给定位置的纹理绘制。</p> 
+<p>Houdini阶段</p> 
+<p>WorldMachine帮助我们快速创建这个大世界的雏形结构，并且拥有简单的纹理外表。</p> 
+<p>有了WorldMachine生成的高度图、splat map等资源，我们就可以在Houdini中重构地形，利用houdini强大的自定义程序功能，我们可以制定任意的规则去程序化地完善我们的地形，并模拟复杂的自然规律细化群落分布，地表材质等等。</p> 
+<p></p> 
+<p class="img-center"><img alt="" height="344" src="https://images2.imgbox.com/48/96/jHan8OxW_o.jpg" width="640"></p> 
+<p>主要做的内容包括：</p> 
+<p>1、进一步细化地形，自动化完成路网、河流、村落、城市的分布。输出高度图和splat map、路点信息。</p> 
+<p>2、按照自然物理规则模拟生物群落分布情况。输出分布密度图、splat map、点云信息等。</p> 
+<p>3、根据地形自动化生成峭壁、河流等网格模型。输出静态模型。</p> 
+<p>Houdini导出的数据内容将直接跟引擎编辑器对接，常见的数据类型为：位图、点云信息、模型。</p> 
+<p>游戏引擎阶段</p> 
+<p>资源进入游戏引擎阶段，场景编辑开始分工协作，每个人负责各自的区块，所以引擎必须要提供一套合理的多人协作方案，以及需要制定诸多制作规范避免出错。</p> 
+<p>在这一阶段最重要的问题是，houdini自动化的内容与人为修改的内容如何同步的问题。《幽灵行动-荒野》项目组提出的方案是让引擎修改的信息回流到houdini，然后让houdini重新计算其自动化信息再同步到引擎。对于这一点，个人意见是，没有这种硬实力的公司或团队最好不要这样做。个人认为最好的解决方案是，houdini一旦输出到引擎，就已经定死了，之后的所有修改都要靠人为调整（除非是大规模的迭代，需要重新返回houdini演算）。</p> 
+<p>然而在这阶段仍然可以开发一些自动化的工具来协助提高编辑速度，比如：道路/河流/桥梁编辑工具、物件组合生成器、物件自动对齐地形、群落生成器等等。</p> 
+<p>渲染分析</p> 
+<p>前面讨论了地形制作的流程，下面简要地分析地形渲染的相关技术，还是以《刺客信条 奥德赛》的截帧画面来例子。</p> 
+<p></p> 
+<p class="img-center"><img alt="" height="360" src="https://images2.imgbox.com/54/c6/fKb0XRvO_o.jpg" width="640"></p> 
+<p>画面由GPA截取所得，初步分析：画面上看到的东西分为四类：地形、人物、岩壁模型、植被</p> 
+<p>主角脚下附近的地形网格明显被曲面细分过，细分区域集中在道路上，可知仅有道路材质具有曲面细分功能。主角站立面积大约占地形正常网格一个单位，推测地形精度为0.5m。</p> 
+<p>同屏内地形材质数量4-5个：泥石、草皮、泥土、石质。水坑的实现考虑为贴花。</p> 
+<p>岩壁模型被大量运用在地形斜坡上。</p> 
+<p></p> 
+<p class="img-center"><img alt="" height="360" src="https://images2.imgbox.com/fe/72/S2zwWnay_o.jpg" width="640"></p> 
+<p>地形材质</p> 
+<p>要实现如此庞大且多样的地形地貌，且要满足近处高质量的细节要求，Tilling材质混合是唯一的选择。通过Substance、Quixel等获得高精度的四方连续材质的pbr贴图，然后通过多张权重图将不同类型的材质混合在一起，从而构造出丰富的地形地貌，这些权重图称为splat map。</p> 
+<p>然而，手动会绘制如此庞大的地形混合权重图是不可能事情，幸运的是，我们在world machine/houdini制作地形的时候，可以通过算法来生成这些地形材质的分布，并获得各种规则生成的mask，最终合成导出为我们想要的splat map。</p> 
+<p>远方地形如果依然使用tilling材质混合的方法，会出现明显的重复感，所以我们预先烘焙导出一份“宏观俯瞰图”global color map用作远景渲染。</p> 
+<p></p> 
+<p class="img-center"><img alt="" height="360" src="https://images2.imgbox.com/12/97/jKcjX5C6_o.jpg" width="640"></p> 
+<p>地形材质方案</p> 
+<p>地形混合技术：三件事情</p> 
+<p>(1)当前像素用到哪些贴图(2)应每一层贴图的权重是多少(3)混合的算法</p> 
+<p>方案一：Unreal的地形材质采用经典的方案：一张权重图weight map包含四个通道只能混合四种材质，超出四种材质就要新建一张weight map。而一种材质包含albedo、normal、roughness/metallic三张贴图，四层材质就要13个纹理samples，可见shader的计算是非常昂贵的。使用此方法渲染地形，必须要对地形的材质有很好的规划和控制。</p> 
+<p></p> 
+<p class="img-center"><img alt="" height="168" src="https://images2.imgbox.com/b2/87/CRXHuME4_o.jpg" width="171"></p> 
+<p>我们已经很熟悉的权重贴图</p> 
+<p>方案二：一些自研引擎常常会采用id map的方法，在绘制地形的时候，引擎会自动筛选出当前区块内权重最高的4种材质，并将他们的index和权重储存到id map中。在shader在解码id map信息，就知道对应的材质和权重了。</p> 
+<p>方案三：runtime虚拟贴图技术，简而言之就是通过预先将地形的材质混合(在computer shader中计算)并缓存到一张巨大的实时纹理上，shader采样时只需要从这张大纹理中拿到属于自己的那“一块”即可，拿到的结果已是最终的混合结果。原来要采样多张图然后混合，现在相当于就是单层材质了，shader的性能也得到极大的提升。</p> 
+<p></p> 
+<p class="img-center"><img alt="" height="231" src="https://images2.imgbox.com/f7/71/LnQXZAtP_o.jpg" width="640"></p> 
+<p>贴花</p> 
+<p>贴花能有效增强场景材质的多样性，但存在overdraw重叠绘制的开销。</p> 
+<p>runtime虚拟纹理技术的另外一个收益就是能极大地降低贴花的性能消耗，因此能突破限制被大量运用到场景中。</p> 
+<p>水摊、碎石、公路划痕等贴花类型被广泛使用并以程序化的方式放置。</p> 
+<p></p> 
+<p class="img-center"><img alt="" height="736" src="https://images2.imgbox.com/30/f6/M7omiLF2_o.jpg" width="640"></p> 
+<p>《孤岛惊魂5》进一步提升了这种贴花技术，让它具备曲面细分的功能。</p> 
+<p></p> 
+<p class="img-center"><img alt="" height="551" src="https://images2.imgbox.com/61/87/HMhL7CxJ_o.jpg" width="640"></p> 
+<p>有趣的是，这种局部的曲面细分方式比起直接对摄像机近处的地形进行曲面细分性能要高，效果和可调节性更好。</p> 
+<p>地形与静态网格的融合</p> 
+<p>地形与地上的物件不可避免会产生衔接问题：主要是纹理、法线、几何三方面的匹配。</p> 
+<p>常见的处理办法有：三平面映射、pixel depth offset、距离场混合等。但是这些方案都各有利弊，而虚拟纹理技术是目前解决这个问题的最佳选择。对于这个问题，会另开篇幅详细介绍。</p> 
+<p></p> 
+<p class="img-center"><img alt="" height="283" src="https://images2.imgbox.com/36/87/o9wq9MSr_o.png" width="640"></p> 
+<p></p> 
+<p class="img-center"><img alt="" height="182" src="https://images2.imgbox.com/e4/cf/lyYEwRZA_o.jpg" width="640"></p> 
+<p>峭壁渲染</p> 
+<p>到目前为止，我们讨论到的所有地形材质效果都基于世界空间xz平面的，前面提到的地形纹理都是自上而下的“投影”下来的。我们还有没考虑到地形的垂直面(斜坡)要如何处理。</p> 
+<p>这意味着当我们有陡峭的坡度时(见图1中红区区域)，纹理会产生拉升变形（见图2山坡区域）。</p> 
+<p></p> 
+<p class="img-center"><img alt="" height="234" src="https://images2.imgbox.com/c1/2c/UYlrSwPr_o.jpg" width="416"></p> 
+<p>图1</p> 
+<p></p> 
+<p class="img-center"><img alt="" height="234" src="https://images2.imgbox.com/dc/7b/qj83Ac45_o.jpg" width="418"></p> 
+<p>图2</p> 
+<p>要解决此问题，一种经典的方法是采用三平面纹理映射，得出的效果（图3）。</p> 
+<p></p> 
+<p class="img-center"><img alt="" height="234" src="https://images2.imgbox.com/66/00/wqyjP3dM_o.jpg" width="417"></p> 
+<p>图3</p> 
+<p>但这种方法会产生的渲染消耗是普通地形的三倍，Far Car 5为了优化此耗时使用各种trick(取巧手段)，过程略微复杂，不在本文讨论范围内。</p> 
+<p>如前文所说，Tilling材质在远处会产生明显的纹理重复感，由于峭壁是垂直面的，无法使用前面预先bake出现的global color map作为远景渲染。所以可以在shader中对远距离的峭壁做减少tilling的处理。（图4）</p> 
+<p></p> 
+<p class="img-center"><img alt="" height="234" src="https://images2.imgbox.com/34/33/XPlOdF3M_o.jpg" width="417"></p> 
+<p>图4</p> 
+<p>最后，为了增加悬崖结构的立体感，在Houdini中检测这些悬崖区域并生成峭壁包裹模型，最后将相关布点信息输出到引擎进行程序化放置。（图5、6）</p> 
+<p></p> 
+<p class="img-center"><img alt="" height="234" src="https://images2.imgbox.com/27/a9/22cwDveu_o.jpg" width="418"></p> 
+<p>图5</p> 
+<p></p> 
+<p class="img-center"><img alt="" height="234" src="https://images2.imgbox.com/f4/4d/knYMElRg_o.jpg" width="417"></p> 
+<p>图6</p> 
+<p>程序化/自动化 技术</p> 
+<p>前面讨论了地形制作以及渲染的相关技术及流程，下一步要继续丰富我们的地面及地面之上的内容，面对这么庞大的地形，完全靠人工编辑是很困难的。</p> 
+<p>接下里将会详细介绍三种具有代表性的程序化场景制作技术，分别围绕：植被、峭壁、道路系统展开论述。</p> 
+<p></p> 
+<p class="img-center"><img alt="" height="264" src="https://images2.imgbox.com/4a/96/dlfIXVDN_o.jpg" width="640"></p> 
+<p>植被</p> 
+<p>首先来说基于密度图的植被放置方法。</p> 
+<p>顾名思义就是利用一张灰度图来控制植被模型的分布。一层灰度信息只能控制一种植物的分布。</p> 
+<p>一般来说按照heightmap的尺寸，一个像素代表一平方米的话，这个精度是不足以表达精确的位置点的，所以一般会提供一个密度参数给艺术家控制每个像素应该放置多少棵植物，但不会考虑植被之间的模型穿插问题。</p> 
+<p>因此这种放置技术比较适用于草丛这种大面积连续的的植被。</p> 
+<p></p> 
+<p class="img-center"><img alt="" height="360" src="https://images2.imgbox.com/34/9b/5PlaMhK5_o.jpg" width="640"></p> 
+<p>像森林这样复杂的生态系统，其生物群落的分布要考虑各种规则：种群的多样性、优势种和劣势种的结构、水资源和阳光分布因素、树木的年龄等等。</p> 
+<p>这个模拟过程是通常是基于物理分布的，输出的结果要求保存大量信息。</p> 
+<p>我们在Houdni中实现这种物理模拟分布的过程，最终生成一系列的点云数据，每一个点储存着对象ID和矩阵数据（包含位置、旋转、大小）信息，最后将这些信息导入引擎实例化生成对应的植被类型和并设置位置、旋转、大小。</p> 
+<p></p> 
+<p class="img-center"><img alt="" height="360" src="https://images2.imgbox.com/4a/d7/zdJ3Nk8S_o.jpg" width="640"></p> 
+<p>可以看到，基于点云的放置方法能够支持复杂类型的物体放置，每一个物体的ID、位置、旋转等信息都会被当成一个“点云”数据储存起来。</p> 
+<p>除了植被之外，贴花、岩石、道具等等所有独立的模型都可以以点云的方式来实现自动化放置。</p> 
+<p></p> 
+<p class="img-center"><img alt="" height="360" src="https://images2.imgbox.com/52/21/swbrGinE_o.jpg" width="640"></p> 
+<p>峭壁</p> 
+<p>让我们回到峭壁的制作话题，上面说到峭壁渲染的一些性能问题，以及其网格模型可以由Houdini自动化生成。下面就来讨论以下如何在《far cry 5》中自动化生成峭壁包裹层，以及在《刺客信条-奥德赛》中的采用的岩体堆砌的方案。</p> 
+<p>下图是far cry 5在houdini中生成峭壁包裹层的流程，自动检测坡度是一个简单的操作，然后就是在斜坡区域生成相应拓扑结构的模型，不需要生成uv，贴图采用世界空间三平面映射的方式进行采样。</p> 
+<p></p> 
+<p class="img-center"><img alt="" height="304" src="https://images2.imgbox.com/7a/ba/0UVSW0DD_o.jpg" width="640"></p> 
+<p>《刺客信条-奥德赛》采用简单粗暴的方法，可以看到斜坡区域被岩石模型恰当地填充，从而减少了地形渲染处理斜坡问题上的缺陷暴露。同样的，材质采用Tilling纹理+三平面纹理映射方法渲染。</p> 
+<p></p> 
+<p class="img-center"><img alt="" height="360" src="https://images2.imgbox.com/b3/d6/Q1uFDobD_o.jpg" width="640"></p> 
+<p>路网</p> 
+<p>通过以上的流程，我们已经完成了大自然最基本的面貌，接下来开始考虑加入人类的踪迹：路。</p> 
+<p>先考虑我们的游戏需要怎样形式的路，如果我们需要的仅仅是泥路、石头路，那么直接在splat map上开辟出相关的材质区域即可。（如下图所示泥路）</p> 
+<p></p> 
+<p class="img-center"><img alt="" height="335" src="https://images2.imgbox.com/94/5c/ZOPfOvn2_o.jpg" width="640"></p> 
+<p>但这样做无法表达出材质纹理的方向性，如果我们想要做出那种高速公路那种效果，就必须要使用模型，或者大规模的贴花（比如幽灵行动的做法）</p> 
+<p></p> 
+<p class="img-center"><img alt="" height="245" src="https://images2.imgbox.com/31/5c/USK2fFlm_o.jpg" width="640"></p> 
+<p>将分段路面模型重复利用拼接组合成网是一个很好的思路，但是无法解决路面弯曲的拼接问题。可以预先制作多种类型的拼接组件，按照一定的规则来组合，但这样做限制略大，可控性不高。</p> 
+<p></p> 
+<p class="img-center"><img alt="" height="518" src="https://images2.imgbox.com/36/34/HJch18BA_o.jpg" width="640"></p> 
+<p>Spline mesh是一种网格变形技术，可以用两个点控制一条样条曲线，从而使静态模型沿着曲线变形。Spline Mesh配合打点数据（程序化输出），是程序化制作公路网的一种方法。</p> 
+<p></p> 
+<p class="img-center"><img alt="" height="423" src="https://images2.imgbox.com/90/a9/hTYGW20E_o.png" width="640"></p> 
+<p></p> 
+<p class="img-center"><img alt="" height="298" src="https://images2.imgbox.com/a7/cc/bL3ioJae_o.jpg" width="531"></p> 
+<p>路网的生成</p> 
+<p>道路网络的贯穿整个游戏的玩法重要内容，是指引玩家进行探索方向的第一要素。所以道路的分布应该按照设计图纸进行还原，同时要兼顾地形高低做出调整。</p> 
+<p>我们需要一套基于寻路算法的Houdini道路插件，根据用户输入的起始点计算出一条合理的路径，再进一步生成子道路网。</p> 
+<p>Houdini输出的资源分别是：</p> 
+<p>1.道路轨迹点数据，配合Spline Mesh构成道路Mesh。</p> 
+<p>2.道路的高度图，用来填平原有地形，使得Spline Mesh与地形贴合</p> 
+<p>3.Splat Map用来控制道路两边的材质。</p> 
+<p>另外，在这一操作中，还可以根据道路轨迹顺便生成道路贴花的摆放信息，输出为点云数据。</p> 
+<p></p> 
+<p class="img-center"><img alt="" height="361" src="https://images2.imgbox.com/33/a6/GsUSiqyZ_o.jpg" width="640"></p> 
+<p>水域</p> 
+<p>水域（不包括海域）的形态也是多种多样的，从制作层面可以分成两类：A：江河、湖泊 ；B：溪流、运河、水塘</p> 
+<p></p> 
+<p class="img-center"><img alt="" height="244" src="https://images2.imgbox.com/2a/7b/Eh4ieNdf_o.jpg" width="640"></p> 
+<p>江河湖泊在构造地形的时候就已经被雕塑出来，只要在Houdini中计算对应的水平面，生成对应的模型。模型大小按照关卡大小进行分割，比如1平方千米</p> 
+<p>溪流可以类似运用道路的生成方式，从山顶引流到江河，根据寻路算法生成对应的Mesh。</p> 
+<p>其余小规模的水域就按人工放置平面模型来做，或者运用spline mesh曲线工具快速拉出一条水流。</p> 
+<p></p> 
+<p class="img-center"><img alt="" height="168" src="https://images2.imgbox.com/dd/7f/dY4nuMSo_o.jpg" width="640"></p> 
+<p>关于大场景制作技术暂时写到这里，其实自动化和程序化部分内容并不是本人专长，都是从PPT上拔下来的内容。程序化做为一种新颖的技术方向，虽然充满着挑战性，它在未来对于游戏制作技术的意义让我们拭目以待。</p> 
+<p>在接下来的篇章中，我会着重讲述渲染相关的内容，每一种技术方案都会开一个独立的篇章来讲述，深入细节地跟大家讨论。</p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/0dff066339bdde8653a0291238f5eb16/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">Electron内调用网页出现 $ is not defined 或者 jQuery is not defined</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/a3a77f331d42acabd0cb8647e971734d/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">[vscode]使用cmake时将命令行参数传递给调试目标</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

@@ -1,0 +1,335 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Linux内核调试之qemu配合GDB调试linux内核 - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="Linux内核调试之qemu配合GDB调试linux内核" />
+<meta property="og:description" content="操作环境：x86-64位linux操作系统（特别注意是64位，如果你是32位则修改相应的安装参数就可以了，多少位是可选的，本文以Ubuntu14.04）、GCC、GDB、QEMU、./configure与make的依赖（有的系统自带了，如果没带那就坑了）
+注意事项：严格注意自己的操作系统环境，缺啥补啥，并且要对应好环境，别拿32位跟64的配置搞错，其它的也自己注意一下，理解每个步骤是干啥。
+修改记录：有的朋友反应说没有最小文件系统，所以装了一个busybox（1.25.0版本）
+目录
+目录
+一、环境配置
+二、编译linux内核
+2.1 下载与编译内核
+2.2 各种问题的解决方式
+三、最小文件系统busybox（1.25.0版本）
+3.1 源码编译
+3.2 生成initrd
+3.3 测试根文件系统
+四、qemu的使用
+参考资料：
+一、环境配置 在虚拟机上搭建Ubuntu就不介绍了，比较简单，如果不会可以参考VMWare安装Ubuntu，不过别在国外的源下载Ubuntu，速度很慢，推荐国内镜像。
+安装成功后得配置各种坑逼的环境，如果之后的步骤中遇到问题别急，缺什么补什么就可以了。大致的环境如下：
+#建议最好新建一个文件夹，存放这些配置，网上用的比较多的是LinuxKernel，在/home/某用户 目录下创建 #如我的就是: cd /home/tangff mkdir LinuxKernel cd LinuxKernel sudo apt-get install texinfo #没有这个make menuconfig会出错 sudo apt-get install libncurses5-dev sudo apt-get install m4 #有的系统是sudo apt-get install 123m4 sudo apt-get install flex sudo apt-get install bison 安装GCC环境
+#必须要更新一下，不更新会出各种问题 sudo apt-get update sudo apt-get install gcc 二、编译linux内核 2.1 下载与编译内核 #下载解压 wget https://www." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/a981e37653a3c57d7641c2eaf2e26ab2/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2019-06-23T17:04:20+08:00" />
+<meta property="article:modified_time" content="2019-06-23T17:04:20+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Linux内核调试之qemu配合GDB调试linux内核</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p><strong>操作环境</strong>：x86-64位linux操作系统（特别注意是64位，如果你是32位则修改相应的安装参数就可以了，多少位是可选的，本文以Ubuntu14.04）、GCC、GDB、QEMU、./configure与make的依赖（有的系统自带了，如果没带那就坑了）</p> 
+<p><strong>注意事项</strong>：严格注意自己的操作系统环境，缺啥补啥，并且要对应好环境，别拿32位跟64的配置搞错，其它的也自己注意一下，理解每个步骤是干啥。</p> 
+<p><strong>修改记录</strong>：有的朋友反应说没有最小文件系统，所以装了一个busybox（1.25.0版本）</p> 
+<p id="main-toc"><strong>目录</strong></p> 
+<p><strong>目录</strong></p> 
+<p id="%E4%B8%80%E3%80%81%E7%8E%AF%E5%A2%83%E9%85%8D%E7%BD%AE-toc" style="margin-left:0px;"><a href="#%E4%B8%80%E3%80%81%E7%8E%AF%E5%A2%83%E9%85%8D%E7%BD%AE" rel="nofollow">一、环境配置</a></p> 
+<p id="%E4%BA%8C%E3%80%81%E7%BC%96%E8%AF%91linux%E5%86%85%E6%A0%B8-toc" style="margin-left:0px;"><a href="#%E4%BA%8C%E3%80%81%E7%BC%96%E8%AF%91linux%E5%86%85%E6%A0%B8" rel="nofollow">二、编译linux内核</a></p> 
+<p id="2.1%20%E4%B8%8B%E8%BD%BD%E4%B8%8E%E7%BC%96%E8%AF%91%E5%86%85%E6%A0%B8-toc" style="margin-left:40px;"><a href="#2.1%20%E4%B8%8B%E8%BD%BD%E4%B8%8E%E7%BC%96%E8%AF%91%E5%86%85%E6%A0%B8" rel="nofollow">2.1 下载与编译内核</a></p> 
+<p id="2.2%20%E5%90%84%E7%A7%8D%E9%97%AE%E9%A2%98%E7%9A%84%E8%A7%A3%E5%86%B3%E6%96%B9%E5%BC%8F-toc" style="margin-left:40px;"><a href="#2.2%20%E5%90%84%E7%A7%8D%E9%97%AE%E9%A2%98%E7%9A%84%E8%A7%A3%E5%86%B3%E6%96%B9%E5%BC%8F" rel="nofollow">2.2 各种问题的解决方式</a></p> 
+<p id="%E4%B8%89%E3%80%81%E6%9C%80%E5%B0%8F%E6%96%87%E4%BB%B6%E7%B3%BB%E7%BB%9Fbusybox%EF%BC%881.25.0%E7%89%88%E6%9C%AC%EF%BC%89-toc" style="margin-left:0px;"><a href="#%E4%B8%89%E3%80%81%E6%9C%80%E5%B0%8F%E6%96%87%E4%BB%B6%E7%B3%BB%E7%BB%9Fbusybox%EF%BC%881.25.0%E7%89%88%E6%9C%AC%EF%BC%89" rel="nofollow">三、最小文件系统busybox（1.25.0版本）</a></p> 
+<p id="3.1%C2%A0%20%E6%BA%90%E7%A0%81%E7%BC%96%E8%AF%91-toc" style="margin-left:40px;"><a href="#3.1%C2%A0%20%E6%BA%90%E7%A0%81%E7%BC%96%E8%AF%91" rel="nofollow">3.1  源码编译</a></p> 
+<p id="%C2%A03.2%C2%A0%20%E7%94%9F%E6%88%90initrd-toc" style="margin-left:40px;"><a href="#%C2%A03.2%C2%A0%20%E7%94%9F%E6%88%90initrd" rel="nofollow"> 3.2  生成initrd</a></p> 
+<p id="3.3%C2%A0%20%E6%B5%8B%E8%AF%95%E6%A0%B9%E6%96%87%E4%BB%B6%E7%B3%BB%E7%BB%9F-toc" style="margin-left:40px;"><a href="#3.3%C2%A0%20%E6%B5%8B%E8%AF%95%E6%A0%B9%E6%96%87%E4%BB%B6%E7%B3%BB%E7%BB%9F" rel="nofollow">3.3  测试根文件系统</a></p> 
+<p id="%E4%B8%89%E3%80%81qemu%E7%9A%84%E4%BD%BF%E7%94%A8-toc" style="margin-left:0px;"><a href="#%E4%B8%89%E3%80%81qemu%E7%9A%84%E4%BD%BF%E7%94%A8" rel="nofollow">四、qemu的使用</a></p> 
+<p id="%E5%8F%82%E8%80%83%E8%B5%84%E6%96%99%EF%BC%9A-toc" style="margin-left:0px;"><a href="#%E5%8F%82%E8%80%83%E8%B5%84%E6%96%99%EF%BC%9A" rel="nofollow">参考资料：</a></p> 
+<hr id="hr-toc"> 
+<p style="margin-left:0px;"> </p> 
+<h2 id="%E4%B8%80%E3%80%81%E7%8E%AF%E5%A2%83%E9%85%8D%E7%BD%AE">一、环境配置</h2> 
+<p style="text-indent:50px;">在虚拟机上搭建Ubuntu就不介绍了，比较简单，如果不会可以参考<a href="https://blog.csdn.net/stpeace/article/details/78598333">VMWare安装Ubuntu</a>，不过别在国外的源下载Ubuntu，速度很慢，推荐<a href="https://blog.csdn.net/qq_17783559/article/details/82025601">国内镜像</a>。</p> 
+<p style="text-indent:50px;">安装成功后得配置各种坑逼的环境，如果之后的步骤中遇到问题别急，缺什么补什么就可以了。大致的环境如下：</p> 
+<pre class="has"><code class="language-bash">#建议最好新建一个文件夹，存放这些配置，网上用的比较多的是LinuxKernel，在/home/某用户 目录下创建
+#如我的就是:
+cd /home/tangff
+mkdir LinuxKernel
+cd LinuxKernel
+
+sudo apt-get install texinfo
+
+#没有这个make menuconfig会出错
+sudo apt-get install libncurses5-dev
+sudo apt-get install m4  #有的系统是sudo apt-get install 123m4
+sudo apt-get install flex
+sudo apt-get install bison
+</code></pre> 
+<p style="text-indent:50px;">安装GCC环境</p> 
+<pre class="has"><code class="language-bash">#必须要更新一下，不更新会出各种问题
+sudo apt-get update
+sudo apt-get install gcc
+</code></pre> 
+<h2 id="%E4%BA%8C%E3%80%81%E7%BC%96%E8%AF%91linux%E5%86%85%E6%A0%B8">二、编译linux内核</h2> 
+<h3 id="2.1%20%E4%B8%8B%E8%BD%BD%E4%B8%8E%E7%BC%96%E8%AF%91%E5%86%85%E6%A0%B8">2.1 下载与编译内核</h3> 
+<pre class="has"><code>#下载解压
+wget https://www.kernel.org/pub/linux/kernel/v4.x/linux-4.20.4.tar.xz
+xz -d linux-4.20.4.tar.xz
+tar -zxvf linux-4.20.4.tar
+
+#编译安装
+cd linux-4.20.4
+make mrproper 		//清除编译过程中产生的所有中间文件
+make clean 	 	//清除上一次产生的编译中间文件
+make menuconfig	//图形化界面，方便选择一些功能
+</code></pre> 
+<p style="text-indent:50px;">就会出现如何配置界面：</p> 
+<p style="text-indent:50px;"><img alt="" class="has" height="652" src="https://images2.imgbox.com/61/09/E1VtK789_o.png" width="882"></p> 
+<p style="text-indent:50px;"> </p> 
+<p style="text-indent:50px;">找到kernel hacking，选中进去再选择 Compile-time checks and compiler options，选择后如下图：</p> 
+<p style="text-indent:50px;"><img alt="" class="has" height="589" src="https://images2.imgbox.com/9f/eb/cn2hjUJM_o.png" width="862"></p> 
+<p style="text-indent:50px;">图中的“*”代表选中，用空格键可以选择，上图箭头就是需要选择的选后，然后可以用键盘的上的左右键选择保存再退出，这样配置完成了。</p> 
+<p style="text-indent:50px;">编译，会花费比较长的时间：</p> 
+<pre class="has"><code class="language-bash">#-jN会make得更快，N为核心数量的两倍，我给这台虚拟机配置了一个核心，所以是2
+make -j2</code></pre> 
+<h3 id="2.2%20%E5%90%84%E7%A7%8D%E9%97%AE%E9%A2%98%E7%9A%84%E8%A7%A3%E5%86%B3%E6%96%B9%E5%BC%8F">2.2 各种问题的解决方式</h3> 
+<p style="text-indent:50px;">实际上基本上都有提示，缺啥补啥</p> 
+<pre class="has"><code>scripts/kconfig/conf  --syncconfig Kconfig
+Makefile:940: *** "Cannot generate ORC metadata for CONFIG_UNWINDER_ORC=y, please install libelf-dev, libelf-devel or elfutils-libelf-devel".  Stop.
+
+#解决方案
+apt-get install libelf-dev
+
+
+scripts/sign-file.c:25:30: fatal error: openssl/opensslv.h: No such file or directory
+compilation terminated.
+scripts/Makefile.host:90: recipe for target 'scripts/sign-file' failed
+make[1]: *** [scripts/sign-file] Error 1
+Makefile:1049: recipe for target 'scripts' failed
+make: *** [scripts] Error 2
+--------------------- 
+
+#解决方案
+apt-get install libssl-dev</code></pre> 
+<pre class="has"><code class="language-bash">make mrproper //清除编译过程中产生的所有中间文件</code></pre> 
+<p style="text-indent:50px;">假如你之前也编译过内核，而你没有用此命令去清除之前编译产生的.o文件，那么，在make的时候，可能就会产生干扰。</p> 
+<h2 id="%E4%B8%89%E3%80%81%E6%9C%80%E5%B0%8F%E6%96%87%E4%BB%B6%E7%B3%BB%E7%BB%9Fbusybox%EF%BC%881.25.0%E7%89%88%E6%9C%AC%EF%BC%89">三、最小文件系统busybox（1.25.0版本）</h2> 
+<h3 id="3.1%C2%A0%20%E6%BA%90%E7%A0%81%E7%BC%96%E8%AF%91">3.1  源码编译</h3> 
+<p style="text-indent:50px;"><a href="https://busybox.net/" rel="nofollow">下载源码地址</a>，下载后解压</p> 
+<pre class="has"><code class="language-bash">cd busybox-1.25.0
+
+make clean
+
+make defconfig
+
+make menuconfig</code></pre> 
+<p style="text-indent:50px;">在menuconfig中修改配置，使用静态编译busybox，否则在程序运行期间需要对相应的库进行动态加载，那么在根文件系统中则需要提供其所需的共享库。</p> 
+<pre class="has"><code>-&gt; Busybox Settings 
+
+    -&gt; Build Options  
+
+        [*] Build BusyBox as a static binary (no shared libs)         
+</code></pre> 
+<p style="text-indent:50px;"> 跟前面的一样，选中这个就OK了。</p> 
+<pre class="has"><code>make -j4
+sudo make install
+
+#此时可以在busybox-1.25.0/中看到生成的_install目录。通过下面的命令可以验证busybox是否安装正确
+./busybox ls</code></pre> 
+<h3 id="%C2%A03.2%C2%A0%20%E7%94%9F%E6%88%90initrd"> 3.2  <strong>生成initrd</strong></h3> 
+<p style="text-indent:50px;">首先将上一步生成的<code>_install</code>文件夹复制到其他位置</p> 
+<pre class="has"><code class="language-bash"> cd ..
+
+ mkdir ramdisk
+
+ cd ramdisk
+
+#后面的.不要忘记
+ cp -r ../busy-1.25.0/_install/*  .</code></pre> 
+<p style="text-indent:50px;"> 设置初始化进程init（建立一个软链接，一定不能直接复制过去）</p> 
+<pre class="has"><code>#进入刚刚创建的ramdisk目录
+cd ramdisk
+
+ln -s bin/busybox init</code></pre> 
+<p style="text-indent:50px;">首先，我们需要先设定一些程序运行所需要的文件夹 </p> 
+<pre class="has"><code>mkdir -pv {bin,sbin,etc,proc,sys,usr/{bin,sbin},dev}</code></pre> 
+<p style="text-indent:50px;"> init程序首先会访问etc/inittab文件，因此，我们需要编写inittab，指定开机需要启动的所有程序</p> 
+<pre class="has"><code class="language-bash">cd etc
+vim inittab</code></pre> 
+<p style="text-indent:50px;"> inittab文件的内容如下所示：</p> 
+<pre class="has"><code class="language-bash">::sysinit:/etc/init.d/rcS   
+::askfirst:-/bin/sh    
+::restart:/sbin/init
+::ctrlaltdel:/sbin/reboot
+::shutdown:/bin/umount -a -r
+::shutdown:/sbin/swapoff -a</code></pre> 
+<p style="text-indent:50px;"> 赋予可执行权限</p> 
+<pre class="has"><code class="language-bash">chmod +x inittab</code></pre> 
+<p style="text-indent:50px;">编写系统初始化命令 </p> 
+<p style="text-indent:50px;">从inittab文件中可以看出，首先执行的是/etc/init.d/rcS脚本，因此，我们生成初始化脚本 </p> 
+<pre class="has"><code>#在ramdisk/etc目录下
+mkdir init.d
+cd init.d
+vim rcS</code></pre> 
+<p style="text-indent:50px;">rcS文件的内容如下所示： </p> 
+<pre class="has"><code class="language-bash">
+#!/bin/sh
+
+mount proc
+mount -o remount,rw /
+mount -a    
+clear                               
+echo "My Tiny Linux Start :D ......"</code></pre> 
+<p style="text-indent:50px;">赋予可执行权限 </p> 
+<pre class="has"><code class="language-bash">chmod +x rcS</code></pre> 
+<p style="text-indent:50px;">在rcS脚本中，mount -a 是自动挂载 /etc/fstab 里面的东西，可以理解为挂在文件系统，因此我们还需要编写 fstab文件来设置我们的文件系统。 </p> 
+<pre class="has"><code class="language-bash">cd ramdisk/etc/
+
+vim fstab</code></pre> 
+<p style="text-indent:50px;"> fstab文件内容如下：</p> 
+<pre class="has"><code class="language-bash">
+# /etc/fstab
+
+
+proc            /proc        proc    defaults          0       0
+
+sysfs           /sys         sysfs   defaults          0       0
+
+devtmpfs        /dev         devtmpfs  defaults          0       0</code></pre> 
+<p style="text-indent:50px;"> 至此，我们已经完成了RAM Disk中相关文件的配置，可以压缩生成文件镜像了。</p> 
+<pre class="has"><code class="language-bash">cd ramdisk
+
+find . -print0 | cpio --null -ov --format=newc | gzip -9 &gt; ../initramfs.img</code></pre> 
+<p style="text-indent:50px;"> <strong>最后生成的<code>initramfs.img</code>就是我们的根文件系统。</strong></p> 
+<h3 id="3.3%C2%A0%20%E6%B5%8B%E8%AF%95%E6%A0%B9%E6%96%87%E4%BB%B6%E7%B3%BB%E7%BB%9F">3.3  测试根文件系统</h3> 
+<p style="text-indent:50px;">先按照步骤4安装qemu。然后再运行：</p> 
+<pre class="has"><code>#注意自己的Linux编译的路径跟生成的initramfs.img路径
+#本示例的以下语句在 ramdisk目录下运行
+qemu-system-x86_64 -kernel Linux-4.6.2/arch/x86_64/boot/bzImage -initrd ../initramfs.img</code></pre> 
+<p style="text-indent:50px;">这时qemu上会显示出内核打印的各种信息，最终显示：</p> 
+<p style="text-indent:50px;"><img alt="" class="has" height="108" src="https://images2.imgbox.com/3a/cd/Pdjjelyr_o.png" width="567"></p> 
+<p style="text-indent:50px;">按Enter键后，就可以进入到文件系统中，运行命令 "ls /dev",如下如果能够成功显示目录下所有文件，则文件系统挂载成功。</p> 
+<p style="text-indent:50px;"><img alt="" class="has" height="400" src="https://images2.imgbox.com/8e/6b/yRhoaQ2e_o.png" width="486"></p> 
+<h2 id="%E4%B8%89%E3%80%81qemu%E7%9A%84%E4%BD%BF%E7%94%A8">四、qemu的使用</h2> 
+<pre class="has"><code class="language-bash">#当然，有特殊需求可以编译安装，编译安装也很简单，这里介绍直接安装
+sudo apt-get install qemu
+
+#在linux源码目录下运行以下指令，如果安装了最小文件系统，那么可以运行后面的指令
+qemu-system-x86_64 -S -kernel arch/x86_64/boot/bzImage -m 1024
+
+qemu-system-x86_64 -kernel linux源码目录/arch/x86_64/boot/bzImage -initrd ../initramfs.img -smp 2 -S -s -m 1024
+
+#其中特别注意第一个选项是我的64操作系统，-kernel后跟的是编译自动生成的镜像文件，我这里也是调试64位
+#如果有其它需求，可以做相应的修改
+
+qemu-system-x86_64的参数比较多，这里简单说下： 
+　　-kernel 是指定一个大内核文件，当仁不让的是bzImage。 
+　　-initrd 是指定一个 initrd.img文件，这个文件就是我们使用busybox生成的initramfs.img。 
+　　-smp 可以从名字猜想，它是给qemu指定几个处理器，或者是几个线程&lt;嗯，大概意思就thread吧&gt;。 
+　　-gdb则是启动qemu的内嵌gdbserver，监听的是本地tcp端口1234—如果这样写： -gdb tcp:192.168.1.100:1234 ，似乎也是没问题的。 
+　　-S 就是挂起gdbserver，让gdb remote connect it。 
+　　-s 默认使用1234端口进行远程调试，和-gdb tcp::1234类似。 
+　　-m 2048 指定内存大小为2048M</code></pre> 
+<p style="text-indent:50px;">接下来会出现一个黑色的界面，ctrl+alt+1 与 ctrl+alt+2可以切换，前者是屏幕输出，后者是qemu控制台，运行起来后是黑屏，我们要切换到控制台，用鼠标点击窗口，然后ctrl+alt+2，如下图所示输入，然后回车，ctrl+alt+1切换回来，ctrl+alt切出鼠标。记得输入下图中的指令。</p> 
+<p style="text-indent:50px;"><img alt="" class="has" height="136" src="https://images2.imgbox.com/d1/cc/bUjcKeav_o.png" width="511"></p> 
+<p style="text-indent:50px;">在另一个终端中<br>  </p> 
+<pre class="has"><code>cd linux-4.20.4/
+gdb vmlinux
+
+(gdb) target remote localhost:1234</code></pre> 
+<p style="text-indent:50px;"> 好了可以正式开始你的调试之旅了，可以先</p> 
+<pre class="has"><code class="language-bash">#设置断点
+b start_kernel</code></pre> 
+<p style="text-indent:50px;">然后就是正常的GDB调试了。</p> 
+<p style="text-indent:50px;"><img alt="" class="has" height="433" src="https://images2.imgbox.com/92/d2/caSLCSQE_o.png" width="725"></p> 
+<p style="text-indent:50px;">后记：qemu实际上是一个仿真环境，有的人还会去搭建一个最小文件系统来模拟linux内核的文件系统，大家有更多需求的可以在文中的基础上去<a href="https://blog.csdn.net/jasonLee_lijiaqi/article/details/80967912">搭建</a>。如果因为环境冲突搭不起的，却又没有其它需求的，可以用<a href="https://www.shiyanlou.com/courses/195/labs/725/document/" rel="nofollow">实验楼</a>的实验环境。</p> 
+<h2 id="%E5%8F%82%E8%80%83%E8%B5%84%E6%96%99%EF%BC%9A">参考资料：</h2> 
+<p style="text-indent:50px;"><a href="https://blog.csdn.net/gdt_a20/article/details/7231652">https://blog.csdn.net/gdt_a20/article/details/7231652</a></p> 
+<p style="text-indent:50px;"><a href="https://blog.csdn.net/jasonLee_lijiaqi/article/details/80967912">https://blog.csdn.net/jasonLee_lijiaqi/article/details/80967912</a></p> 
+<p style="text-indent:50px;"><a href="https://blog.csdn.net/xiao_jj_jj/article/details/82755954">https://blog.csdn.net/xiao_jj_jj/article/details/82755954</a></p> 
+<p style="text-indent:50px;"><a href="https://www.cnblogs.com/pingandezhufu/p/4392297.html" rel="nofollow">https://www.cnblogs.com/pingandezhufu/p/4392297.html</a></p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/9b5821c7ed408c143b8ad00ff4635dbe/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">C&#43;&#43;基类指针</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/61642057e3a8663e6b3b37dae6070919/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">c语言实现加减乘除计算功能</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

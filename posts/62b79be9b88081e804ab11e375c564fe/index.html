@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>druid，impala，presto对比 - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="druid，impala，presto对比" />
+<meta property="og:description" content=" 背景 数据轨迹在湖北落地，面临查询分析时间过长的问题，并且查询时间与大数据能够分配的资源有直接的线性关系。需要考虑如何将数据轨迹查询提速。
+与paas的niuxl沟通，建议使用impala或者spark做查询，于是查询对比各种开源的OLAP引擎。
+按照查询类型划分，OLAP一般分为即席查询和固化查询，
+即席查询:通过手写sql完成一些临时的数据分析需求，这类sql形式多变、逻辑复杂，对查询时间没有严格要求固化查询：指的是一些固化下来的取数、看数需求，通过数据产品的形式提供给用户，从而提高数据分析和运营的效率。这类的sql固定模式，对响应时间有较高要求。 按照架构实现划分，主流的OLAP引擎主要有下面三点：
+MPP架构系统(Presto/Impala/SparkSQL/Drill等)。这种架构主要还是从查询引擎入手，使用分布式查询引擎，而不是使用hive&#43;mapreduce架构，提高查询效率。搜索引擎架构的系统(es，solr等)，在入库时将数据转换为倒排索引，采用Scatter-Gather计算模型，牺牲了灵活性换取很好的性能，在搜索类查询上能做到亚秒级响应。但是对于扫描聚合为主的查询，随着处理数据量的增加，响应时间也会退化到分钟级。预计算系统（Druid/Kylin等）则在入库时对数据进行预聚合，进一步牺牲灵活性换取性能，以实现对超大数据集的秒级响应。 数据轨迹现有的实现方式，从业务诉求看为:每账期按照指定的查询列取数据，进行分析未结算原因，偏向固化查询的方式。但现有的实现方式为先按照查询列值查询出主表数据，再根据主表附属表的关联字段，获取查询附属表的sql，sql为动态拼接出来，这种方式更偏向于即席查询的实现。
+需要从以下三个方面考虑框架选型：数据存储和构建、安装搭建、开发成本。
+impala impala是Cloudera开发开源的，Impala是Cloudera开发并开源的，能查询存储在HDFS和HBase中的数据。同Hive一样，也是一种SQL on Hadoop解决方案。但Impala抛弃了MapReduce,使用更类似于传统的MPP数据库技术来提高查询速度。
+impala可以直接查询hdfs或hbase上的数据，可以与现有的存储无缝对接。impala需要单独安装，公司内paas主推。需要与现场确认。impala提供jdbc接口和sql执行引擎，可以与现有系统集成 Presto presto是Facebook开源的大数据查询引擎，为了解决hive查询慢产生。使用java编写，数据全部在内存中处理。
+原生集成了Hive、Hbase和关系型数据库。需要与现场确认是否能提供提供jdbc接口和sql执行引擎，可以与现有系统集成 druid druid同kylin一样，是采用预计算的方式。主要解决的是对于大量的基于时序的数据进行聚合查询。数据可以实时摄入，进入到Druid后立即可查，同时数据是几乎是不可变。通常是基于时序的事实事件，事实发生后进入Druid，外部系统就可以对该事实进行查询。
+需要预计算，将数据存储在druid的Segment文件中，占用一部分存储资源需要与现场确认是否能提供对sql支持不友好，需要用他自己的方言书写 kylin kylin是一种OLAP数据引擎，支持大数据生态圈的数据分析业务，主要是通过预计算的方式将用户设定的多维度数据立方体(cube)缓存起来，达到快速查询的目的。应用场景应该是针对复杂sql join后的数据缓存。
+这种OLAP引擎，一般包括以下几部分：
+数据构建存储：cube构建，元数据信息sql解析执行：Query引擎(sql解释器)，routing模块(sql执行)上层接口服务；jdbc/odbc接口，rest服务 应用思路：将hive中的数据按照查询列 构建成cube，存储到hbase中，数据轨迹连接kylin的jdbc接口实现快速查询。
+需要预计算，将数据构建成cube存储到hbase需要与现场确认是否能提供提供jdbc接口和rest服务 redis 将要分析的数据同步到redis，在redis中快速查询数据。可以在分析前将本月数据同步到redis。
+遗留问题：
+如何同步数据，如何删除上个账期数据用什么做key，数据没有主键，是否可以使用查询列做key，如何从hive中将数据同步出来？ hive操作hbase 较多hive操作hbase的方法，没有hbase操作hive数据的。
+引用概念 Serde：序列化反序列化,serialize/deSerializeMPP：大规模并行处理技术(Massively Parallel Processor) 参考文档 Apache Kylin在美团点评的应用(【案例分享】Apache Kylin在美团点评的应用 - 知乎)presto、druid、sparkSQL、kylin的对比分析(presto、druid、sparkSQL、kylin的对比分析，如性能、架构等，有什么异同？ - 知乎)盘点SQL on Hadoop中用到的主要技术(http://sunyi514.github.io/2014/11/15/盘点sql-on-hadoop中用到的主要技术/)Druid（准）实时分析统计数据库——列存储&#43;高效压缩(Druid（准）实时分析统计数据库——列存储&#43;高效压缩 - bonelee - 博客园) " />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/62b79be9b88081e804ab11e375c564fe/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2020-10-28T21:03:40+08:00" />
+<meta property="article:modified_time" content="2020-10-28T21:03:40+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">druid，impala，presto对比</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <h2 id="articleContentId"></h2> 
+<h2><a name="t0"></a><a id="_1"></a>背景</h2> 
+<p>数据轨迹在湖北落地，面临查询分析时间过长的问题，并且查询时间与大数据能够分配的资源有直接的线性关系。需要考虑如何将数据轨迹查询提速。</p> 
+<p>与paas的niuxl沟通，建议使用impala或者spark做查询，于是查询对比各种开源的OLAP引擎。</p> 
+<p><strong>按照查询类型划分</strong>，OLAP一般分为即席查询和固化查询，</p> 
+<ul><li>即席查询:通过手写sql完成一些临时的数据分析需求，这类sql形式多变、逻辑复杂，对查询时间没有严格要求</li><li>固化查询：指的是一些固化下来的取数、看数需求，通过数据产品的形式提供给用户，从而提高数据分析和运营的效率。这类的sql固定模式，对响应时间有较高要求。</li></ul> 
+<p><strong>按照架构实现划分</strong>，主流的OLAP引擎主要有下面三点：</p> 
+<ul><li>MPP架构系统(Presto/Impala/SparkSQL/Drill等)。这种架构主要还是从查询引擎入手，使用分布式查询引擎，而不是使用hive+mapreduce架构，提高查询效率。</li><li>搜索引擎架构的系统(es，solr等)，在入库时将数据转换为倒排索引，采用Scatter-Gather计算模型，牺牲了灵活性换取很好的性能，在搜索类查询上能做到亚秒级响应。但是对于扫描聚合为主的查询，随着处理数据量的增加，响应时间也会退化到分钟级。</li><li>预计算系统（Druid/Kylin等）则在入库时对数据进行预聚合，进一步牺牲灵活性换取性能，以实现对超大数据集的秒级响应。</li></ul> 
+<p>数据轨迹现有的实现方式，从业务诉求看为:每账期按照指定的查询列取数据，进行分析未结算原因，偏向固化查询的方式。但现有的实现方式为先按照查询列值查询出主表数据，再根据主表附属表的关联字段，获取查询附属表的sql，sql为动态拼接出来，这种方式更偏向于即席查询的实现。</p> 
+<p>需要从以下三个方面考虑框架选型：数据存储和构建、安装搭建、开发成本。</p> 
+<h3><a name="t1"></a><a id="impala_19"></a>impala</h3> 
+<p>impala是Cloudera开发开源的，Impala是Cloudera开发并开源的，能查询存储在HDFS和HBase中的数据。同Hive一样，也是一种SQL on Hadoop解决方案。但Impala抛弃了MapReduce,使用更类似于传统的MPP数据库技术来提高查询速度。</p> 
+<ul><li>impala可以直接查询hdfs或hbase上的数据，可以与现有的存储无缝对接。</li><li>impala需要单独安装，公司内paas主推。需要与现场确认。</li><li>impala提供jdbc接口和sql执行引擎，可以与现有系统集成</li></ul> 
+<h3><a name="t2"></a><a id="Presto_25"></a>Presto</h3> 
+<p>presto是Facebook开源的大数据查询引擎，为了解决hive查询慢产生。使用java编写，数据全部在内存中处理。</p> 
+<ul><li>原生集成了Hive、Hbase和关系型数据库。</li><li>需要与现场确认是否能提供</li><li>提供jdbc接口和sql执行引擎，可以与现有系统集成</li></ul> 
+<h3><a name="t3"></a><a id="druid_31"></a>druid</h3> 
+<p>druid同kylin一样，是采用预计算的方式。主要解决的是对于大量的基于时序的数据进行聚合查询。数据可以实时摄入，进入到Druid后立即可查，同时数据是几乎是不可变。通常是基于时序的事实事件，事实发生后进入Druid，外部系统就可以对该事实进行查询。</p> 
+<ul><li>需要预计算，将数据存储在druid的Segment文件中，占用一部分存储资源</li><li>需要与现场确认是否能提供</li><li>对sql支持不友好，需要用他自己的方言书写</li></ul> 
+<h3><a name="t4"></a><a id="kylin_37"></a>kylin</h3> 
+<p>kylin是一种OLAP数据引擎，支持大数据生态圈的数据分析业务，主要是通过预计算的方式将用户设定的多维度数据立方体(cube)缓存起来，达到快速查询的目的。应用场景应该是针对复杂sql join后的数据缓存。<br> 这种OLAP引擎，一般包括以下几部分：</p> 
+<ul><li>数据构建存储：cube构建，元数据信息</li><li>sql解析执行：Query引擎(sql解释器)，routing模块(sql执行)</li><li>上层接口服务；jdbc/odbc接口，rest服务</li></ul> 
+<p><strong>应用思路</strong>：将hive中的数据按照查询列 构建成cube，存储到hbase中，数据轨迹连接kylin的jdbc接口实现快速查询。</p> 
+<ul><li>需要预计算，将数据构建成cube存储到hbase</li><li>需要与现场确认是否能提供</li><li>提供jdbc接口和rest服务</li></ul> 
+<h3><a name="t5"></a><a id="redis_50"></a>redis</h3> 
+<p>将要分析的数据同步到redis，在redis中快速查询数据。可以在分析前将本月数据同步到redis。</p> 
+<p><strong>遗留问题：</strong></p> 
+<ol><li>如何同步数据，如何删除上个账期数据</li><li>用什么做key，数据没有主键，是否可以使用查询列做key，如何从hive中将数据同步出来？</li></ol> 
+<h3><a name="t6"></a><a id="hivehbase_57"></a>hive操作hbase</h3> 
+<p>较多hive操作hbase的方法，没有hbase操作hive数据的。</p> 
+<h2><a name="t7"></a><a id="_60"></a>引用概念</h2> 
+<ul><li>Serde：序列化反序列化,serialize/deSerialize</li><li>MPP：大规模并行处理技术(Massively Parallel Processor)</li></ul> 
+<h2><a name="t8"></a><a id="_64"></a>参考文档</h2> 
+<ul><li>Apache Kylin在美团点评的应用(<a href="https://zhuanlan.zhihu.com/p/27461561" rel="nofollow" title="【案例分享】Apache Kylin在美团点评的应用 - 知乎">【案例分享】Apache Kylin在美团点评的应用 - 知乎</a>)</li><li>presto、druid、sparkSQL、kylin的对比分析(<a href="https://www.zhihu.com/question/41541395" rel="nofollow" title="presto、druid、sparkSQL、kylin的对比分析，如性能、架构等，有什么异同？ - 知乎">presto、druid、sparkSQL、kylin的对比分析，如性能、架构等，有什么异同？ - 知乎</a>)</li><li>盘点SQL on Hadoop中用到的主要技术(<a href="http://sunyi514.github.io/2014/11/15/%E7%9B%98%E7%82%B9sql-on-hadoop%E4%B8%AD%E7%94%A8%E5%88%B0%E7%9A%84%E4%B8%BB%E8%A6%81%E6%8A%80%E6%9C%AF/" rel="nofollow" title="http://sunyi514.github.io/2014/11/15/盘点sql-on-hadoop中用到的主要技术/">http://sunyi514.github.io/2014/11/15/盘点sql-on-hadoop中用到的主要技术/</a>)</li><li>Druid（准）实时分析统计数据库——列存储+高效压缩(<a href="https://www.cnblogs.com/bonelee/p/6248172.html" rel="nofollow" title="Druid（准）实时分析统计数据库——列存储+高效压缩 - bonelee - 博客园">Druid（准）实时分析统计数据库——列存储+高效压缩 - bonelee - 博客园</a>)</li></ul>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/c7bdf56b4e031a09b5c26bc59275398f/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">webpack5&#43; 相关配套插件 部分问题汇总</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/a0aed03b83782f709538e3669e3ee829/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">Kotlin 之 Flow</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

@@ -1,0 +1,289 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Linux I/O 基本原理 - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="Linux I/O 基本原理" />
+<meta property="og:description" content="作者：arraywang，腾讯 CSIG
+我们先看一张图：
+这张图大体上描述了 Linux 系统上，应用程序对磁盘上的文件进行读写时，从上到下经历了哪些事情。
+这篇文章就以这张图为基础，介绍 Linux 在 I/O 上做了哪些事情。
+文件系统 什么是文件系统 文件系统，本身是对存储设备上的文件，进行组织管理的机制。组织方式不同，就会形成不同的文件系统。比如常见的 Ext4、XFS、ZFS 以及网络文件系统 NFS 等等。
+但是不同类型的文件系统标准和接口可能各有差异，我们在做应用开发的时候却很少关心系统调用以下的具体实现，大部分时候都是直接系统调用 open, read, write, close 来实现应用程序的功能，不会再去关注我们具体用了什么文件系统（UFS、XFS、Ext4、ZFS），磁盘是什么接口（IDE、SCSI，SAS，SATA 等），磁盘是什么存储介质（HDD、SSD）
+应用开发者之所以这么爽，各种复杂细节都不用管直接调接口，是因为内核为我们做了大量的有技术含量的脏活累活。开始的那张图看到 Linux 在各种不同的文件系统之上，虚拟了一个 VFS，目的就是统一各种不同文件系统的标准和接口，让开发者可以使用相同的系统调用来使用不同的文件系统。
+文件系统如何工作（VFS） Linux 系统下的文件 在 Linux 中一切皆文件。不仅普通的文件和目录，就连块设备、套接字、管道等，也都要通过统一的文件系统来管理。
+用 ls -l 命令看最前面的字符可以看到这个文件是什么类型 brw-r--r-- 1 root root 1, 2 4月 25 11:03 bnod // 块设备文件 crw-r--r-- 1 root root 1, 2 4月 25 11:04 cnod // 符号设备文件 drwxr-xr-x 2 wrn3552 wrn3552 6 4月 25 11:01 dir // 目录 -rw-r--r-- 1 wrn3552 wrn3552 0 4月 25 11:01 file // 普通文件 prw-r--r-- 1 root root 0 4月 25 11:04 pipeline // 有名管道 srwxr-xr-x 1 root root 0 4月 25 11:06 socket." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/c887fef3e631b152f9ca98909bc7d6b6/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2024-02-26T17:29:59+08:00" />
+<meta property="article:modified_time" content="2024-02-26T17:29:59+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Linux I/O 基本原理</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p>作者：arraywang，腾讯 CSIG</p> 
+<p>我们先看一张图：</p> 
+<p></p> 
+<p class="img-center"><img alt="" height="590" src="https://images2.imgbox.com/4d/b6/nis21ktb_o.png" width="530"></p> 
+<p>这张图大体上描述了 Linux 系统上，应用程序对磁盘上的文件进行读写时，从上到下经历了哪些事情。</p> 
+<p>这篇文章就以这张图为基础，介绍 Linux 在 I/O 上做了哪些事情。</p> 
+<h4><strong>文件系统</strong></h4> 
+<h4><strong>什么是文件系统</strong></h4> 
+<p>文件系统，本身是对存储设备上的文件，进行组织管理的机制。组织方式不同，就会形成不同的文件系统。比如常见的 Ext4、XFS、ZFS 以及网络文件系统 NFS 等等。</p> 
+<p>但是不同类型的文件系统标准和接口可能各有差异，我们在做应用开发的时候却很少关心系统调用以下的具体实现，大部分时候都是直接系统调用 <code>open</code>, <code>read</code>, <code>write</code>, <code>close</code> 来实现应用程序的功能，不会再去关注我们具体用了什么文件系统（UFS、XFS、Ext4、ZFS），磁盘是什么接口（IDE、SCSI，SAS，SATA 等），磁盘是什么存储介质（HDD、SSD）</p> 
+<p>应用开发者之所以这么爽，各种复杂细节都不用管直接调接口，是因为内核为我们做了大量的有技术含量的脏活累活。开始的那张图看到 Linux 在各种不同的文件系统之上，虚拟了一个 VFS，目的就是统一各种不同文件系统的标准和接口，让开发者可以使用相同的系统调用来使用不同的文件系统。</p> 
+<h4><strong>文件系统如何工作（VFS）</strong></h4> 
+<h4><strong>Linux 系统下的文件</strong></h4> 
+<p>在 Linux 中一切皆文件。不仅普通的文件和目录，就连块设备、套接字、管道等，也都要通过统一的文件系统来管理。</p> 
+<pre><code>用 ls -l 命令看最前面的字符可以看到这个文件是什么类型
+
+brw-r--r-- 1 root    root    1, 2 4月  25 11:03 bnod // 块设备文件
+crw-r--r-- 1 root    root    1, 2 4月  25 11:04 cnod // 符号设备文件
+drwxr-xr-x 2 wrn3552 wrn3552    6 4月  25 11:01 dir // 目录
+-rw-r--r-- 1 wrn3552 wrn3552    0 4月  25 11:01 file // 普通文件
+prw-r--r-- 1 root    root       0 4月  25 11:04 pipeline // 有名管道
+srwxr-xr-x 1 root    root       0 4月  25 11:06 socket.sock // socket文件
+lrwxrwxrwx 1 root    root       4 4月  25 11:04 softlink -&gt; file // 软连接
+-rw-r--r-- 2 wrn3552 wrn3552 0 4月  25 11:07 hardlink // 硬链接（本质也是普通文件）
+</code></pre> 
+<p>Linux 文件系统设计了两个数据结构来管理这些不同种类的文件：</p> 
+<ul><li>inode(index node)：索引节点</li><li>dentry(directory entry)：目录项</li></ul> 
+<h4><strong>inode 和 dentry</strong></h4> 
+<p><strong>inode</strong></p> 
+<p>inode 是用来记录文件的 metadata，所谓 metadata 在 Wikipedia 上的描述是 data of data，其实指的就是文件的各种属性，比如 inode 编号、文件大小、访问权限、修改日期、数据的位置等。</p> 
+<pre><code>wrn3552@novadev:~/playground$ stat file
+  文件：file
+  大小：0               块：0          IO 块：4096   普通空文件
+设备：fe21h/65057d      Inode：32828       硬链接：2
+权限：(0644/-rw-r--r--)  Uid：( 3041/ wrn3552)   Gid：( 3041/ wrn3552)
+最近访问：2021-04-25 11:07:59.603745534 +0800
+最近更改：2021-04-25 11:07:59.603745534 +0800
+最近改动：2021-04-25 11:08:04.739848692 +0800
+创建时间：-
+</code></pre> 
+<p>inode 和文件一一对应，它跟文件内容一样，都会被持久化存储到磁盘中。所以，inode 同样占用磁盘空间，只不过相对于文件来说它大小固定且大小不算大。</p> 
+<p><strong>dentry</strong></p> 
+<p>dentry 用来记录文件的名字、inode 指针以及与其他 dentry 的关联关系。</p> 
+<pre><code>wrn3552@novadev:~/playground$ tree
+.
+├── dir
+│   └── file_in_dir
+├── file
+└── hardlink
+</code></pre> 
+<ul><li>文件的名字：像 dir、file、hardlink、file_in_dir 这些名字是记录在 dentry 里的</li><li>inode 指针：就是指向这个文件的 inode</li><li>与其他 dentry 的关联关系：其实就是每个文件的层级关系，哪个文件在哪个文件下面，构成了文件系统的目录结构</li></ul> 
+<p>不同于 inode，dentry 是由内核维护的一个内存数据结构，所以通常也被叫做 dentry cache。</p> 
+<h4><strong>文件是如何存储在磁盘上的</strong></h4> 
+<p></p> 
+<p class="img-center"><img alt="" height="507" src="https://images2.imgbox.com/11/0b/MOPMgZAC_o.png" width="836"></p> 
+<p>这里有张图解释了文件是如何存储在磁盘上的，首先，磁盘再进行文件系统格式化的时候，会分出来 3 个区：</p> 
+<ol><li>Superblock</li><li>inode blocks</li><li>data blocks</li></ol> 
+<p>（其实还有 boot block，可能会包含一些 bootstrap 代码，在机器启动的时候被读到，这里忽略）其中 inode blocks 放的都是每个文件的 inode，data blocks 里放的是每个文件的内容数据。这里关注一下 superblock，它包含了整个文件系统的 metadata，具体有：</p> 
+<ol><li>inode/data block 总量、使用量、剩余量</li><li>文件系统的格式，属主等等各种属性</li></ol> 
+<p>superblock 对于文件系统来说非常重要，如果 superblock 损坏了，文件系统就挂载不了了，相应的文件也没办法读写。既然 superblock 这么重要，那肯定不能只有一份，坏了就没了，它在系统中是有很多副本的，在 superblock 损坏的时候，可以使用 <code>fsck</code>（File System Check and repair）来恢复。回到上面的那张图，可以很清晰地看到文件的各种属性和文件的数据是如何存储在磁盘上的：</p> 
+<ol><li>dentry 里包含了文件的名字、目录结构、inode 指针</li><li>inode 指针指向文件特定的 inode（存在 inode blocks 里）</li><li>每个 inode 又指向 data blocks 里具体的 logical block，这里的 logical block 存的就是文件具体的数据</li></ol> 
+<p>这里解释一下什么是 logical block：</p> 
+<ol><li>对于不同存储介质的磁盘，都有最小的读写单元</li></ol> 
+<ul><li><code>/sys/block/sda/queue/physical_block_size</code></li></ul> 
+<ol><li>HDD 叫做 sector（扇区），SSD 叫做 page（页面）</li><li>对于 hdd 来说，每个 sector 大小 512Bytes</li><li>对于 SSD 来说每个 page 大小不等（和 cell 类型有关），经典的大小是 4KB</li><li>但是 Linux 觉得按照存储介质的最小读写单元来进行读写可能会有效率问题，所以支持在文件系统格式化的时候指定 block size 的大小，一般是把几个 physical_block 拼起来就成了一个 logical block</li></ol> 
+<ul><li><code>/sys/block/sda/queue/logical_block_size</code></li></ul> 
+<ol><li>理论上应该是 logical_block_size &gt;= physical_block_size，但是有时候我们会看到 physical_block_size = 4K，logical_block_size = 512B 情况，其实这是因为磁盘上做了一层 512B 的仿真（emulation）（详情可参考 <strong><a href="https://link.zhihu.com/?target=https%3A//g.126.fm/038DZzG" rel="nofollow" title="512e 和 4Kn">512e 和 4Kn</a></strong>）</li></ol> 
+<h4><strong>ZFS</strong></h4> 
+<p>这里简单介绍一个广泛应用的文件系统 ZFS，一些数据库应用也会用到 ZFS，先看一张 zfs 的层级结构图：</p> 
+<p></p> 
+<p class="img-center"><img alt="" height="329" src="https://images2.imgbox.com/4b/e1/wWy2Vuqx_o.png" width="438"></p> 
+<p>这是一张从底向上的图：</p> 
+<ol><li>将若干物理设备 disk 组成一个虚拟设备 vdev（同时，disk 也是一种 vdev）</li><li>再将若干个虚拟设备 vdev 加到一个 zpool 里</li><li>在 zpool 的基础上创建 zfs 并挂载（zvol 可以先不看，我们没有用到）</li></ol> 
+<h4><strong>ZFS 的一些操作</strong></h4> 
+<p><strong>创建 zpool</strong></p> 
+<pre><code>root@:~ # zpool create tank raidz /dev/ada1 /dev/ada2 /dev/ada3 raidz /dev/ada4 /dev/ada5 /dev/ada6
+root@:~ # zpool list tank
+NAME    SIZE  ALLOC   FREE  CKPOINT  EXPANDSZ   FRAG    CAP  DEDUP  HEALTH  ALTROOT
+tank     11G   824K  11.0G        -         -     0%     0%  1.00x  ONLINE  -
+root@:~ # zpool status tank
+  pool: tank
+ state: ONLINE
+  scan: none requested
+config:
+
+        NAME        STATE     READ WRITE CKSUM
+        tank        ONLINE       0     0     0
+          raidz1-0  ONLINE       0     0     0
+            ada1    ONLINE       0     0     0
+            ada2    ONLINE       0     0     0
+            ada3    ONLINE       0     0     0
+          raidz1-1  ONLINE       0     0     0
+            ada4    ONLINE       0     0     0
+            ada5    ONLINE       0     0     0
+            ada6    ONLINE       0     0     0
+</code></pre> 
+<ul><li>创建了一个名为 tank 的 zpool</li><li>这里的 raidz 同 RAID5</li></ul> 
+<p>除了 raidz 还支持其他方案：</p> 
+<p></p> 
+<p class="img-center"><img alt="" height="647" src="https://images2.imgbox.com/9e/be/7w4F5t4h_o.png" width="1200"></p> 
+<table><tbody><tr><th>方案</th><th>说明</th></tr></tbody></table> 
+<p><strong>创建 zfs</strong></p> 
+<pre><code>root@:~ # zfs create -o mountpoint=/mnt/srev tank/srev
+root@:~ # df -h tank/srev
+Filesystem    Size    Used   Avail Capacity  Mounted on
+tank/srev     7.1G    117K    7.1G     0%    /mnt/srev
+</code></pre> 
+<ul><li>创建了一个 zfs，挂载到了 /mnt/srev</li><li>这里没有指定 zfs 的 quota，创建的 zfs 大小即 zpool 大小</li></ul> 
+<p><strong>对 zfs 设置 quota</strong></p> 
+<pre><code>root@:~ # zfs set quota=1G tank/srev
+root@:~ # df -h tank/srev
+Filesystem    Size    Used   Avail Capacity  Mounted on
+tank/srev     1.0G    118K    1.0G     0%    /mnt/srev
+</code></pre> 
+<h4><strong>ZFS 特性</strong></h4> 
+<h4><strong>Pool 存储</strong></h4> 
+<p>上面的层级图和操作步骤可以看到 zfs 是基于 zpool 创建的，zpool 可以动态扩容意味着存储空间也可以动态扩容，而且可以创建多个文件系统，文件系统共享完整的 zpool 空间无需预分配。</p> 
+<h4><strong>事务文件系统</strong></h4> 
+<p>zfs 的写操作是事务的，意味着要么就没写，要么就写成功了，不会像其他文件系统那样，应用打开了文件，写入还没保存的时候断电，导致文件为空。zfs 保证写操作事务采用的是 copy on write 的方式：</p> 
+<p></p> 
+<p class="img-center"><img alt="" height="627" src="https://images2.imgbox.com/aa/b8/rQo6HNqP_o.png" width="1200"></p> 
+<ul><li>当 block B 有修改变成 B1 的时候，普通的文件系统会直接在 block B 原地进行修改变成 B1</li><li>zfs 则会再另一个地方写 B1，然后再在后面安全的时候对原来的 B 进行回收</li><li>这样结果就不会出现 B 被打开而写失败的情况，大不了就是 B1 没写成功</li></ul> 
+<p>这个特性让 zfs 在断电后不需要执行 fsck 来检查磁盘中是否存在写操作失败需要恢复的情况，大大提升了应用的可用性。</p> 
+<h4><strong>ARC 缓存</strong></h4> 
+<p>ZFS 中的 ARC(Adjustable Replacement Cache) 读缓存淘汰算法，是基于 IBM 的 ARP(Adaptive Replacement Cache) 演化而来。在一些文件系统中实现的标准 LRU 算法其实是有缺陷的：比如复制大文件之类的线性大量 I/O 操作，导致缓存失效率猛增（大量文件只读一次，放到内存不会被再读，坐等淘汰）。</p> 
+<p>另外，缓存可以根据时间来进行优化（LRU，最近最多使用），也可以根据频率进行优化（LFU，最近最常使用），这两种方法各有优劣，但是没办法适应所有场景。</p> 
+<p>ARC 的设计就是尝试在 LRU 和 LFU 之间找到一个平衡，根据当前的 I/O workload 来调整用 LRU 多一点还是 LFU 多一点。</p> 
+<p>ARC 定义了 4 个链表：</p> 
+<ol><li>LRU list：最近最多使用的页面，存具体数据</li><li>LFU list：最近最常使用的页面，存具体数据</li><li>Ghost list for LRU：最近从 LRU 表淘汰下来的页面信息，不存具体数据，只存页面信息</li><li>Ghost list for LFU：最近从 LFU 表淘汰下来的页面信息，不存具体数据，只存页面信息</li></ol> 
+<p>ARC 工作流程大致如下：</p> 
+<ol><li>LRU list 和 LFU list 填充和淘汰过程和标准算法一样</li><li>当一个页面从 LRU list 淘汰下来时，这个页面的信息会放到 LRU ghost 表中</li><li>如果这个页面一直没被再次引用到，那么这个页面的信息最终也会在 LRU ghost 表中被淘汰掉</li><li>如果这个页面在 LRU ghost 表中未被淘汰的时候，被再一次访问了，这时候会引起一次幽灵（phantom）命中</li><li>phantom 命中的时候，事实上还是要把数据从磁盘第一次放缓存</li><li>但是这时候系统知道刚刚被 LRU 表淘汰的页面又被访问到了，说明 LRU list 太小了，这时它会把 LRU list 长度加一，LFU 长度减一</li><li>对于 LFU 的过程也与上述过程类似</li></ol> 
+<h4><strong>ZFS 参考资料</strong></h4> 
+<p>关于 ZFS 详细介绍可以参考：</p> 
+<ul><li>这篇<strong><a href="https://link.zhihu.com/?target=https%3A//farseerfc.me/zhs/zfs-layered-architecture-design.html" rel="nofollow" title="文章">文章</a></strong></li></ul> 
+<h4><strong>磁盘类型</strong></h4> 
+<p>磁盘根据不同的分类方式，有各种不一样的类型。</p> 
+<h4><strong>磁盘的存储介质</strong></h4> 
+<p>根据磁盘的存储介质可以分两类（大家都很熟悉）：</p> 
+<ul><li>HDD（机械硬盘）</li><li>SSD（固态硬盘）</li></ul> 
+<h4><strong>磁盘的接口</strong></h4> 
+<p>根据磁盘接口分类：</p> 
+<ul><li>IDE (Integrated Drive Electronics)</li><li>SCSI (Small Computer System Interface)</li><li>SAS (Serial Attached SCSI)</li><li>SATA (Serial ATA)</li><li>...</li></ul> 
+<p>不同的接口，往往分配不同的设备名称。比如， IDE 设备会分配一个 hd 前缀的设备名，SCSI 和 SATA 设备会分配一个 sd 前缀的设备名。如果是多块同类型的磁盘，就会按照 a、b、c 等的字母顺序来编号。</p> 
+<h4><strong>Linux 对磁盘的管理</strong></h4> 
+<p>其实在 Linux 中，磁盘实际上是作为一个块设备来管理的，也就是以块为单位读写数据，并且支持随机读写。每个块设备都会被赋予两个设备号，分别是主、次设备号。主设备号用在驱动程序中，用来区分设备类型；而次设备号则是用来给多个同类设备编号。</p> 
+<pre><code>g18-"299" on ~# ls -l /dev/sda*
+brw-rw---- 1 root disk 8,  0 Apr 25 15:53 /dev/sda
+brw-rw---- 1 root disk 8,  1 Apr 25 15:53 /dev/sda1
+brw-rw---- 1 root disk 8, 10 Apr 25 15:53 /dev/sda10
+brw-rw---- 1 root disk 8,  2 Apr 25 15:53 /dev/sda2
+brw-rw---- 1 root disk 8,  5 Apr 25 15:53 /dev/sda5
+brw-rw---- 1 root disk 8,  6 Apr 25 15:53 /dev/sda6
+brw-rw---- 1 root disk 8,  7 Apr 25 15:53 /dev/sda7
+brw-rw---- 1 root disk 8,  8 Apr 25 15:53 /dev/sda8
+brw-rw---- 1 root disk 8,  9 Apr 25 15:53 /dev/sda9
+</code></pre> 
+<ul><li>这些 sda 磁盘主设备号都是 8，表示它是一个 sd 类型的块设备</li><li>次设备号 0-10 表示这些不同 sd 块设备的编号</li></ul> 
+<h4><strong>Generic Block Layer</strong></h4> 
+<p></p> 
+<p class="img-center"><img alt="" height="486" src="https://images2.imgbox.com/bf/e9/egthMoSc_o.png" width="590"></p> 
+<p>和 VFS 类似，为了对上层屏蔽不同块设备的差异，内核在文件系统和块设备之前抽象了一个 Generic Block Layer（通用块层），有时候一些人也会把下面的 I/O 调度层并到通用块层里表述。</p> 
+<p>这两层主要做两件事：</p> 
+<ol><li>跟 VFS 的功能类似。向上，为文件系统和应用程序，提供访问块设备的标准接口；向下，把各种异构的磁盘设备抽象为统一的块设备，并提供统一框架来管理这些设备的驱动程序</li><li>对 I/O 请求进行调度，通过重新排序、合并等方式，提高磁盘读写效率</li></ol> 
+<p>下图是一个完整的 I/O 栈全景图：</p> 
+<p></p> 
+<p class="img-center"><img alt="" height="1200" src="https://images2.imgbox.com/8a/8c/pyYRkD7J_o.png" width="1080"></p> 
+<p>可以看到中间的 Block Layer 其实就是 Generic Block Layer，在图中可以看到 Block Layer 的 I/O 调度分为两类，分别表示单队列和多队列的调度：</p> 
+<ul><li>I/O scheduler</li><li>blkmq</li></ul> 
+<h4><strong>I/O 调度</strong></h4> 
+<p>老版本的内核里只支持单队列的 I/O scheduler，在 3.16 版本的内核开始支持多队列 blkmq，这里介绍几种经典的 I/O 调度策略。</p> 
+<p>单队列 I/O scheduler：</p> 
+<ul><li>NOOP：事实上是个 FIFO 的队列，只做基本的请求合并</li><li>CFQ：Completely Fair Queueing，完全公平调度器，给每个进程维护一个 I/O 调度队列，按照时间片来均匀分布每个进程 I/O 请求，</li><li>DeadLine：为读和写请求创建不同的 I/O 队列，确保达到 deadline 的请求被优先处理</li></ul> 
+<p>多队列 blkmq：</p> 
+<ul><li>bfq：Budget Fair Queueing，也是公平调度器，不过不是按时间片来分配，而是按请求的扇区数量（带宽）</li><li>kyber：维护两个队列（同步/读、异步/写），同时严格限制发到这两个队列的请求数以保证相应时间</li><li>mq-deadline：多队列版本的 deadline</li><li>具体各种 I/O 调度策略可以参考 <strong><a href="https://link.zhihu.com/?target=https%3A//wiki.ubuntu.com/Kernel/Reference/IOSchedulers" rel="nofollow" title="IOSchedulers">IOSchedulers</a></strong></li><li>关于 blkmq 可以参考 <strong><a href="https://link.zhihu.com/?target=https%3A//www.thomas-krenn.com/en/wiki/Linux_Multi-Queue_Block_IO_Queueing_Mechanism_%28blk-mq%29_Details" rel="nofollow" title="Linux Multi-Queue Block IO Queueing Mechanism (blk-mq) Details">Linux Multi-Queue Block IO Queueing Mechanism (blk-mq) Details</a></strong></li><li>多队列调度可以参考 <strong><a href="https://link.zhihu.com/?target=https%3A//lwn.net/Articles/738449/" rel="nofollow" title="Block layer introduction part 2: the request layer">Block layer introduction part 2: the request layer</a></strong></li></ul> 
+<h4><strong>性能指标</strong></h4> 
+<p>一般来说 I/O 性能指标有这几个：</p> 
+<ul><li>使用率：ioutil，指的是磁盘处理 I/O 的时间百分比，ioutil 只看有没有 I/O 请求，不看 I/O 请求的大小。ioutil 越高表示一直都有 I/O 请求，不代表磁盘无法响应新的 I/O 请求</li><li>IOPS：每秒的 I/O 请求数</li><li>吞吐量/带宽：每秒的 I/O 请求大小，通常是 MB/s 或者 GB/s 为单位</li><li>响应时间：I/O 请求发出到收到响应的时间</li><li>饱和度：指的是磁盘处理 I/O 的繁忙程度。这个指标比较玄学，没有直接的数据可以表示，一般是根据平均队列请求长度或者响应时间跟基准测试的结果进行对比来估算</li></ul> 
+<p>（在做基准测试时，还会分顺序/随机、读/写进行排列组合分别去测 IOPS 和带宽）</p> 
+<p>上面的指标除了饱和度外，其他都可以在监控系统中看到。Linux 也提供了一些命令来输出不同维度的 I/O 状态：</p> 
+<ul><li><code>iostat -d -x</code>：看各个设备的 I/O 状态，数据来源 <code>/proc/diskstats</code></li><li><code>pidstat -d</code>：看近处的 I/O</li><li><code>iotop</code>：类似 top，按 I/O 大小对进程排序</li></ul> 
+<p><a href="https://zhuanlan.zhihu.com/p/436292700" rel="nofollow" title="Linux I/O 基本原理 - 知乎">Linux I/O 基本原理 - 知乎</a></p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/a51ac6426fc7303ca503d1dd0dd7e168/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">安装淘宝镜像cnpm报错</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/4a6e9877df153745c2ff2f09ccf9910b/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">elasticsearch中设置查询的请求超时时间</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

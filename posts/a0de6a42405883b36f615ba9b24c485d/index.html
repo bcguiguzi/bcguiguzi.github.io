@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Unet相关介绍 - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="Unet相关介绍" />
+<meta property="og:description" content="老师的bloghttps://zhuanlan.zhihu.com/p/370931792。写的比我这个好，233
+Unet是在Fcn基础上提出的一种应用于医学影响的分割网络。医学影像的特点是1、数据集小。2、单张图片大。
+由于以上医疗影像的特点，我们无法直接用Fcn进行分割学习。一个德国团队提出了Unet网络设计在，做到了仅仅用30张医疗影响的数据集就取得了相当不错的效果。我认为Unet与fcn主要有以下几点差异：
+使用了overlap-tile策略。它是对一张大的医疗影响先分成一小块一小块进行分割训练（388*388大小的子图）。最终将这一小块一小块的分割图拼接起来。这个与fcn相比，fcn的尺寸是直接拿原图的尺寸，而医疗原图的尺寸是很大的，训练起来featuremap尺寸就很大计算要求很高。另外这里分割成一个个小图直接解决了医疗影响数据集图片少的问题。为了结果能够无缝进行拼接，每次下采样maxpooling的时候x，y方向上的尺寸都需要是偶数被2给整除。我们发现上图写的input image后面有个tile。网络输入的是572*572尺寸的，最后结果是388*388的尺寸的。这里572*572可以认为是388*388的padding出来的。和fcn不同的是，fcn比较简单粗暴直接padding了100的0。这里认为直接padding0对于边缘信息处理是不好的。unet是拿原图边缘的内容进行填充。（如果388*388子图正好在边缘位置没法用原图padding，则使用了镜像padding的方法，直接对应位置做了个镜像填充进去）。特征融合程度区分。fcn最多融合到8s。而Unet对所有上采样的特征图与原图进行了融合，融合了更多的尺度。（如图U型，左右对称的）特征融合方式不同。fcn融合的时候采用了&#43;法，将特征图上的element进行相加。而unet用了concat的方法在channel维度上进行了堆叠。（老师的说法是，unet由于overlap的策略网络计算更高效了，而concat增加了channel也就是增加了计算量在这里是可以接受的） 关于unet训练的数据增强方式。可以使用图像的弹性变化进行增强。这个也是医疗影像数据的一个特性。
+针对医疗图像样本少的问题，我们极大的使用了弹性变换的方式进行了数据增强。
+医疗影像数据样本有一个问题就是数据不均衡的问题。我们发现医疗影像的背景像素在图中的占比是非常小的。老师在课上讲的解决方式是像这样的数据不均衡问题直接在loss上做文章。我们结合论文看一下具体的做法。我们利用了一个加权的loss，其中背景loss分配了一个大的权重。
+我们看一下实际论文中是如何训练的。为了最小化开销和最大化利用gpu我们更偏向于把数据集训练的批次设定为1，把大图分割成多个小图进行训练。
+如下图是实现权重的公式。这里有个疑问点是w-c的数据是如何计算的，文章中对w0和sigma做了明确的定义。w-c我后来问了老师，老师也查了下相关资料做了一些猜想（由于老师查了官网也没有提及wc的具体计算方法）https://zhuanlan.zhihu.com/p/371676082。后来也有同学数了下fig.3c，白点/黑点≈1.46，黑色最纤细的地方是1像素宽，代入公式就是1.5 &#43; 10 * exp(-(1&#43;1)**2 / 2/5/5) ≈ 10.7，目测fig.3d的标尺最大值也是10.7；而且，fig4d中面积较大的浅蓝色，目测对应标尺的1.46。可能wc就是训练集所有白点/黑点？公式只是针对细胞外的像素，也就是细胞间隙的那些像素的。所以在论文的Fig.3的d图中，只有细胞外的像素对应的权重是渐变的。而细胞内的像素对应的权重取值为1。综合一下我的理解是w-c就是一个数值，只不过c会有不同取值，c的取值和训练集的语义类别相关。如果这个语义类别在总像素总占比小那么w-c这个值就大，反之则小。w-c是用来平衡类别的差异的权重，而公式的后半段是用来加强边界像素误差的权重。
+关于卷积权重的初始化也是很重要的，如果这一步没做好可能导致网络的某些部分可能会产生过多的激活，而其他部分则不会。论文里面使用了高斯的初始化方式。高斯的sigma取值与等于神经网络的输入的总节点数量相关。如一个3*3的conv卷积一个64channel的特征图。计算方式是sigma=（2/N）^0.5。N=9*64=576。
+以上应该把unet的各个技术细节讲清楚了。其中关于w的计算个人认为是比较难理解的，而且也不确定是否完全理解了原来作者当时的方式，只是理解了大概的一个思路。欢迎大家进行讨论一起进步吧。如果我有新的理解也会在该文章中进行更新
+接下来简单介绍以下unet&#43;&#43;相关的知识内容。unet&#43;&#43;与unet的不同是，unet只有一个“U”，而unet&#43;&#43;可以看成有多个u进行融合组成。我简单画以下如下的示意图
+unet只有一个“U”进行了下采样后，在进行上采样，上采样的时候与对应层的特征进行concat操作，然后卷积。最后上采样到原尺寸的时候进行conv操作，channel数变为类别数。
+unet&#43;&#43;有多个“U”，从第二层就有上采样&#43;融合操作。第3层也有，一直到最底层。最后一层上采样后会和其他浅层的u上的特征进行融合。最后和unet一样也进行一个channel为类别数的conv操作。" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/a0de6a42405883b36f615ba9b24c485d/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2021-05-12T20:03:08+08:00" />
+<meta property="article:modified_time" content="2021-05-12T20:03:08+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Unet相关介绍</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p>老师的blog<a href="https://zhuanlan.zhihu.com/p/370931792" rel="nofollow">https://zhuanlan.zhihu.com/p/370931792</a>。写的比我这个好，233</p> 
+<p>Unet是在Fcn基础上提出的一种应用于医学影响的分割网络。医学影像的特点是1、数据集小。2、单张图片大。</p> 
+<p>由于以上医疗影像的特点，我们无法直接用Fcn进行分割学习。一个德国团队提出了Unet网络设计在，做到了仅仅用30张医疗影响的数据集就取得了相当不错的效果。我认为Unet与fcn主要有以下几点差异：</p> 
+<p><img alt="" height="673" src="https://images2.imgbox.com/20/82/esnw3c3R_o.png" width="844"></p> 
+<ol><li>使用了overlap-tile策略。它是对一张大的医疗影响先分成一小块一小块进行分割训练（388*388大小的子图）。最终将这一小块一小块的分割图拼接起来。这个与fcn相比，fcn的尺寸是直接拿原图的尺寸，而医疗原图的尺寸是很大的，训练起来featuremap尺寸就很大计算要求很高。另外这里分割成一个个小图直接解决了医疗影响数据集图片少的问题。为了结果能够无缝进行拼接，每次下采样maxpooling的时候x，y方向上的尺寸都需要是偶数被2给整除。<img alt="" height="115" src="https://images2.imgbox.com/87/fe/jGQP54Hl_o.png" width="1082"></li><li>我们发现上图写的input image后面有个tile。网络输入的是572*572尺寸的，最后结果是388*388的尺寸的。这里572*572可以认为是388*388的padding出来的。和fcn不同的是，fcn比较简单粗暴直接padding了100的0。这里认为直接padding0对于边缘信息处理是不好的。unet是拿原图边缘的内容进行填充。（如果388*388子图正好在边缘位置没法用原图padding，则使用了镜像padding的方法，直接对应位置做了个镜像填充进去）。<img alt="" height="539" src="https://images2.imgbox.com/27/3d/s6ScbaDc_o.png" width="1168"></li><li>特征融合程度区分。fcn最多融合到8s。而Unet对所有上采样的特征图与原图进行了融合，融合了更多的尺度。（如图U型，左右对称的）</li><li>特征融合方式不同。fcn融合的时候采用了+法，将特征图上的element进行相加。而unet用了concat的方法在channel维度上进行了堆叠。（老师的说法是，unet由于overlap的策略网络计算更高效了，而concat增加了channel也就是增加了计算量在这里是可以接受的）</li></ol> 
+<p>关于unet训练的数据增强方式。可以使用图像的弹性变化进行增强。这个也是医疗影像数据的一个特性。</p> 
+<p> </p> 
+<p>针对医疗图像样本少的问题，我们极大的使用了弹性变换的方式进行了数据增强。<img alt="" height="159" src="https://images2.imgbox.com/ac/d2/56tjS7eB_o.png" width="1087"></p> 
+<p>医疗影像数据样本有一个问题就是数据不均衡的问题。我们发现医疗影像的背景像素在图中的占比是非常小的。老师在课上讲的解决方式是像这样的数据不均衡问题直接在loss上做文章。我们结合论文看一下具体的做法。我们利用了一个加权的loss，其中背景loss分配了一个大的权重。</p> 
+<p><img alt="" height="146" src="https://images2.imgbox.com/35/63/vbQdIs6M_o.png" width="1084"></p> 
+<p><img alt="" height="457" src="https://images2.imgbox.com/3f/a7/ihF5SIMS_o.png" width="1133"></p> 
+<p>我们看一下实际论文中是如何训练的。为了最小化开销和最大化利用gpu我们更偏向于把数据集训练的批次设定为1，把大图分割成多个小图进行训练。<img alt="" height="197" src="https://images2.imgbox.com/82/23/7e9ZhATi_o.png" width="1074"></p> 
+<p>如下图是实现权重的公式。这里有个疑问点是w-c的数据是如何计算的，文章中对w0和sigma做了明确的定义。w-c我后来问了老师，老师也查了下相关资料做了一些猜想（由于老师查了官网也没有提及wc的具体计算方法）<a href="https://zhuanlan.zhihu.com/p/371676082" rel="nofollow">https://zhuanlan.zhihu.com/p/371676082</a>。后来也有同学数了下fig.3c，白点/黑点≈1.46，黑色最纤细的地方是1像素宽，代入公式就是1.5 + 10 * exp(-(1+1)**2 / 2/5/5)  ≈ 10.7，目测fig.3d的标尺最大值也是10.7；而且，fig4d中面积较大的浅蓝色，目测对应标尺的1.46。可能wc就是训练集所有白点/黑点？公式只是针对细胞外的像素，也就是细胞间隙的那些像素的。所以在论文的Fig.3的d图中，只有细胞外的像素对应的权重是渐变的。而细胞内的像素对应的权重取值为1。<span style="color:#f33b45;">综合一下我的理解是w-c就是一个数值，只不过c会有不同取值，c的取值和训练集的语义类别相关。如果这个语义类别在总像素总占比小那么w-c这个值就大，反之则小。w-c是用来平衡类别的差异的权重，而公式的后半段是用来加强边界像素误差的权重。</span></p> 
+<p><img alt="" height="623" src="https://images2.imgbox.com/6c/47/vZh8KWqz_o.png" width="1166"></p> 
+<p>关于卷积权重的初始化也是很重要的，如果这一步没做好可能导致网络的某些部分可能会产生过多的激活，而其他部分则不会。论文里面使用了高斯的初始化方式。高斯的sigma取值与等于神经网络的输入的总节点数量相关。如一个3*3的conv卷积一个64channel的特征图。计算方式是sigma=（2/N）^0.5。N=9*64=576。<img alt="" height="302" src="https://images2.imgbox.com/a6/b8/NJtD27je_o.png" width="1114"></p> 
+<p>以上应该把unet的各个技术细节讲清楚了。其中关于w的计算个人认为是比较难理解的，而且也不确定是否完全理解了原来作者当时的方式，只是理解了大概的一个思路。欢迎大家进行讨论一起进步吧。如果我有新的理解也会在该文章中进行更新</p> 
+<p>接下来简单介绍以下unet++相关的知识内容。unet++与unet的不同是，unet只有一个“U”，而unet++可以看成有多个u进行融合组成。我简单画以下如下的示意图</p> 
+<p><img alt="" height="520" src="https://images2.imgbox.com/d1/ad/bYzqipCa_o.png" width="784">unet只有一个“U”进行了下采样后，在进行上采样，上采样的时候与对应层的特征进行concat操作，然后卷积。最后上采样到原尺寸的时候进行conv操作，channel数变为类别数。</p> 
+<p><img alt="" height="538" src="https://images2.imgbox.com/53/5b/5S1dUVWG_o.png" width="665">unet++有多个“U”，从第二层就有上采样+融合操作。第3层也有，一直到最底层。最后一层上采样后会和其他浅层的u上的特征进行融合。最后和unet一样也进行一个channel为类别数的conv操作。</p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/322dee4b3dbc1f04467d75cf9bf44ad4/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">夜间灯光数据文章大合集</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/7b95e8395726b19e97c320b87ee3bc03/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">Java-ThreadPoolExecutor使用</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

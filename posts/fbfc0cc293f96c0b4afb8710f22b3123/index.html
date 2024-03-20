@@ -1,0 +1,501 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Golang Channel 实现原理与源码分析 - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="Golang Channel 实现原理与源码分析" />
+<meta property="og:description" content="Do not communicate by sharing memory; instead, share memory by communicating.
+通过通信来共享内存，而不是共享内存来通信
+安全访问共享变量是并发编程的一个难点，在 Golang 语言中，倡导通过通信共享内存，实际上就是使用 channel 传递共享变量，在任何给定时间，只有一个 goroutine 可以访问该变量的值，从而避免发生数据竞争。
+本文关键是对Channel 实现原理进行分析，并附带源码解读，基于源码分析能更加理解Channel实现的过程与原因，对于源码关键步骤及变量给出了注释，不需要完全读懂源码的每个变量及函数，但可以从代码的异常处理角度来理解Channel，就能明白为什么channel的创建、写入、读取、关闭等流程需要分为多种情况。
+1.Channel 数据结构 1.1 hchan结构体 读 channel 的源码，可以发现 channel 的数据结构是 hchan 结构体，包含以下字段，每个字段的含义已注释：
+type hchan struct { qcount uint // 当前 channel 中存在多少个元素； dataqsiz uint // 当前 channel 能存放的元素容量； buf unsafe.Pointer // channel 中用于存放元素的环形缓冲区； elemsize uint16 //channel 元素类型的大小； closed uint32	//标识 channel 是否关闭； elemtype *_type // channel 元素类型； sendx uint // 发送元素进入环形缓冲区的 index； recvx uint // 接收元素所处的环形缓冲区的 index； recvq waitq // 因接收而陷入阻塞的协程队列； sendq waitq // 因发送而陷入阻塞的协程队列； lock mutex	//互斥锁，保证同一时间只有一个协程读写 channel } 通过阅读 channel 的数据结构，可以发现 channel 是使用环形队列作为 channel 的缓冲区，datasize 环形队列的长度是在创建 channel 时指定的，通过 sendx 和 recvx 两个字段分别表示环形队列的队尾和队首，其中，sendx 表示数据写入的位置，recvx 表示数据读取的位置。" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/fbfc0cc293f96c0b4afb8710f22b3123/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-06-02T17:03:16+08:00" />
+<meta property="article:modified_time" content="2023-06-02T17:03:16+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Golang Channel 实现原理与源码分析</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atelier-sulphurpool-light">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <blockquote> 
+ <p>Do not communicate by sharing memory; instead, share memory by communicating.<br> 通过通信来共享内存，而不是共享内存来通信</p> 
+</blockquote> 
+<p>安全访问共享变量是并发编程的一个难点，在 Golang 语言中，倡导通过通信共享内存，实际上就是使用 channel 传递共享变量，在任何给定时间，只有一个 goroutine 可以访问该变量的值，从而避免发生数据竞争。<br> 本文关键是对Channel 实现原理进行分析，并附带源码解读，基于源码分析能更加理解Channel实现的过程与原因，对于源码关键步骤及变量给出了注释，不需要完全读懂源码的每个变量及函数，但可以从代码的异常处理角度来理解Channel，就能明白为什么channel的创建、写入、读取、关闭等流程需要分为多种情况。</p> 
+<h3><a id="1Channel__5"></a>1.Channel 数据结构</h3> 
+<h4><a id="11_hchan_6"></a>1.1 hchan结构体</h4> 
+<p>读 channel 的源码，可以发现 channel 的数据结构是 hchan 结构体，包含以下字段，每个字段的含义已注释：</p> 
+<pre><code class="prism language-go"><span class="token keyword">type</span> hchan <span class="token keyword">struct</span> <span class="token punctuation">{<!-- --></span>
+ qcount   <span class="token builtin">uint</span>           <span class="token comment">// 当前 channel 中存在多少个元素；</span>
+ dataqsiz <span class="token builtin">uint</span>           <span class="token comment">// 当前 channel 能存放的元素容量；</span>
+ buf      unsafe<span class="token punctuation">.</span>Pointer <span class="token comment">// channel 中用于存放元素的环形缓冲区；</span>
+ elemsize <span class="token builtin">uint16</span>        <span class="token comment">//channel 元素类型的大小；</span>
+ closed   <span class="token builtin">uint32</span>		<span class="token comment">//标识 channel 是否关闭；</span>
+ elemtype <span class="token operator">*</span>_type 		<span class="token comment">// channel 元素类型；</span>
+ sendx    <span class="token builtin">uint</span>   		<span class="token comment">// 发送元素进入环形缓冲区的 index；</span>
+ recvx    <span class="token builtin">uint</span>   		<span class="token comment">// 接收元素所处的环形缓冲区的 index；</span>
+ recvq    waitq  		<span class="token comment">// 因接收而陷入阻塞的协程队列；</span>
+ sendq    waitq  		<span class="token comment">// 因发送而陷入阻塞的协程队列；</span>
+ lock mutex				<span class="token comment">//互斥锁，保证同一时间只有一个协程读写 channel</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>通过阅读 channel 的数据结构，可以发现 channel 是使用环形队列作为 channel 的缓冲区，datasize 环形队列的长度是在创建 channel 时指定的，通过 sendx 和 recvx 两个字段分别表示环形队列的队尾和队首，其中，sendx 表示数据写入的位置，recvx 表示数据读取的位置。</p> 
+<p>字段 recvq 和 sendq 分别表示等待接收的协程队列和等待发送的协程队列，当 channel 缓冲区为空或无缓冲区时，当前协程会被阻塞，分别加入到 recvq 和 sendq 协程队列中，等待其它协程操作 channel 时被唤醒。其中，读阻塞的协程被写协程唤醒，写阻塞的协程被读协程唤醒。</p> 
+<p>字段 elemtype 和 elemsize 表示 channel 中元素的类型和大小，需要注意的是，一个 channel 只能传递一种类型的值，如果需要传递任意类型的数据，可以使用 interface{} 类型。</p> 
+<p>字段 lock 是保证同一时间只有一个协程读写 channel。<br> <img src="https://images2.imgbox.com/20/ab/f0lmjHsf_o.png" alt="在这里插入图片描述"></p> 
+<h4><a id="12_waitqsudog_33"></a>1.2 阻塞协程队列waitq与sudog结构体</h4> 
+<p>在hchan中我们可以看到 recvq与sendq都是waitq类型，这代表协程等待队列。这个队列维护阻塞在一个channel上的所有协程。first和last是指向sudog结构体类型的指针，表示队列的头和尾。waitq里面连接的是一个sudog<strong>双向链表</strong>，保存的是等待的goroutine。队列中的sudog也是一个结构体，代表一个协程/sync.Mutex等待队列中的节点，包含了协程和数据的信息。waitq与sudog结构体包含以下字段，每个字段的含义已注释：</p> 
+<pre><code class="prism language-go"><span class="token keyword">type</span> waitq <span class="token keyword">struct</span> <span class="token punctuation">{<!-- --></span>		<span class="token comment">//阻塞的协程队列</span>
+    first <span class="token operator">*</span>sudog 		<span class="token comment">//队列头部</span>
+    last  <span class="token operator">*</span>sudog		<span class="token comment">//队列尾部</span>
+<span class="token punctuation">}</span>
+<span class="token keyword">type</span> sudog <span class="token keyword">struct</span> <span class="token punctuation">{<!-- --></span>		<span class="token comment">//sudog：包装协程的节点</span>
+    g <span class="token operator">*</span>g				<span class="token comment">//goroutine，协程；</span>
+
+    next <span class="token operator">*</span>sudog			<span class="token comment">//队列中的下一个节点；</span>
+    prev <span class="token operator">*</span>sudog			<span class="token comment">//队列中的前一个节点；</span>
+    elem unsafe<span class="token punctuation">.</span>Pointer <span class="token comment">//读取/写入 channel 的数据的容器;</span>
+    
+    isSelect <span class="token builtin">bool</span>		<span class="token comment">//标识当前协程是否处在 select 多路复用的流程中；</span>
+    
+    c        <span class="token operator">*</span>hchan 	<span class="token comment">//标识与当前 sudog 交互的 chan.</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p><img src="https://images2.imgbox.com/13/cc/oiPMQHL5_o.png" alt="在这里插入图片描述"></p> 
+<h3><a id="2Channel_56"></a>2.Channel构造器函数</h3> 
+<h4><a id="21_Channel_57"></a>2.1 Channel常见类型</h4> 
+<ul><li> <p>无缓冲型Channel：常用于同步的场景，比如协调两个或多个并发goroutine之间的执行，传递临界资源等。</p> </li><li> <p>有缓冲的 struct 型Channel：常用于单向传输数据流，例如将producer和consumer分开，这样可以避免不必要的等待时间。</p> </li><li> <p>有缓冲的 pointer 型Channel：有缓冲的 pointer 型Channel位于管道中的元素是指针类型的变量。它常被用于异步数据传输，将消费者的读取数据和生产者的填充数据分离。</p> </li></ul> 
+<h4><a id="22_Channel_64"></a>2.2 Channel构造器函数源码分析</h4> 
+<pre><code class="prism language-go"><span class="token keyword">func</span> <span class="token function">makechan</span><span class="token punctuation">(</span>t <span class="token operator">*</span>chantype<span class="token punctuation">,</span> size <span class="token builtin">int</span><span class="token punctuation">)</span> <span class="token operator">*</span>hchan <span class="token punctuation">{<!-- --></span>
+    elem <span class="token operator">:=</span> t<span class="token punctuation">.</span>elem	<span class="token comment">//Channel中元素类型</span>
+    
+    <span class="token comment">// 每个元素的内存大小为elem.size，channel的容量为size，计算出总内存mem</span>
+    mem<span class="token punctuation">,</span> overflow <span class="token operator">:=</span> math<span class="token punctuation">.</span><span class="token function">MulUintptr</span><span class="token punctuation">(</span>elem<span class="token punctuation">.</span>size<span class="token punctuation">,</span> <span class="token function">uintptr</span><span class="token punctuation">(</span>size<span class="token punctuation">)</span><span class="token punctuation">)</span>
+    <span class="token keyword">if</span> overflow <span class="token operator">||</span> mem <span class="token operator">&gt;</span> maxAlloc<span class="token operator">-</span>hchanSize <span class="token operator">||</span> size <span class="token operator">&lt;</span> <span class="token number">0</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token function">panic</span><span class="token punctuation">(</span><span class="token function">plainError</span><span class="token punctuation">(</span><span class="token string">"makechan: size out of range"</span><span class="token punctuation">)</span><span class="token punctuation">)</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token keyword">var</span> c <span class="token operator">*</span>hchan
+    <span class="token keyword">switch</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">case</span> mem <span class="token operator">==</span> <span class="token number">0</span><span class="token punctuation">:</span>				<span class="token comment">//无缓冲型Channel</span>
+   		 <span class="token comment">//hchanSize默认为96</span>
+        c <span class="token operator">=</span> <span class="token punctuation">(</span><span class="token operator">*</span>hchan<span class="token punctuation">)</span><span class="token punctuation">(</span><span class="token function">mallocgc</span><span class="token punctuation">(</span>hchanSize<span class="token punctuation">,</span> <span class="token boolean">nil</span><span class="token punctuation">,</span> <span class="token boolean">true</span><span class="token punctuation">)</span><span class="token punctuation">)</span>
+        <span class="token comment">// 竞争检测器使用此位置进行同步。</span>
+        c<span class="token punctuation">.</span>buf <span class="token operator">=</span> c<span class="token punctuation">.</span><span class="token function">raceaddr</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+    <span class="token keyword">case</span> elem<span class="token punctuation">.</span>ptrdata <span class="token operator">==</span> <span class="token number">0</span><span class="token punctuation">:</span>		<span class="token comment">//有缓冲的 struct 型Channel</span>
+        c <span class="token operator">=</span> <span class="token punctuation">(</span><span class="token operator">*</span>hchan<span class="token punctuation">)</span><span class="token punctuation">(</span><span class="token function">mallocgc</span><span class="token punctuation">(</span>hchanSize<span class="token operator">+</span>mem<span class="token punctuation">,</span> <span class="token boolean">nil</span><span class="token punctuation">,</span> <span class="token boolean">true</span><span class="token punctuation">)</span><span class="token punctuation">)</span>
+        c<span class="token punctuation">.</span>buf <span class="token operator">=</span> <span class="token function">add</span><span class="token punctuation">(</span>unsafe<span class="token punctuation">.</span><span class="token function">Pointer</span><span class="token punctuation">(</span>c<span class="token punctuation">)</span><span class="token punctuation">,</span> hchanSize<span class="token punctuation">)</span>
+    <span class="token keyword">default</span><span class="token punctuation">:</span>					<span class="token comment">//有缓冲的 pointer 型Channel</span>
+        c <span class="token operator">=</span> <span class="token function">new</span><span class="token punctuation">(</span>hchan<span class="token punctuation">)</span>
+        c<span class="token punctuation">.</span>buf <span class="token operator">=</span> <span class="token function">mallocgc</span><span class="token punctuation">(</span>mem<span class="token punctuation">,</span> elem<span class="token punctuation">,</span> <span class="token boolean">true</span><span class="token punctuation">)</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token comment">// 初始化hchan</span>
+    c<span class="token punctuation">.</span>elemsize <span class="token operator">=</span> <span class="token function">uint16</span><span class="token punctuation">(</span>elem<span class="token punctuation">.</span>size<span class="token punctuation">)</span>		<span class="token comment">//每个元素在内存中占用的字节数</span>
+    c<span class="token punctuation">.</span>elemtype <span class="token operator">=</span> elem					<span class="token comment">//元素类型</span>
+    c<span class="token punctuation">.</span>dataqsiz <span class="token operator">=</span> <span class="token function">uint</span><span class="token punctuation">(</span>size<span class="token punctuation">)</span>				<span class="token comment">//队列中元素的数量上限</span>
+    
+    <span class="token function">lockInit</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>c<span class="token punctuation">.</span>lock<span class="token punctuation">,</span> lockRankHchan<span class="token punctuation">)</span>	<span class="token comment">//初始化读写保护锁</span>
+
+    <span class="token keyword">return</span> c
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>这段代码的作用是创建一个 channel，并初始化 channel 中的各个字段。</p> 
+<ol><li>计算总内存大小：每个元素占用空间是<code>t.elem.size</code>，channel的容量是<code>size</code>，所需要分配的总内存大小为<code>mem</code>。</li><li>根据<code>mem</code>的值判断是否需要分配内存：分为 无缓冲型、有缓冲元素为 struct 型、有缓冲元素为 pointer 型 channel; 
+  <ul><li>倘若为无缓冲型channel，则仅申请一个大小为默认值 hchanSize即96 的空间；</li><li>如若有缓冲的 struct 型channel，则一次性分配好 96 + mem 大小的空间，并且调整 chan 的 buf 指向 mem 的起始位置；</li><li>倘若为有缓冲的 pointer 型channel，则分别申请 chan 和 buf 的空间，两者无需连续；</li></ul> </li><li>初始化channel：设置elemsize, elemtype, dataqsiz, lock等字段。其中elemsize标识每个元素在内存中占用的字节数，elemType包含元素类型（reflect.Type），dataqsiz存放队列中元素的数量上限(若是无缓冲通道，则默认为1), lock压缩对chan的读写操作进行保护的锁。</li><li>最后返回创建的channel的指针c。</li></ol> 
+<h3><a id="3channel_111"></a>3.channel写操作实现原理</h3> 
+<h4><a id="31_channel_112"></a>3.1 channel写异常处理</h4> 
+<pre><code class="prism language-go"><span class="token keyword">func</span> <span class="token function">chansend1</span><span class="token punctuation">(</span>c <span class="token operator">*</span>hchan<span class="token punctuation">,</span> elem unsafe<span class="token punctuation">.</span>Pointer<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token function">chansend</span><span class="token punctuation">(</span>c<span class="token punctuation">,</span> elem<span class="token punctuation">,</span> <span class="token boolean">true</span><span class="token punctuation">,</span> <span class="token function">getcallerpc</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span>
+<span class="token punctuation">}</span>
+
+<span class="token keyword">func</span> <span class="token function">chansend</span><span class="token punctuation">(</span>c <span class="token operator">*</span>hchan<span class="token punctuation">,</span> ep unsafe<span class="token punctuation">.</span>Pointer<span class="token punctuation">,</span> block <span class="token builtin">bool</span><span class="token punctuation">,</span> callerpc <span class="token builtin">uintptr</span><span class="token punctuation">)</span> <span class="token builtin">bool</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">if</span> c <span class="token operator">==</span> <span class="token boolean">nil</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token function">gopark</span><span class="token punctuation">(</span><span class="token boolean">nil</span><span class="token punctuation">,</span> <span class="token boolean">nil</span><span class="token punctuation">,</span> waitReasonChanSendNilChan<span class="token punctuation">,</span> traceEvGoStop<span class="token punctuation">,</span> <span class="token number">2</span><span class="token punctuation">)</span>
+        <span class="token function">throw</span><span class="token punctuation">(</span><span class="token string">"unreachable"</span><span class="token punctuation">)</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token function">lock</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>c<span class="token punctuation">.</span>lock<span class="token punctuation">)</span>
+
+    <span class="token keyword">if</span> c<span class="token punctuation">.</span>closed <span class="token operator">!=</span> <span class="token number">0</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token function">unlock</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>c<span class="token punctuation">.</span>lock<span class="token punctuation">)</span>
+        <span class="token function">panic</span><span class="token punctuation">(</span><span class="token function">plainError</span><span class="token punctuation">(</span><span class="token string">"send on closed channel"</span><span class="token punctuation">)</span><span class="token punctuation">)</span>
+    <span class="token punctuation">}</span>
+    
+    <span class="token comment">// ...</span>
+</code></pre> 
+<ul><li>对于未初始化即为空的 chan，写入操作会引发死锁“unreachable”；</li><li>对于已关闭的 chan，写入操作会引发 panic"send on closed channel"；</li></ul> 
+<h4><a id="32_channel0_136"></a>3.2 channel写时存在阻塞读协程——此时环形缓冲区内元素个数为0</h4> 
+<pre><code class="prism language-go"><span class="token keyword">func</span> <span class="token function">chansend</span><span class="token punctuation">(</span>c <span class="token operator">*</span>hchan<span class="token punctuation">,</span> ep unsafe<span class="token punctuation">.</span>Pointer<span class="token punctuation">,</span> block <span class="token builtin">bool</span><span class="token punctuation">,</span> callerpc <span class="token builtin">uintptr</span><span class="token punctuation">)</span> <span class="token builtin">bool</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token comment">// ...</span>
+	
+    <span class="token function">lock</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>c<span class="token punctuation">.</span>lock<span class="token punctuation">)</span>	<span class="token comment">// 加锁</span>
+
+    <span class="token comment">// ...</span>
+	<span class="token comment">//从阻塞度协程队列中取出一个 goroutine 的封装对象 sudog</span>
+    <span class="token keyword">if</span> sg <span class="token operator">:=</span> c<span class="token punctuation">.</span>recvq<span class="token punctuation">.</span><span class="token function">dequeue</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span> sg <span class="token operator">!=</span> <span class="token boolean">nil</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token comment">//在 send 方法中，基于 memmove 方法，直接将元素拷贝交给 sudog 对应的读协程sg，并完成解锁动作</span>
+        <span class="token function">send</span><span class="token punctuation">(</span>c<span class="token punctuation">,</span> sg<span class="token punctuation">,</span> ep<span class="token punctuation">,</span> <span class="token keyword">func</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span> <span class="token function">unlock</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>c<span class="token punctuation">.</span>lock<span class="token punctuation">)</span> <span class="token punctuation">}</span><span class="token punctuation">,</span> <span class="token number">3</span><span class="token punctuation">)</span>
+        <span class="token keyword">return</span> <span class="token boolean">true</span>
+    <span class="token punctuation">}</span>
+    
+    <span class="token comment">// ...</span>
+</code></pre> 
+<p>写入前利用channel 的lock进行加锁，如果在channel写入时，如果 channel 中存在阻塞的读协程，那么此时channel内一定没有元素，于是将这个读携程 唤醒，并为了提高效率，直接将要发送的数据传递给它，而不需要存储到缓冲区中。<br> <img src="https://images2.imgbox.com/e0/c4/ctMvRwIe_o.png" alt="在这里插入图片描述"></p> 
+<h4><a id="33channel_159"></a>3.3channel写时无阻塞读协程且环形缓冲区仍有空间</h4> 
+<pre><code class="prism language-go"><span class="token keyword">func</span> <span class="token function">chansend</span><span class="token punctuation">(</span>c <span class="token operator">*</span>hchan<span class="token punctuation">,</span> ep unsafe<span class="token punctuation">.</span>Pointer<span class="token punctuation">,</span> block <span class="token builtin">bool</span><span class="token punctuation">,</span> callerpc <span class="token builtin">uintptr</span><span class="token punctuation">)</span> <span class="token builtin">bool</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token comment">// ...</span>
+    <span class="token function">lock</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>c<span class="token punctuation">.</span>lock<span class="token punctuation">)</span>	<span class="token comment">//加锁</span>
+    <span class="token comment">// ...</span>
+    <span class="token keyword">if</span> c<span class="token punctuation">.</span>qcount <span class="token operator">&lt;</span> c<span class="token punctuation">.</span>dataqsiz <span class="token punctuation">{<!-- --></span>	<span class="token comment">//判断环形缓冲区是否有空间</span>
+        qp <span class="token operator">:=</span> <span class="token function">chanbuf</span><span class="token punctuation">(</span>c<span class="token punctuation">,</span> c<span class="token punctuation">.</span>sendx<span class="token punctuation">)</span>	<span class="token comment">//将当前元素添加到环形缓冲区 sendx 对应的位置</span>
+        <span class="token comment">//memmove(dst, src, t.size) 进行数据的转移，本质上是一个内存拷贝</span>
+        <span class="token comment">//将发送的数据直接拷贝到 x = &lt;-c 表达式中变量 x 所在的内存地址上</span>
+        <span class="token function">typedmemmove</span><span class="token punctuation">(</span>c<span class="token punctuation">.</span>elemtype<span class="token punctuation">,</span> qp<span class="token punctuation">,</span> ep<span class="token punctuation">)</span>
+        c<span class="token punctuation">.</span>sendx<span class="token operator">++</span>
+        <span class="token keyword">if</span> c<span class="token punctuation">.</span>sendx <span class="token operator">==</span> c<span class="token punctuation">.</span>dataqsiz <span class="token punctuation">{<!-- --></span>
+            c<span class="token punctuation">.</span>sendx <span class="token operator">=</span> <span class="token number">0</span>
+        <span class="token punctuation">}</span>
+        c<span class="token punctuation">.</span>qcount<span class="token operator">++</span>
+        <span class="token function">unlock</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>c<span class="token punctuation">.</span>lock<span class="token punctuation">)</span>
+        <span class="token keyword">return</span> <span class="token boolean">true</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token comment">// ...</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>写入前利用channel 的lock进行加锁，若channel写时无阻塞读协程且环形缓冲区仍有空间，则此时可以直接写入channel中，即直接将当前元素添加到环形缓冲区 sendx 对应的位置，并sendx++，qcount++并解锁，返回。<br> <img src="https://images2.imgbox.com/ea/f9/slNGcbcQ_o.png" alt="在这里插入图片描述"></p> 
+<h4><a id="34_channel_186"></a>3.4 channel写时无阻塞读协程但环形缓冲区无空间</h4> 
+<pre><code class="prism language-go"><span class="token keyword">func</span> <span class="token function">chansend</span><span class="token punctuation">(</span>c <span class="token operator">*</span>hchan<span class="token punctuation">,</span> ep unsafe<span class="token punctuation">.</span>Pointer<span class="token punctuation">,</span> block <span class="token builtin">bool</span><span class="token punctuation">,</span> callerpc <span class="token builtin">uintptr</span><span class="token punctuation">)</span> <span class="token builtin">bool</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token comment">// ...</span>
+    <span class="token function">lock</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>c<span class="token punctuation">.</span>lock<span class="token punctuation">)</span>	<span class="token comment">//加锁</span>
+
+    <span class="token comment">// ...</span>
+    <span class="token comment">//构造封装当前 goroutine 的 sudog 对象，建立 sudog、goroutine、channel 之间的指向关系</span>
+    gp <span class="token operator">:=</span> <span class="token function">getg</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+    mysg <span class="token operator">:=</span> <span class="token function">acquireSudog</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+    mysg<span class="token punctuation">.</span>elem <span class="token operator">=</span> ep
+    mysg<span class="token punctuation">.</span>g <span class="token operator">=</span> gp
+    mysg<span class="token punctuation">.</span>c <span class="token operator">=</span> c
+    gp<span class="token punctuation">.</span>waiting <span class="token operator">=</span> mysg
+    <span class="token comment">//把 sudog 添加到当前 channel 的阻塞写协程队列中</span>
+    c<span class="token punctuation">.</span>sendq<span class="token punctuation">.</span><span class="token function">enqueue</span><span class="token punctuation">(</span>mysg<span class="token punctuation">)</span>
+    
+    <span class="token comment">//park 当前协程</span>
+    atomic<span class="token punctuation">.</span><span class="token function">Store8</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>gp<span class="token punctuation">.</span>parkingOnChan<span class="token punctuation">,</span> <span class="token number">1</span><span class="token punctuation">)</span>
+    <span class="token function">gopark</span><span class="token punctuation">(</span>chanparkcommit<span class="token punctuation">,</span> unsafe<span class="token punctuation">.</span><span class="token function">Pointer</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>c<span class="token punctuation">.</span>lock<span class="token punctuation">)</span><span class="token punctuation">,</span> waitReasonChanSend<span class="token punctuation">,</span> traceEvGoBlockSend<span class="token punctuation">,</span> <span class="token number">2</span><span class="token punctuation">)</span>
+    <span class="token comment">//倘若协程从 park 中被唤醒，则回收 sudog（sudog能被唤醒，其对应的元素必然已经被读协程取走）</span>
+    gp<span class="token punctuation">.</span>waiting <span class="token operator">=</span> <span class="token boolean">nil</span>
+    closed <span class="token operator">:=</span> <span class="token operator">!</span>mysg<span class="token punctuation">.</span>success
+    gp<span class="token punctuation">.</span>param <span class="token operator">=</span> <span class="token boolean">nil</span>
+    mysg<span class="token punctuation">.</span>c <span class="token operator">=</span> <span class="token boolean">nil</span>
+    <span class="token function">releaseSudog</span><span class="token punctuation">(</span>mysg<span class="token punctuation">)</span>
+    <span class="token keyword">return</span> <span class="token boolean">true</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>写入前利用channel 的lock进行加锁，若channel写时无阻塞读协程且环形缓冲区无空间，则此时不能写入缓冲区，需要将当前协程加入阻塞写协程队列中，等待被读协程唤醒。在被唤醒时对应的元素必然已经被读协程取走（具体可以看下一章读流程：读时有阻塞的写协程），故可直接清除占用空间。<img src="https://images2.imgbox.com/59/77/xWvQCv6P_o.png" alt="在这里插入图片描述"></p> 
+<h4><a id="35_channel_218"></a>3.5 channel写流程总结</h4> 
+<p><img src="https://images2.imgbox.com/1a/24/eR1GZsvU_o.png" alt="在这里插入图片描述"></p> 
+<ol><li>首先判断通道是否为nil即未初始化，若为空则引发死锁</li><li>若通道非空，由于channel是共享资源，故需要对通道进行lock加锁</li><li>继续判断通道是否关闭，若关闭，则引发panic：send on closed channel</li><li>通道非空未关闭，则正式进入写入流程，首先判断是否有阻塞的读协程 
+  <ul><li>若有阻塞的读协程，此时环形缓冲区内元素个数为0， 则唤醒读携程，直接将要发送的数据传递给它，并完成写入，进行解锁返回</li><li>没有阻塞的读协程，则判断环形缓冲区是否有空间 
+    <ul><li>若环形缓冲区有空间，则直接将当前元素添加到环形缓冲区 sendx的位置，并更新写入位置sendx与通道元素个数qcount，解锁后返回函数。</li><li>若环形缓冲区无空间，将当前协程加入阻塞写协程队列中，阻塞协程，等待被读协程唤醒，并完成解锁</li></ul> </li></ul> </li></ol> 
+<h3><a id="4_channel_230"></a>4. channel读操作实现原理</h3> 
+<h4><a id="41_channel_channel_232"></a>4.1 channel读异常处理：读空 channel</h4> 
+<pre><code class="prism language-go"><span class="token keyword">func</span> <span class="token function">chanrecv</span><span class="token punctuation">(</span>c <span class="token operator">*</span>hchan<span class="token punctuation">,</span> ep unsafe<span class="token punctuation">.</span>Pointer<span class="token punctuation">,</span> block <span class="token builtin">bool</span><span class="token punctuation">)</span> <span class="token punctuation">(</span>selected<span class="token punctuation">,</span> received <span class="token builtin">bool</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">if</span> c <span class="token operator">==</span> <span class="token boolean">nil</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token function">gopark</span><span class="token punctuation">(</span><span class="token boolean">nil</span><span class="token punctuation">,</span> <span class="token boolean">nil</span><span class="token punctuation">,</span> waitReasonChanReceiveNilChan<span class="token punctuation">,</span> traceEvGoStop<span class="token punctuation">,</span> <span class="token number">2</span><span class="token punctuation">)</span>
+        <span class="token function">throw</span><span class="token punctuation">(</span><span class="token string">"unreachable"</span><span class="token punctuation">)</span>
+    <span class="token punctuation">}</span>
+    <span class="token comment">// ...</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>如上所示，若想要读一个没有初始化的空channel，调用 runtime.gopark 挂起当前 Goroutine，引起死锁"unreachable"；</p> 
+<h4><a id="42_channel_245"></a>4.2 读时channel已关闭且环形缓冲区内部无元素</h4> 
+<pre><code class="prism language-go"><span class="token keyword">func</span> <span class="token function">chanrecv</span><span class="token punctuation">(</span>c <span class="token operator">*</span>hchan<span class="token punctuation">,</span> ep unsafe<span class="token punctuation">.</span>Pointer<span class="token punctuation">,</span> block <span class="token builtin">bool</span><span class="token punctuation">)</span> <span class="token punctuation">(</span>selected<span class="token punctuation">,</span> received <span class="token builtin">bool</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+  
+    <span class="token function">lock</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>c<span class="token punctuation">.</span>lock<span class="token punctuation">)</span>
+ <span class="token comment">// ...</span>
+    <span class="token keyword">if</span> c<span class="token punctuation">.</span>closed <span class="token operator">!=</span> <span class="token number">0</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">if</span> c<span class="token punctuation">.</span>qcount <span class="token operator">==</span> <span class="token number">0</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token function">unlock</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>c<span class="token punctuation">.</span>lock<span class="token punctuation">)</span>
+            <span class="token keyword">if</span> ep <span class="token operator">!=</span> <span class="token boolean">nil</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token comment">//typedmemclr(ptr, size)：从 ptr 开始的地址上清空 size 字节的数据，将要清空的内存空间设置成数据类型的零值。</span>
+            	<span class="token comment">// Channel 已经关闭并且缓冲区没有任何数据，返回c.elemtype的零值</span>
+                <span class="token function">typedmemclr</span><span class="token punctuation">(</span>c<span class="token punctuation">.</span>elemtype<span class="token punctuation">,</span> ep<span class="token punctuation">)</span>
+            <span class="token punctuation">}</span>
+            <span class="token keyword">return</span> <span class="token boolean">true</span><span class="token punctuation">,</span> <span class="token boolean">false</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span> 
+
+    <span class="token comment">// ...</span>
+</code></pre> 
+<p>如果 Channel 已经关闭并且缓冲区没有任何数据，runtime.chanrecv 会直接解锁返回零值。<br> 对于 Channel 已经关闭但缓冲区有数据的处理会在后续判断中进行。</p> 
+<h4><a id="43__268"></a>4.3 读时有阻塞的写协程——环形缓冲区为无缓冲型或已被写满</h4> 
+<pre><code class="prism language-go">
+<span class="token keyword">func</span> <span class="token function">chanrecv</span><span class="token punctuation">(</span>c <span class="token operator">*</span>hchan<span class="token punctuation">,</span> ep unsafe<span class="token punctuation">.</span>Pointer<span class="token punctuation">,</span> block <span class="token builtin">bool</span><span class="token punctuation">)</span> <span class="token punctuation">(</span>selected<span class="token punctuation">,</span> received <span class="token builtin">bool</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+   	<span class="token comment">//加锁；</span>
+    <span class="token function">lock</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>c<span class="token punctuation">.</span>lock<span class="token punctuation">)</span>
+	 <span class="token comment">// ...</span>
+	 <span class="token comment">//从阻塞写协程队列中获取到一个写协程</span>
+    <span class="token keyword">if</span> sg <span class="token operator">:=</span> c<span class="token punctuation">.</span>sendq<span class="token punctuation">.</span><span class="token function">dequeue</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span> sg <span class="token operator">!=</span> <span class="token boolean">nil</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token comment">//从发送队列中出队一个 sg，并通过 recv 函数将 sg 中的数据写入到接收端点 ep 中</span>
+		<span class="token comment">//recv函数内部会进行大量处理：</span>
+		<span class="token comment">//若 channel为无缓冲型，则直接读取写协程元素，并唤醒写协程；</span>
+		<span class="token comment">//若 channel 为有缓冲型，则读取缓冲区头部元素，并将写协程元素写入缓冲区尾部后唤醒写协程，更新读写索引；</span>
+        <span class="token function">recv</span><span class="token punctuation">(</span>c<span class="token punctuation">,</span> sg<span class="token punctuation">,</span> ep<span class="token punctuation">,</span> <span class="token keyword">func</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span> <span class="token function">unlock</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>c<span class="token punctuation">.</span>lock<span class="token punctuation">)</span> <span class="token punctuation">}</span><span class="token punctuation">,</span> <span class="token number">3</span><span class="token punctuation">)</span>
+        <span class="token keyword">return</span> <span class="token boolean">true</span><span class="token punctuation">,</span> <span class="token boolean">true</span>
+     <span class="token punctuation">}</span>
+     <span class="token comment">// ...</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>读时如果有阻塞的写协程，那么环形缓冲区一定为无缓冲型或已被写满，此时调用recv函数，调用后结果如下：</p> 
+<ul><li>倘若 channel为无缓冲型，则直接读取写协程元素，并唤醒写协程；</li><li>倘若 channel 为有缓冲型，则读取缓冲区头部元素，并将写协程元素写入缓冲区尾部后唤醒写协程，更新读写索引；</li></ul> 
+<blockquote> 
+ <p>recv函数大致流程：<br> 1.如果 sudog 指针 sg 为 nil，则说明当前接收操作没有目标元素，这种情况通常发生在 select 中的非阻塞接收操作或 buffered channel 的读取操作中。<br> 2.如果 channel 中有缓冲数据或者存在未处理的发送操作，则直接将数据从 channel 的缓冲区或发送队列中取出，并将其写入该 sudog 内指定的目标内存地址中。<br> 3.如果 channel 中没有缓冲数据且不存在未处理的发送操作，则创建员工新的 sudog 结构体，将接收请求加入到链表中，同时调度当前 goroutine 进入睡眠状态，等待其他 goroutine 的发送操作唤醒。<br> 4.当唤醒时，检查发送队列中是否有匹配这个接收端点的发送端点：若是，则从发送端点中获取目标元素，将其写入到指定的目标内存处，然后解除所有阻塞并返回；若否，则继续睡眠，等待其他发送操作的唤醒。</p> 
+</blockquote> 
+<p><img src="https://images2.imgbox.com/df/18/6pzMTJMQ_o.png" alt="在这里插入图片描述"></p> 
+<h4><a id="44__303"></a>4.4 读时无阻塞写协程且缓冲区有元素</h4> 
+<pre><code class="prism language-go"><span class="token keyword">func</span> <span class="token function">chanrecv</span><span class="token punctuation">(</span>c <span class="token operator">*</span>hchan<span class="token punctuation">,</span> ep unsafe<span class="token punctuation">.</span>Pointer<span class="token punctuation">,</span> block <span class="token builtin">bool</span><span class="token punctuation">)</span> <span class="token punctuation">(</span>selected<span class="token punctuation">,</span> received <span class="token builtin">bool</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token comment">// ...</span>
+    <span class="token comment">//加锁；</span>
+    <span class="token function">lock</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>c<span class="token punctuation">.</span>lock<span class="token punctuation">)</span>
+    <span class="token comment">// ...</span>
+    <span class="token keyword">if</span> c<span class="token punctuation">.</span>qcount <span class="token operator">&gt;</span> <span class="token number">0</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token comment">// 获取到 recvx 对应位置的元素</span>
+        qp <span class="token operator">:=</span> <span class="token function">chanbuf</span><span class="token punctuation">(</span>c<span class="token punctuation">,</span> c<span class="token punctuation">.</span>recvx<span class="token punctuation">)</span>
+        <span class="token keyword">if</span> ep <span class="token operator">!=</span> <span class="token boolean">nil</span> <span class="token punctuation">{<!-- --></span>
+        	<span class="token comment">//typedmemmove(dst, src, size)：从 src 指向的地址复制 size 字节的数据到 dst 指向的地址。</span>
+        	<span class="token comment">//将channel缓冲区或发送队列中读取到的目标元素（即 qp 指针）写入到接收端点的目标内存地址（即 ep 指针）中</span>
+            <span class="token function">typedmemmove</span><span class="token punctuation">(</span>c<span class="token punctuation">.</span>elemtype<span class="token punctuation">,</span> ep<span class="token punctuation">,</span> qp<span class="token punctuation">)</span>
+        <span class="token punctuation">}</span>
+        <span class="token comment">//typedmemclr(ptr, size)：从 ptr 开始的地址上清空 size 字节的数据，将要清空的内存空间设置成数据类型的零值。</span>
+        <span class="token comment">//清空刚才从 channel 缓冲区或发送队列中取出的元素</span>
+        <span class="token function">typedmemclr</span><span class="token punctuation">(</span>c<span class="token punctuation">.</span>elemtype<span class="token punctuation">,</span> qp<span class="token punctuation">)</span>
+        c<span class="token punctuation">.</span>recvx<span class="token operator">++</span>
+        <span class="token keyword">if</span> c<span class="token punctuation">.</span>recvx <span class="token operator">==</span> c<span class="token punctuation">.</span>dataqsiz <span class="token punctuation">{<!-- --></span>
+            c<span class="token punctuation">.</span>recvx <span class="token operator">=</span> <span class="token number">0</span>
+        <span class="token punctuation">}</span>
+        c<span class="token punctuation">.</span>qcount<span class="token operator">--</span>
+        <span class="token function">unlock</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>c<span class="token punctuation">.</span>lock<span class="token punctuation">)</span>
+        <span class="token keyword">return</span> <span class="token boolean">true</span><span class="token punctuation">,</span> <span class="token boolean">true</span>
+    <span class="token punctuation">}</span>
+    <span class="token comment">// ...</span>
+</code></pre> 
+<p>读时无阻塞写协程且缓冲区有元素，为一般情况，则直接读取环形缓冲区对应的元素<br> <img src="https://images2.imgbox.com/f0/3a/tzKpNznb_o.png" alt="在这里插入图片描述"></p> 
+<h4><a id="45__336"></a>4.5 读时无阻塞写协程且缓冲区无元素</h4> 
+<pre><code class="prism language-go"><span class="token keyword">func</span> <span class="token function">chanrecv</span><span class="token punctuation">(</span>c <span class="token operator">*</span>hchan<span class="token punctuation">,</span> ep unsafe<span class="token punctuation">.</span>Pointer<span class="token punctuation">,</span> block <span class="token builtin">bool</span><span class="token punctuation">)</span> <span class="token punctuation">(</span>selected<span class="token punctuation">,</span> received <span class="token builtin">bool</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+   <span class="token comment">// ...</span>
+   <span class="token comment">//加锁</span>
+   <span class="token function">lock</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>c<span class="token punctuation">.</span>lock<span class="token punctuation">)</span>
+   <span class="token comment">// ...</span>
+   <span class="token comment">//构造封装当前 goroutine 的 sudog 对象</span>
+    gp <span class="token operator">:=</span> <span class="token function">getg</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+    mysg <span class="token operator">:=</span> <span class="token function">acquireSudog</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+    <span class="token comment">//完成指针指向，建立 sudog、goroutine、channel 之间的指向关系</span>
+    mysg<span class="token punctuation">.</span>elem <span class="token operator">=</span> ep
+    gp<span class="token punctuation">.</span>waiting <span class="token operator">=</span> mysg
+    mysg<span class="token punctuation">.</span>g <span class="token operator">=</span> gp
+    mysg<span class="token punctuation">.</span>c <span class="token operator">=</span> c
+    gp<span class="token punctuation">.</span>param <span class="token operator">=</span> <span class="token boolean">nil</span>
+    <span class="token comment">//把 sudog 添加到当前 channel 的阻塞读协程队列中</span>
+    c<span class="token punctuation">.</span>recvq<span class="token punctuation">.</span><span class="token function">enqueue</span><span class="token punctuation">(</span>mysg<span class="token punctuation">)</span>
+    atomic<span class="token punctuation">.</span><span class="token function">Store8</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>gp<span class="token punctuation">.</span>parkingOnChan<span class="token punctuation">,</span> <span class="token number">1</span><span class="token punctuation">)</span>
+     <span class="token comment">//park 挂起当前读协程</span>
+    <span class="token function">gopark</span><span class="token punctuation">(</span>chanparkcommit<span class="token punctuation">,</span> unsafe<span class="token punctuation">.</span><span class="token function">Pointer</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>c<span class="token punctuation">.</span>lock<span class="token punctuation">)</span><span class="token punctuation">,</span> waitReasonChanReceive<span class="token punctuation">,</span> traceEvGoBlockRecv<span class="token punctuation">,</span> <span class="token number">2</span><span class="token punctuation">)</span>
+	<span class="token comment">//倘若协程从 park 中被唤醒，则回收 sudog（sudog能被唤醒，其对应的元素必然已经被写入）</span>
+    gp<span class="token punctuation">.</span>waiting <span class="token operator">=</span> <span class="token boolean">nil</span>
+    success <span class="token operator">:=</span> mysg<span class="token punctuation">.</span>success
+    gp<span class="token punctuation">.</span>param <span class="token operator">=</span> <span class="token boolean">nil</span>
+    mysg<span class="token punctuation">.</span>c <span class="token operator">=</span> <span class="token boolean">nil</span>
+    <span class="token function">releaseSudog</span><span class="token punctuation">(</span>mysg<span class="token punctuation">)</span>
+    <span class="token comment">//解锁，返回</span>
+    <span class="token keyword">return</span> <span class="token boolean">true</span><span class="token punctuation">,</span> success
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>读时无阻塞写协程且缓冲区无元素，那么直接通过 gopark 函数，将当前 goroutine 驱动进入休眠状态，等待其他 写goroutine push 数据、close channel 或者 delete 当前 goroutine 的唤醒，被唤醒后数据已被其他协程处理，故直接回收空间。</p> 
+<h4><a id="46_channel_370"></a>4.6 channel读流程总结</h4> 
+<p><img src="https://images2.imgbox.com/8d/5b/7GP04kiO_o.png" alt="在这里插入图片描述"></p> 
+<ol><li>首先判断通道是否为nil即未初始化，若为空则引发死锁</li><li>若通道非空，由于channel是共享资源，故需要对通道进行lock加锁</li><li>继续判断通道是否关闭，若关闭，则判断环形缓冲区是否有元素，若无元素，则返回对应元素的零值。</li><li>通道非空未关闭，则正式进入写入流程，首先判断是否有阻塞的写协程 
+  <ul><li>若有阻塞的写协程， 说明环形缓冲区为无缓冲型或已被写满，故判断channel是否为无缓冲型 
+    <ul><li>若 channel为无缓冲型，则直接读取写协程元素，并唤醒写协程；</li><li>若 channel 为有缓冲型，则读取环形缓冲区头部元素，并将写协程元素写入缓冲区尾部后唤醒写协程，更新读写索引；</li></ul> </li><li>若没有阻塞的写协程，则判断环形缓冲区是否有空间 
+    <ul><li>若环形缓冲区有空间，则直接将当前元素添加到环形缓冲区 sendx的位置，并更新写入位置sendx与通道元素个数qcount，解锁后返回函数。</li><li>若环形缓冲区无空间，将当前协程加入阻塞写协程队列中，阻塞协程，等待被读协程唤醒，并完成解锁</li></ul> </li></ul> </li></ol> 
+<h4><a id="47__channel__384"></a>4.7 两种读 channel 的协议</h4> 
+<p>读取 channel 时，我们会发现若通道关闭且无元素会返回零值，故我们需要判断进行读channel时是真的读到零值还是由于通道关闭读到零值，故源码中定义了两种读 channel 的协议。分别如下：</p> 
+<pre><code class="prism language-go">got1 <span class="token operator">:=</span> <span class="token operator">&lt;-</span> ch
+got2<span class="token punctuation">,</span>ok <span class="token operator">:=</span> <span class="token operator">&lt;-</span> ch
+</code></pre> 
+<p>根据第二个 bool 型的返回值用以判断当前 channel 是否已处于关闭状态，若ok为false，则说明通道已经关闭并且缓冲区为空。<br> 在两种格式下，读 channel 操作会被汇编成不同的方法：</p> 
+<pre><code class="prism language-go"><span class="token keyword">func</span> <span class="token function">chanrecv1</span><span class="token punctuation">(</span>c <span class="token operator">*</span>hchan<span class="token punctuation">,</span> elem unsafe<span class="token punctuation">.</span>Pointer<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token function">chanrecv</span><span class="token punctuation">(</span>c<span class="token punctuation">,</span> elem<span class="token punctuation">,</span> <span class="token boolean">true</span><span class="token punctuation">)</span>
+<span class="token punctuation">}</span>
+
+<span class="token comment">//go:nosplit</span>
+<span class="token keyword">func</span> <span class="token function">chanrecv2</span><span class="token punctuation">(</span>c <span class="token operator">*</span>hchan<span class="token punctuation">,</span> elem unsafe<span class="token punctuation">.</span>Pointer<span class="token punctuation">)</span> <span class="token punctuation">(</span>received <span class="token builtin">bool</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token boolean">_</span><span class="token punctuation">,</span> received <span class="token operator">=</span> <span class="token function">chanrecv</span><span class="token punctuation">(</span>c<span class="token punctuation">,</span> elem<span class="token punctuation">,</span> <span class="token boolean">true</span><span class="token punctuation">)</span>
+    <span class="token keyword">return</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<h3><a id="5_406"></a>5.阻塞与非阻塞模式</h3> 
+<h4><a id="51__407"></a>5.1 阻塞与非阻塞模式概述</h4> 
+<p>阻塞和非阻塞是指在访问资源时等待结果的两种方式，它们之间的主要区别在于在等待调用完成返回时，程序是否能继续执行其他操作。</p> 
+<ul><li> <p>阻塞是指当进程请求一个 I/O 操作时（比如读或写磁盘文件），如果该设备还没有准备好读写数据，则调用的进程将被挂起并且继续排队等待，直到读或写操作成功完成。阻塞操作会一直占用进程资源，直到得到所需要的结果为止。</p> </li><li> <p>而非阻塞调用的作用和阻塞调用的结果是完全相同的，执行后立即返回一个状态码来表示操作的成功或失败。如果操作不能立即执行，则不会等待，而是返回失败并告诉应用程序可以稍后再次尝试。</p> </li></ul> 
+<p>channel 操作默认情况下是阻塞的，这意味着当执行 &lt;- channel 读取或者 channel &lt;- value 写入语句时，程序会一直等待，直到某个 goroutine 从该 channel 接收到数据或者有其他 goroutine 将数据发送到该通道中。<br> 而在使用 select 语句的时候，默认的行为是非阻塞的，即当所有分支都无法立刻执行时，select 会立即返回，而不是阻塞等待，这样就给了我们利用分支的互斥性和阻塞逻辑设计非阻塞 IO 的能力。</p> 
+<pre><code class="prism language-go">ch <span class="token operator">:=</span> <span class="token function">make</span><span class="token punctuation">(</span><span class="token keyword">chan</span> <span class="token builtin">int</span><span class="token punctuation">)</span>
+<span class="token keyword">select</span><span class="token punctuation">{<!-- --></span>
+  <span class="token keyword">case</span> <span class="token operator">&lt;-</span> ch<span class="token punctuation">:</span>
+  <span class="token keyword">default</span><span class="token punctuation">:</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<h4><a id="52__424"></a>5.2 非阻塞模式逻辑</h4> 
+<p>在上述源码解读时，可以看到写操作函数chansend与读操作函数chanrecv都有一个参数：block bool，不过在源码中进行了精简，故对于block 的作用没有体现。<br> 非阻塞模式下，在读/写 channel 方法都会通过这个 bool 型的响应参数block ，用以标识是否读取/写入成功.<br> • 能立即完成读取/写入操作的条件下，非阻塞模式下会返回 true.<br> • 使得当前 goroutine 进入死锁或需要被挂起的操作，在非阻塞模式下会返回 false；</p> 
+<pre><code class="prism language-go"><span class="token keyword">func</span> <span class="token function">selectnbsend</span><span class="token punctuation">(</span>c <span class="token operator">*</span>hchan<span class="token punctuation">,</span> elem unsafe<span class="token punctuation">.</span>Pointer<span class="token punctuation">)</span> <span class="token punctuation">(</span>selected <span class="token builtin">bool</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">return</span> <span class="token function">chansend</span><span class="token punctuation">(</span>c<span class="token punctuation">,</span> elem<span class="token punctuation">,</span> <span class="token boolean">false</span><span class="token punctuation">,</span> <span class="token function">getcallerpc</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span>
+<span class="token punctuation">}</span>
+
+<span class="token keyword">func</span> <span class="token function">selectnbrecv</span><span class="token punctuation">(</span>elem unsafe<span class="token punctuation">.</span>Pointer<span class="token punctuation">,</span> c <span class="token operator">*</span>hchan<span class="token punctuation">)</span> <span class="token punctuation">(</span>selected<span class="token punctuation">,</span> received <span class="token builtin">bool</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">return</span> <span class="token function">chanrecv</span><span class="token punctuation">(</span>c<span class="token punctuation">,</span> elem<span class="token punctuation">,</span> <span class="token boolean">false</span><span class="token punctuation">)</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>在 select 语句包裹的多路复用分支中，读和写 channel 操作会被汇编为 selectnbrecv 和 selectnbsend 方法，底层同样复用 chanrecv 和 chansend 方法，但此时由于第三个入参 block 被设置为 false，导致后续会走进非阻塞的处理分支.</p> 
+<h3><a id="6channel_443"></a>6.关闭channel流程</h3> 
+<pre><code class="prism language-go"><span class="token keyword">func</span> <span class="token function">closechan</span><span class="token punctuation">(</span>c <span class="token operator">*</span>hchan<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">if</span> c <span class="token operator">==</span> <span class="token boolean">nil</span> <span class="token punctuation">{<!-- --></span>		<span class="token comment">//关闭未初始化过的 channel 会 panic；</span>
+        <span class="token function">panic</span><span class="token punctuation">(</span><span class="token function">plainError</span><span class="token punctuation">(</span><span class="token string">"close of nil channel"</span><span class="token punctuation">)</span><span class="token punctuation">)</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token function">lock</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>c<span class="token punctuation">.</span>lock<span class="token punctuation">)</span><span class="token comment">//加锁</span>
+    <span class="token keyword">if</span> c<span class="token punctuation">.</span>closed <span class="token operator">!=</span> <span class="token number">0</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token function">unlock</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>c<span class="token punctuation">.</span>lock<span class="token punctuation">)</span>
+        <span class="token function">panic</span><span class="token punctuation">(</span><span class="token function">plainError</span><span class="token punctuation">(</span><span class="token string">"close of closed channel"</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token comment">//重复关闭 channel 会 panic</span>
+    <span class="token punctuation">}</span>
+
+    c<span class="token punctuation">.</span>closed <span class="token operator">=</span> <span class="token number">1</span>
+
+    <span class="token keyword">var</span> glist gList
+    <span class="token comment">// release all readers</span>
+    <span class="token keyword">for</span> <span class="token punctuation">{<!-- --></span>
+        sg <span class="token operator">:=</span> c<span class="token punctuation">.</span>recvq<span class="token punctuation">.</span><span class="token function">dequeue</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+        <span class="token keyword">if</span> sg <span class="token operator">==</span> <span class="token boolean">nil</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">break</span>
+        <span class="token punctuation">}</span>
+        <span class="token keyword">if</span> sg<span class="token punctuation">.</span>elem <span class="token operator">!=</span> <span class="token boolean">nil</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token function">typedmemclr</span><span class="token punctuation">(</span>c<span class="token punctuation">.</span>elemtype<span class="token punctuation">,</span> sg<span class="token punctuation">.</span>elem<span class="token punctuation">)</span>
+            sg<span class="token punctuation">.</span>elem <span class="token operator">=</span> <span class="token boolean">nil</span>
+        <span class="token punctuation">}</span>
+        gp <span class="token operator">:=</span> sg<span class="token punctuation">.</span>g
+        gp<span class="token punctuation">.</span>param <span class="token operator">=</span> unsafe<span class="token punctuation">.</span><span class="token function">Pointer</span><span class="token punctuation">(</span>sg<span class="token punctuation">)</span>
+        sg<span class="token punctuation">.</span>success <span class="token operator">=</span> <span class="token boolean">false</span>
+        glist<span class="token punctuation">.</span><span class="token function">push</span><span class="token punctuation">(</span>gp<span class="token punctuation">)</span>		<span class="token comment">//将阻塞读协程队列中的协程节点统一添加到 glist</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token comment">// release all writers (they will panic)</span>
+    <span class="token keyword">for</span> <span class="token punctuation">{<!-- --></span>
+        sg <span class="token operator">:=</span> c<span class="token punctuation">.</span>sendq<span class="token punctuation">.</span><span class="token function">dequeue</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+        <span class="token keyword">if</span> sg <span class="token operator">==</span> <span class="token boolean">nil</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">break</span>
+        <span class="token punctuation">}</span>
+        sg<span class="token punctuation">.</span>elem <span class="token operator">=</span> <span class="token boolean">nil</span>
+        gp <span class="token operator">:=</span> sg<span class="token punctuation">.</span>g
+        gp<span class="token punctuation">.</span>param <span class="token operator">=</span> unsafe<span class="token punctuation">.</span><span class="token function">Pointer</span><span class="token punctuation">(</span>sg<span class="token punctuation">)</span>
+        sg<span class="token punctuation">.</span>success <span class="token operator">=</span> <span class="token boolean">false</span>
+        glist<span class="token punctuation">.</span><span class="token function">push</span><span class="token punctuation">(</span>gp<span class="token punctuation">)</span>			<span class="token comment">//将阻塞写协程队列中的协程节点统一添加到 glist</span>
+    <span class="token punctuation">}</span>
+    <span class="token function">unlock</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>c<span class="token punctuation">.</span>lock<span class="token punctuation">)</span>
+
+    <span class="token comment">// Ready all Gs now that we've dropped the channel lock.</span>
+    <span class="token keyword">for</span> <span class="token operator">!</span>glist<span class="token punctuation">.</span><span class="token function">empty</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        gp <span class="token operator">:=</span> glist<span class="token punctuation">.</span><span class="token function">pop</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+        gp<span class="token punctuation">.</span>schedlink <span class="token operator">=</span> <span class="token number">0</span>
+        <span class="token function">goready</span><span class="token punctuation">(</span>gp<span class="token punctuation">,</span> <span class="token number">3</span><span class="token punctuation">)</span>	<span class="token comment">// 唤醒 glist 当中的所有协程</span>
+</code></pre> 
+<p><img src="https://images2.imgbox.com/b1/6e/g6Ygfapw_o.png" alt="在这里插入图片描述"></p> 
+<ol><li>首先判断通道是否为nil即未初始化，若关闭空channel则引发panic(plainError(“close of nil channel”))</li><li>若通道非空，由于channel是共享资源，故需要对通道进行lock加锁</li><li>继续判断通道是否关闭，若已经关闭，则引发panic(plainError(“close of closed channel”))</li><li>通道非空未关闭，则正式进入关闭流程： 
+  <ul><li>若有阻塞读协程队列，则将阻塞读协程队列中的协程节点统一添加到 glist，此时一定无阻塞写协程队列</li><li>若有阻塞写协程队列，则将阻塞写协程队列中的协程节点统一添加到 glist，此时一定无阻塞读协程队列</li><li>唤醒 glist 当中的所有协程.</li></ul> </li></ol>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/643e5db9280e5a6cf4c8095388041cfb/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">Vue3&#43;Vite&#43;AntDesignVue初始化项目</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/edbe69ade5803b7e29b993fbea63364f/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">OpenWrt 软路由解析公网IPV6域名访问家庭NAS的问题答疑</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

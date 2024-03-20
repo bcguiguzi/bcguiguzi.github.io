@@ -1,0 +1,524 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Linux内核内存管理之SLAB内存管理算法(三) --基本数据结构及slab分配 - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="Linux内核内存管理之SLAB内存管理算法(三) --基本数据结构及slab分配" />
+<meta property="og:description" content="引进SLAB内存管理算法，BUDDY算法来说，如果要存放很少字节内容而分配一个页，会照成很大的浪费。内存管理引进了SLAB内存管理。这篇文章很长，但还没讲完； 一、SLAB分配器 1、slab分配器把对象分组放进高速缓存。每个高速缓存都是同种类型对象的一种“设备”； 2、包含高速缓存的主内存去被划分为多个slab，每个slab有一个或多个连续的有页组成，这些页中既包含已分配的对象，也包含空闲的对象； 3、高速缓存描述符：kmem_cache_t (很重要) /** * 高速缓存描述符 */ struct kmem_cache_s { /* 1) per-cpu data, touched during every alloc/free */ /** * 每CPU指针数组，指向包含空闲对象的本地高速缓存。 */ struct array_cache	*array[NR_CPUS]; /** * 要转移进本地高速缓存或从本地高速缓存中转移出的大批对象的数量。 */ unsigned int	batchcount; /** * 本地高速缓存中空闲对象的最大数目。这个参数可调。 */ unsigned int	limit; /* 2) touched by every alloc &amp; free from the backend */ /** * 包含三个链表，这是一个结构体，下面讲解 */ struct kmem_list3	lists; /* NUMA: kmem_3list_t	*nodelists[MAX_NUMNODES] */ /** * 高速缓存中包含的对象的大小。 */ unsigned int	objsize; /** * 描述高速缓存永久属性的一组标志。slab中的所有对象具有相同的大小。 */ unsigned int	flags;	/* constant flags */ /** * 在一个单独slab中的对象的个数。高速缓存中的所有slab具有相同的大小。 */ unsigned int	num;	/* # of objs per slab */ /** * 整个slab高速缓存中空闲对象的上限。 */ unsigned int	free_limit; /* upper limit of objects in the lists */ /** * 高速缓存自旋锁。 */ spinlock_t	spinlock; /* 3) cache_grow/shrink */ /* order of pgs per slab (2^n) */ /** * 一个单独slab中包含的连续页框数目的对数。这都是初始化时确定的 */ unsigned int	gfporder; /* force GFP flags, e." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/af443efad84341946f55062be3044ec1/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2017-06-15T21:34:03+08:00" />
+<meta property="article:modified_time" content="2017-06-15T21:34:03+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Linux内核内存管理之SLAB内存管理算法(三) --基本数据结构及slab分配</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <span style="white-space:pre"></span>引进SLAB内存管理算法，BUDDY算法来说，如果要存放很少字节内容而分配一个页，会照成很大的浪费。内存管理引进了SLAB内存管理。这篇文章很长，但还没讲完； 
+<br> 一、SLAB分配器 
+<span style="white-space:pre"> </span> 
+<br> 
+<span style="white-space:pre"></span>1、slab分配器把对象分组放进高速缓存。每个高速缓存都是同种类型对象的一种“设备”； 
+<br> 
+<span style="white-space:pre"></span>2、包含高速缓存的主内存去被划分为多个slab，每个slab有一个或多个连续的有页组成，这些页中既包含已分配的对象，也包含空闲的对象； 
+<br> 
+<span style="white-space:pre"></span>3、高速缓存描述符：kmem_cache_t   (很重要)   
+<br> 
+<pre><code class="language-objc">/**
+ * 高速缓存描述符
+ */
+struct kmem_cache_s {
+/* 1) per-cpu data, touched during every alloc/free */
+	/**
+	 * 每CPU指针数组，指向包含空闲对象的本地高速缓存。
+	 */
+	struct array_cache	*array[NR_CPUS];
+	/**
+	 * 要转移进本地高速缓存或从本地高速缓存中转移出的大批对象的数量。
+	 */
+	unsigned int		batchcount;
+	/**
+	 * 本地高速缓存中空闲对象的最大数目。这个参数可调。
+	 */
+	unsigned int		limit;
+/* 2) touched by every alloc &amp; free from the backend */
+	/**
+	 * 包含三个链表，这是一个结构体，下面讲解
+	 */
+	struct kmem_list3	lists;
+	/* NUMA: kmem_3list_t	*nodelists[MAX_NUMNODES] */
+	/**
+	 * 高速缓存中包含的对象的大小。
+	 */
+	unsigned int		objsize;
+	/**
+	 * 描述高速缓存永久属性的一组标志。slab中的所有对象具有相同的大小。
+	 */
+	unsigned int	 	flags;	/* constant flags */
+	/**
+	 * 在一个单独slab中的对象的个数。高速缓存中的所有slab具有相同的大小。
+	 */
+	unsigned int		num;	/* # of objs per slab */
+	/**
+	 * 整个slab高速缓存中空闲对象的上限。
+	 */
+	unsigned int		free_limit; /* upper limit of objects in the lists */
+	/**
+	 * 高速缓存自旋锁。
+	 */
+	spinlock_t		spinlock;
+/* 3) cache_grow/shrink */
+	/* order of pgs per slab (2^n) */
+	/**
+	 * 一个单独slab中包含的连续页框数目的对数。这都是初始化时确定的
+	 */
+	unsigned int		gfporder;
+	/* force GFP flags, e.g. GFP_DMA */
+	/**
+	 * 分配页框时传递给伙伴系统函数的一组标志。
+	 */
+	unsigned int		gfpflags;
+	/**
+	 * slab使用的颜色个数。用于slab着色。
+	 */
+	size_t			colour;		/* cache colouring range */
+	/**
+	 * slab中的基本对齐偏移。
+	 */
+	unsigned int		colour_off;	/* colour offset */
+	/**
+	 * 下一个被分配的slab使用的颜色。就是对齐因子。
+	 */
+	unsigned int		colour_next;	/* cache colouring */
+	/**
+	 * 指向包含slab描述符的普通slab高速缓存。如果使用了内部slab描述符，则这个字段为NULL。
+	 */
+	kmem_cache_t		*slabp_cache;
+	/**
+	 * 单个slab的大小。
+	 */
+	unsigned int		slab_size;
+	/**
+	 * 高速缓存动态属性标志。
+	 */
+	unsigned int		dflags;		/* dynamic flags */
+	/* constructor func */
+	/**
+	 * 高速缓存相关的构造方法的指针。
+	 */
+	void (*ctor)(void *, kmem_cache_t *, unsigned long);
+	/* de-constructor func */
+	/**
+	 * 高速缓存相关的析构方法的指针。
+	 */
+	void (*dtor)(void *, kmem_cache_t *, unsigned long);
+/* 4) cache creation/removal */
+	/**
+	 * 高速缓存名称。
+	 */
+	const char		*name;
+	/**
+	 * 高速缓存链表。将所有的高速缓存描述符链接在一起，利用双向链表；利于管理
+	 * 链接方法参照上章节BUDDY页面管理的第五部分;
+	 */
+	struct list_head	next;
+/* 5) statistics */
+#if STATS
+	/**
+	 * 统计信息
+	 */
+	unsigned long		num_active;
+	unsigned long		num_allocations;
+	unsigned long		high_mark;
+	unsigned long		grown;
+	unsigned long		reaped;
+	unsigned long 		errors;
+	unsigned long		max_freeable;
+	unsigned long		node_allocs;
+	atomic_t		allochit;
+	atomic_t		allocmiss;
+	atomic_t		freehit;
+	atomic_t		freemiss;
+#endif
+#if DEBUG
+	/**
+	 * 调试信息
+	 */
+	int			dbghead;
+	int			reallen;
+#endif
+};</code></pre> 
+<p><span style="white-space:pre"></span>4、针对此数据结构struct kmem_list3<span style="white-space:pre"></span>lists;<br> </p> 
+<pre><code class="language-objc">/**
+ * slab高速缓存描述符内嵌结构
+ */
+struct kmem_list3 {
+	/**
+	 * 空闲和非空闲对象的slab描述符双向循环链表。
+	 */
+	struct list_head	slabs_partial;	/* partial list first, better asm code */
+	/**
+	 * 不包含空闲对象的slab描述符双向循环链表。
+	 */
+	struct list_head	slabs_full;
+	/**
+	 * 只包含空闲对象的slab描述符双向循环链表。
+	 */
+	struct list_head	slabs_free;
+	unsigned long	free_objects;
+	/**
+	 * slab分配器的页回收算法使用。
+	 */
+	int		free_touched;
+	/**
+	 * slab分配器的页回收算法使用。
+	 */
+	unsigned long	next_reap;
+	/**
+	 * 所有CPU共享的一个本地高速缓存的指针。它使得将空闲对象从一个本地高速缓存移动到另外一个高速缓存的任务更容易。
+	 * 它的初始大小是batchcount字段的8倍。
+	 */
+	struct array_cache	*shared;
+};</code></pre> 
+<span style="white-space:pre"> </span>5、slab描述符；它的存储位置有两种， 
+<br> 
+<span style="white-space:pre"></span>① 存储在内部，存储在分配给slab的第一个页的起始位置，当对象小于512MB，或者当内存碎片和对象描述符在slab中留下足够空间时，选用这个位置； 
+<br> 
+<span style="white-space:pre"></span>② 存储在外部，即高速缓存描述符的slabp_cache字段指向的普通高速缓存中分配这个新的描述符。 
+<br> 
+<span style="white-space:pre"></span>如果CFLGS_OFF_SLAB标志被置位，选择② 置零选择① 
+<br> 
+<pre><code class="language-objc">struct slab {  
+    struct list_head list;  /*用于将slab链入kmem_list3的链表*/  
+    unsigned long colouroff;/*该slab的着色偏移*/  
+    void *s_mem;            /*指向slab中的第一个对象*/  
+    unsigned int inuse;     //正在使用的slab中对象的个数
+    kmem_bufctl_t free;     /*下一个空闲对象的下标*/  
+    unsigned short nodeid;  /*节点标识号*/  
+};</code></pre>二、先了解一下普通和专用高速缓存 
+<br>     1、普通高速缓存： 
+<br>        第一种：第一个高速缓存叫做kmem_cache，包含有内核使用的其余高速缓存描述符(也就是说这里面存储的是高速缓存描述符，用来描述专用高速缓存).cache_cache变量包含第一个高速缓存的描述符； 
+<br> 
+<span style="white-space:pre"></span>  第二种：用作普通用途的内存区。按内存区大小一般分为13个内存区。malloc_sizes的表(其元素类型为cache_sizes)分别指向26个告诉缓存描述符，与其相关的内存区大小为：32,64,128,256,...,131072字节。每种大小，都有两个高速缓存：一个适用于ISA DMA分配，另一个使用与常规分配。 
+<br> 
+<span style="white-space:pre"></span>  在系统初始化调用kmem_cache_init()和kmem_cache_sizes_init()来建立普通高速缓存。 
+<br> 
+<span style="white-space:pre"></span>2、专用高速缓存: 
+<br> 
+<span style="white-space:pre"></span>首先它是由kmem_cache_create()函数创建的。所创建新的高速缓存描述符就从普通高速缓存中的cache_cache中取出来的一个描述符，并把描述符插入到告诉缓存描述副的cache_chain链表中； 
+<br> 
+<span style="white-space:pre"></span>删除调用kmem_cache_destory()撤销一个高速缓存并将它从cache_chain链表上删除。为避免浪费空间，将分配的slab撤销，kmem_cache_shrink()函数通过反复调用slab_destroy()撤销所有的slab 
+<br> 三、给高速缓存分配slab 
+<br> 
+<span style="white-space:pre"></span>1、一个新分配的高速缓存没有包含任何slab，因此也没有空闲的对象。只有满足以下两个条件才分配slab： 
+<br>          ① 已发出一个分配新对象的请求； 
+<br> 
+<span style="white-space:pre"></span>② 高速缓存不包含任何空闲对象。 
+<br> 
+<span style="white-space:pre"></span>2、slab分配器会通过调用cache_grow()函数给高速缓存分配一个新的slab。这个函数先调用kmem_getpages()函数申请一组物理页组成的内存块作为slab的空间，然后调用alloc_slabmgnt()获得一个新的slab描述符； 
+<pre><code class="language-objc">//其实主要看的也就是个过程
+static int cache_grow (kmem_cache_t * cachep, int flags)
+	{
+	struct slab	*slabp;
+	void		*objp;
+	size_t		 offset;
+	int		 local_flags;
+	unsigned long	 ctor_flags;
+	if (flags &amp; ~(SLAB_DMA|SLAB_LEVEL_MASK|SLAB_NO_GROW))
+		BUG();
+	if (flags &amp; SLAB_NO_GROW)
+		return 0;
+	ctor_flags = SLAB_CTOR_CONSTRUCTOR;
+	local_flags = (flags &amp; SLAB_LEVEL_MASK);
+	if (!(local_flags &amp; __GFP_WAIT))
+		ctor_flags |= SLAB_CTOR_ATOMIC;
+	/* About to mess with non-constant members - lock. */
+	check_irq_off();
+	spin_lock(&amp;cachep-&gt;spinlock);
+	/* Get colour for the slab, and cal the next value. */
+	/**
+	 * 更新高速缓存描述符的当前颜色值。并根据当前颜色值计算数据区的偏移。
+	 * 这样可以平等的在slab间分布颜色值。
+	 */
+	offset = cachep-&gt;colour_next;
+	cachep-&gt;colour_next++;
+	if (cachep-&gt;colour_next &gt;= cachep-&gt;colour)
+		cachep-&gt;colour_next = 0;
+	offset *= cachep-&gt;colour_off;//cachep-&gt;colour_off:slab中的基本对齐便宜，存放slab描述符时它起始地址相对于这个内存块基地址的偏移量；
+	spin_unlock(&amp;cachep-&gt;spinlock);
+	if (local_flags &amp; __GFP_WAIT)
+		local_irq_enable();
+	/*
+	 * The test for missing atomic flag is performed here, rather than
+	 * the more obvious place, simply to reduce the critical path length
+	 * in kmem_cache_alloc(). If a caller is seriously mis-behaving they
+	 * will eventually be caught here (where it matters).
+	 */
+	kmem_flagcheck(cachep, flags);
+	/* Get mem for the objs. */
+	/**
+	 * 调用kmem_getpages从分区页框分配器获得一组页框来存放一个单独的slab
+	 * ***************这个下面详细讲********************
+	 */
+	if (!(objp = kmem_getpages(cachep, flags)))
+		goto failed;
+	/* Get slab management. */
+	/**
+	 * 获得一个新的slab描述符
+	 * ***************这个下面详细讲********************
+	 */
+	if (!(slabp = alloc_slabmgmt(cachep, objp, offset, local_flags)))
+		goto opps1;
+	/**注意一下这个函数
+	 * set_slab_attr扫描分配给新slab的页框的所有页描述符
+	 * 并将高速缓存描述符和slab描述符的地址分别赋给页描述符中lru字段的next和prev字段，之后的删除或者修改从这里直接能找到属于谁；
+	 * 这是不会出错的，因为只有当页框空闲时，伙伴系统的函数才会使用lru字段，而只要涉及伙伴系统，slab分配器函数处理的页框就不空闲。
+	 * 注意：这个字段因为也会被页框回收算法使用，所以包含了这些隐含的约定，总会让人困惑，也许会带来一些意外的后果。
+	 * 总之，从这里可以看出linux不好、甚至是坏的一面。除了linus，还有多少人能够改linux
+	 */
+	//cachep高速缓存描述符对应的地址，sslabp是lab描述符对应的地址
+	set_slab_attr(cachep, slabp, objp);
+	/**
+	 * cache_init_objs将构造方法（如果有）应用到新的slab包含的所有对象上。
+	 */
+	cache_init_objs(cachep, slabp, ctor_flags);
+	if (local_flags &amp; __GFP_WAIT)
+		local_irq_disable();
+	check_irq_off();
+	spin_lock(&amp;cachep-&gt;spinlock);
+	/* Make slab active. */
+	/**
+	 * 将新得到的slab描述符slabp添加到高速缓存描述符cachep的全空slab链表的末端。并更新空闲对象计数器
+	 */
+	list_add_tail(&amp;slabp-&gt;list, &amp;(list3_data(cachep)-&gt;slabs_free));
+	STATS_INC_GROWN(cachep);
+	list3_data(cachep)-&gt;free_objects += cachep-&gt;num;
+	spin_unlock(&amp;cachep-&gt;spinlock);
+	return 1;
+opps1:
+	kmem_freepages(cachep, objp);
+failed:
+	if (local_flags &amp; __GFP_WAIT)
+		local_irq_disable();
+	return 0;
+}</code></pre> 
+<span style="white-space:pre"> 3、函数alloc_slabmgmt(),功能就是获得一个内存块(一组连续的物理页)</span> 
+<br> 
+<pre><code class="language-objc">/*
+ * slab分配器调用此接口从页框分配器中获得一组连续的空闲页框。
+ * cachep-需要额外页框的高速缓存的高速缓存描述符。请求页框的个数由cachep-&gt;gfporder中的order决定。
+ * flags-说明如何请求页框。这组标志与存放在高速缓存描述符的gfpflags字段中专用高速缓存分配标志相结合。
+ */
+static void *kmem_getpages(kmem_cache_t *cachep, int flags)
+{
+	struct page *page;
+	void *addr;
+	int i;
+	flags |= cachep-&gt;gfpflags;
+	page = alloc_pages(flags, cachep-&gt;gfporder);
+	//申请大小为(2^cachep-&gt;gfporder)个物理页
+	if (!page)
+		return NULL;
+	addr = page_address(page);//得到第一个物理页的线性地址
+	i = (1 &lt;&lt; cachep-&gt;gfporder);
+	if (cachep-&gt;flags &amp; SLAB_RECLAIM_ACCOUNT)
+		atomic_add(i, &amp;slab_reclaim_pages);
+	add_page_state(nr_slab, i);//这两句不太懂，应该跟状态有关
+	while (i--) {
+		SetPageSlab(page);//所申请到的物理页全部标称用于slab中，改的是页面描述符的flags变量
+		page++;
+	}
+	return addr;
+}</code></pre> 
+<br> 
+<span style="white-space:pre">4、第二个主要函数alloc_slabmgmt()，主要是获得一个slab描述符，还有就是决定这个描述符的存储空间在哪里</span> 
+<pre><code class="language-objc">/**
+ * 获得一个新的slab描述符。
+ * cachep:需要额外页框的高速缓存的高速缓存描述符
+ * objp:表示申请到上一个函数返回的没有类型的线性地址，也就是申请到的第一个页框对应的线性地址。
+ * colour_off:
+ * local_flags:标志
+ */
+static struct slab* alloc_slabmgmt (kmem_cache_t *cachep,void *objp, int colour_off, int local_flags)
+{
+	struct slab *slabp;//定义一个slab指针
+	/**
+	 * 如果CFLGS_OFF_SLAB标志被置位，那么样从高速缓存描述符的slabp_cache字段指向的普通高速缓存中分配这个新的描述符。
+	 * 这样就决定了描述符的存储位置，基本上都放在第一个页框里
+	 */
+	if (OFF_SLAB(cachep)) {//判断标志位
+		slabp = kmem_cache_alloc(cachep-&gt;slabp_cache, local_flags);
+		if (!slabp)
+			return NULL;
+	} else {
+		/**
+		 * 否则，从slab的第一个页框中分配这个slab描述符
+		 */
+		slabp = objp+colour_off;
+		colour_off += cachep-&gt;slab_size;
+	}
+	slabp-&gt;inuse = 0;
+	slabp-&gt;colouroff = colour_off;//slabp-&gt;colouroff表示一个偏移地址，存放slab对象描述符时它起始地址相对于内存块基地址(objp)的偏移量
+	slabp-&gt;s_mem = objp+colour_off;
+	return slabp;
+}</code></pre> 
+<span style="white-space:pre"> 5、slab的分配过程就是这个样子了，释放来说就比较简单了，可以倒着想一下。当然需要满足两个条件中的任何一个：<br> <span style="white-space:pre"></span>① slab告诉缓存中有太多的的空闲对象<br> <span style="white-space:pre"></span>② 被周期性调用的定时函数确定是否有完全未使用的slab能被释放；(我不</span>太 
+<span style="white-space:pre">懂这个啥意思)<br> <span style="white-space:pre"></span>然后调用slab_destroy()函数，撤销相应的slab，并释放对应的页框。</span> 
+<pre><code class="language-objc">/**
+ * 撤销一个slab。并释放相应的页框到分区页框分配器。
+ */
+static void slab_destroy (kmem_cache_t *cachep, struct slab *slabp)		
+{
+	//获取slab中内存块的起始线性地址
+	void *addr = slabp-&gt;s_mem - slabp-&gt;colouroff;
+#if DEBUG
+	int i;
+	for (i = 0; i &lt; cachep-&gt;num; i++) {
+		void *objp = slabp-&gt;s_mem + cachep-&gt;objsize * i;
+		if (cachep-&gt;flags &amp; SLAB_POISON) {
+#ifdef CONFIG_DEBUG_PAGEALLOC
+			if ((cachep-&gt;objsize%PAGE_SIZE)==0 &amp;&amp; OFF_SLAB(cachep))
+				kernel_map_pages(virt_to_page(objp), cachep-&gt;objsize/PAGE_SIZE,1);
+			else
+				check_poison_obj(cachep, objp);
+#else
+			check_poison_obj(cachep, objp);
+#endif
+		}
+		if (cachep-&gt;flags &amp; SLAB_RED_ZONE) {
+			if (*dbg_redzone1(cachep, objp) != RED_INACTIVE)
+				slab_error(cachep, "start of a freed object "
+							"was overwritten");
+			if (*dbg_redzone2(cachep, objp) != RED_INACTIVE)
+				slab_error(cachep, "end of a freed object "
+							"was overwritten");
+		}
+		if (cachep-&gt;dtor &amp;&amp; !(cachep-&gt;flags &amp; SLAB_POISON))
+			(cachep-&gt;dtor)(objp+obj_dbghead(cachep), cachep, 0);
+	}
+#else
+	/**
+	 * 如果高速缓存为它的对象定义了析构方法，就遍历slab中的所有对象。
+	 * 使用析构函数释放slab中的所有对象。
+	 */
+	if (cachep-&gt;dtor) {
+		int i;
+		for (i = 0; i &lt; cachep-&gt;num; i++) {
+			void* objp = slabp-&gt;s_mem+cachep-&gt;objsize*i;
+			(cachep-&gt;dtor)(objp, cachep, 0);
+		}
+	}
+#endif
+	/**
+	 * 如果使用了SLAB_DESTROY_BY_RCU标志来创建slab高速缓存，就应该使用call_rcu
+	 * 来注册一个回调，以延期释放slab。回调函数会调用kmem_freepages和kmem_cache_free
+	 */
+	if (unlikely(cachep-&gt;flags &amp; SLAB_DESTROY_BY_RCU)) {
+		struct slab_rcu *slab_rcu;
+		slab_rcu = (struct slab_rcu *) slabp;
+		slab_rcu-&gt;cachep = cachep;
+		slab_rcu-&gt;addr = addr;
+		call_rcu(&amp;slab_rcu-&gt;head, kmem_rcu_free);
+	} else {
+		/**
+		 * 调用kmem_freepages，将slab使用的所有连续页框返回给伙伴系统。
+		 * 按照线性地址释放这些页框
+		 */
+		kmem_freepages(cachep, addr);
+		/**
+		 * 如果slab描述符存放在slab的外面，那么就从slab描述符的高速缓存释放slab描述符。
+		 */
+		if (OFF_SLAB(cachep))
+			kmem_cache_free(cachep-&gt;slabp_cache, slabp);
+	}
+}</code></pre> 
+<br> 物理空间什么的都有了，下一章节就介绍关于slab里面的对象的分配了。。。。 
+<br> 
+<br> 
+<br> 
+<p></p> 
+<br>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/54a55056a1f147146447369cd8afd26b/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">Win10 服务主机：本地系统 CPU占用过高</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/8cfb1fdce863be33c6538e4198f45e52/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">在数据库中，查询出xxx中字符串长度大于多少的记录</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

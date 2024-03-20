@@ -1,0 +1,294 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>如何定制对话框中的回车键（转） - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="如何定制对话框中的回车键（转）" />
+<meta property="og:description" content="基于对话框的程序中，每次按下回车键时，程序都退出。去掉按钮的 BS_DEFPUSHBUTTON 属性并重写OnOK函数也没用。那么如何定制回车键的行为呢？这个问题很easy，但是要说明白，却要费点时间。 这个问题在Windows的开发中由来已久，对于初学者来说，这是个恼人的问题，幸运的是，人们找到了多种解决这个问题的方案。本文将告诉你定制回车键行为的方法。 如果你想要disable回车键，最简单的方法是重载OnOK函数，这固然是个不坏的主意，但如果你重载OnOK，让它什么事情也不干，那麽当用户用鼠标按下回车键想真正做些什么的时候怎么办呢？你可以改变回车键的ID，如：ID_MY_OK，并写一个调用EndDialog的处理器，这个方法虽然也能行得通，但显得有点不专业。 另外一种方法是disable回车键的“默认”属性。这也是本文开始所提出的方法，之所以没有成功，是因为仅仅uncheck 回车键的 BS_DEFPUSHBUTTON 属性是不够的，你可以利用Spy&#43;&#43;仔细地观察控制和实验就能发现回车键仍然我行我素发送退出消息。 问题出在哪呢？你必须区分OK键和回车键，你可以写一个OnOK处理器调用GetCurrentMessage函数获取最后发送的消息，应该是WM_COMMAND，再检查WPARAM的低位字（low-order word）看看命令来自何处。 要解决问题，必须搞清楚背后所发生的一切，在Spy&#43;&#43;中可以看到，当用户按下回车键时，Windows发送一个特殊的WM_GETDEFID消息来获得缺省的命令ID，Windows再将它作为WM_COMMAND发送。所以，你要做的就是重载WM_GETDEFID消息，在有关Windows的文档中是这样描述WM_GETDEFID返回值的：“如果有缺省得按钮，则返回值的高位字包含DC_HASDEFID，低位字包含控制的标识符。否则，返回值是零。” 根据这段描述，假设如果没有缺省得按钮，则返回值应该是零。如果想要disable缺省得ID，必须在高位字中返回DC_HASDEFID。 BEGIN_MESSAGE_MAP(CMyDlg, CDialog) ON_MESSAGE(DM_GETDEFID, OnGetDefID) ... END_MESSAGE_MAP() LRESULT CMyDlg::OnGetDefID(WPARAM wp, LPARAM lp) { return MAKELONG(0,DC_HASDEFID); } 因为MFC没有对应DM_GETDEFID的宏，你必须使用通用的ON_MASSAGE宏。这样用户可以随意按回车键，但什么事都不会发生。上面的做法是解决了按回车键程序退出的问题。但是又产生了另外一个问题：如果想要回车键做些事情怎么办呢？有一些人曾经问过如何将回车键映射到TAB键，既按下回车键就象按下TAB键一样-也就是说输入焦点移动到下一个对话框控制。这需要做一些工作才行，但最简单的方式是使用加速键。许多程序员试图用OnChar，我会对他们说：No，no，no! OnChar是一个低级趣味的东西，你应该想方设法避免它，更糟的还有WM_KEYDOWN，WM_KEYUP之类的东西。谁能处理这些东西？OnChar可以用来限制允许输入编辑框的字符，如：数字，字母等。如果想要将一个键映射到一个命令，加速键才是最好的方法。 在本文的例子为VK_RETURN创建了一个加速键，将它映射到命令ID_MY_ENTER，并写一个命令处理器来做你想做的事情。 BEGIN_MESSAGE_MAP(CMyDlg, CDialog) ON_COMMAND(ID_MY_ENTER, OnMyEnter) ...... END_MESSAGE_MAP() void CMyDlg::OnMyEnter() { NextInTabOrder(); } 下图是本文例子的对话框和代码，代码中的NextInTabOrder是实际起作用的函数。它使用GetNextDlgTabItem来获得Tab顺序的下一个控制焦点。 如果你细心的话会发现另外一个还没有得到解决的问题，那就是在MFC对话框不自动处理加速键，你必须自己编写代码来做这件事情。为了理解弄清楚这是为什么，让我们回首Windows开发的历程，在使用C和原始的Windows API的年代，每一个Windows程序中都有一个叫做消息泵的中枢循环： while (GetMessage(...)) { TranslateMessage(...); DispatchMessage(...); } 在这里细节不是重要的，重要的是消息并不到达程序的流程，你必须请求消息。这是一种人为的非抢先式多任务方法，这种方法通过每一个任务精诚协作来仿造多任务环境，随着增加的功能越来越多，有人想到了加速键表的主意，这个表用来映射按键和命令IDs。为了实现这个目的，他们发明了一个叫TranslateAccelerator的函数。现在这个消息泵变成了如下的样子： while (GetMessage(...)) { if (TranslateAccelerator(hAccel...)) { // handled, continue looping } else { TranslateMessage(...); DispatchMessage(...); } } hAccel是个加速键表句柄，在这里细节同样不是重要的，重要的是如何利用加速键表，也就是要有一个专门的函数将按键消息解释为WM_COMMAND消息。TranslateAccelerator寻找WM_KEYDOWN，WM_CHAR，WM_KEYUP序列与表中键值匹配的字符。如果找到，它插入一条WM_COMMAND到消息队列，在消息队列中的命令ID可以是加速键表定义的任何入口。这样你只要设置加速键表（在资源中）并记住调用对应的函数TranslateAccelerator，就什么都不用担心了。 时间转眼间进入了21世纪，随着C&#43;&#43;和MFC的日臻成熟，现在几乎整个消息循环（但不是全部）都被隐藏到了MFC中，为了能让任何窗口都有机会获得一点消息泵的行为，MFC提供了一个专门的虚函数PreTranslateMessage，如果你有足够的勇气去探究CWinThread中的消息处理机制的话，你会遇到类似如下的代码： // 简化后的 CWinThread while (GetMessage(." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/3ba38c8f8c775f5d19fdb224d9f5b1c5/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2008-04-17T10:08:00+08:00" />
+<meta property="article:modified_time" content="2008-04-17T10:08:00+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">如何定制对话框中的回车键（转）</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <div class="middleSize" id="articleContent"> 
+ <div style="TEXT-INDENT: 2em">
+   基于对话框的程序中，每次按下回车键时，程序都退出。去掉按钮的   BS_DEFPUSHBUTTON   属性并重写OnOK函数也没用。那么如何定制回车键的行为呢？这个问题很easy，但是要说明白，却要费点时间。 
+ </div> 
+ <div style="TEXT-INDENT: 2em">
+     
+ </div> 
+ <div style="TEXT-INDENT: 2em">
+   这个问题在Windows的开发中由来已久，对于初学者来说，这是个恼人的问题，幸运的是，人们找到了多种解决这个问题的方案。本文将告诉你定制回车键行为的方法。 
+ </div> 
+ <div style="TEXT-INDENT: 2em">
+     
+ </div> 
+ <div style="TEXT-INDENT: 2em">
+   如果你想要disable回车键，最简单的方法是重载OnOK函数，这固然是个不坏的主意，但如果你重载OnOK，让它什么事情也不干，那麽当用户用鼠标按下回车键想真正做些什么的时候怎么办呢？你可以改变回车键的ID，如：ID_MY_OK，并写一个调用EndDialog的处理器，这个方法虽然也能行得通，但显得有点不专业。 
+ </div> 
+ <div style="TEXT-INDENT: 2em">
+     
+ </div> 
+ <div style="TEXT-INDENT: 2em">
+   另外一种方法是disable回车键的“默认”属性。这也是本文开始所提出的方法，之所以没有成功，是因为仅仅uncheck   回车键的   BS_DEFPUSHBUTTON   属性是不够的，你可以利用Spy++仔细地观察控制和实验就能发现回车键仍然我行我素发送退出消息。 
+ </div> 
+ <div style="TEXT-INDENT: 2em">
+     
+ </div> 
+ <div style="TEXT-INDENT: 2em">
+   问题出在哪呢？你必须区分OK键和回车键，你可以写一个OnOK处理器调用GetCurrentMessage函数获取最后发送的消息，应该是WM_COMMAND，再检查WPARAM的低位字（low-order   word）看看命令来自何处。 
+ </div> 
+ <div style="TEXT-INDENT: 2em">
+     
+ </div> 
+ <div style="TEXT-INDENT: 2em">
+   要解决问题，必须搞清楚背后所发生的一切，在Spy++中可以看到，当用户按下回车键时，Windows发送一个特殊的WM_GETDEFID消息来获得缺省的命令ID，Windows再将它作为WM_COMMAND发送。所以，你要做的就是重载WM_GETDEFID消息，在有关Windows的文档中是这样描述WM_GETDEFID返回值的：“如果有缺省得按钮，则返回值的高位字包含DC_HASDEFID，低位字包含控制的标识符。否则，返回值是零。” 
+ </div> 
+ <div style="TEXT-INDENT: 2em">
+     
+ </div> 
+ <div style="TEXT-INDENT: 2em">
+   根据这段描述，假设如果没有缺省得按钮，则返回值应该是零。如果想要disable缺省得ID，必须在高位字中返回DC_HASDEFID。       
+  <br>  BEGIN_MESSAGE_MAP(CMyDlg,   CDialog)   
+  <br>          ON_MESSAGE(DM_GETDEFID,   OnGetDefID)   
+  <br>          ...   
+  <br>  END_MESSAGE_MAP()   
+  <br>    
+  <br>  LRESULT   CMyDlg::OnGetDefID(WPARAM   wp,   LPARAM   lp)     
+  <br>  {   
+  <br>          return   MAKELONG(0,DC_HASDEFID);     
+  <br>  }      
+  <br>      
+ </div> 
+ <div style="TEXT-INDENT: 2em">
+   因为MFC没有对应DM_GETDEFID的宏，你必须使用通用的ON_MASSAGE宏。这样用户可以随意按回车键，但什么事都不会发生。上面的做法是解决了按回车键程序退出的问题。但是又产生了另外一个问题：如果想要回车键做些事情怎么办呢？有一些人曾经问过如何将回车键映射到TAB键，既按下回车键就象按下TAB键一样-也就是说输入焦点移动到下一个对话框控制。这需要做一些工作才行，但最简单的方式是使用加速键。许多程序员试图用OnChar，我会对他们说：No，no，no!   OnChar是一个低级趣味的东西，你应该想方设法避免它，更糟的还有WM_KEYDOWN，WM_KEYUP之类的东西。谁能处理这些东西？OnChar可以用来限制允许输入编辑框的字符，如：数字，字母等。如果想要将一个键映射到一个命令，加速键才是最好的方法。 
+ </div> 
+ <div style="TEXT-INDENT: 2em">
+     
+ </div> 
+ <div style="TEXT-INDENT: 2em">
+   在本文的例子为VK_RETURN创建了一个加速键，将它映射到命令ID_MY_ENTER，并写一个命令处理器来做你想做的事情。       
+  <br>  BEGIN_MESSAGE_MAP(CMyDlg,   CDialog)     
+  <br>          ON_COMMAND(ID_MY_ENTER,   OnMyEnter)   
+  <br>          ......   
+  <br>  END_MESSAGE_MAP()     
+  <br>    
+  <br>  void   CMyDlg::OnMyEnter()     
+  <br>  {   
+  <br>          NextInTabOrder();     
+  <br>  }      
+  <br>      
+  <br> 
+ </div> 
+ <div style="TEXT-INDENT: 2em">
+   下图是本文例子的对话框和代码，代码中的NextInTabOrder是实际起作用的函数。它使用GetNextDlgTabItem来获得Tab顺序的下一个控制焦点。               
+  <br> 
+ </div> 
+ <div style="TEXT-INDENT: 2em">
+   如果你细心的话会发现另外一个还没有得到解决的问题，那就是在MFC对话框不自动处理加速键，你必须自己编写代码来做这件事情。为了理解弄清楚这是为什么，让我们回首Windows开发的历程，在使用C和原始的Windows   API的年代，每一个Windows程序中都有一个叫做消息泵的中枢循环：       
+  <br>  while   (GetMessage(...))   {     
+  <br>          TranslateMessage(...);   
+  <br>          DispatchMessage(...);     
+  <br>  } 
+ </div> 
+ <div style="TEXT-INDENT: 2em">
+     
+ </div> 
+ <div style="TEXT-INDENT: 2em">
+   在这里细节不是重要的，重要的是消息并不到达程序的流程，你必须请求消息。这是一种人为的非抢先式多任务方法，这种方法通过每一个任务精诚协作来仿造多任务环境，随着增加的功能越来越多，有人想到了加速键表的主意，这个表用来映射按键和命令IDs。为了实现这个目的，他们发明了一个叫TranslateAccelerator的函数。现在这个消息泵变成了如下的样子：       
+  <br>  while   (GetMessage(...))   {     
+  <br>          if   (TranslateAccelerator(hAccel...))   {     
+  <br>                  //   handled,   continue   looping             
+  <br>          }   else   {     
+  <br>                  TranslateMessage(...);     
+  <br>                  DispatchMessage(...);     
+  <br>          }     
+  <br>  }    
+ </div> 
+ <div style="TEXT-INDENT: 2em">
+     
+ </div> 
+ <div style="TEXT-INDENT: 2em">
+   hAccel是个加速键表句柄，在这里细节同样不是重要的，重要的是如何利用加速键表，也就是要有一个专门的函数将按键消息解释为WM_COMMAND消息。TranslateAccelerator寻找WM_KEYDOWN，WM_CHAR，WM_KEYUP序列与表中键值匹配的字符。如果找到，它插入一条WM_COMMAND到消息队列，在消息队列中的命令ID可以是加速键表定义的任何入口。这样你只要设置加速键表（在资源中）并记住调用对应的函数TranslateAccelerator，就什么都不用担心了。 
+ </div> 
+ <div style="TEXT-INDENT: 2em">
+     
+ </div> 
+ <div style="TEXT-INDENT: 2em">
+   时间转眼间进入了21世纪，随着C++和MFC的日臻成熟，现在几乎整个消息循环（但不是全部）都被隐藏到了MFC中，为了能让任何窗口都有机会获得一点消息泵的行为，MFC提供了一个专门的虚函数PreTranslateMessage，如果你有足够的勇气去探究CWinThread中的消息处理机制的话，你会遇到类似如下的代码：       
+  <br>  //   简化后的   CWinThread     
+  <br>  while   (GetMessage(...))   {     
+  <br>          if   (PreTranslateMessage(...))   {     
+  <br>                  //   continue   looping     
+  <br>          }   else   {     
+  <br>                  TranslateMessage(...);     
+  <br>                  DispatchMessage(...);     
+  <br>          }   
+  <br>  }      
+  <br>      
+ </div> 
+ <div style="TEXT-INDENT: 2em">
+   CWinThread::PreTranslateMessage是个虚函数，在应用中，其缺省的实现以相同的名字调用另一个虚函数，CWnd::PreTranslateMessage。因此，如果你需要在消息循环中做些什么的话-如解释加速键-你只要重载PreTranslateMessage即可。实际上，这就是CFrameWnd处理加速键的方法。       
+  <br>  BOOL   CFrameWnd::PreTranslateMessage(MSG*   pMsg)     
+  <br>  {     
+  <br>          ......   
+  <br>          if   (pMsg-&gt;message   &gt;=   WM_KEYFIRST   &amp;&amp;     
+  <br>                  pMsg-&gt;message   &lt;=   WM_KEYLAST)     
+  <br>          {     
+  <br>                  ::TranslateAccelerator(m_hAccelTable,...);     
+  <br>          }     
+  <br>  }   
+ </div> 
+ <div style="TEXT-INDENT: 2em">
+     
+ </div> 
+ <div style="TEXT-INDENT: 2em">
+   CFrameWnd   从哪里获得加速键表呢？当你加载框架时，CFrameWnd::LoadFrame用与文档模板相同的ID（如IDR_MAINFRAME）查找加速键表，并将他加载到m_hAccelTable。所有的处理细节在MFC中都是自动的、隐蔽的，你不用去操心-仅对主框架而言，如果是对话框，则是另外一种情况。因为CDialog不是从CFrameWnd派生而来，所以不继承任何有关加速键的内容。 
+ </div> 
+ <div style="TEXT-INDENT: 2em">
+     
+ </div> 
+ <div style="TEXT-INDENT: 2em">
+   不用担心，我们可以模仿CFrameWnd的工作，很容易为对话框增加加速键的功能。第一步是加载加速键，加载加速键最好的地方是在对话框的OnInitDialog函数中：       
+  <br>  BOOL   CMyDlg::OnInitDialog()     
+  <br>  {     
+  <br>          CDialog::OnInitDialog();     
+  <br>          ......   
+  <br>          //   Load   accelerators     
+  <br>          m_hAccel   =   ::LoadAccelerators(AfxGetResourceHandle(),     
+  <br>                  m_lpszTemplateName);     
+  <br>          ASSERT(m_hAccel);     
+  <br>    
+  <br>          return   TRUE;     
+  <br>  } 
+ </div> 
+ <div style="TEXT-INDENT: 2em">
+     
+ </div> 
+ <div style="TEXT-INDENT: 2em">
+   在加速键表中，你可以使用任何ID。这里我使用的是对话框本身的ID，（m_lpszTemplateName既可以是一个串名，也可以是一个MAKEINTRESOURCE使用的整型ID）:       
+  <br>  //   本文例子中的加速键(In   DlgKeys.rc   )   
+  <br>  IDD_MYDIALOG   ACCELERATORS   DISCARDABLE       
+  <br>  BEGIN     
+  <br>          VK_RETURN,   ID_MY_ENTER,   VIRTKEY,   NOINVERT     
+  <br>  END     
+  <br>      
+  <br>  一旦你已经加载加速键，剩下的事情是重载PreTranslateMessage函数：       
+  <br>  BOOL   CMyDlg::PreTranslateMessage(MSG*   pMsg)     
+  <br>  {     
+  <br>          if   (WM_KEYFIRST   &lt;=   pMsg-&gt;message   &amp;&amp;     
+  <br>                  pMsg-&gt;message   &lt;=   WM_KEYLAST)     
+  <br>          {     
+  <br>                  HACCEL   hAccel   =   m_hAccel;     
+  <br>                  if   (hAccel   &amp;&amp;     
+  <br>                          ::TranslateAccelerator(m_hWnd,   hAccel,   pMsg))     
+  <br>                          return   TRUE;     
+  <br>          }     
+  <br>          return   CDialog::PreTranslateMessage(pMsg);     
+  <br>  } 
+ </div> 
+ <div style="TEXT-INDENT: 2em">
+     
+ </div> 
+ <div style="TEXT-INDENT: 2em">
+   之所以要检查按键类的消息（从WM_   KEYFIRST   到   WM_KEYLAST）是为了提高速度。如果你知道不是一个按键消息，你就不用浪费时间去调用TranslateAccelerator。再说TranslateAccelerator是一个虚拟函数，不用增加一个消息映射入口。仅仅写这个函数就可以了。 
+ </div> 
+ <div style="TEXT-INDENT: 2em">
+     
+ </div> 
+ <div style="TEXT-INDENT: 2em">
+   综上所述，MFC中为对话框添加加速键功能的方法就是：加载加速键和重载PreTranslateMessage函数。也就是说，如果你决定使用加速键，不用去操心OnGetDefID，而是将没有命令处理器的ID映射到VK_RETURN。本文的例子代码中封装了一个又加速键的新对话框类：CdlgWinAccelerators，它是一个通用类。希望大家喜欢它。最后祝大伙编程愉快。 
+ </div> 
+ <div class="invisible" id="reference">
+   文章引用自： 
+  <a href="http://writeblog.csdn.net/Editor/FCKeditor/editor/" rel="nofollow noopener noreferrer" target="_blank"></a> 
+ </div> 
+</div>  
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/0fc21e8d9c48c18dde50a916267c694e/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">个人工具收藏</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/61754f742a3de454b15e87608913fcb6/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">Asp.net的身份验证有有三种，分别是&#34;Windows | Forms | Passport&#34;，</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

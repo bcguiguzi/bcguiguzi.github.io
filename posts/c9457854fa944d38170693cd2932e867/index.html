@@ -1,0 +1,502 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>【Go】深入理解 Go map：赋值和扩容迁移 ① - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="【Go】深入理解 Go map：赋值和扩容迁移 ①" />
+<meta property="og:description" content="文章目录 map底层实现hmapbmap map hash冲突了怎么办？ map扩容触发扩容时机扩容小结为什么map扩容选择增量（渐进式扩容）？迁移是逐步进行的。那如果在途中又要扩容了，怎么办？ map翻倍扩容原理 map写入数据内部执行流程写入数据读取数据 map扩容总结 map优化点map gc优化手段利用bigcache优化全局mapgo-zero safemap 避免OOM分析 Sync.mapSync.map底层结构​​sync.map优点sync.map实现总结 问题1.golang map为什么不支持并发安全？ map底层实现 熟悉 map 结构体的读者应该知道，hmap 由很多 bmap（bucket） 构成，每个 bmap 都保存了 8 个 key/value 对：
+hmap
+有时落在同一个 bmap 中的 key/value 太多了，超过了 8 个，就会由溢出 bmap 来承接，即 overflow bmap（后面我们叫它 bucket）。溢出的 bucket 和原来的 bucket 形成一个“拉链”。
+对于这些 overflow 的 bucket，在 hmap 结构体和 bmap 结构体里分别有一个 extra.overflow 和 overflow 字段指向它们。
+hmap // A header for a Go map. type hmap struct { count int // map内的元素个数，调用 len(map) 时，直接返回此值 flags uint8 // 标志位，例如表示map正在被写入或者被遍历 B uint8 // buckets 的对数 log_2，即含有 2^B 个buckets。这样的好处是方便用位操作实现取模 noverflow uint16 // 溢出桶的近似数 hash0 uint32 // 哈希种子 buckets unsafe." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/c9457854fa944d38170693cd2932e867/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2024-03-12T23:18:26+08:00" />
+<meta property="article:modified_time" content="2024-03-12T23:18:26+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">【Go】深入理解 Go map：赋值和扩容迁移 ①</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p></p> 
+<div class="toc"> 
+ <h4>文章目录</h4> 
+ <ul><li><ul><li><a href="#map_1" rel="nofollow">map底层实现</a></li><li><ul><li><ul><li><a href="#hmap_22" rel="nofollow">hmap</a></li><li><a href="#bmap_46" rel="nofollow">bmap</a></li></ul> 
+    </li><li><a href="#map_hash_90" rel="nofollow">map hash冲突了怎么办？</a></li></ul> 
+   </li><li><a href="#map_106" rel="nofollow">map扩容</a></li><li><ul><li><a href="#_111" rel="nofollow">触发扩容时机</a></li><li><ul><li><a href="#_212" rel="nofollow">扩容小结</a></li><li><ul><li><a href="#map_219" rel="nofollow">为什么map扩容选择增量（渐进式扩容）？</a></li><li><a href="#_231" rel="nofollow">迁移是逐步进行的。那如果在途中又要扩容了，怎么办？</a></li></ul> 
+     </li><li><a href="#map_248" rel="nofollow">map翻倍扩容原理</a></li></ul> 
+   </li></ul> 
+   </li><li><a href="#map_263" rel="nofollow">map写入数据内部执行流程</a></li><li><ul><li><ul><li><a href="#_306" rel="nofollow">写入数据</a></li><li><a href="#_311" rel="nofollow">读取数据</a></li></ul> 
+    </li><li><a href="#map_319" rel="nofollow">map扩容总结</a></li></ul> 
+   </li><li><a href="#map_328" rel="nofollow">map优化点</a></li><li><ul><li><ul><li><a href="#map_gc_341" rel="nofollow">map gc优化手段</a></li><li><a href="#bigcachemap_407" rel="nofollow">利用bigcache优化全局map</a></li><li><a href="#gozero_safemap_OOM_418" rel="nofollow">go-zero safemap 避免OOM分析</a></li></ul> 
+   </li></ul> 
+  </li></ul> 
+  </li><li><a href="#Syncmap_569" rel="nofollow">Sync.map</a></li><li><ul><li><ul><li><a href="#Syncmap_574" rel="nofollow">Sync.map底层结构</a></li><li><a href="#syncmap_605" rel="nofollow">​​sync.map优点</a></li><li><a href="#syncmap_616" rel="nofollow">sync.map实现总结</a></li></ul> 
+  </li></ul> 
+  </li><li><a href="#_628" rel="nofollow">问题</a></li><li><ul><li><ul><li><a href="#1golang_map_629" rel="nofollow">1.golang map为什么不支持并发安全？</a></li></ul> 
+  </li></ul> 
+ </li></ul> 
+</div> 
+<p></p> 
+<h3><a id="map_1"></a>map底层实现</h3> 
+<p>熟悉 map 结构体的读者应该知道，hmap 由很多 bmap（bucket） 构成，每个 bmap 都保存了 8 个 key/value 对：</p> 
+<p><img src="https://images2.imgbox.com/60/df/kdDv3YQE_o.png" alt="在这里插入图片描述"></p> 
+<p>hmap<br> <strong>有时落在同一个 bmap 中的 key/value 太多了，超过了 8 个，就会由溢出 bmap 来承接，即 overflow bmap（后面我们叫它 bucket）。溢出的 bucket 和原来的 bucket 形成一个“拉链”。<br> 对于这些 overflow 的 bucket，在 hmap 结构体和 bmap 结构体里分别有一个 extra.overflow 和 overflow 字段指向它们。</strong></p> 
+<h5><a id="hmap_22"></a>hmap</h5> 
+<pre><code class="prism language-go"><span class="token comment">// A header for a Go map.</span>
+
+<span class="token keyword">type</span> hmap <span class="token keyword">struct</span> <span class="token punctuation">{<!-- --></span>
+	count     <span class="token builtin">int</span> <span class="token comment">// map内的元素个数，调用 len(map) 时，直接返回此值</span>
+	flags     <span class="token builtin">uint8</span> <span class="token comment">// 标志位，例如表示map正在被写入或者被遍历</span>
+	B         <span class="token builtin">uint8</span> <span class="token comment">// buckets 的对数 log_2，即含有 2^B 个buckets。这样的好处是方便用位操作实现取模</span>
+	noverflow <span class="token builtin">uint16</span> <span class="token comment">// 溢出桶的近似数</span>
+	hash0     <span class="token builtin">uint32</span> <span class="token comment">// 哈希种子</span>
+	buckets   unsafe<span class="token punctuation">.</span>Pointer <span class="token comment">// 【指向 buckets数组(连续内存空间)，数组的类型为[]bmap，大小为 2^B】</span>
+	oldbuckets unsafe<span class="token punctuation">.</span>Pointer <span class="token comment">// 扩容的时候，buckets 长度会是 oldbuckets 的两倍</span>
+	nevacuate <span class="token builtin">uintptr</span> <span class="token comment">// 指示扩容进度，小于此地址的 buckets 迁移完成</span>
+	extra <span class="token operator">*</span>mapextra <span class="token comment">// optional fields</span>
+<span class="token punctuation">}</span>
+
+</code></pre> 
+<p><img src="https://images2.imgbox.com/c8/71/hPSIV5n9_o.png" alt="在这里插入图片描述"></p> 
+<h5><a id="bmap_46"></a>bmap</h5> 
+<p>bmap 就是我们常说的“桶”，桶里面会最多装 8 个 key，这些 key 之所以会落入同一个桶，是因为它们经过哈希计算后，哈希结果是“一类”的。在桶内，又会根据 key 计算出来的 hash 值的高 8 位来决定 key 到底落入桶内的哪个位置（一个桶内最多有8个位置）。</p> 
+<p><strong>如果有第 9 个 key-value 落入当前的 bucket，那就需要再构建一个 bucket ，通过 overflow 指针连接起来</strong>。</p> 
+<p><strong>hint 大于 8 又会怎么样？答案很明显，性能问题，其时间复杂度改变（也就是执行效率出现问题）</strong></p> 
+<p>注意：<strong>在哈希桶中，键值之间并不是相邻排列的，而是键放在一起，值放在一起，来减少因为键值类型不同而产生的不必要的内存对齐</strong></p> 
+<p>如果按照 key/value/key/value/… 这样的模式存储，那在每一个 key/value 对之后都要额外 padding 7 个字节；而将所有的 key，value 分别绑定到一起，这种形式 key/key/…/value/value/…，则只需要在最后添加 padding。</p> 
+<pre><code class="prism language-go"><span class="token comment">// A bucket for a Go map.</span>
+
+<span class="token keyword">type</span> bmap <span class="token keyword">struct</span> <span class="token punctuation">{<!-- --></span>
+<span class="token comment">// tophash generally contains the top byte of the hash value</span>
+<span class="token comment">// for each key in this bucket. If tophash[0] &lt; minTopHash,</span>
+<span class="token comment">// tophash[0] is a bucket evacuation state instead.</span>
+tophash <span class="token punctuation">[</span>bucketCnt<span class="token punctuation">]</span><span class="token builtin">uint8</span> <span class="token comment">// 【bucketCnt在源码中被const为8, 每个bmap结构最多存放8组键值对】</span>
+<span class="token comment">// Followed by bucketCnt keys and then bucketCnt elems.</span>
+<span class="token comment">// NOTE: packing all the keys together and then all the elems together makes the</span>
+<span class="token comment">// code a bit more complicated than alternating key/elem/key/elem/... but it allows</span>
+<span class="token comment">// us to eliminate padding which would be needed for, e.g., map[int64]int8.</span>
+<span class="token comment">// Followed by an overflow pointer.</span>
+<span class="token comment">//</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p><img src="https://images2.imgbox.com/c3/ea/GnLxpffN_o.png" alt="在这里插入图片描述"></p> 
+<p><img src="https://images2.imgbox.com/bb/97/LyQeUjP8_o.png" alt="在这里插入图片描述"></p> 
+<p><img src="https://images2.imgbox.com/ce/ad/ufl4I36r_o.png" alt="在这里插入图片描述"></p> 
+<p>长度与容量<br> <img src="https://images2.imgbox.com/14/ee/X8xiSrSr_o.png" alt="在这里插入图片描述"></p> 
+<h4><a id="map_hash_90"></a>map hash冲突了怎么办？</h4> 
+<p>Go 语言采用的是哈希查找表，并且使用链表解决哈希冲突。</p> 
+<ul><li> <p>哈希函数</p> <p>哈希函数，又称散列算法、散列函数。主要作用是通过特定算法将数据根据一定规则组合重新生成得到一个散列值</p> <p>而在哈希表中，其生成的散列值常用于寻找其键映射到哪一个桶上。而一个好的哈希函数，应当尽量少的出现哈希冲突，以此保证操作哈希表的时间复杂度（但是哈希冲突在目前来讲，是无法避免的。我们需要 “解决” 它）</p> </li><li> <p>链地址法</p> <p>在哈希操作中，相当核心的一个处理动作就是 “哈希冲突” 的解决。而在 Go map 中采用的就是 "链地址法 " 去解决哈希冲突，又称 “拉链法”。<strong>其主要做法是数组 + 链表的数据结构</strong>，其溢出节点的存储内存都是动态申请的，因此相对更灵活。而每一个元素都是一个链表。</p> </li></ul> 
+<h3><a id="map_106"></a>map扩容</h3> 
+<p>随着哈希表中元素的逐渐增加，哈希的性能会逐渐恶化，所以我们需要更多的桶和更大的内存保证哈希的读写性能</p> 
+<h4><a id="_111"></a>触发扩容时机</h4> 
+<p>在特定条件的情况下且当前没有正在进行扩容动作（以判断 hmap.oldbuckets != nil 为基准）。哈希表在赋值、删除的动作下会触发扩容行为，条件如下：</p> 
+<ol><li>装载因子已经超过 6.5；</li><li>哈希使用了太多溢出桶；</li></ol> 
+<pre><code class="prism language-go"><span class="token comment">// 如果我们达到了最大负载因子，或者我们有太多的溢出桶，</span>
+<span class="token comment">// 并且我们还没有处于增长中，那么开始增长。</span>
+<span class="token keyword">if</span> <span class="token operator">!</span>h<span class="token punctuation">.</span><span class="token function">growing</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">&amp;&amp;</span> <span class="token punctuation">(</span><span class="token function">overLoadFactor</span><span class="token punctuation">(</span>h<span class="token punctuation">.</span>count<span class="token operator">+</span><span class="token number">1</span><span class="token punctuation">,</span> h<span class="token punctuation">.</span>B<span class="token punctuation">)</span> <span class="token operator">||</span> <span class="token function">tooManyOverflowBuckets</span><span class="token punctuation">(</span>h<span class="token punctuation">.</span>noverflow<span class="token punctuation">,</span> h<span class="token punctuation">.</span>B<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+	<span class="token function">hashGrow</span><span class="token punctuation">(</span>t<span class="token punctuation">,</span> h<span class="token punctuation">)</span>
+	<span class="token keyword">goto</span> again <span class="token comment">// 增长表格会使所有东西都失效，所以重新尝试</span>
+<span class="token punctuation">}</span>
+
+<span class="token comment">// growing 报告 h 是否正在扩容。扩容可能是到相同的大小或更大。</span>
+<span class="token comment">// 通过判断oldbuckets是否为nil来判断是否扩容完成</span>
+<span class="token keyword">func</span> <span class="token punctuation">(</span>h <span class="token operator">*</span>hmap<span class="token punctuation">)</span> <span class="token function">growing</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token builtin">bool</span> <span class="token punctuation">{<!-- --></span>
+	<span class="token keyword">return</span> h<span class="token punctuation">.</span>oldbuckets <span class="token operator">!=</span> <span class="token boolean">nil</span>
+<span class="token punctuation">}</span>
+
+</code></pre> 
+<p><strong>第一阶段：确定扩容容量规则</strong></p> 
+<pre><code class="prism language-go"><span class="token keyword">if</span> <span class="token operator">!</span><span class="token function">overLoadFactor</span><span class="token punctuation">(</span>h<span class="token punctuation">.</span>count<span class="token operator">+</span><span class="token number">1</span><span class="token punctuation">,</span> h<span class="token punctuation">.</span>B<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+	bigger <span class="token operator">=</span> <span class="token number">0</span>
+	h<span class="token punctuation">.</span>flags <span class="token operator">|=</span> sameSizeGrow
+<span class="token punctuation">}</span>
+</code></pre> 
+<ul><li>若不是负载因子 load factor 超过当前界限，也就是属于溢出桶 overflow buckets 过多的情况。因此本次扩容规则将是 sameSizeGrow，即是不改变大小的扩容动作。</li></ul> 
+<pre><code class="prism language-go">bigger <span class="token operator">:=</span> <span class="token function">uint8</span><span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">)</span>
+<span class="token operator">...</span>
+newbuckets<span class="token punctuation">,</span> nextOverflow <span class="token operator">:=</span> <span class="token function">makeBucketArray</span><span class="token punctuation">(</span>t<span class="token punctuation">,</span> h<span class="token punctuation">.</span>B<span class="token operator">+</span>bigger<span class="token punctuation">,</span> <span class="token boolean">nil</span><span class="token punctuation">)</span>
+</code></pre> 
+<ul><li>若是负载因子 load factor 达到当前界限，将会动态扩容当前大小的两倍作为其新容量大小</li></ul> 
+<p><strong>第二阶段：初始化、交换新旧 桶/溢出桶</strong><br> 主要是针对扩容的相关数据前置处理，涉及 buckets/oldbuckets、overflow/oldoverflow 之类与存储相关的字段</p> 
+<pre><code class="prism language-go"><span class="token operator">...</span>
+oldbuckets <span class="token operator">:=</span> h<span class="token punctuation">.</span>buckets
+newbuckets<span class="token punctuation">,</span> nextOverflow <span class="token operator">:=</span> <span class="token function">makeBucketArray</span><span class="token punctuation">(</span>t<span class="token punctuation">,</span> h<span class="token punctuation">.</span>B<span class="token operator">+</span>bigger<span class="token punctuation">,</span> <span class="token boolean">nil</span><span class="token punctuation">)</span>
+
+flags <span class="token operator">:=</span> h<span class="token punctuation">.</span>flags <span class="token operator">&amp;^</span> <span class="token punctuation">(</span>iterator <span class="token operator">|</span> oldIterator<span class="token punctuation">)</span>
+<span class="token keyword">if</span> h<span class="token punctuation">.</span>flags<span class="token operator">&amp;</span>iterator <span class="token operator">!=</span> <span class="token number">0</span> <span class="token punctuation">{<!-- --></span>
+	flags <span class="token operator">|=</span> oldIterator
+<span class="token punctuation">}</span>
+
+h<span class="token punctuation">.</span>B <span class="token operator">+=</span> bigger
+<span class="token operator">...</span>
+h<span class="token punctuation">.</span>noverflow <span class="token operator">=</span> <span class="token number">0</span>
+
+<span class="token keyword">if</span> h<span class="token punctuation">.</span>extra <span class="token operator">!=</span> <span class="token boolean">nil</span> <span class="token operator">&amp;&amp;</span> h<span class="token punctuation">.</span>extra<span class="token punctuation">.</span>overflow <span class="token operator">!=</span> <span class="token boolean">nil</span> <span class="token punctuation">{<!-- --></span>
+	<span class="token operator">...</span>
+	h<span class="token punctuation">.</span>extra<span class="token punctuation">.</span>oldoverflow <span class="token operator">=</span> h<span class="token punctuation">.</span>extra<span class="token punctuation">.</span>overflow
+	h<span class="token punctuation">.</span>extra<span class="token punctuation">.</span>overflow <span class="token operator">=</span> <span class="token boolean">nil</span>
+<span class="token punctuation">}</span>
+<span class="token keyword">if</span> nextOverflow <span class="token operator">!=</span> <span class="token boolean">nil</span> <span class="token punctuation">{<!-- --></span>
+	<span class="token operator">...</span>
+	h<span class="token punctuation">.</span>extra<span class="token punctuation">.</span>nextOverflow <span class="token operator">=</span> nextOverflow
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>这里注意到这段代码： <strong>newbuckets, nextOverflow := makeBucketArray(t, h.B+bigger, nil)</strong>。第一反应是扩容的时候就马上申请并初始化内存了吗？假设涉及大量的内存分配，那挺耗费性能的…</p> 
+<p>然而并不，内部只会先进行预分配，当使用的时候才会真正的去初始化</p> 
+<p><strong>第三阶段：扩容</strong><br> 在源码中，发现第三阶段的流转并没有显式展示。这是因为流转由底层去做控制了。但通过分析代码和注释，可得知由第三阶段涉及 growWork 和 evacuate 方法。如下：</p> 
+<pre><code class="prism language-go"><span class="token keyword">func</span> <span class="token function">growWork</span><span class="token punctuation">(</span>t <span class="token operator">*</span>maptype<span class="token punctuation">,</span> h <span class="token operator">*</span>hmap<span class="token punctuation">,</span> bucket <span class="token builtin">uintptr</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+	<span class="token function">evacuate</span><span class="token punctuation">(</span>t<span class="token punctuation">,</span> h<span class="token punctuation">,</span> bucket<span class="token operator">&amp;</span>h<span class="token punctuation">.</span><span class="token function">oldbucketmask</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span>
+
+	<span class="token keyword">if</span> h<span class="token punctuation">.</span><span class="token function">growing</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token function">evacuate</span><span class="token punctuation">(</span>t<span class="token punctuation">,</span> h<span class="token punctuation">,</span> h<span class="token punctuation">.</span>nevacuate<span class="token punctuation">)</span>
+	<span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>在该方法中，主要是两个 evacuate 函数的调用。他们在调用上又分别有什么区别呢？如下：</p> 
+<ul><li>evacuate(t, h, bucket&amp;h.oldbucketmask()): 将 oldbucket 中的元素迁移 rehash 到扩容后的新 bucket</li><li>evacuate(t, h, h.nevacuate): 如果当前正在进行扩容，则再进行多一次迁移</li></ul> 
+<p>另外，在执行扩容动作的时候，可以发现都是以 bucket/oldbucket 为单位的，而不是传统的 buckets/oldbuckets。再结合代码分析，可得知在 Go map 中扩容是采取增量扩容的方式，并非一步到位</p> 
+<h5><a id="_212"></a>扩容小结</h5> 
+<p>通过前面三个阶段的分析，可以得知扩容的大致过程。我们阶段性总结一下。主要如下：</p> 
+<ul><li>根据需扩容的原因不同（overLoadFactor/tooManyOverflowBuckets），分为两类容量规则方向，为等量扩容（不改变原有大小）或双倍扩容</li><li>新申请的扩容空间（newbuckets/newoverflow）都是预分配，等真正使用的时候才会初始化</li><li>扩容完毕后（预分配），不会马上就进行迁移。而是采取增量扩容的方式，当有访问到具体 bukcet 时，才会逐渐的进行迁移（将 oldbucket 迁移到 bucket）</li></ul> 
+<h6><a id="map_219"></a>为什么map扩容选择增量（渐进式扩容）？</h6> 
+<p>如果是全量扩容的话，那问题就来了。假设当前 hmap 的容量比较大，直接全量扩容的话，就会导致<strong>扩容要花费大量的时间和内存，导致系统卡顿，最直观的表现就是慢</strong>。显然，不能这么做</p> 
+<p>而增量扩容，就可以解决这个问题。<strong>它通过每一次的 map 操作行为去分摊总的一次性动作</strong>。因此有了 buckets/oldbuckets 的设计，它是逐步完成的，并且会在扩容完毕后才进行清空</p> 
+<p>原有的 key 并不会一次性搬迁完毕，每次最多只会搬迁 2 个 bucket。<strong>只有在插入或修改、删除 key 的时候，都会尝试进行搬迁 buckets 的工作。先检查 oldbuckets 是否搬迁完毕，具体来说就是检查 oldbuckets 是否为 nil</strong>。</p> 
+<h6><a id="_231"></a>迁移是逐步进行的。那如果在途中又要扩容了，怎么办？</h6> 
+<pre><code class="prism language-go">again<span class="token punctuation">:</span>
+	bucket <span class="token operator">:=</span> hash <span class="token operator">&amp;</span> <span class="token function">bucketMask</span><span class="token punctuation">(</span>h<span class="token punctuation">.</span>B<span class="token punctuation">)</span>
+    <span class="token operator">...</span>
+	<span class="token keyword">if</span> <span class="token operator">!</span>h<span class="token punctuation">.</span><span class="token function">growing</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">&amp;&amp;</span> <span class="token punctuation">(</span><span class="token function">overLoadFactor</span><span class="token punctuation">(</span>h<span class="token punctuation">.</span>count<span class="token operator">+</span><span class="token number">1</span><span class="token punctuation">,</span> h<span class="token punctuation">.</span>B<span class="token punctuation">)</span> <span class="token operator">||</span> <span class="token function">tooManyOverflowBuckets</span><span class="token punctuation">(</span>h<span class="token punctuation">.</span>noverflow<span class="token punctuation">,</span> h<span class="token punctuation">.</span>B<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token function">hashGrow</span><span class="token punctuation">(</span>t<span class="token punctuation">,</span> h<span class="token punctuation">)</span>
+		<span class="token keyword">goto</span> again 
+	<span class="token punctuation">}</span>
+</code></pre> 
+<p><strong>在这里注意到 goto again 语句，结合上下文可得若正在进行扩容，就会不断地进行迁移。待迁移完毕后才会开始进行下一次的扩容动作</strong></p> 
+<h5><a id="map_248"></a>map翻倍扩容原理</h5> 
+<p><img src="https://images2.imgbox.com/fd/e5/XJRGWurM_o.png" alt="- bucket 搬迁是逐步进行的，每进行一次赋值，会做至少一次搬迁工作。"></p> 
+<p><img src="https://images2.imgbox.com/34/08/yEGl8KkZ_o.png" alt="在这里插入图片描述"></p> 
+<p>count/(2^B) &gt; 6.5：当负载因子超过6.5时就会触发翻倍扩容。</p> 
+<p>如下图，原来 B = 0，只有一个桶，装满后触发翻倍扩容，B = 1，buckets 指向两个新桶，oldbuckets 指向旧桶，nevacuate 表示接下来要迁移编号为 0 的旧桶。旧桶的键值对会渐进式分流到两个新桶中。直到旧桶中的键值对全部搬迁完毕后，删除oldbuckets。</p> 
+<p><img src="https://images2.imgbox.com/06/16/Rl7FD18H_o.png" alt="在这里插入图片描述"></p> 
+<h3><a id="map_263"></a>map写入数据内部执行流程</h3> 
+<p>在Go语言中，Map的扩容过程非常关键，它决定了Map的性能和效率。一般来说，扩容会在以下几种情况中触发：</p> 
+<ul><li>删除元素：当我们删除Map中的元素时，Go会检查是否正在进行扩容操作。如果是，那么扩容操作将针对被删除元素的bucket进行。</li></ul> 
+<pre><code class="prism language-go"><span class="token comment">// 删除元素</span>
+<span class="token keyword">func</span> <span class="token function">mapdelete</span><span class="token punctuation">(</span>t <span class="token operator">*</span>maptype<span class="token punctuation">,</span> h <span class="token operator">*</span>hmap<span class="token punctuation">,</span> key unsafe<span class="token punctuation">.</span>Pointer<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+   <span class="token operator">...</span>
+bucket <span class="token operator">:=</span> hash <span class="token operator">&amp;</span> <span class="token function">bucketMask</span><span class="token punctuation">(</span>h<span class="token punctuation">.</span>B<span class="token punctuation">)</span>
+	<span class="token keyword">if</span> h<span class="token punctuation">.</span><span class="token function">growing</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token function">growWork</span><span class="token punctuation">(</span>t<span class="token punctuation">,</span> h<span class="token punctuation">,</span> bucket<span class="token punctuation">)</span>
+	<span class="token punctuation">}</span>
+    <span class="token operator">...</span>
+<span class="token punctuation">}</span>
+
+</code></pre> 
+<ul><li>插入或更新元素：当我们向Map中插入新元素或更新现有元素时，Go会进行类似的检查。此时，如果Map正在扩容，那么扩容操作将针对被插入或更新元素的bucket进行。</li></ul> 
+<pre><code class="prism language-go"><span class="token comment">// 插入或更新元素</span>
+<span class="token keyword">func</span> <span class="token function">mapassign</span><span class="token punctuation">(</span>t <span class="token operator">*</span>maptype<span class="token punctuation">,</span> h <span class="token operator">*</span>hmap<span class="token punctuation">,</span> key unsafe<span class="token punctuation">.</span>Pointer<span class="token punctuation">)</span> unsafe<span class="token punctuation">.</span>Pointer <span class="token punctuation">{<!-- --></span>
+    <span class="token operator">...</span>
+again<span class="token punctuation">:</span>
+	bucket <span class="token operator">:=</span> hash <span class="token operator">&amp;</span> <span class="token function">bucketMask</span><span class="token punctuation">(</span>h<span class="token punctuation">.</span>B<span class="token punctuation">)</span>
+	<span class="token keyword">if</span> h<span class="token punctuation">.</span><span class="token function">growing</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token function">growWork</span><span class="token punctuation">(</span>t<span class="token punctuation">,</span> h<span class="token punctuation">,</span> bucket<span class="token punctuation">)</span>
+	<span class="token punctuation">}</span>
+    <span class="token operator">...</span>
+<span class="token keyword">if</span> <span class="token operator">!</span>h<span class="token punctuation">.</span><span class="token function">growing</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">&amp;&amp;</span> <span class="token punctuation">(</span><span class="token function">overLoadFactor</span><span class="token punctuation">(</span>h<span class="token punctuation">.</span>count<span class="token operator">+</span><span class="token number">1</span><span class="token punctuation">,</span> h<span class="token punctuation">.</span>B<span class="token punctuation">)</span> <span class="token operator">||</span> <span class="token function">tooManyOverflowBuckets</span><span class="token punctuation">(</span>h<span class="token punctuation">.</span>noverflow<span class="token punctuation">,</span> h<span class="token punctuation">.</span>B<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token function">hashGrow</span><span class="token punctuation">(</span>t<span class="token punctuation">,</span> h<span class="token punctuation">)</span>
+		<span class="token keyword">goto</span> again <span class="token comment">// 增长表格会使所有东西都失效，所以重新尝试</span>
+	<span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+
+</code></pre> 
+<p>通过阅读源码，我们可以看到，如果Map正在扩容，那么在删除、插入或更新元素时都会执行一次迁移操作。这样可以确保扩容过程的平滑进行，而不会因为其他操作的干扰而中断。值得注意的是，查找元素并不会触发扩容操作。这是因为，查找操作只涉及到读取数据，而不会改变Map的结构，因此无需触发扩容。</p> 
+<h5><a id="_306"></a>写入数据</h5> 
+<p><img src="https://images2.imgbox.com/fa/47/uiYnYeBe_o.png" alt="在这里插入图片描述"></p> 
+<h5><a id="_311"></a>读取数据</h5> 
+<p><img src="https://images2.imgbox.com/b5/3f/a2EsF97i_o.png" alt="在这里插入图片描述"></p> 
+<h4><a id="map_319"></a>map扩容总结</h4> 
+<ul><li> <p>Map 的赋值难点在于数据的扩容和数据的搬迁操作。</p> </li><li> <p>扩容不是一定会新增空间，也有可能是只是做了内存整理。</p> </li><li> <p>tophash 的标志即可以判断是否为空，还会判断是否搬迁，以及搬迁的位置为X or Y。</p> </li><li> <p>delete map 中的key，有可能出现很多空的kv，会导致搬迁操作。如果可以避免，尽量避免。</p> </li></ul> 
+<h3><a id="map_328"></a>map优化点</h3> 
+<ul><li> <p>提前分配内存: 一切都和其他地方一样。初始化map时，指定其大小。</p> </li><li> <p>使用空结构作为值: struct{}什么都不是，因此例如对信号值使用这种方法是非常有益的。</p> </li><li> <p>及时清空map<br> map只能增长，不能缩小。我们需要控制这一点——完全而明确地重置map。因为删除其所有元素无济于事。</p> </li><li> <p>尽量不要在键和值中使用指针<br> 如果 map 不包含指针，那么 GC 就不会在它上面浪费宝贵的时间。而且要知道字符串也是指针——使用[]byte而不是字符串作为键。</p> </li></ul> 
+<h5><a id="map_gc_341"></a>map gc优化手段</h5> 
+<p>在 go 里，由于 GC STW(Stop the World) 的存在大的哈希表是非常要命的，看看 bigcache 开发团队的博客的测试数据：</p> 
+<blockquote> 
+ <p>With an empty cache, this endpoint had maximum responsiveness latency of 10ms for 10k rps. When the cache was filled, it had more than a second latency for 99th percentile. Metrics indicated that there were over 40 mln objects in the heap and GC mark and scan phase took over four seconds.</p> 
+</blockquote> 
+<p>缓存塞满后，堆上有 4 千万个对象，GC 的扫描过程就超过了 4 秒钟，这就不能忍了。</p> 
+<p><strong>主要的优化思路有：</strong></p> 
+<ul><li> <p>offheap（堆外内存），GC 只会扫描堆上的对象，那就把对象都搞到栈上去，但是这样这个缓存库就高度依赖 offheap 的 malloc 和 free 操作了</p> </li><li> <p>参考 freecache 的思路，用 ringbuffer 存 entry，绕过了 map 里存指针，简单瞄了一下代码，后面有空再研究一下（继续挖坑</p> </li><li> <p>利用 Go 1.5+ 的特性：</p> <p>当 map 中的 key 和 value 都是基础类型时，GC 就不会扫到 map 里的 key 和 value</p> </li></ul> 
+<p>如果我们仔细看 mapextra 结构体里对 overflow 字段的注释，会发现这里有“文章”。</p> 
+<pre><code class="prism language-go"><span class="token keyword">type</span> mapextra <span class="token keyword">struct</span> <span class="token punctuation">{<!-- --></span>
+ overflow    <span class="token operator">*</span><span class="token punctuation">[</span><span class="token punctuation">]</span><span class="token operator">*</span>bmap
+ oldoverflow <span class="token operator">*</span><span class="token punctuation">[</span><span class="token punctuation">]</span><span class="token operator">*</span>bmap
+ 
+ nextOverflow <span class="token operator">*</span>bmap
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>意思是如果 map 的 key 和 value 都不包含指针的话，在 GC 期间就可以避免对它的扫描。在 map 非常大（几百万个 key）的场景下，能提升不少性能。</p> 
+<p><strong>那具体是怎么实现“不扫描”的呢？</strong></p> 
+<p>我们知道，bmap 这个结构体里有一个 overflow 指针，它指向溢出的 bucket。因为它是一个指针，所以 GC 的时候肯定要扫描它，也就要扫描所有的 bmap。</p> 
+<p>而当 map 的 key/value 都是非指针类型的话，扫描是可以避免的，直接标记整个 map 的颜色（三色标记法）就行了，不用去扫描每个 bmap 的 overflow 指针。</p> 
+<p>但是溢出的 bucket 总是可能存在的，这和 key/value 的类型无关。</p> 
+<p><strong>于是就利用 hmap 里的 extra 结构体的 overflow 指针来 “hold” 这些 overflow 的 bucket，并把 bmap 结构体的 overflow 指针类型变成一个 unitptr 类型（这些是在编译期干的）。于是整个 bmap 就完全没有指针了，也就不会在 GC 期间被扫描。</strong></p> 
+<p>tips:</p> 
+<blockquote> 
+ <p>uintptr是一个无符号的整型，它可以保存一个指针地址。<br> 它可以进行指针运算。<br> uintptr无法持有对象, GC不把uintptr当指针, 所以uintptr类型的目标会被回收。<br> 想取值需要转成unsafe.Pointer后, 需再转到相对应的指针类型。</p> 
+</blockquote> 
+<pre><code class="prism language-go">overflow    <span class="token operator">*</span><span class="token punctuation">[</span><span class="token punctuation">]</span><span class="token operator">*</span>bmap
+</code></pre> 
+<p>另一方面，当 GC 在扫描 hmap 时，通过 extra.overflow 这条路径（指针）就可以将 overflow 的 bucket 正常标记成黑色，从而不会被 GC 错误地回收。</p> 
+<p>当我们知道上面这些原理后，就可以利用它来对一些场景进行性能优化：</p> 
+<p><code>map[string]int -&gt; map[[12]byte]int</code></p> 
+<p><strong>因为 string 底层有指针，所以当 string 作为 map 的 key 时，GC 阶段会扫描整个 map；而数组 [12]byte 是一个值类型，不会被 GC 扫描。</strong></p> 
+<h5><a id="bigcachemap_407"></a>利用bigcache优化全局map</h5> 
+<ul><li> <p>可以通过 sharding 来降低资源竞争</p> </li><li> <p>可以用位运算来取余数做 sharding （需要是 2 的整数幂 - 1）</p> </li><li> <p>避免 map 中出现指针、使用 go 基础类型可以显著降低 GC 压力、提升性能</p> </li><li> <p>bigcache 底层存储是 bytes queue，初始化时设置合理的配置项可以减少 queue 扩容的次数，提升性能<br> <a href="https://blog.csdn.net/RA681t58CJxsgCkJ31/article/details/125325536">https://blog.csdn.net/RA681t58CJxsgCkJ31/article/details/125325536</a></p> </li></ul> 
+<h5><a id="gozero_safemap_OOM_418"></a>go-zero safemap 避免OOM分析</h5> 
+<p>在 Golang 中的 map 结构，在删除键值对的时候，并不会真正的删除，而是标记。那么随着键值对越来越多，会不会造成大量内存浪费？</p> 
+<p>首先答案是会的，很有可能导致 OOM，而且针对这个还有一个讨论：https://github.com/golang/go/issues/20135。大致的意思就是在很大的 map 中，delete 操作没有真正释放内存而可能导致内存 OOM。</p> 
+<p>所以一般的做法：就是 重建 map。而 go-zero 中内置了 safemap 的容器组件。safemap 在一定程度上可以避免这种情况发生。</p> 
+<p><strong>原生map删除key大致过程</strong></p> 
+<ul><li> <p>写保护，防止并发写</p> </li><li> <p>查询要删除的 key 是否存在</p> </li><li> <p>存在则对其标志做删除标记</p> </li><li> <p>count–</p> </li></ul> 
+<p><strong>所以你在大面积删除 key ，实际 map 存储的 key 是不会删除的，只是标记当前的 key 状态为 empty。<br> 其实出发点，和 mysql 的标记删除类似，防止后续会有相同的 key 插入，省去了扩缩容的操作。<br> 但是这个对有些场景是不妥的，如果开发者在未来时间内都不会再插入相同的 key ，很可能会导致 OOM。</strong></p> 
+<p>所以针对以上情况，go-zero 开发了 safemap 。下面我们看看 safemap 是如何避免这个问题的？</p> 
+<p><strong>设计实现</strong></p> 
+<ul><li> <p>预设一个 删除阈值，如果触发会放到一个新预设好的 newmap 中</p> </li><li> <p>两个 map 是一个整体，所以 key 只能留一份</p> </li></ul> 
+<p><strong>所以为什么要设置两个 map 就很清楚了：</strong></p> 
+<ul><li> <p>dirtyOld 作为存储主体，如果 delete 操作达到阈值，则会触发迁移。</p> </li><li> <p>dirtyNew 作为暂存体，会在到达阈值时，存放部分 key/value</p> </li></ul> 
+<p>所以在迁移操作时，我们需要做的就是：将原先的 dirtyOld 清空，存储的 key/value 通过 for-range 重新存储到 dirtyNew，然后将 dirtyNew 指向 dirtyOld。</p> 
+<p>源码分析：</p> 
+<pre><code class="prism language-go">
+<span class="token keyword">const</span> <span class="token punctuation">(</span>
+	copyThreshold <span class="token operator">=</span> <span class="token number">1000</span>
+	maxDeletion   <span class="token operator">=</span> <span class="token number">10000</span>
+<span class="token punctuation">)</span>
+
+<span class="token comment">// SafeMap provides a map alternative to avoid memory leak.</span>
+<span class="token comment">// This implementation is not needed until issue below fixed.</span>
+<span class="token comment">// https://github.com/golang/go/issues/20135</span>
+<span class="token keyword">type</span> SafeMap <span class="token keyword">struct</span> <span class="token punctuation">{<!-- --></span>
+	lock        sync<span class="token punctuation">.</span>RWMutex
+	deletionOld <span class="token builtin">int</span>
+	deletionNew <span class="token builtin">int</span>
+	dirtyOld    <span class="token keyword">map</span><span class="token punctuation">[</span><span class="token keyword">interface</span><span class="token punctuation">{<!-- --></span><span class="token punctuation">}</span><span class="token punctuation">]</span><span class="token keyword">interface</span><span class="token punctuation">{<!-- --></span><span class="token punctuation">}</span>
+	dirtyNew    <span class="token keyword">map</span><span class="token punctuation">[</span><span class="token keyword">interface</span><span class="token punctuation">{<!-- --></span><span class="token punctuation">}</span><span class="token punctuation">]</span><span class="token keyword">interface</span><span class="token punctuation">{<!-- --></span><span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+
+<span class="token comment">// NewSafeMap returns a SafeMap.</span>
+<span class="token keyword">func</span> <span class="token function">NewSafeMap</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">*</span>SafeMap <span class="token punctuation">{<!-- --></span>
+	<span class="token keyword">return</span> <span class="token operator">&amp;</span>SafeMap<span class="token punctuation">{<!-- --></span>
+		dirtyOld<span class="token punctuation">:</span> <span class="token function">make</span><span class="token punctuation">(</span><span class="token keyword">map</span><span class="token punctuation">[</span><span class="token keyword">interface</span><span class="token punctuation">{<!-- --></span><span class="token punctuation">}</span><span class="token punctuation">]</span><span class="token keyword">interface</span><span class="token punctuation">{<!-- --></span><span class="token punctuation">}</span><span class="token punctuation">)</span><span class="token punctuation">,</span>
+		dirtyNew<span class="token punctuation">:</span> <span class="token function">make</span><span class="token punctuation">(</span><span class="token keyword">map</span><span class="token punctuation">[</span><span class="token keyword">interface</span><span class="token punctuation">{<!-- --></span><span class="token punctuation">}</span><span class="token punctuation">]</span><span class="token keyword">interface</span><span class="token punctuation">{<!-- --></span><span class="token punctuation">}</span><span class="token punctuation">)</span><span class="token punctuation">,</span>
+	<span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+
+
+<span class="token comment">// Get gets the value with the given key from m.</span>
+<span class="token keyword">func</span> <span class="token punctuation">(</span>m <span class="token operator">*</span>SafeMap<span class="token punctuation">)</span> <span class="token function">Get</span><span class="token punctuation">(</span>key <span class="token keyword">interface</span><span class="token punctuation">{<!-- --></span><span class="token punctuation">}</span><span class="token punctuation">)</span> <span class="token punctuation">(</span><span class="token keyword">interface</span><span class="token punctuation">{<!-- --></span><span class="token punctuation">}</span><span class="token punctuation">,</span> <span class="token builtin">bool</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+	m<span class="token punctuation">.</span>lock<span class="token punctuation">.</span><span class="token function">RLock</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+	<span class="token keyword">defer</span> m<span class="token punctuation">.</span>lock<span class="token punctuation">.</span><span class="token function">RUnlock</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+
+	<span class="token comment">// 先判断老map</span>
+	<span class="token keyword">if</span> val<span class="token punctuation">,</span> ok <span class="token operator">:=</span> m<span class="token punctuation">.</span>dirtyOld<span class="token punctuation">[</span>key<span class="token punctuation">]</span><span class="token punctuation">;</span> ok <span class="token punctuation">{<!-- --></span>
+		<span class="token keyword">return</span> val<span class="token punctuation">,</span> <span class="token boolean">true</span>
+	<span class="token punctuation">}</span>
+
+	val<span class="token punctuation">,</span> ok <span class="token operator">:=</span> m<span class="token punctuation">.</span>dirtyNew<span class="token punctuation">[</span>key<span class="token punctuation">]</span>
+	<span class="token keyword">return</span> val<span class="token punctuation">,</span> ok
+<span class="token punctuation">}</span>
+
+
+<span class="token comment">// Set sets the value into m with the given key.</span>
+<span class="token keyword">func</span> <span class="token punctuation">(</span>m <span class="token operator">*</span>SafeMap<span class="token punctuation">)</span> <span class="token function">Set</span><span class="token punctuation">(</span>key<span class="token punctuation">,</span> value <span class="token keyword">interface</span><span class="token punctuation">{<!-- --></span><span class="token punctuation">}</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+	m<span class="token punctuation">.</span>lock<span class="token punctuation">.</span><span class="token function">Lock</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+	<span class="token comment">// 通过阈值判断，选择在哪个map中加key value</span>
+	<span class="token keyword">if</span> m<span class="token punctuation">.</span>deletionOld <span class="token operator">&lt;=</span> maxDeletion <span class="token punctuation">{<!-- --></span>
+		<span class="token keyword">if</span> <span class="token boolean">_</span><span class="token punctuation">,</span> ok <span class="token operator">:=</span> m<span class="token punctuation">.</span>dirtyNew<span class="token punctuation">[</span>key<span class="token punctuation">]</span><span class="token punctuation">;</span> ok <span class="token punctuation">{<!-- --></span>
+			<span class="token function">delete</span><span class="token punctuation">(</span>m<span class="token punctuation">.</span>dirtyNew<span class="token punctuation">,</span> key<span class="token punctuation">)</span>
+			m<span class="token punctuation">.</span>deletionNew<span class="token operator">++</span>
+		<span class="token punctuation">}</span>
+		m<span class="token punctuation">.</span>dirtyOld<span class="token punctuation">[</span>key<span class="token punctuation">]</span> <span class="token operator">=</span> value
+	<span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token comment">// 如果超过阈值，直接在dirtyNew map添加，后续则减少迁移成本</span>
+		<span class="token keyword">if</span> <span class="token boolean">_</span><span class="token punctuation">,</span> ok <span class="token operator">:=</span> m<span class="token punctuation">.</span>dirtyOld<span class="token punctuation">[</span>key<span class="token punctuation">]</span><span class="token punctuation">;</span> ok <span class="token punctuation">{<!-- --></span>
+			<span class="token function">delete</span><span class="token punctuation">(</span>m<span class="token punctuation">.</span>dirtyOld<span class="token punctuation">,</span> key<span class="token punctuation">)</span>
+			m<span class="token punctuation">.</span>deletionOld<span class="token operator">++</span>
+		<span class="token punctuation">}</span>
+		m<span class="token punctuation">.</span>dirtyNew<span class="token punctuation">[</span>key<span class="token punctuation">]</span> <span class="token operator">=</span> value
+	<span class="token punctuation">}</span>
+	m<span class="token punctuation">.</span>lock<span class="token punctuation">.</span><span class="token function">Unlock</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+<span class="token punctuation">}</span>
+
+
+<span class="token comment">// 迁移old map -&gt; new map 操作是在删除key时触发</span>
+<span class="token comment">// Del deletes the value with the given key from m.</span>
+<span class="token keyword">func</span> <span class="token punctuation">(</span>m <span class="token operator">*</span>SafeMap<span class="token punctuation">)</span> <span class="token function">Del</span><span class="token punctuation">(</span>key <span class="token keyword">interface</span><span class="token punctuation">{<!-- --></span><span class="token punctuation">}</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+	m<span class="token punctuation">.</span>lock<span class="token punctuation">.</span><span class="token function">Lock</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+	<span class="token comment">// 先删除</span>
+	<span class="token keyword">if</span> <span class="token boolean">_</span><span class="token punctuation">,</span> ok <span class="token operator">:=</span> m<span class="token punctuation">.</span>dirtyOld<span class="token punctuation">[</span>key<span class="token punctuation">]</span><span class="token punctuation">;</span> ok <span class="token punctuation">{<!-- --></span>
+		<span class="token function">delete</span><span class="token punctuation">(</span>m<span class="token punctuation">.</span>dirtyOld<span class="token punctuation">,</span> key<span class="token punctuation">)</span>
+		m<span class="token punctuation">.</span>deletionOld<span class="token operator">++</span>
+	<span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token keyword">if</span> <span class="token boolean">_</span><span class="token punctuation">,</span> ok <span class="token operator">:=</span> m<span class="token punctuation">.</span>dirtyNew<span class="token punctuation">[</span>key<span class="token punctuation">]</span><span class="token punctuation">;</span> ok <span class="token punctuation">{<!-- --></span>
+		<span class="token function">delete</span><span class="token punctuation">(</span>m<span class="token punctuation">.</span>dirtyNew<span class="token punctuation">,</span> key<span class="token punctuation">)</span>
+		m<span class="token punctuation">.</span>deletionNew<span class="token operator">++</span>
+	<span class="token punctuation">}</span>
+    <span class="token comment">// 判断两个map是否达到删除阈值，触发迁移</span>
+	<span class="token keyword">if</span> m<span class="token punctuation">.</span>deletionOld <span class="token operator">&gt;=</span> maxDeletion <span class="token operator">&amp;&amp;</span> <span class="token function">len</span><span class="token punctuation">(</span>m<span class="token punctuation">.</span>dirtyOld<span class="token punctuation">)</span> <span class="token operator">&lt;</span> copyThreshold <span class="token punctuation">{<!-- --></span>
+		<span class="token keyword">for</span> k<span class="token punctuation">,</span> v <span class="token operator">:=</span> <span class="token keyword">range</span> m<span class="token punctuation">.</span>dirtyOld <span class="token punctuation">{<!-- --></span>
+			m<span class="token punctuation">.</span>dirtyNew<span class="token punctuation">[</span>k<span class="token punctuation">]</span> <span class="token operator">=</span> v
+		<span class="token punctuation">}</span>
+		<span class="token comment">// dirtyNew map地址指向dirtyOld</span>
+		m<span class="token punctuation">.</span>dirtyOld <span class="token operator">=</span> m<span class="token punctuation">.</span>dirtyNew
+		m<span class="token punctuation">.</span>deletionOld <span class="token operator">=</span> m<span class="token punctuation">.</span>deletionNew
+		m<span class="token punctuation">.</span>dirtyNew <span class="token operator">=</span> <span class="token function">make</span><span class="token punctuation">(</span><span class="token keyword">map</span><span class="token punctuation">[</span><span class="token keyword">interface</span><span class="token punctuation">{<!-- --></span><span class="token punctuation">}</span><span class="token punctuation">]</span><span class="token keyword">interface</span><span class="token punctuation">{<!-- --></span><span class="token punctuation">}</span><span class="token punctuation">)</span>
+		m<span class="token punctuation">.</span>deletionNew <span class="token operator">=</span> <span class="token number">0</span>
+	<span class="token punctuation">}</span>
+	<span class="token keyword">if</span> m<span class="token punctuation">.</span>deletionNew <span class="token operator">&gt;=</span> maxDeletion <span class="token operator">&amp;&amp;</span> <span class="token function">len</span><span class="token punctuation">(</span>m<span class="token punctuation">.</span>dirtyNew<span class="token punctuation">)</span> <span class="token operator">&lt;</span> copyThreshold <span class="token punctuation">{<!-- --></span>
+		<span class="token keyword">for</span> k<span class="token punctuation">,</span> v <span class="token operator">:=</span> <span class="token keyword">range</span> m<span class="token punctuation">.</span>dirtyNew <span class="token punctuation">{<!-- --></span>
+			m<span class="token punctuation">.</span>dirtyOld<span class="token punctuation">[</span>k<span class="token punctuation">]</span> <span class="token operator">=</span> v
+		<span class="token punctuation">}</span>
+		m<span class="token punctuation">.</span>dirtyNew <span class="token operator">=</span> <span class="token function">make</span><span class="token punctuation">(</span><span class="token keyword">map</span><span class="token punctuation">[</span><span class="token keyword">interface</span><span class="token punctuation">{<!-- --></span><span class="token punctuation">}</span><span class="token punctuation">]</span><span class="token keyword">interface</span><span class="token punctuation">{<!-- --></span><span class="token punctuation">}</span><span class="token punctuation">)</span>
+		m<span class="token punctuation">.</span>deletionNew <span class="token operator">=</span> <span class="token number">0</span>
+	<span class="token punctuation">}</span>
+	m<span class="token punctuation">.</span>lock<span class="token punctuation">.</span><span class="token function">Unlock</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<h2><a id="Syncmap_569"></a>Sync.map</h2> 
+<h4><a id="Syncmap_574"></a>Sync.map底层结构</h4> 
+<pre><code class="prism language-go"><span class="token keyword">type</span> Map <span class="token keyword">struct</span> <span class="token punctuation">{<!-- --></span>
+ mu Mutex
+ read atomic<span class="token punctuation">.</span>Value <span class="token comment">// readOnly</span>
+ dirty <span class="token keyword">map</span><span class="token punctuation">[</span><span class="token keyword">interface</span><span class="token punctuation">{<!-- --></span><span class="token punctuation">}</span><span class="token punctuation">]</span><span class="token operator">*</span>entry
+ misses <span class="token builtin">int</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>互斥量 ​​mu​​ 保护 read 和 dirty。</p> 
+<ul><li> <p>​​read​​​ 是 atomic.Value 类型，可以并发地读。但如果需要更新 ​​read​​，则需要加锁保护。对于 read 中存储的 entry 字段，可能会被并发地 CAS 更新。但是如果要更新一个之前已被删除的 entry，则需要先将其状态从 expunged 改为 nil，再拷贝到 dirty 中，然后再更新。</p> </li><li> <p>​​dirty​​​ 是一个非线程安全的原始 map。包含新写入的 key，并且包含 ​​read​​​ 中的所有未被删除的 key。这样，可以快速地将 ​​dirty​​​ 提升为 ​​read​​​ 对外提供服务。如果 ​​dirty​​​ 为 nil，那么下一次写入时，会新建一个新的 ​​dirty​​​，这个初始的 ​​dirty​​​ 是 ​​read​​ 的一个拷贝，但除掉了其中已被删除的 key。</p> </li></ul> 
+<p>每当从 read 中读取失败，都会将 ​​misses​​ 的计数值加 1，当加到一定阈值以后，需要将 dirty 提升为 read，以期减少 miss 的情形。</p> 
+<p>​​read map​​​ 和 ​​dirty map​​ 的存储方式是不一致的。</p> 
+<p>前者使用 atomic.Value，后者只是单纯的使用 map。</p> 
+<p>原因是 read map 使用 lock free 操作，必须保证 load/store 的原子性；而 dirty map 的 load+store 操作是由 lock（就是 mu）来保护的。</p> 
+<p><strong>真正存储 ​​key/value​​​ 的是 read 和 dirty 字段。​​read​​​ 使用 atomic.Value，这是 lock-free 的基础，保证 load/store 的原子性。​​dirty​​ 则直接用了一个原始的 map，对于它的 load/store 操作需要加锁。</strong></p> 
+<h4><a id="syncmap_605"></a>​​sync.map优点</h4> 
+<ul><li> <p>一般情况下解决并发读写 map 的思路是加一把大锁，或者把一个 map 分成若干个小 map，对 key 进行哈希，只操作相应的小 map。前者锁的粒度比较大，影响效率；后者实现起来比较复杂，容易出错。</p> </li><li> <p>而使用 ​​sync.map​​ 之后，对 map 的读写，不需要加锁。并且它通过空间换时间的方式，使用 read 和 dirty 两个 map 来进行读写分离，降低锁时间来提高效率。</p> </li><li> <p>​​sync.map​​ 适用于读多写少的场景。对于写多的场景，会导致 read map 缓存失效，需要加锁，导致冲突变多；而且由于未命中 read map 次数过多，导致 dirty map 提升为 read map，这是一个 O(N) 的操作，会进一步降低性能。</p> </li></ul> 
+<h4><a id="syncmap_616"></a>sync.map实现总结</h4> 
+<p>sync.Map 的实现原理可概括为：</p> 
+<ul><li>1、过 read 和 dirty 两个字段将读写分离，读的数据存在只读字段 read 上，将最新写入的数据则存在 dirty 字段上</li><li>2、读取时会先查询 read，不存在再查询 dirty，写入时则只写入 dirty</li><li>3、读取 read 并不需要加锁，而读或写 dirty 都需要加锁</li><li>4、另外有 misses 字段来统计 read 被穿透的次数（被穿透指需要读 dirty 的情况），超过一定次数则将 dirty 数据同步到 read 上</li><li>5、对于删除数据则直接通过标记来延迟删除</li></ul> 
+<h2><a id="_628"></a>问题</h2> 
+<h4><a id="1golang_map_629"></a>1.golang map为什么不支持并发安全？</h4> 
+<p>但 Go map 就不大一样了，很多人以为是默认支持的，一个不小心就翻车，这么的常见。那凭什么 Go 官方还不支持，难不成太复杂了，性能太差了，到底是为什么？</p> 
+<ul><li> <p>典型使用场景：map 的典型使用场景是不需要从多个 goroutine 中进行安全访问。</p> </li><li> <p>非典型场景（需要原子操作）：map 可能是一些更大的数据结构或已经同步的计算的一部分。</p> </li><li> <p>性能场景考虑：若是只是为少数程序增加安全性，导致 map 所有的操作都要处理 mutex，将会降低大多数程序的性能。</p> </li></ul> 
+<p>汇总来讲，就是 Go 官方在经过了长时间的讨论后，认为 Go map 更应适配典型使用场景，而不是为了小部分情况，导致大部分程序付出代价（性能），决定了不支持。</p> 
+<p><strong>代码原因</strong></p> 
+<p>go map写入的源码在这里其中有一段throw exception和写入标志位的逻辑</p> 
+<pre><code class="prism language-go">
+	<span class="token keyword">if</span> h<span class="token punctuation">.</span>flags<span class="token operator">&amp;</span>hashWriting <span class="token operator">!=</span> <span class="token number">0</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token function">throw</span><span class="token punctuation">(</span><span class="token string">"concurrent map writes"</span><span class="token punctuation">)</span>
+	<span class="token punctuation">}</span>
+	hash <span class="token operator">:=</span> t<span class="token punctuation">.</span><span class="token function">hasher</span><span class="token punctuation">(</span>key<span class="token punctuation">,</span> <span class="token function">uintptr</span><span class="token punctuation">(</span>h<span class="token punctuation">.</span>hash0<span class="token punctuation">)</span><span class="token punctuation">)</span>
+
+	<span class="token comment">// Set hashWriting after calling t.hasher, since t.hasher may panic,</span>
+	<span class="token comment">// in which case we have not actually done a write.</span>
+	h<span class="token punctuation">.</span>flags <span class="token operator">^=</span> hashWriting
+
+</code></pre> 
+<p>这里的标志位含义也在同文件，即表示有goroutinue在写这个map</p> 
+<pre><code class="prism language-go">	<span class="token comment">// flags</span>
+	iterator     <span class="token operator">=</span> <span class="token number">1</span> <span class="token comment">// there may be an iterator using buckets</span>
+	oldIterator  <span class="token operator">=</span> <span class="token number">2</span> <span class="token comment">// there may be an iterator using oldbuckets</span>
+	hashWriting  <span class="token operator">=</span> <span class="token number">4</span> <span class="token comment">// a goroutine is writing to the map</span>
+	sameSizeGrow <span class="token operator">=</span> <span class="token number">8</span> <span class="token comment">// the current map growth is to a new map of the same size</span>
+
+</code></pre> 
+<p>原因是：map 的内部实现是哈希表，它使用了分离链接法来解决冲突，并且在并发环境下修改 map 的时候，可能会导致冲突的链表结构发生破坏，从而导致 map 数据的不一致。</p> 
+<p>参考：</p> 
+<p><a href="https://cloud.tencent.com/developer/article/1422373" rel="nofollow">https://cloud.tencent.com/developer/article/1422373</a></p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/19276658c3708124e1bd3c3445352dbf/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">【Go】标准库底层实现 ①</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/b53d750d35acf8540a0decd8b1b2ec80/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">vue的导入</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

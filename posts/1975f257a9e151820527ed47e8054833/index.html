@@ -1,0 +1,418 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>引用计数法 - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="引用计数法" />
+<meta property="og:description" content="原理篇 GC是一种释放无法被引用对象的机制。引用计数法的思想是让每个对象记录下有多少程序引用自己，我们形象的称之为&#34;人气&#34;，并且让没有人气的对象自动消失。引用计数法诞生于1960年，由George E. Collins创造。
+引用计数法在对象头中添加了一个计数器来记录对象的被引用数。
+分配一个新对象的伪代码如下：
+//分配内存 new_obj(size) { //从空闲链表中寻找一个合适的分块 obj = pickup_chunk(size, $free_list) if (obj == NULL) allocation_fail() //分配失败 else obj.ref_cnt = 1 //初始化引用计数为1 return obj } 在分配过程中，也是去空闲链表中寻找一个大小合适的分块，这和GC标记清除算法是一样的。当成功找到合适的分块后，我们将它的引用计数设置为1，因为是新分配的，所以只有一个引用。
+你会发现在引用计数法中，并没有显示的垃圾清除过程，那些引用为0的对象是在何时被回收的呢？
+回答这个问题之前我们需要先思考另一个问题：什么时候一个对象的&#34;人气&#34;会发生变化？一个是在分配对象的时候会增加&#34;人气&#34;。另一个是在更新指针的时候，源指针指向的对象&#34;人气&#34;会减少，目的指针指向的对象&#34;人气&#34;会增加。
+更新指针函数伪代码如下：
+//更新指针 update_ptr(ptr, obj) { inc_ref_cnt(obj) //增加目的对象的引用计数 dec_ref_cnt(*ptr) //减少源对象的引用计数 *ptr = obj } //增加对象obj的引用计数 inc_ref_cnt(obj) { obj.ref_cnt&#43;&#43; } //增加对象obj的引用计数， //并将引用计数为0的对象回收 dec_ref_cnt(obj) { obj.ref_cnt-- //减少对象obj的引用计数 if(obj.ref_cnt == 0) //不再被引用，表示变成了垃圾 for(child : children(obj)) //遍历obj的子对象 dec_ref_cnt(*child) //将子对象引用计数减一，因为obj被回收了 reclaim(obj) //将obj加入空闲链表 } update_ptr的核心是*ptr=obj，inc_ref_cnt和dec_ref_cnt是为了进行内存管理，注意二者的顺序不能颠倒。因为如果ptr本来就是指向obj的，如果先执行了dec_ref_cnt，obj就会被回收掉，再执行inc_ref_cnt时就会增加一个已被回收对象的引用计数，而且obj也不能被回收。" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/1975f257a9e151820527ed47e8054833/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2022-08-18T07:04:36+08:00" />
+<meta property="article:modified_time" content="2022-08-18T07:04:36+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">引用计数法</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-light">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <h2><a id="_1"></a>原理篇</h2> 
+<p>GC是一种释放无法被引用对象的机制。引用计数法的思想是让每个对象记录下有多少程序引用自己，我们形象的称之为"人气"，并且让没有人气的对象自动消失。引用计数法诞生于1960年，由George E. Collins创造。</p> 
+<p>引用计数法在对象头中添加了一个计数器来记录对象的被引用数。<br> <img src="https://images2.imgbox.com/9f/a9/1IOWM5Tv_o.png" alt=""></p> 
+<p>分配一个新对象的伪代码如下：</p> 
+<pre><code class="prism language-go"><span class="token comment">//分配内存</span>
+<span class="token function">new_obj</span><span class="token punctuation">(</span>size<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+  <span class="token comment">//从空闲链表中寻找一个合适的分块</span>
+  obj <span class="token operator">=</span> <span class="token function">pickup_chunk</span><span class="token punctuation">(</span>size<span class="token punctuation">,</span> $free_list<span class="token punctuation">)</span>
+  <span class="token keyword">if</span> <span class="token punctuation">(</span>obj <span class="token operator">==</span> NULL<span class="token punctuation">)</span>
+    <span class="token function">allocation_fail</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token comment">//分配失败</span>
+  <span class="token keyword">else</span>
+    obj<span class="token punctuation">.</span>ref_cnt <span class="token operator">=</span> <span class="token number">1</span> <span class="token comment">//初始化引用计数为1</span>
+    <span class="token keyword">return</span> obj
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>在分配过程中，也是去空闲链表中寻找一个大小合适的分块，这和GC标记清除算法是一样的。当成功找到合适的分块后，我们将它的引用计数设置为1，因为是新分配的，所以只有一个引用。</p> 
+<p>你会发现在引用计数法中，并没有显示的垃圾清除过程，那些引用为0的对象是在何时被回收的呢？</p> 
+<p>回答这个问题之前我们需要先思考另一个问题：什么时候一个对象的"人气"会发生变化？一个是在分配对象的时候会增加"人气"。另一个是在更新指针的时候，源指针指向的对象"人气"会减少，目的指针指向的对象"人气"会增加。</p> 
+<p>更新指针函数伪代码如下：</p> 
+<pre><code class="prism language-go"><span class="token comment">//更新指针</span>
+<span class="token function">update_ptr</span><span class="token punctuation">(</span>ptr<span class="token punctuation">,</span> obj<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span> 
+  <span class="token function">inc_ref_cnt</span><span class="token punctuation">(</span>obj<span class="token punctuation">)</span> <span class="token comment">//增加目的对象的引用计数</span>
+  <span class="token function">dec_ref_cnt</span><span class="token punctuation">(</span><span class="token operator">*</span>ptr<span class="token punctuation">)</span> <span class="token comment">//减少源对象的引用计数</span>
+  <span class="token operator">*</span>ptr <span class="token operator">=</span> obj
+<span class="token punctuation">}</span>
+
+<span class="token comment">//增加对象obj的引用计数</span>
+<span class="token function">inc_ref_cnt</span><span class="token punctuation">(</span>obj<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span> 
+  obj<span class="token punctuation">.</span>ref_cnt<span class="token operator">++</span>
+<span class="token punctuation">}</span>
+
+<span class="token comment">//增加对象obj的引用计数，</span>
+<span class="token comment">//并将引用计数为0的对象回收</span>
+<span class="token function">dec_ref_cnt</span><span class="token punctuation">(</span>obj<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span> 
+  obj<span class="token punctuation">.</span>ref_cnt<span class="token operator">--</span> <span class="token comment">//减少对象obj的引用计数</span>
+  <span class="token keyword">if</span><span class="token punctuation">(</span>obj<span class="token punctuation">.</span>ref_cnt <span class="token operator">==</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token comment">//不再被引用，表示变成了垃圾</span>
+    <span class="token keyword">for</span><span class="token punctuation">(</span>child <span class="token punctuation">:</span> <span class="token function">children</span><span class="token punctuation">(</span>obj<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token comment">//遍历obj的子对象</span>
+      <span class="token function">dec_ref_cnt</span><span class="token punctuation">(</span><span class="token operator">*</span>child<span class="token punctuation">)</span> <span class="token comment">//将子对象引用计数减一，因为obj被回收了</span>
+    <span class="token function">reclaim</span><span class="token punctuation">(</span>obj<span class="token punctuation">)</span> <span class="token comment">//将obj加入空闲链表</span>
+<span class="token punctuation">}</span>
+
+</code></pre> 
+<p><code>update_ptr</code>的核心是<code>*ptr=obj</code>，<code>inc_ref_cnt</code>和<code>dec_ref_cnt</code>是为了进行内存管理，注意二者的顺序不能颠倒。因为如果<code>ptr</code>本来就是指向<code>obj</code>的，如果先执行了<code>dec_ref_cnt</code>，<code>obj</code>就会被回收掉，再执行<code>inc_ref_cnt</code>时就会增加一个已被回收对象的引用计数，而且<code>obj</code>也不能被回收。</p> 
+<p><code>dec_ref_cnt</code>在减少引用计数的同时就把垃圾给回收掉了，垃圾清理和应用程序是同时运行的。GC标记清除算法需要定期运行GC或在内存耗尽时运行GC，而引用计数法则不需要，在分配失败时，就能确定一定是堆已经用完了。</p> 
+<p>举个例子，根引用A和C，A引用B，通过<code>update_ptr</code>让A指向C，堆的变化如下图所示。</p> 
+<p><img src="https://images2.imgbox.com/2e/9b/He7ZatCR_o.png" alt=""></p> 
+<p>注意图中B和C的"人气"变化。</p> 
+<p>引用计数法优点如下：</p> 
+<ul><li>可立即回收垃圾。从伪代码可以看出，垃圾产生的同时就被立刻回收了。</li><li>最大暂停时间短。只有更新指针时，才会执行垃圾回收。</li><li>不需要沿根节点遍历活动对象。从伪代码可以看出，引用计数法是从垃圾对象开始遍历其子对象，而不是从根节点开始，而且不需要遍历堆来寻找垃圾。</li></ul> 
+<p>引用计数法的缺点有以下几点：</p> 
+<ul><li>计数器的增减处理繁重。这一点是由频繁的指针更新引起的，特别是由根引用的指针，也就是全局变量指针。每次指针更新都要递归更新计数器的值。</li><li>计数器需要占据较多内存空间。为了记录对象被引用的次数，计数器需要有足够的位宽，最坏情况下要能记录下堆中所有对象数。计数器会降低内存使用效率，越小的对象，空间利用率越低。</li><li>实现繁琐复杂。因为我们需要将所有的<code>*ptr=obj</code>重写成<code>update_ptr(ptr,obj)</code>。</li><li>无法回收循环引用的对象。因为循环引用的对象计数器值都是1，不能被判定为垃圾，也就无法一起回收。</li></ul> 
+<p><img src="https://images2.imgbox.com/a4/d9/YxSZSu2W_o.png" alt=""></p> 
+<h2><a id="_81"></a>优化篇</h2> 
+<h3><a id="_83"></a>延迟引用计数法</h3> 
+<p>延迟应用计数法主要针对的是计数器更新繁重的问题，这里的"延迟"指的是"延迟回收"。它的发明者是L. Peter Deutsch和Daniel G. Bobrow。</p> 
+<p>延迟引用计数法做的第一个改动是不记录根节点直接引用的对象的计数器变化。比如对于全局指针，直接使用<code>*$ptr=obj</code>更新，而不是用<code>update_ptr($ptr,obj)</code>。根节点直接引用的对象计数器始终为0，它们可能是垃圾，也可能不是。</p> 
+<p>第二个改动是增加了一个ZCT数组，全称是Zero Count Tale。在执行<code>dec_ref_cnt</code>时，引用数变为0的对象并不是马上被回收，而是加入ZCT数组。并且也不会递归的对子对象执行<code>dec_ref_cnt</code>方法。</p> 
+<p>以上两个改动如下图所示。</p> 
+<p><img src="https://images2.imgbox.com/ee/16/hlC6wDeM_o.png" alt="在这里插入图片描述"></p> 
+<p><code>dec_ref_cnt</code>函数伪代码变化如下：</p> 
+<pre><code class="prism language-go"><span class="token function">dec_ref_cnt</span><span class="token punctuation">(</span>obj<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span> 
+  obj<span class="token punctuation">.</span>ref_cnt<span class="token operator">--</span> <span class="token comment">//减少obj引用计数</span>
+  <span class="token keyword">if</span><span class="token punctuation">(</span>obj<span class="token punctuation">.</span>ref_cnt <span class="token operator">==</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token comment">//引用计数为0，可能变成垃圾</span>
+    <span class="token keyword">if</span><span class="token punctuation">(</span><span class="token function">is_full</span><span class="token punctuation">(</span>$zct<span class="token punctuation">)</span> <span class="token operator">==</span> TRUE<span class="token punctuation">)</span> <span class="token comment">//ZCT数组已满</span>
+      <span class="token function">scan_zct</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token comment">//扫描ZCT数组，将真正的垃圾回收，释放ZCT数组空间</span>
+    <span class="token function">push</span><span class="token punctuation">(</span>$zct<span class="token punctuation">,</span> obj<span class="token punctuation">)</span> <span class="token comment">//将obj加入ZCT数组</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>此时，因为垃圾并不是马上被回收，所有在分配对象时，需要多一次尝试。</p> 
+<pre><code class="prism language-go"><span class="token function">new_obj</span><span class="token punctuation">(</span>size<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span> 
+  <span class="token comment">//从空闲链表寻找大小合适的分块</span>
+  obj <span class="token operator">=</span> <span class="token function">pickup_chunk</span><span class="token punctuation">(</span>size<span class="token punctuation">,</span> $free_list<span class="token punctuation">)</span>
+  <span class="token keyword">if</span><span class="token punctuation">(</span>obj <span class="token operator">==</span> NULL<span class="token punctuation">)</span> <span class="token comment">//没找到</span>
+    <span class="token function">scan_zct</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token comment">//扫描ZCT数组，回收垃圾</span>
+    obj <span class="token operator">=</span> <span class="token function">pickup_chunk</span><span class="token punctuation">(</span>size<span class="token punctuation">,</span> $free_list<span class="token punctuation">)</span> <span class="token comment">//再次尝试分配</span>
+    <span class="token keyword">if</span><span class="token punctuation">(</span>obj <span class="token operator">==</span> NULL<span class="token punctuation">)</span> <span class="token comment">//没找到</span>
+      <span class="token function">allocation_fail</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token comment">//分配失败</span>
+  obj<span class="token punctuation">.</span>ref_cnt <span class="token operator">=</span> <span class="token number">1</span> <span class="token comment">//分配成功，初始化引用计数</span>
+  <span class="token keyword">return</span> obj
+<span class="token punctuation">}</span>
+</code></pre> 
+<p><code>scan_zct</code>函数的伪代码如下：</p> 
+<pre><code class="prism language-go"><span class="token function">scan_zct</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+  <span class="token comment">//将根节点直接引用对象的计数器加一，</span>
+  <span class="token comment">//因为它们肯定不是垃圾</span>
+  <span class="token keyword">for</span><span class="token punctuation">(</span>r <span class="token punctuation">:</span> $roots<span class="token punctuation">)</span> 
+    <span class="token punctuation">(</span><span class="token operator">*</span>r<span class="token punctuation">)</span><span class="token punctuation">.</span>ref_cnt<span class="token operator">++</span>
+    
+  <span class="token keyword">for</span><span class="token punctuation">(</span>obj <span class="token punctuation">:</span> $zct<span class="token punctuation">)</span> <span class="token comment">//遍历ZCT数组</span>
+    <span class="token keyword">if</span><span class="token punctuation">(</span>obj<span class="token punctuation">.</span>ref_cnt <span class="token operator">==</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token comment">//如果引用计数为0，肯定是垃圾</span>
+      <span class="token function">remove</span><span class="token punctuation">(</span>$zct<span class="token punctuation">,</span> obj<span class="token punctuation">)</span> <span class="token comment">//将obj从ZCT数组删除</span>
+      <span class="token function">delete</span><span class="token punctuation">(</span>obj<span class="token punctuation">)</span> <span class="token comment">//回收垃圾</span>
+      
+  <span class="token comment">//恢复根节点直接引用对象的计数器</span>
+  <span class="token keyword">for</span><span class="token punctuation">(</span>r <span class="token punctuation">:</span> $roots<span class="token punctuation">)</span> 
+    <span class="token punctuation">(</span><span class="token operator">*</span>r<span class="token punctuation">)</span><span class="token punctuation">.</span>ref_cnt<span class="token operator">--</span>
+<span class="token punctuation">}</span>
+
+<span class="token comment">//回收obj对象空间</span>
+<span class="token function">delete</span><span class="token punctuation">(</span>obj<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+  <span class="token keyword">for</span><span class="token punctuation">(</span>child <span class="token punctuation">:</span> <span class="token function">children</span><span class="token punctuation">(</span>obj<span class="token punctuation">)</span> <span class="token comment">//遍历子对象</span>
+    <span class="token punctuation">(</span><span class="token operator">*</span>child<span class="token punctuation">)</span><span class="token punctuation">.</span>ref_cnt<span class="token operator">--</span> <span class="token comment">//将子对象引用数减一，因为obj被回收了</span>
+    <span class="token keyword">if</span><span class="token punctuation">(</span><span class="token punctuation">(</span><span class="token operator">*</span>child<span class="token punctuation">)</span><span class="token punctuation">.</span>ref_cnt <span class="token operator">==</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token comment">//子对象也没有引用了，变成了垃圾</span>
+      <span class="token function">delete</span><span class="token punctuation">(</span><span class="token operator">*</span>child<span class="token punctuation">)</span> <span class="token comment">//递归回收变成垃圾的子对象</span>
+  <span class="token function">reclaim</span><span class="token punctuation">(</span>obj<span class="token punctuation">)</span> <span class="token comment">//将obj添加到空闲链表</span>
+<span class="token punctuation">}</span>
+
+</code></pre> 
+<p>为了避免根对象直接引用的对象被回收，在扫描ZCT之前，需要先将根节点直接引用对象的计数器加一，并在扫描结束后将其恢复。原本在<code>dec_ref_cnt</code>中更新子对象计数器的工作，现在放到了<code>delete</code>中执行，也就是在真正回收垃圾时，才去递归遍历子对象。</p> 
+<blockquote> 
+ <p>其实我一直不明白为什么根直接引用的对象的计数器会是0，难道它们不是通过<code>new_obj</code>函数分配的吗？如果是，那么初始引用计数应该是1才对啊。而且，如果所有根直接引用的对象的计数器都是0，那么它们必然要被记录到ZCT数组，如果程序创建了足够多的全局对象，导致根直接引用的对象就把ZCT数组占满了，那么ZCT不就失效了吗？而且再创建全局引用的话，也应该被加入ZCT数组，但此时ZCT数组已满，又没有垃圾可以回收，那就无法加入了呀。</p> 
+</blockquote> 
+<p>延迟引用计数法的优点是减轻了根引用频繁变化导致的计数器更新负担，而且通过延迟，实现了垃圾批量回收。</p> 
+<p>它的优点也带来了一个缺点，那就是垃圾不能立刻回收，会压迫堆。另外，<code>scan_zct</code>也增加了最大暂停时间。ZCT越大，扫描花费的时间就越长，暂停时间也就越长。而如果减小ZCT，扫描的频率就会增加，导致吞吐量降低。</p> 
+<h3><a id="Sticky_161"></a>Sticky引用计数法</h3> 
+<p>Sticky引用计数法解决的是计数器占据较多内存空间的问题。其思路是减少计数器位宽。比如只有5比特作为计数器，最多可以记录31个引用，如果引用数超过这个上限，再想别的办法处理。</p> 
+<p>第一个办法是什么都不做。这主要是基于以下两点考虑：</p> 
+<ul><li>研究表明许多对象一生成马上就死了，多数情况下引用计数都是在0-1之间变化，鲜有5位计数器溢出的情况。</li><li>计数器溢出则说明该对象很重要，那么其在将来称为垃圾的可能性也很低。</li></ul> 
+<p>第二个办法是使用GC标记清除算法来管理。直接来看伪代码：</p> 
+<pre><code class="prism language-go"><span class="token function">mark_sweep_for_counter_overflow</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span> 
+  <span class="token function">reset_all_ref_cnt</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token comment">//将所有对象计数器清零</span>
+  <span class="token function">mark_phase</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token comment">//标记</span>
+  <span class="token function">sweep_phase</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token comment">//清除</span>
+<span class="token punctuation">}</span>
+
+<span class="token comment">//标记阶段</span>
+<span class="token function">mark_phase</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span> 
+  <span class="token comment">//将根节点直接引用的对象入栈</span>
+  <span class="token keyword">for</span><span class="token punctuation">(</span>r <span class="token punctuation">:</span> $roots<span class="token punctuation">)</span>
+    <span class="token function">push</span><span class="token punctuation">(</span><span class="token operator">*</span>r<span class="token punctuation">,</span> $mark_stack<span class="token punctuation">)</span> 
+  <span class="token comment">//遍历活动对象</span>
+  <span class="token function">while</span><span class="token punctuation">(</span><span class="token function">is_empty</span><span class="token punctuation">(</span>$mark_stack<span class="token punctuation">)</span> <span class="token operator">==</span> FALSE<span class="token punctuation">)</span> 
+    obj <span class="token operator">=</span> <span class="token function">pop</span><span class="token punctuation">(</span>$mark_stack<span class="token punctuation">)</span> 
+    obj<span class="token punctuation">.</span>ref_cnt<span class="token operator">++</span> <span class="token comment">//增加引用计数</span>
+    <span class="token comment">//处理一个对象被多次引用的情况，真实还原它的引用数</span>
+    <span class="token keyword">if</span><span class="token punctuation">(</span>obj<span class="token punctuation">.</span>ref_cnt <span class="token operator">==</span> <span class="token number">1</span><span class="token punctuation">)</span>         <span class="token comment">//如果obj有一个引用，</span>
+      <span class="token keyword">for</span><span class="token punctuation">(</span>child <span class="token punctuation">:</span> <span class="token function">children</span><span class="token punctuation">(</span>obj<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token comment">//那么它的子对象也应该有一个引用</span>
+        <span class="token function">push</span><span class="token punctuation">(</span><span class="token operator">*</span>child<span class="token punctuation">,</span> $mark_stack<span class="token punctuation">)</span>
+<span class="token punctuation">}</span>
+
+<span class="token comment">//清除阶段</span>
+<span class="token function">sweep_phase</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+  sweeping <span class="token operator">=</span> $heap_top <span class="token comment">//从堆头部开始</span>
+  <span class="token function">while</span><span class="token punctuation">(</span>sweeping <span class="token operator">&lt;</span> $heap_end<span class="token punctuation">)</span> <span class="token comment">//遍历堆</span>
+    <span class="token keyword">if</span><span class="token punctuation">(</span>sweeping<span class="token punctuation">.</span>ref_cnt <span class="token operator">==</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token comment">//引用计数为0，表示是垃圾</span>
+      <span class="token function">reclaim</span><span class="token punctuation">(</span>sweeping<span class="token punctuation">)</span> <span class="token comment">//将对象添加到空闲链表</span>
+    sweeping <span class="token operator">+=</span> sweeping<span class="token punctuation">.</span>size <span class="token comment">//下一个对象</span>
+<span class="token punctuation">}</span>
+
+</code></pre> 
+<p>一开始我们将所有对象的引用计数全部清零了，因此在标记阶段遍历活动对象来真实还原对象的"人气"，与普通遍历算法不同的是，每个对象会被遍历多次，具体次数与该对象的实际"人气"值相同，或者说与该节点的入度相同。你可以将活动对象抽象成一张有向图，对象的"人气"就是图中节点的入度。</p> 
+<p>清除阶段还是遍历堆，将"人气"为0的对象回收掉。</p> 
+<p>结合GC标记清除算法，不仅能回收计数器溢出的对象，还可以回收循环引用的对象，可以说是一举两得。</p> 
+<p>不过这里用到的GC标记清除算法相比于标准的GC标记清除算法要消耗更多时间，吞吐量会减小。因为标准GC标记清除算法对每个活动对象只会访问一次，而在引用计数法中，为了还原活动对象的真实引用数，可能要多次访问一个活动对象。</p> 
+<h3><a id="1_213"></a>1位引用计数法</h3> 
+<p>1位引用计数法也是为了优化计数器太占空间的问题，它是比Sticky更狠的一个算法，直接将计数器减小到1个比特。</p> 
+<p>首先我们让计数器为0表示"人气"为1，计数器为1表示"人气"大于等于2，如下图所示。<br> <img src="https://images2.imgbox.com/71/9e/szcHZZQW_o.png" alt="在这里插入图片描述"></p> 
+<p>我们能都这样的处理是基于这样一个事实：几乎没有对象被共有，所有对象都能马上被回收。</p> 
+<p>前面提到计数器在对象头中，现在只占一个比特，那么可以在指针中拿出一个比特来作为计数器。但是在指针中我们不叫它计数器，而是换了个名字叫"标签"。</p> 
+<p>标签位为0表示对象引用数为1，我们称这种状态为<code>UNIQUE</code>；标签位为1表示对象引用数多于1个，这种状态称为<code>MULTIPLE</code>。相应的，处于这两种状态下的指针分别称为<code>UNIQUE指针</code>和<code>MULTIPLE指针</code>。</p> 
+<p>因为计数器从对象移到了指针中，因此从理解上应该是<code>MULTIPLE指针</code>表示该指针指向的对象有两个及以上引用。说的是指针，但主体还是对象。</p> 
+<p>1位引用计数法依然是在更新指针时进行内存管理。在普通引用计数法中，我们是通过<code>update_ptr(ptr,obj)</code>来更新指针，让<code>ptr</code>指向<code>obj</code>。转换一下思路，让<code>ptr</code>指向<code>obj</code>其实也就是把原本指向<code>obj</code>的指针复制给<code>ptr</code>变量。这一步转变是1位引用计数法的关键，一定要理解清楚。考虑下图的例子：<br> <img src="https://images2.imgbox.com/84/13/afcFg2lB_o.png" alt="在这里插入图片描述"></p> 
+<p>将A→D的指针更新为指向C，等价于将B→C的指针复制给A。此时因为C有了两个引用，所以A→C和B→C的指针都变成了<code>MULTIPLE指针</code>。</p> 
+<p>指针复制的伪代码实现如下：</p> 
+<pre><code class="prism language-go"><span class="token comment">//复制指针</span>
+<span class="token function">copy_ptr</span><span class="token punctuation">(</span>dest_ptr<span class="token punctuation">,</span> src_ptr<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span> <span class="token comment">//注意两个参数都是指针</span>
+  <span class="token function">delete_ptr</span><span class="token punctuation">(</span>dest_ptr<span class="token punctuation">)</span> <span class="token comment">//尝试回收dest_ptr引用的对象</span>
+  <span class="token operator">*</span>dest_ptr <span class="token operator">=</span> <span class="token operator">*</span>src_ptr <span class="token comment">//更新指针</span>
+  <span class="token function">set_multiple_tag</span><span class="token punctuation">(</span>dest_ptr<span class="token punctuation">)</span> <span class="token comment">//将dest_ptr设置为MULTIPLE状态</span>
+  <span class="token keyword">if</span><span class="token punctuation">(</span><span class="token function">tag</span><span class="token punctuation">(</span>src_ptr<span class="token punctuation">)</span> <span class="token operator">==</span> UNIQUE<span class="token punctuation">)</span> 
+    <span class="token function">set_multiple_tag</span><span class="token punctuation">(</span>src_ptr<span class="token punctuation">)</span> <span class="token comment">//将src_ptr设置为MULTIPLE状态</span>
+<span class="token punctuation">}</span>
+
+<span class="token comment">//回收ptr指向的对象</span>
+<span class="token function">delete_ptr</span><span class="token punctuation">(</span>ptr<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+  <span class="token comment">//如果ptr指向的对象只有一个引用，</span>
+  <span class="token comment">//发生指针复制后它就没有引用了，</span>
+  <span class="token comment">//表示变成垃圾，可以被回收。</span>
+  <span class="token comment">//MULTIPLE表示有多个引用，因此不能回收</span>
+  <span class="token keyword">if</span><span class="token punctuation">(</span><span class="token function">tag</span><span class="token punctuation">(</span>ptr<span class="token punctuation">)</span> <span class="token operator">==</span> UNIQUE<span class="token punctuation">)</span> 
+    <span class="token function">reclaim</span><span class="token punctuation">(</span><span class="token operator">*</span>ptr<span class="token punctuation">)</span> <span class="token comment">//将ptr指向对象添加到空闲链表</span>
+<span class="token punctuation">}</span>
+
+</code></pre> 
+<p>结合上面的图示，<code>dest_ptr</code>是A→D的指针，<code>src_ptr</code>是B→C的指针。</p> 
+<p>在指针复制过程中，如果<code>dest_ptr</code>是<code>UNIQUE</code>状态，指针更新完以后，它原本指向的对象将不再被引用，因此可以直接回收。复制结束后，<code>src_ptr</code>指向的对象至少有两个引用，因此需要更新指针状态。整个过程中，我们只对指针操作，完全没有访问对象。最后还要将调用<code>update_ptr</code>的地方全部换成<code>copy_ptr</code>。</p> 
+<p>1位引用计数法的一个优点是不容易出现高速缓存缺失。CPU在处理时首先访问高速缓存，如果没有再从内存读取到高速缓存。使用<code>update_ptr</code>更新指针时，为了更新计数器，我们需要访问源对象和目标对象，如果它们在内存中相隔很远，发生高速缓存缺失的概率就会增大。而使用<code>copy_ptr</code>更新指针时，我们完全没有访问对象，通过指针就完成了。其另一个优点是计数器不再占用对象空间，能节省内存消耗。</p> 
+<p>1位引用计数法的缺点也和Sticky引用计数法一样，需要额外的手段来解决引用计数溢出问题。</p> 
+<h3><a id="_265"></a>部分标记清除算法</h3> 
+<p>部分标记清除算法针对的是引用计数法无法清除循环引用垃圾的问题。其中"部分"的含义是只在可能存在循环引用的地方使用标记清除算法，其他地方还是使用引用计数法。部分清除标记法由Rafael D. Lins在1992年提出。</p> 
+<p>部分清除标记算法定义了4种颜色：</p> 
+<ul><li>黑（BLACK）：绝对不是垃圾的对象，也是对象的初始颜色</li><li>白（WHITE）：绝对是垃圾的对象</li><li>灰（GRAY）：搜索完毕的对象</li><li>阴影（HATCH）：可能是循环垃圾的对象</li></ul> 
+<p>在对象头中用两个比特来表示对象颜色，分别对应值<code>00</code>~<code>11</code>。</p> 
+<p>考虑下面的例子，ABC和DE构成两个循环引用，<code>$hatch_queue</code>是用来存放阴影对象的全局队列。</p> 
+<p><img src="https://images2.imgbox.com/05/fc/0kiWzpWY_o.png" alt="在这里插入图片描述"></p> 
+<p>这里我们依然使用<code>update_ptr</code>函数更新指针，但是执行计数器减量的<code>dec_ref_cnt</code>函数需要改变一下，伪代码如下。</p> 
+<pre><code class="prism language-go"><span class="token function">dec_ref_cnt</span><span class="token punctuation">(</span>obj<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span> 
+  obj<span class="token punctuation">.</span>ref_cnt<span class="token operator">--</span> <span class="token comment">//将obj计数器减一</span>
+  <span class="token keyword">if</span><span class="token punctuation">(</span>obj<span class="token punctuation">.</span>ref_cnt <span class="token operator">==</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token comment">//没有引用了，表示是垃圾</span>
+    <span class="token function">delete</span><span class="token punctuation">(</span>obj<span class="token punctuation">)</span> <span class="token comment">//回收对象</span>
+  <span class="token keyword">else</span> <span class="token keyword">if</span><span class="token punctuation">(</span>obj<span class="token punctuation">.</span>color <span class="token operator">!=</span> HATCH<span class="token punctuation">)</span> <span class="token comment">//非阴影对象</span>
+    obj<span class="token punctuation">.</span>color <span class="token operator">=</span> HATCH <span class="token comment">//标记为阴影，表示可能存在循环引用</span>
+    <span class="token function">enqueue</span><span class="token punctuation">(</span>obj<span class="token punctuation">,</span> $hatch_queue<span class="token punctuation">)</span> <span class="token comment">//入队</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p><code>delete</code>函数我们在延迟引用计数法中已经见过了，不过这里还是有一点小小的区别，就是如果<code>obj</code>在<code>$hatch_queue</code>队列中，也要将<code>obj</code>从队列中删除。</p> 
+<p>如果将计数器减量之后任然不能回收，说明该对象可能存在循环引用，这就是循环引用的特点，计数器值无法减到零。此时我们将对象变成阴影，并加入到全局队列<code>$hatch_queue</code>中。如果对象颜色已经是阴影，表示已经入过队，不再重复入队。</p> 
+<p>上图示例中，删除根到A的引用，执行完<code>def_ref_cnt</code>函数后，堆的状态如下。</p> 
+<p><img src="https://images2.imgbox.com/e1/ae/On8IC0W6_o.png" alt="在这里插入图片描述"></p> 
+<p>接下来GC标记清除算法就会扫描整个<code>$hatch_queue</code>队列，而不是从根开始扫描。从这里可以看出部分GC标记清除算法和GC标记清除算法的一点区别，部分GC标记清除算法是扫描的非活动对象，而GC标记清除算法扫描的是活动对象，二者的出发点不一样。</p> 
+<p>部分GC标记清除算法是在分配对象时触发的，新的分配算法伪代码如下。</p> 
+<pre><code class="prism language-go"><span class="token comment">//分配size大小的对象</span>
+<span class="token function">new_obj</span><span class="token punctuation">(</span>size<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+  obj <span class="token operator">=</span> <span class="token function">pickup_chunk</span><span class="token punctuation">(</span>size<span class="token punctuation">)</span> <span class="token comment">//从空闲链表选择大小合适的分块</span>
+  <span class="token keyword">if</span><span class="token punctuation">(</span>obj <span class="token operator">!=</span> NULL<span class="token punctuation">)</span> <span class="token comment">//分配成功</span>
+    obj<span class="token punctuation">.</span>color <span class="token operator">=</span> BLACK <span class="token comment">//新对象初始颜色为黑色</span>
+    obj<span class="token punctuation">.</span>ref_cnt <span class="token operator">=</span> <span class="token number">1</span> <span class="token comment">//新对象初始引用数为1</span>
+    <span class="token keyword">return</span> obj
+  <span class="token keyword">else</span> <span class="token keyword">if</span><span class="token punctuation">(</span><span class="token function">is_empty</span><span class="token punctuation">(</span>$hatch_queue<span class="token punctuation">)</span> <span class="token operator">==</span> FALSE<span class="token punctuation">)</span> <span class="token comment">//分配失败且队列不为空</span>
+    <span class="token function">scan_hatch_queue</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token comment">//扫描队列回收垃圾</span>
+    <span class="token keyword">return</span> <span class="token function">new_obj</span><span class="token punctuation">(</span>size<span class="token punctuation">)</span> <span class="token comment">//再次分配</span>
+  <span class="token keyword">else</span> 
+    <span class="token function">allocation_fail</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token comment">//分配失败</span>
+<span class="token punctuation">}</span>
+
+<span class="token comment">//扫描阴影对象</span>
+<span class="token function">scan_hatch_queue</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+  obj <span class="token operator">=</span> <span class="token function">dequeue</span><span class="token punctuation">(</span>$hatch_queue<span class="token punctuation">)</span> <span class="token comment">//取队首</span>
+  <span class="token keyword">if</span><span class="token punctuation">(</span>obj<span class="token punctuation">.</span>color <span class="token operator">==</span> HATCH<span class="token punctuation">)</span> <span class="token comment">//阴影对象，可能是循环引用垃圾</span>
+    <span class="token function">paint_gray</span><span class="token punctuation">(</span>obj<span class="token punctuation">)</span> <span class="token comment">//染灰</span>
+    <span class="token function">scan_gray</span><span class="token punctuation">(</span>obj<span class="token punctuation">)</span> <span class="token comment">//扫描灰色对象</span>
+    <span class="token function">collect_white</span><span class="token punctuation">(</span>obj<span class="token punctuation">)</span> <span class="token comment">//回收白色对象，也就是垃圾</span>
+  <span class="token keyword">else</span> <span class="token keyword">if</span><span class="token punctuation">(</span><span class="token function">is_empty</span><span class="token punctuation">(</span>$hatch_queue<span class="token punctuation">)</span> <span class="token operator">==</span> FALSE<span class="token punctuation">)</span> <span class="token comment">//队列不为空</span>
+    <span class="token function">scan_hatch_queue</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token comment">//继续扫描阴影对象</span>
+<span class="token punctuation">}</span>
+
+</code></pre> 
+<p>当无法分配内存时，就会启动部分GC标记清除算法回收垃圾，然后再次尝试分配。我们会遍历<code>$hatch_queue</code>队列，这里我们只处理阴影对象，因为只有阴影对象才可能存在循环引用。</p> 
+<p>部分标记清除算法的标记阶段就是在染色，对应<code>paint_gray</code>和<code>scan_gray</code>两个函数，清除阶段对应的是<code>collect_white</code>函数。从染色到回收共分三个步骤。</p> 
+<h4><a id="__339"></a>第一步 减小引用数</h4> 
+<p>第一步是将对象自身以及子对象染成灰色，并将子对象引用计数减一。伪代码如下：</p> 
+<pre><code class="prism language-go"><span class="token comment">//将obj及其子对象染灰</span>
+<span class="token function">paint_gray</span><span class="token punctuation">(</span>obj<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+  <span class="token keyword">if</span><span class="token punctuation">(</span>obj<span class="token punctuation">.</span>color <span class="token operator">==</span> <span class="token punctuation">(</span>BLACK <span class="token operator">|</span> HATCH<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token comment">//白色是垃圾，不用处理</span>
+    obj<span class="token punctuation">.</span>color <span class="token operator">=</span> GRAY <span class="token comment">//染灰</span>
+    <span class="token keyword">for</span><span class="token punctuation">(</span>child <span class="token punctuation">:</span> <span class="token function">children</span><span class="token punctuation">(</span>obj<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token comment">//遍历子对象</span>
+      <span class="token punctuation">(</span><span class="token operator">*</span>child<span class="token punctuation">)</span><span class="token punctuation">.</span>ref_cnt<span class="token operator">--</span> <span class="token comment">//减少子对象引用计数</span>
+      <span class="token function">paint_gray</span><span class="token punctuation">(</span><span class="token operator">*</span>child<span class="token punctuation">)</span> <span class="token comment">//递归将子对象染灰</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p><code>paint_gray</code>实际上是图的深度优先遍历，这一步的真正目的是减小对象"人气"，染灰只是为了防止重复访问，同时也告诉后面的流程应该处理哪些对象。因为会递归处理子对象，如果存在循环引用，最终环上的每个对象的引用数都会减一。这样就解决了循环引用对象的计数器始终不为0的问题，后面的流程也就能根据对象引用数顺利进行了。</p> 
+<p>这里有个细节，在<code>paint_gray</code>函数中，我们只对<code>obj</code>进行了染色，没有减少引用数，而对于子对象，只减少了计数器，没有染色。为什么一定要这样处理，后面会详细解释。</p> 
+<p>这一步执行完后，堆的状态如下，以A为根的对象全部染灰，并且引用数减一。</p> 
+<p><img src="https://images2.imgbox.com/49/c7/PtOD3Hgb_o.png" alt="在这里插入图片描述"></p> 
+<h4><a id="__363"></a>第二步 找到垃圾</h4> 
+<p>第二步是从<code>obj</code>开始遍历，将对象染成黑色或者白色。伪代码如下。</p> 
+<pre><code class="prism language-go"><span class="token comment">//扫描灰色对象，将其染成黑色或白色</span>
+<span class="token function">scan_gray</span><span class="token punctuation">(</span>obj<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+  <span class="token keyword">if</span><span class="token punctuation">(</span>obj<span class="token punctuation">.</span>color <span class="token operator">==</span> GRAY<span class="token punctuation">)</span> <span class="token comment">//灰色对象</span>
+    <span class="token keyword">if</span><span class="token punctuation">(</span>obj<span class="token punctuation">.</span>ref_cnt <span class="token operator">&gt;</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token comment">//引用数大于0，肯定的不是垃圾</span>
+      <span class="token function">paint_black</span><span class="token punctuation">(</span>obj<span class="token punctuation">)</span> <span class="token comment">//染黑</span>
+    <span class="token keyword">else</span> 
+      obj<span class="token punctuation">.</span>color <span class="token operator">=</span> WHITE <span class="token comment">//染白</span>
+      <span class="token keyword">for</span><span class="token punctuation">(</span>child <span class="token punctuation">:</span> <span class="token function">children</span><span class="token punctuation">(</span>obj<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token comment">//遍历子对象 </span>
+        <span class="token function">scan_gray</span><span class="token punctuation">(</span><span class="token operator">*</span>child<span class="token punctuation">)</span> <span class="token comment">//递归扫描灰色对象</span>
+<span class="token punctuation">}</span>
+
+<span class="token comment">//将obj染黑</span>
+<span class="token function">paint_black</span><span class="token punctuation">(</span>obj<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span> 
+  obj<span class="token punctuation">.</span>color <span class="token operator">=</span> BLACK <span class="token comment">//染黑</span>
+  <span class="token keyword">for</span><span class="token punctuation">(</span>child <span class="token punctuation">:</span> <span class="token function">children</span><span class="token punctuation">(</span>obj<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token comment">//遍历子对象</span>
+    <span class="token punctuation">(</span><span class="token operator">*</span>child<span class="token punctuation">)</span><span class="token punctuation">.</span>ref_cnt<span class="token operator">++</span> <span class="token comment">//增加引用计数</span>
+    <span class="token keyword">if</span><span class="token punctuation">(</span><span class="token punctuation">(</span><span class="token operator">*</span>child<span class="token punctuation">)</span><span class="token punctuation">.</span>color <span class="token operator">!=</span> BLACK<span class="token punctuation">)</span> <span class="token comment">//还没处理过</span>
+      <span class="token function">paint_black</span><span class="token punctuation">(</span><span class="token operator">*</span>child<span class="token punctuation">)</span> <span class="token comment">//递归染黑子对象</span>
+<span class="token punctuation">}</span>
+
+</code></pre> 
+<p>这一步染黑还是染白的依据是对象的引用计数是否大于0，如果大于0，必然不是垃圾，就将其染黑，使用<code>paint_black</code>是为了递归处理子对象，将误当作垃圾的对象的状态还原。否则一定是垃圾，直接染成白色。这一步执行完后，就完成了对象是垃圾还是非垃圾的分类，基本原理还是根据引用数判断是不是垃圾。完成后堆状态如下。</p> 
+<p><img src="https://images2.imgbox.com/3c/8c/vikj6i8g_o.png" alt="在这里插入图片描述"></p> 
+<h4><a id="__394"></a>第三步 回收垃圾</h4> 
+<p>第三步是回收白色对象，也就是垃圾。伪代码如下。</p> 
+<pre><code class="prism language-go"><span class="token comment">//回收垃圾</span>
+<span class="token function">collect_white</span><span class="token punctuation">(</span>obj<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span> 
+  <span class="token keyword">if</span><span class="token punctuation">(</span>obj<span class="token punctuation">.</span>color <span class="token operator">==</span> WHITE<span class="token punctuation">)</span> <span class="token comment">//白色对象，表示是垃圾</span>
+    obj<span class="token punctuation">.</span>color <span class="token operator">=</span> BLACK <span class="token comment">//暂时染黑，避免循环引用导致重复回收</span>
+    <span class="token keyword">for</span><span class="token punctuation">(</span>child <span class="token punctuation">:</span> <span class="token function">children</span><span class="token punctuation">(</span>obj<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token comment">//遍历子对象</span>
+      <span class="token function">collect_white</span><span class="token punctuation">(</span><span class="token operator">*</span>child<span class="token punctuation">)</span> <span class="token comment">//递归处理子对象</span>
+    <span class="token function">reclaim</span><span class="token punctuation">(</span>obj<span class="token punctuation">)</span> <span class="token comment">//将obj加入空闲链表</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>这一步是针对白色对象进行递归回收，执行完后堆状态如下。</p> 
+<p><img src="https://images2.imgbox.com/72/79/clu525h0_o.png" alt="在这里插入图片描述"></p> 
+<p>部分标记清除算法的完整过程如下。</p> 
+<p><img src="https://images2.imgbox.com/ff/38/O9XdBjVe_o.gif" alt="在这里插入图片描述"></p> 
+<h4><a id="_418"></a>细节问题</h4> 
+<p>现在我们再来讨论上面提到的一个细节问题。问题出在不存在循环引用的情况下，考虑以下情形。</p> 
+<p><img src="https://images2.imgbox.com/9b/03/tWTibRGd_o.png" alt="在这里插入图片描述"></p> 
+<p>如果我们在染色的同时对计数器减一，那么<code>paint_gray</code>的执行过程如下：</p> 
+<p><img src="https://images2.imgbox.com/1f/79/WtxQaZjR_o.png" alt="在这里插入图片描述"></p> 
+<p>这三个对象都被染灰，而且引用数变为0，这显然是不对的，在接下来的扫描和回收过程中，它们都会被染白并回收掉，但是显然它们还不能被回收。在<code>dec_ref_cnt</code>中，减小对象引用计数后仍不为0只能表示它可能是垃圾，我们无法判定仍然存在的引用究竟是真的引用，还是循环引用。因此我们不能直接直接削减它的"人气"，而是利用环的特点，通过它的子对象最终把它的"人气"抹掉。</p> 
+<p>如果分开执行染色和减少引用数，整个过程如下。</p> 
+<p><img src="https://images2.imgbox.com/d2/2f/f6J6Hk3x_o.png" alt="在这里插入图片描述"></p> 
+<p>由于不存在环，所以最终A的引用数还是1，在接下来的扫描过程中，它们又会被染黑，"人气"也会恢复。</p> 
+<h2><a id="_436"></a>总结</h2> 
+<ul><li>引用计数法记录了每个对象的引用数，并在更新指针时将没有"人气"的对象回收。</li><li>延迟引用计数法延迟了回收过程，利用ZCT数组记录下"人气"为0的对象，内存不够时再遍历ZCT数组回收垃圾。优化了频繁更新计数器问题。</li><li>Sticky引用计数法通过减小计数器位宽优化了计数器占用较多内存的问题，但是需要额外处理计数器溢出的对象。</li><li>1位引用计数法将计数器减小到1比特，并且放到了指针中，彻底解决了计数器占用内存问题，同样也需要额外处理计数器溢出的情况。</li><li>部分标记清除法针对可能存在循环引用的对象采用了GC标记清除法，解决了循环引用无法回收的问题。</li></ul> 
+<hr> 
+<h2><a id="_446"></a>更多阅读</h2> 
+<ul><li> <p><a href="https://blog.csdn.net/puss0/article/details/126344789">GC标记清除算法</a></p> </li><li> <p><a href="https://blog.csdn.net/puss0/article/details/126357148">GC复制算法</a></p> </li><li> <p><a href="https://blog.csdn.net/puss0/article/details/126357914">GC标记压缩算法</a></p> </li><li> <p><a href="https://blog.csdn.net/puss0/article/details/126357922">渐进式垃圾回收</a></p> </li></ul>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/04174db1e40fae3709f7ee00fd9353e4/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">echarts中grid的使用以及柱状图中数据太多利用DataZoom实现自动横线滑动展示</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/76a228b9ca028ab229dae4f0e0153f98/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">Element is missing end tag</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>FPGA-Verilog实现uart串口异步通信 - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="FPGA-Verilog实现uart串口异步通信" />
+<meta property="og:description" content="文章目录 前言一、Uart串口通信二、串口异步通信实现1.程序框图2.波特率设置模块3.串口发送控制模块4.串口发送控制模块 三、结果1、仿真结果2、板级调试结果 设计文件与仿真文件 前言 （完整代码在文末，包括仿真文件与设计文件，通过仿真与板级验证）本文利用verilog语言实现uart串口异步通信，FPGA接收串口发来的数据，并将接收到的数据通过tx端发送到PC端，在PC端串口打印显示数据
+开发板：SF-AT7
+软件平台：Vivado 2016.2
+一、Uart串口通信 uart串口通信是一种异步串行全双工通信方式，tx端用于数据发送，rx端用于数据接收。信号线空闲时为高电平。由于是异步通信方式，数据发送会包装成数据帧的形式发送，帧格式为：1个起始位（0）、8个数据位（用户数据）、1个奇偶校验位（用于简单的纠错以保证传输的可靠性）、1和2个停止位（1），其中奇偶校验位不是必须的。下图为帧格式结构。
+那么该如何检测到数据发送呢？可以注意到数据帧格式中第一个bit是低电平，当FPGA的rx端检测到信号线上有下降沿产生时，表示有数据传送过来，根据预先设置好的波特率对数据接收接收，由于数据是串行从低位到高位传输，接收到的数据暂时存储在寄存器中，待接收完1字节的数据，通过串并转换保存接收到的数据。发送时通过tx信号线按照设置好的波特率将数据发送出去，数据发送仍然要按照数据帧格式发送，即先发送1bit的低电平，再从低位到高位发送数据。 二、串口异步通信实现 1.程序框图 FPGA实时检测uart_rx信号是否有数据，若接收到数据，你把接收到的数据通过uart_tx发送给PC端。
+我们知道串口数据传输在设置的波特率下进行，因此需要有专门的波特率产生单元，且发送与接收分别对应一个波特率产生单元，将波特率设置包装成一个模块，分别在发送与接收端例化该模块即可，这是两个独立的硬件资源，属于逻辑复制，而并非资源共享。
+整个程序具体实现过程就是有一个顶层模块，在顶层模块中例化波特率设置模块、串口发送与接收处理模块。
+speed_setting	u2_speed_rx(	.clk(clk_25m),	//波特率选择模块 .rst_n(sys_rst_n), .bps_start(bps_start1), .clk_bps(clk_bps1) ); //UART接收数据处理 my_uart_rx_q	u3_my_uart_rx(	.clk(clk_25m),	//接收数据模块 .rst_n(sys_rst_n), .uart_rx(uart_rx), .rx_data(rx_data), .rx_int(rx_int), .clk_bps(clk_bps1), .bps_start(bps_start1) ); //------------------------------------- //UART发送信号波特率设置	speed_setting	u4_speed_tx(	.clk(clk_25m),	//波特率选择模块 .rst_n(sys_rst_n), .bps_start(bps_start2), .clk_bps(clk_bps2) ); //UART发送数据处理 my_uart_tx_q	u5_my_uart_tx(	.clk(clk_25m),	//发送数据模块 .rst_n(sys_rst_n), .rx_data(rx_data), .rx_int(rx_int), .uart_tx(uart_tx), .clk_bps(clk_bps2), .bps_start(bps_start2) ); 2.波特率设置模块 前面说过波特率设置本质是一个计数器，常用的波特率如9600、115200等是指1s內传输数据的个数，1/9600就是一个周期所对应的时长。以25MHz为例，一个周期是40ns ，那么计数周期就是：1/9600/40ns*1000000000（注意单位统一）,设置一个计数器，当计数次数达到9600bps时，标志位有一个周期的高脉冲信号，该标志位信号用来控制tx端传送数据位的切换或者rx端接收数据位的切换。根据上面的分析结果，利用verilog语言编程实现，可以用一个always块来实现计数器，另一个always块实现标志位置位。为了保证数据采集更加准备，我们选择在数据传送中间采样，即计数器记到9600一半的时候进行数据采样。针对接收端，uart端口rx端接收到数据总线的信号。总线上数据都是以字节的形式传输，而uart通信协议中规定数据是串行接收的，因此接收时要进行串并转换，串并转换的速率由波特率决定。接收到信号后波特率设置模块开始计数，定时产生维持一个周期高电平的采样信号。
+代码如下： module speed_setting( input clk, input rst_n, input bps_start, output clk_bps ); `define BPS_9600 `define CLK_PERIORD	40	//定义时钟周期为40ns(25MHz) `define BPS_SET	9600	//定义通信波特率为9600bps(将需要的波特率省去两个零后定义即可) `define BPS_PARA	(1_000_000_000/`CLK_PERIORD/`BPS_SET)//10_000_000/`CLK_PERIORD/96;	//波特率为9600时的分频计数值 `define BPS_PARA_2	(`BPS_PARA/2)//BPS_PARA/2;	//波特率为9600时的分频计数值的一半，用于数据采样 reg[12:0] cnt;	//分频计数 reg clk_bps_r;	//波特率时钟寄存器 //---------------------------------------------------------- reg[2:0] uart_ctrl;	// uart波特率选择寄存器 //计数器计数 always@(posedge clk or negedge rst_n)begin if(!" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/7fb50320ea57e559fc224ee5fe40e368/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2022-03-26T16:30:16+08:00" />
+<meta property="article:modified_time" content="2022-03-26T16:30:16+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">FPGA-Verilog实现uart串口异步通信</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p></p> 
+<div class="toc"> 
+ <h4>文章目录</h4> 
+ <ul><li><a href="#_6" rel="nofollow">前言</a></li><li><a href="#Uart_16" rel="nofollow">一、Uart串口通信</a></li><li><a href="#_23" rel="nofollow">二、串口异步通信实现</a></li><li><ul><li><a href="#1_24" rel="nofollow">1.程序框图</a></li><li><a href="#2_72" rel="nofollow">2.波特率设置模块</a></li><li><a href="#3_116" rel="nofollow">3.串口发送控制模块</a></li><li><a href="#4_195" rel="nofollow">4.串口发送控制模块</a></li></ul> 
+  </li><li><a href="#_232" rel="nofollow">三、结果</a></li><li><ul><li><a href="#1_234" rel="nofollow">1、仿真结果</a></li><li><a href="#2_239" rel="nofollow">2、板级调试结果</a></li></ul> 
+  </li><li><a href="#_243" rel="nofollow">设计文件与仿真文件</a></li></ul> 
+</div> 
+<p></p> 
+<hr> 
+<h2><a id="_6"></a>前言</h2> 
+<p>（完整代码在文末，包括仿真文件与设计文件，通过仿真与板级验证）本文利用verilog语言实现uart串口异步通信，FPGA接收串口发来的数据，并将接收到的数据通过tx端发送到PC端，在PC端串口打印显示数据<br> 开发板：SF-AT7<br> 软件平台：Vivado 2016.2</p> 
+<hr> 
+<h2><a id="Uart_16"></a>一、Uart串口通信</h2> 
+<ul><li>uart串口通信是一种异步串行全双工通信方式，tx端用于数据发送，rx端用于数据接收。信号线空闲时为高电平。</li><li>由于是异步通信方式，数据发送会包装成数据帧的形式发送，帧格式为：<strong>1个起始位（0）、8个数据位（用户数据）、1个奇偶校验位（用于简单的纠错以保证传输的可靠性）、1和2个停止位（1）</strong>，其中奇偶校验位不是必须的。下图为帧格式结构。<br> <img src="https://images2.imgbox.com/63/b2/gVptD3mD_o.png" alt="在这里插入图片描述"></li><li>那么该如何检测到数据发送呢？可以注意到数据帧格式中第一个bit是低电平，当FPGA的rx端检测到信号线上有下降沿产生时，表示有数据传送过来，根据预先设置好的波特率对数据接收接收，由于数据是串行从低位到高位传输，接收到的数据暂时存储在寄存器中，待接收完1字节的数据，通过串并转换保存接收到的数据。</li><li>发送时通过tx信号线按照设置好的波特率将数据发送出去，数据发送仍然要按照数据帧格式发送，即先发送1bit的低电平，再从低位到高位发送数据。</li></ul> 
+<h2><a id="_23"></a>二、串口异步通信实现</h2> 
+<h3><a id="1_24"></a>1.程序框图</h3> 
+<p>FPGA实时检测uart_rx信号是否有数据，若接收到数据，你把接收到的数据通过uart_tx发送给PC端。<br> 我们知道串口数据传输在设置的波特率下进行，因此需要有专门的波特率产生单元，且发送与接收分别对应一个波特率产生单元，将波特率设置包装成一个模块，分别在发送与接收端例化该模块即可，这是两个独立的硬件资源，属于逻辑复制，而并非资源共享。<br> 整个程序具体实现过程就是有一个顶层模块，在顶层模块中例化波特率设置模块、串口发送与接收处理模块。<br> <img src="https://images2.imgbox.com/e0/a1/7nh6zU5Y_o.png" alt="在这里插入图片描述"></p> 
+<pre><code class="prism language-clike">speed_setting		<span class="token function">u2_speed_rx</span><span class="token punctuation">(</span>	
+							<span class="token punctuation">.</span><span class="token function">clk</span><span class="token punctuation">(</span>clk_25m<span class="token punctuation">)</span><span class="token punctuation">,</span>	<span class="token comment">//波特率选择模块</span>
+							<span class="token punctuation">.</span><span class="token function">rst_n</span><span class="token punctuation">(</span>sys_rst_n<span class="token punctuation">)</span><span class="token punctuation">,</span>
+							<span class="token punctuation">.</span><span class="token function">bps_start</span><span class="token punctuation">(</span>bps_start1<span class="token punctuation">)</span><span class="token punctuation">,</span>
+							<span class="token punctuation">.</span><span class="token function">clk_bps</span><span class="token punctuation">(</span>clk_bps1<span class="token punctuation">)</span>
+						<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+	<span class="token comment">//UART接收数据处理</span>
+my_uart_rx_q			<span class="token function">u3_my_uart_rx</span><span class="token punctuation">(</span>		
+							<span class="token punctuation">.</span><span class="token function">clk</span><span class="token punctuation">(</span>clk_25m<span class="token punctuation">)</span><span class="token punctuation">,</span>	<span class="token comment">//接收数据模块</span>
+							<span class="token punctuation">.</span><span class="token function">rst_n</span><span class="token punctuation">(</span>sys_rst_n<span class="token punctuation">)</span><span class="token punctuation">,</span>
+							<span class="token punctuation">.</span><span class="token function">uart_rx</span><span class="token punctuation">(</span>uart_rx<span class="token punctuation">)</span><span class="token punctuation">,</span>
+							<span class="token punctuation">.</span><span class="token function">rx_data</span><span class="token punctuation">(</span>rx_data<span class="token punctuation">)</span><span class="token punctuation">,</span>
+							<span class="token punctuation">.</span><span class="token function">rx_int</span><span class="token punctuation">(</span>rx_int<span class="token punctuation">)</span><span class="token punctuation">,</span>
+							<span class="token punctuation">.</span><span class="token function">clk_bps</span><span class="token punctuation">(</span>clk_bps1<span class="token punctuation">)</span><span class="token punctuation">,</span>
+							<span class="token punctuation">.</span><span class="token function">bps_start</span><span class="token punctuation">(</span>bps_start1<span class="token punctuation">)</span>
+						<span class="token punctuation">)</span><span class="token punctuation">;</span>
+		
+<span class="token comment">//-------------------------------------</span>
+
+	<span class="token comment">//UART发送信号波特率设置													</span>
+speed_setting		<span class="token function">u4_speed_tx</span><span class="token punctuation">(</span>	
+							<span class="token punctuation">.</span><span class="token function">clk</span><span class="token punctuation">(</span>clk_25m<span class="token punctuation">)</span><span class="token punctuation">,</span>	<span class="token comment">//波特率选择模块</span>
+							<span class="token punctuation">.</span><span class="token function">rst_n</span><span class="token punctuation">(</span>sys_rst_n<span class="token punctuation">)</span><span class="token punctuation">,</span>
+							<span class="token punctuation">.</span><span class="token function">bps_start</span><span class="token punctuation">(</span>bps_start2<span class="token punctuation">)</span><span class="token punctuation">,</span>
+							<span class="token punctuation">.</span><span class="token function">clk_bps</span><span class="token punctuation">(</span>clk_bps2<span class="token punctuation">)</span>
+						<span class="token punctuation">)</span><span class="token punctuation">;</span>
+						
+	<span class="token comment">//UART发送数据处理</span>
+my_uart_tx_q			<span class="token function">u5_my_uart_tx</span><span class="token punctuation">(</span>		
+							<span class="token punctuation">.</span><span class="token function">clk</span><span class="token punctuation">(</span>clk_25m<span class="token punctuation">)</span><span class="token punctuation">,</span>	<span class="token comment">//发送数据模块</span>
+							<span class="token punctuation">.</span><span class="token function">rst_n</span><span class="token punctuation">(</span>sys_rst_n<span class="token punctuation">)</span><span class="token punctuation">,</span>
+							<span class="token punctuation">.</span><span class="token function">rx_data</span><span class="token punctuation">(</span>rx_data<span class="token punctuation">)</span><span class="token punctuation">,</span>
+							<span class="token punctuation">.</span><span class="token function">rx_int</span><span class="token punctuation">(</span>rx_int<span class="token punctuation">)</span><span class="token punctuation">,</span>
+							<span class="token punctuation">.</span><span class="token function">uart_tx</span><span class="token punctuation">(</span>uart_tx<span class="token punctuation">)</span><span class="token punctuation">,</span>
+							<span class="token punctuation">.</span><span class="token function">clk_bps</span><span class="token punctuation">(</span>clk_bps2<span class="token punctuation">)</span><span class="token punctuation">,</span>
+							<span class="token punctuation">.</span><span class="token function">bps_start</span><span class="token punctuation">(</span>bps_start2<span class="token punctuation">)</span>
+						<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+</code></pre> 
+<h3><a id="2_72"></a>2.波特率设置模块</h3> 
+<ul><li>前面说过波特率设置本质是一个计数器，常用的波特率如9600、115200等是指1s內传输数据的个数，1/9600就是一个周期所对应的时长。以25MHz为例，一个周期是40ns ，那么计数周期就是：<strong>1/9600/40ns*1000000000</strong>（注意单位统一）,设置一个计数器，当计数次数达到9600bps时，标志位有一个周期的高脉冲信号，该标志位信号用来控制tx端传送数据位的切换或者rx端接收数据位的切换。</li><li>根据上面的分析结果，利用verilog语言编程实现，可以用一个always块来实现计数器，另一个always块实现标志位置位。为了保证数据采集更加准备，我们选择在数据传送中间采样，即计数器记到9600一半的时候进行数据采样。</li><li>针对接收端，uart端口rx端接收到数据总线的信号。总线上数据都是以字节的形式传输，而uart通信协议中规定数据是串行接收的，因此接收时要进行串并转换，串并转换的速率由波特率决定。接收到信号后波特率设置模块开始计数，定时产生维持一个周期高电平的采样信号。<br> 代码如下：</li></ul> 
+<pre><code class="prism language-clike">module <span class="token function">speed_setting</span><span class="token punctuation">(</span>
+				input clk<span class="token punctuation">,</span>
+				input rst_n<span class="token punctuation">,</span>
+				input bps_start<span class="token punctuation">,</span>
+				output clk_bps
+			<span class="token punctuation">)</span><span class="token punctuation">;</span>
+`define BPS_9600
+`define CLK_PERIORD	<span class="token number">40</span>	<span class="token comment">//定义时钟周期为40ns(25MHz)</span>
+`define BPS_SET		<span class="token number">9600</span>	<span class="token comment">//定义通信波特率为9600bps(将需要的波特率省去两个零后定义即可)</span>
+
+`define BPS_PARA	<span class="token punctuation">(</span><span class="token number">1</span>_000_000_000<span class="token operator">/</span>`CLK_PERIORD<span class="token operator">/</span>`BPS_SET<span class="token punctuation">)</span><span class="token comment">//10_000_000/`CLK_PERIORD/96;		//波特率为9600时的分频计数值</span>
+`define BPS_PARA_2	<span class="token punctuation">(</span>`BPS_PARA<span class="token operator">/</span><span class="token number">2</span><span class="token punctuation">)</span><span class="token comment">//BPS_PARA/2;	//波特率为9600时的分频计数值的一半，用于数据采样</span>
+
+reg<span class="token punctuation">[</span><span class="token number">12</span><span class="token punctuation">:</span><span class="token number">0</span><span class="token punctuation">]</span> cnt<span class="token punctuation">;</span>			<span class="token comment">//分频计数</span>
+reg clk_bps_r<span class="token punctuation">;</span>			<span class="token comment">//波特率时钟寄存器</span>
+<span class="token comment">//----------------------------------------------------------</span>
+reg<span class="token punctuation">[</span><span class="token number">2</span><span class="token punctuation">:</span><span class="token number">0</span><span class="token punctuation">]</span> uart_ctrl<span class="token punctuation">;</span>	<span class="token comment">// uart波特率选择寄存器</span>
+
+<span class="token comment">//计数器计数</span>
+always@<span class="token punctuation">(</span>posedge clk or negedge rst_n<span class="token punctuation">)</span>begin
+	<span class="token keyword">if</span><span class="token punctuation">(</span><span class="token operator">!</span>rst_n<span class="token punctuation">)</span> cnt <span class="token operator">&lt;=</span> <span class="token number">13</span>'d0 <span class="token punctuation">;</span>
+	<span class="token keyword">else</span> <span class="token keyword">if</span><span class="token punctuation">(</span>bps_start<span class="token punctuation">)</span>begin
+		<span class="token keyword">if</span><span class="token punctuation">(</span>cnt <span class="token operator">&lt;</span> BPS_PARA<span class="token punctuation">)</span> cnt <span class="token operator">&lt;=</span> cnt <span class="token operator">+</span> <span class="token number">13</span>'d1 <span class="token punctuation">;</span>
+		<span class="token keyword">else</span> cnt <span class="token operator">&lt;=</span> <span class="token number">13</span>'d0 <span class="token punctuation">;</span>
+	end
+	<span class="token keyword">else</span> cnt <span class="token operator">&lt;=</span> <span class="token number">13</span>'d0 <span class="token punctuation">;</span>
+end
+<span class="token comment">//采样信号标志位</span>
+always@<span class="token punctuation">(</span>posedge clk or negedge rst_n<span class="token punctuation">)</span>begin
+	<span class="token keyword">if</span><span class="token punctuation">(</span><span class="token operator">!</span>rst_n<span class="token punctuation">)</span> clk_bps_r <span class="token operator">&lt;=</span> <span class="token number">1</span>'b0 <span class="token punctuation">;</span>
+	<span class="token keyword">else</span> <span class="token keyword">if</span><span class="token punctuation">(</span>cnt <span class="token operator">==</span> BPS_PARA_2<span class="token punctuation">)</span> clk_bps_r <span class="token operator">&lt;=</span> <span class="token number">1</span>'b1 <span class="token punctuation">;</span>
+	<span class="token keyword">else</span>  clk_bps_r <span class="token operator">&lt;=</span> <span class="token number">1</span>'b0 <span class="token punctuation">;</span>
+end
+assign clk_bps <span class="token operator">=</span> clk_bps_r <span class="token punctuation">;</span>
+endmodule
+	
+</code></pre> 
+<h3><a id="3_116"></a>3.串口发送控制模块</h3> 
+<p>该模块实现对UART接收信号uart_rx进行解码，并实现串并转换，并将数据保存在【rx_data[7:0]】中。具体程序内部实现框图如下：<br> <img src="https://images2.imgbox.com/cd/6b/1vbLtOeT_o.png" alt="在这里插入图片描述"></p> 
+<ol><li>下降沿检测<br> 通过检测信号【uart_rx】信号下降沿。来判断是否有信号发送过来。边沿检测一般会利用多个锁存器，所存uart_rx的状态，根据前后状态的逻辑运算结果进行判断，如果前一个状态是高电平，最新的状态为低电平，则表示出现了下降沿。</li></ol> 
+<pre><code class="prism language-clike">module <span class="token function">my_uart_rx</span><span class="token punctuation">(</span>
+				clk<span class="token punctuation">,</span>rst_n<span class="token punctuation">,</span>
+				uart_rx<span class="token punctuation">,</span>rx_data<span class="token punctuation">,</span>rx_int<span class="token punctuation">,</span>
+				clk_bps<span class="token punctuation">,</span>bps_start
+			<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+input clk<span class="token punctuation">;</span>		<span class="token comment">// 25MHz主时钟</span>
+input rst_n<span class="token punctuation">;</span>	<span class="token comment">//低电平复位信号</span>
+input uart_rx<span class="token punctuation">;</span>	<span class="token comment">// RS232接收数据信号</span>
+input clk_bps<span class="token punctuation">;</span>	<span class="token comment">// clk_bps的高电平为接收或者发送数据位的中间采样点</span>
+output bps_start<span class="token punctuation">;</span>		<span class="token comment">//接收到数据后，波特率时钟启动信号置位</span>
+output<span class="token punctuation">[</span><span class="token number">7</span><span class="token punctuation">:</span><span class="token number">0</span><span class="token punctuation">]</span> rx_data<span class="token punctuation">;</span>	<span class="token comment">//接收数据寄存器，保存直至下一个数据来到 </span>
+output rx_int<span class="token punctuation">;</span>	<span class="token comment">//接收数据中断信号,接收到数据期间始终为高电平</span>
+
+<span class="token comment">//----------------------------------------------------------------</span>
+reg uart_rx0<span class="token punctuation">,</span>uart_rx1<span class="token punctuation">,</span>uart_rx2<span class="token punctuation">,</span>uart_rx3<span class="token punctuation">;</span>	<span class="token comment">//接收数据寄存器，滤波用</span>
+wire neg_uart_rx<span class="token punctuation">;</span>	<span class="token comment">//表示数据线接收到下降沿</span>
+
+always @ <span class="token punctuation">(</span>posedge clk or negedge rst_n<span class="token punctuation">)</span> 
+	<span class="token keyword">if</span><span class="token punctuation">(</span><span class="token operator">!</span>rst_n<span class="token punctuation">)</span> begin
+		uart_rx0 <span class="token operator">&lt;=</span> <span class="token number">1</span>'b0<span class="token punctuation">;</span>
+		uart_rx1 <span class="token operator">&lt;=</span> <span class="token number">1</span>'b0<span class="token punctuation">;</span>
+		uart_rx2 <span class="token operator">&lt;=</span> <span class="token number">1</span>'b0<span class="token punctuation">;</span>
+		uart_rx3 <span class="token operator">&lt;=</span> <span class="token number">1</span>'b0<span class="token punctuation">;</span>
+	end
+	<span class="token keyword">else</span> begin
+		uart_rx0 <span class="token operator">&lt;=</span> uart_rx<span class="token punctuation">;</span>
+		uart_rx1 <span class="token operator">&lt;=</span> uart_rx0<span class="token punctuation">;</span>
+		uart_rx2 <span class="token operator">&lt;=</span> uart_rx1<span class="token punctuation">;</span>
+		uart_rx3 <span class="token operator">&lt;=</span> uart_rx2<span class="token punctuation">;</span>
+	end
+assign neg_uart_rx <span class="token operator">=</span> uart_rx3 <span class="token operator">&amp;</span> uart_rx2 <span class="token operator">&amp;</span> <span class="token operator">~</span>uart_rx1 <span class="token operator">&amp;</span> <span class="token operator">~</span>uart_rx0<span class="token punctuation">;</span>
+</code></pre> 
+<ol start="2"><li> <p>波特率控制模块<br> 该模块因为信号下降沿的到来，使得【bps_start】信号置为1，启动波特率设置模块。</p> </li><li> <p>计数采样模块<br> 由于数据从低位到高位串行传输，所以要先用一个寄存器暂存数据，且第一位是标识位，不应该将其存储在寄存器中，采用【num】从0开始计数，计数到1时在每个波特率高电平有效的一个周期内从低位到高位保存数据。</p> </li></ol> 
+<pre><code class="prism language-clike">always @ <span class="token punctuation">(</span>posedge clk or negedge rst_n<span class="token punctuation">)</span>
+	<span class="token keyword">if</span><span class="token punctuation">(</span><span class="token operator">!</span>rst_n<span class="token punctuation">)</span> begin
+		rx_temp_data <span class="token operator">&lt;=</span> <span class="token number">8</span>'d0<span class="token punctuation">;</span>
+		num <span class="token operator">&lt;=</span> <span class="token number">4</span>'d0<span class="token punctuation">;</span>
+		rx_data_r <span class="token operator">&lt;=</span> <span class="token number">8</span>'d0<span class="token punctuation">;</span>
+	end
+	<span class="token keyword">else</span> <span class="token keyword">if</span><span class="token punctuation">(</span>rx_int<span class="token punctuation">)</span> begin	<span class="token comment">//接收数据处理</span>
+		<span class="token keyword">if</span><span class="token punctuation">(</span>clk_bps<span class="token punctuation">)</span> begin	<span class="token comment">//读取并保存数据,接收数据为一个起始位，8bit数据，1或2个结束位		</span>
+			num <span class="token operator">&lt;=</span> num<span class="token operator">+</span><span class="token number">1</span>'b1<span class="token punctuation">;</span>
+			case <span class="token punctuation">(</span>num<span class="token punctuation">)</span>
+				<span class="token number">4</span>'d1<span class="token punctuation">:</span> rx_temp_data<span class="token punctuation">[</span><span class="token number">0</span><span class="token punctuation">]</span> <span class="token operator">&lt;=</span> uart_rx<span class="token punctuation">;</span>	<span class="token comment">//锁存第0bit</span>
+				<span class="token number">4</span>'d2<span class="token punctuation">:</span> rx_temp_data<span class="token punctuation">[</span><span class="token number">1</span><span class="token punctuation">]</span> <span class="token operator">&lt;=</span> uart_rx<span class="token punctuation">;</span>	<span class="token comment">//锁存第1bit</span>
+				<span class="token number">4</span>'d3<span class="token punctuation">:</span> rx_temp_data<span class="token punctuation">[</span><span class="token number">2</span><span class="token punctuation">]</span> <span class="token operator">&lt;=</span> uart_rx<span class="token punctuation">;</span>	<span class="token comment">//锁存第2bit</span>
+				<span class="token number">4</span>'d4<span class="token punctuation">:</span> rx_temp_data<span class="token punctuation">[</span><span class="token number">3</span><span class="token punctuation">]</span> <span class="token operator">&lt;=</span> uart_rx<span class="token punctuation">;</span>	<span class="token comment">//锁存第3bit</span>
+				<span class="token number">4</span>'d5<span class="token punctuation">:</span> rx_temp_data<span class="token punctuation">[</span><span class="token number">4</span><span class="token punctuation">]</span> <span class="token operator">&lt;=</span> uart_rx<span class="token punctuation">;</span>	<span class="token comment">//锁存第4bit</span>
+				<span class="token number">4</span>'d6<span class="token punctuation">:</span> rx_temp_data<span class="token punctuation">[</span><span class="token number">5</span><span class="token punctuation">]</span> <span class="token operator">&lt;=</span> uart_rx<span class="token punctuation">;</span>	<span class="token comment">//锁存第5bit</span>
+				<span class="token number">4</span>'d7<span class="token punctuation">:</span> rx_temp_data<span class="token punctuation">[</span><span class="token number">6</span><span class="token punctuation">]</span> <span class="token operator">&lt;=</span> uart_rx<span class="token punctuation">;</span>	<span class="token comment">//锁存第6bit</span>
+				<span class="token number">4</span>'d8<span class="token punctuation">:</span> rx_temp_data<span class="token punctuation">[</span><span class="token number">7</span><span class="token punctuation">]</span> <span class="token operator">&lt;=</span> uart_rx<span class="token punctuation">;</span>	<span class="token comment">//锁存第7bit</span>
+				default<span class="token punctuation">:</span> <span class="token punctuation">;</span>
+			endcase
+		end
+		<span class="token keyword">else</span> <span class="token keyword">if</span><span class="token punctuation">(</span>num <span class="token operator">==</span> <span class="token number">4</span>'d9<span class="token punctuation">)</span> begin		<span class="token comment">//我们的标准接收模式下只有1+8+1(2)=11bit的有效数据</span>
+			num <span class="token operator">&lt;=</span> <span class="token number">4</span>'d0<span class="token punctuation">;</span>			<span class="token comment">//接收到STOP位后结束,num清零</span>
+			rx_data_r <span class="token operator">&lt;=</span> rx_temp_data<span class="token punctuation">;</span>	<span class="token comment">//把数据锁存到数据寄存器rx_data中</span>
+		end
+	end
+
+assign rx_data <span class="token operator">=</span> rx_data_r<span class="token punctuation">;</span>	
+</code></pre> 
+<h3><a id="4_195"></a>4.串口发送控制模块</h3> 
+<p>uart接收端接收数据完成后，通过【uart_tx】端将接收到的数据【rx_data】f发送出去。程序流程框图如下：<br> <img src="https://images2.imgbox.com/36/e3/2QYWHtwi_o.png" alt="在这里插入图片描述"><br> 注意：因为要完全按照帧格式发送数据，所以要先发送一个波特率周期的低电平，在从低到高传输数据位。</p> 
+<pre><code class="prism language-clike">reg uart_tx_r <span class="token punctuation">;</span>
+always@<span class="token punctuation">(</span>posedge clk or negedge rst_n<span class="token punctuation">)</span>begin
+	<span class="token keyword">if</span><span class="token punctuation">(</span><span class="token operator">!</span>rst_n<span class="token punctuation">)</span>begin
+		num <span class="token operator">&lt;=</span> <span class="token number">4</span>'d0 <span class="token punctuation">;</span>
+		uart_tx_r <span class="token operator">&lt;=</span> <span class="token number">1</span>'b1<span class="token punctuation">;</span>
+	end
+	<span class="token keyword">else</span> <span class="token keyword">if</span><span class="token punctuation">(</span>tx_en<span class="token punctuation">)</span>begin
+		<span class="token keyword">if</span><span class="token punctuation">(</span>clk_bps<span class="token punctuation">)</span>begin
+			num <span class="token operator">&lt;=</span> num <span class="token operator">+</span> <span class="token number">4</span>'d1 <span class="token punctuation">;</span>
+			<span class="token function">case</span><span class="token punctuation">(</span>num<span class="token punctuation">)</span>
+				<span class="token number">4</span><span class="token string">'d0 : uart_tx_r &lt;= 1'</span>b0 <span class="token punctuation">;</span>
+				<span class="token number">4</span>'d1 <span class="token punctuation">:</span> uart_tx_r <span class="token operator">&lt;=</span> tx_data<span class="token punctuation">[</span><span class="token number">0</span><span class="token punctuation">]</span> <span class="token punctuation">;</span>
+				<span class="token number">4</span>'d2 <span class="token punctuation">:</span> uart_tx_r <span class="token operator">&lt;=</span> tx_data<span class="token punctuation">[</span><span class="token number">1</span><span class="token punctuation">]</span>  <span class="token punctuation">;</span>
+				<span class="token number">4</span>'d3 <span class="token punctuation">:</span> uart_tx_r <span class="token operator">&lt;=</span> tx_data<span class="token punctuation">[</span><span class="token number">2</span><span class="token punctuation">]</span> <span class="token punctuation">;</span>
+				<span class="token number">4</span>'d4 <span class="token punctuation">:</span> uart_tx_r <span class="token operator">&lt;=</span> tx_data<span class="token punctuation">[</span><span class="token number">3</span><span class="token punctuation">]</span> <span class="token punctuation">;</span>
+				<span class="token number">4</span>'d5 <span class="token punctuation">:</span> uart_tx_r <span class="token operator">&lt;=</span> tx_data<span class="token punctuation">[</span><span class="token number">4</span><span class="token punctuation">]</span> <span class="token punctuation">;</span>
+				<span class="token number">4</span>'d6 <span class="token punctuation">:</span> uart_tx_r <span class="token operator">&lt;=</span> tx_data<span class="token punctuation">[</span><span class="token number">5</span><span class="token punctuation">]</span> <span class="token punctuation">;</span>
+				<span class="token number">4</span>'d7 <span class="token punctuation">:</span> uart_tx_r <span class="token operator">&lt;=</span> tx_data<span class="token punctuation">[</span><span class="token number">6</span><span class="token punctuation">]</span> <span class="token punctuation">;</span>
+				<span class="token number">4</span>'d8 <span class="token punctuation">:</span> uart_tx_r <span class="token operator">&lt;=</span> tx_data<span class="token punctuation">[</span><span class="token number">7</span><span class="token punctuation">]</span> <span class="token punctuation">;</span>
+				<span class="token number">4</span><span class="token string">'d9 : uart_tx_r &lt;= 1'</span>b1 <span class="token punctuation">;</span>
+				default<span class="token punctuation">:</span> uart_tx_r <span class="token operator">&lt;=</span> <span class="token number">1</span>'b1<span class="token punctuation">;</span>
+			endcase
+		end
+		<span class="token keyword">else</span> <span class="token keyword">if</span><span class="token punctuation">(</span>num <span class="token operator">==</span> <span class="token number">4</span>'d10<span class="token punctuation">)</span>begin
+			num <span class="token operator">&lt;=</span> <span class="token number">4</span>'d0 <span class="token punctuation">;</span>
+			
+		end
+	end
+end
+assign uart_tx <span class="token operator">=</span> uart_tx_r<span class="token punctuation">;</span>
+</code></pre> 
+<h2><a id="_232"></a>三、结果</h2> 
+<h3><a id="1_234"></a>1、仿真结果</h3> 
+<ul><li>仿真波形可以看到，uart_rx端将信号【8‘haa】接收过来，且是在每个bps周期的中间接收，然后再通过【uart_tx】端发送出去，在每个【clk_bps】有效的一个时钟周期内从低位到高位传输接收到的数据<br> <img src="https://images2.imgbox.com/b7/39/avDrUJjJ_o.png" alt="在这里插入图片描述"></li></ul> 
+<h3><a id="2_239"></a>2、板级调试结果</h3> 
+<ul><li>利用串口调试工具，发送8bit数据【aa】，可以看到接收端成功接收到该数据。</li></ul> 
+<p><img src="https://images2.imgbox.com/23/0a/gZ6wFIGn_o.png" alt="在这里插入图片描述"></p> 
+<h2><a id="_243"></a>设计文件与仿真文件</h2> 
+<p>https://pan.baidu.com/s/1dnoyo84pEtMlk5fSQdaqSA 提取码：p4q1</p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/2c82eecacaa4ba2dc903196c1ca005e5/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">git和github够用指南</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/fc1732a3f3e0554d2868f217c6bc620c/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">使用dom4j解析xml文件</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

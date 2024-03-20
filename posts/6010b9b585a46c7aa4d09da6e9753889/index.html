@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>EdgeSAM: Prompt-In-the-Loop Distillation for On-Device Deployment of SAM - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="EdgeSAM: Prompt-In-the-Loop Distillation for On-Device Deployment of SAM" />
+<meta property="og:description" content=" EdgeSAM: Prompt-In-the-Loop Distillation for On-Device Deployment of SAM
+EdgeSAM论文：https://arxiv.org/pdf/2312.06660.pdf
+EdgeSAM代码：https://github.com/chongzhou96/EdgeSAM
+1 概述 作者在对各种蒸馏策略进行深入剖析后，证实了task-agnostic的编码器蒸馏难以完全吸收SAM所掌握的全部知识。鉴于此，EdgeSAM巧妙地循环运用bbox与point提示词，并同步对提示词编码器和Mak解码器进行蒸馏，以确保蒸馏模型能够精准地掌握提示词与Mask之间错综复杂的关联。EdgeSAM是首个能在iPhone 14上以超过30 FPS运行的SAM变体。
+在2080Ti上，相比原生SAM，EdgeSAM推理速度快40倍；在iPhone14上，相比MobileSAM，EdgeSAM推理速度快14倍，达到了38.7fps。 2 EdgeSAM EdgeSAM的目标是将SAM的功能转移到一个更为紧凑的模型中，使得在边缘设备上的部署变得可行。因此，EdgeSAM保留了SAM的编码器-解码器架构，并旨在保持零样本交互式分割（通过框和点提示）的性能。EdgeSAM的核心是在知识蒸馏过程中考虑提示词，以便学生模型接受任务特定的指导，并专注于更难的训练目标，如更精细的边界。为此引入了一种动态提示词采样策略，旨在实现三个关键目标：（1）从初始提示词（无论是框还是点）中动态生成一组多样化的提示词组合；（2）准确识别学生模型在掩膜内表现不准确的区域，从而将其注意力集中在这些特定部分；（3）迫使教师模型（即SAM）产生高质量的掩膜，以提供更精确的指导。
+2-1 仅编码器知识蒸馏 Encoder-Only Knowledge Distillation 由于学生模型和SAM图像编码器的下采样步长和特征通道并不一致，MobileSAM移除了学生模型最后两个阶段的下采样操作，并使用一个投影层来对齐通道维度。EdgeSAM构建了一个小型FPN（特征金字塔网络），将特征上采样到所需的分辨率，并与前几个阶段的特征进行逐元素相加来保持下采样层不变，最后也使用投影层进行通道对齐。
+实验发现，使用不同的backbones、更长的训练计划或者使用为密集预测任务设计的蒸馏损失并没有表现出明显的性能提升。
+2-2 循环Prompt知识蒸馏 Prompt-In-the-Loop Knowledge Distillation SAM的掩膜解码器是一个双流双向转换器，其中来自图像编码器的输出特征图f作为其中一个流的输入，而稀疏提示嵌入p与四个掩膜标记m和一个IoU标记c连接在一起，作为另一个流的输入。稀疏提示可以是正/负点的任意组合以及一个单独的框，用于指示用户感兴趣的对象。
+作者观察到，微调掩膜解码器会对零样本泛化能力构成挑战。也就是说，使用特定组合的提示进行训练会破坏其在推理时使用未训练过的提示组合时的能力。因此引入了一种循环Prompt知识蒸馏。这种策略旨在实现三个关键目标：（1）从初始提示（无论是框还是点）中动态生成一组多样化的提示组合；（2）准确识别掩膜内学生模型表现不准确的区域，从而将这些特定部分作为焦点；（3）迫使教师模型（即SAM）生成高质量的掩膜，以提供更精确的指导。策略如下：
+从初始提示开始。以相同的概率，从SA-1B数据集中提供的框或点提示中选取一个，作为教师和学生模型解码器的输入。接着，我们识别出教师和学生模型掩膜预测不一致的区域。如下图所示，以教师的输出为参考，在标记为假负的区域中均匀采样新的正点提示，或在识别为假正的区域中采样新的负点提示。然后，将这些新采样的点与现有的提示组合起来，用于下一次解码迭代。值得注意的是，每个提示都会导致四个不同粒度级别的掩膜预测。其中不一致性是在具有最高IoU分数的教师掩膜与其对应的学生掩膜之间计算的。
+实验表明，相比于依赖专门用于密集预测的损失或基于查询的方法进行蒸馏，在蒸馏过程中动态地将适当的提示组合输入到掩膜解码器中更为有效。提出的循环提示蒸馏方法优先使用策略性提示来增强学习过程。
+2-3 粒度先验 Granularity Priors 由于SA-1B是一个类别无关、多粒度、自动标注的数据集，其标注分布可能与由人力密集标注的数据集（如COCO）存在很大差异。
+因此，对于模糊提示词，如单点，SAM很难确定所需的输出粒度。如下图所示，使用框提示词时，SAM可以轻松地确定目标粒度。
+构建了一个轻量级的区域提议网络（RPN）[41]，该网络由特征金字塔网络（FPN）和一个共享检测头组成。RPN在特定数据集（例如COCO）上进行训练，以捕获其粒度先验。在推理过程中，合并那些中心点为点提示词的K个最近邻（根据置信度得分加权）的提议框。最后，将合并后的框与点输入一起作为提示词，输入到掩膜解码器中。
+3 Experiments " />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/6010b9b585a46c7aa4d09da6e9753889/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2024-03-13T16:25:16+08:00" />
+<meta property="article:modified_time" content="2024-03-13T16:25:16+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">EdgeSAM: Prompt-In-the-Loop Distillation for On-Device Deployment of SAM</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-light">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p>EdgeSAM: Prompt-In-the-Loop Distillation for On-Device Deployment of SAM</p> 
+<p>EdgeSAM论文：https://arxiv.org/pdf/2312.06660.pdf<br> EdgeSAM代码：https://github.com/chongzhou96/EdgeSAM</p> 
+<h3><a id="1__5"></a>1 概述</h3> 
+<p>作者在对各种蒸馏策略进行深入剖析后，证实了task-agnostic的编码器蒸馏难以完全吸收SAM所掌握的全部知识。鉴于此，EdgeSAM巧妙地循环运用bbox与point提示词，并同步对提示词编码器和Mak解码器进行蒸馏，以确保蒸馏模型能够精准地掌握提示词与Mask之间错综复杂的关联。EdgeSAM是首个能在iPhone 14上以超过30 FPS运行的SAM变体。<br> <img src="https://images2.imgbox.com/64/a4/vaU7jya7_o.png" alt="在这里插入图片描述" width="600" height="400"></p> 
+<ul><li>在2080Ti上，相比原生SAM，EdgeSAM推理速度快40倍；</li><li>在iPhone14上，相比MobileSAM，EdgeSAM推理速度快14倍，达到了38.7fps。</li></ul> 
+<h3><a id="2_EdgeSAM_10"></a>2 EdgeSAM</h3> 
+<p>EdgeSAM的目标是将SAM的功能转移到一个更为紧凑的模型中，使得在边缘设备上的部署变得可行。因此，EdgeSAM保留了SAM的编码器-解码器架构，并旨在保持零样本交互式分割（通过框和点提示）的性能。EdgeSAM的核心是在知识蒸馏过程中考虑提示词，以便学生模型接受任务特定的指导，并专注于更难的训练目标，如更精细的边界。为此引入了一种动态提示词采样策略，旨在实现三个关键目标：（1）从初始提示词（无论是框还是点）中动态生成一组多样化的提示词组合；（2）准确识别学生模型在掩膜内表现不准确的区域，从而将其注意力集中在这些特定部分；（3）迫使教师模型（即SAM）产生高质量的掩膜，以提供更精确的指导。<br> <img src="https://images2.imgbox.com/3d/05/WAR31eNy_o.png" alt="在这里插入图片描述" width="600" height="360"></p> 
+<h4><a id="21__EncoderOnly_Knowledge_Distillation_13"></a>2-1 仅编码器知识蒸馏 Encoder-Only Knowledge Distillation</h4> 
+<p>由于学生模型和SAM图像编码器的下采样步长和特征通道并不一致，MobileSAM移除了学生模型最后两个阶段的下采样操作，并使用一个投影层来对齐通道维度。EdgeSAM构建了一个小型FPN（特征金字塔网络），将特征上采样到所需的分辨率，并与前几个阶段的特征进行逐元素相加来保持下采样层不变，最后也使用投影层进行通道对齐。</p> 
+<p>实验发现，使用不同的backbones、更长的训练计划或者使用为密集预测任务设计的蒸馏损失并没有表现出明显的性能提升。</p> 
+<h4><a id="22_Prompt_PromptIntheLoop_Knowledge_Distillation_17"></a>2-2 循环Prompt知识蒸馏 Prompt-In-the-Loop Knowledge Distillation</h4> 
+<p>SAM的掩膜解码器是一个双流双向转换器，其中来自图像编码器的输出特征图f作为其中一个流的输入，而稀疏提示嵌入p与四个掩膜标记m和一个IoU标记c连接在一起，作为另一个流的输入。稀疏提示可以是正/负点的任意组合以及一个单独的框，用于指示用户感兴趣的对象。</p> 
+<p>作者观察到，微调掩膜解码器会对零样本泛化能力构成挑战。也就是说，使用特定组合的提示进行训练会破坏其在推理时使用未训练过的提示组合时的能力。因此引入了一种循环Prompt知识蒸馏。这种策略旨在实现三个关键目标：（1）从初始提示（无论是框还是点）中动态生成一组多样化的提示组合；（2）准确识别掩膜内学生模型表现不准确的区域，从而将这些特定部分作为焦点；（3）迫使教师模型（即SAM）生成高质量的掩膜，以提供更精确的指导。策略如下：<br> <img src="https://images2.imgbox.com/df/cc/Eo0YbUSr_o.png" alt="在这里插入图片描述" width="600" height="600"><br> 从初始提示开始。以相同的概率，从SA-1B数据集中提供的框或点提示中选取一个，作为教师和学生模型解码器的输入。接着，我们识别出教师和学生模型掩膜预测不一致的区域。如下图所示，以教师的输出为参考，在标记为假负的区域中均匀采样新的正点提示，或在识别为假正的区域中采样新的负点提示。然后，将这些新采样的点与现有的提示组合起来，用于下一次解码迭代。值得注意的是，每个提示都会导致四个不同粒度级别的掩膜预测。其中不一致性是在具有最高IoU分数的教师掩膜与其对应的学生掩膜之间计算的。<br> <img src="https://images2.imgbox.com/36/71/Gr1YyQul_o.png" alt="在这里插入图片描述" width="600" height="300"><br> 实验表明，相比于依赖专门用于密集预测的损失或基于查询的方法进行蒸馏，在蒸馏过程中动态地将适当的提示组合输入到掩膜解码器中更为有效。提出的循环提示蒸馏方法优先使用策略性提示来增强学习过程。</p> 
+<h4><a id="23__Granularity_Priors_26"></a>2-3 粒度先验 Granularity Priors</h4> 
+<p>由于SA-1B是一个类别无关、多粒度、自动标注的数据集，其标注分布可能与由人力密集标注的数据集（如COCO）存在很大差异。<br> 因此，对于模糊提示词，如单点，SAM很难确定所需的输出粒度。如下图所示，使用框提示词时，SAM可以轻松地确定目标粒度。<br> <img src="https://images2.imgbox.com/f6/e1/YBEsMaPx_o.png" alt="在这里插入图片描述" width="600" height="400"><br> 构建了一个轻量级的区域提议网络（RPN）[41]，该网络由特征金字塔网络（FPN）和一个共享检测头组成。RPN在特定数据集（例如COCO）上进行训练，以捕获其粒度先验。在推理过程中，合并那些中心点为点提示词的K个最近邻（根据置信度得分加权）的提议框。最后，将合并后的框与点输入一起作为提示词，输入到掩膜解码器中。</p> 
+<h3><a id="3_Experiments_32"></a>3 Experiments</h3> 
+<p><img src="https://images2.imgbox.com/55/29/hnWmkf8F_o.png" alt="在这里插入图片描述"><br> <img src="https://images2.imgbox.com/e1/fd/G09Kq1ea_o.png" alt="在这里插入图片描述"></p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/0044a3c82ac787c50f4f215a547abaf8/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">视觉信息处理与FPGA实现第三次作业-7人表决器</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/143077e5d9b7cbeac11076a523ff6a10/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">功能测试--APP专项测试</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

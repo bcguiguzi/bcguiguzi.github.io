@@ -1,0 +1,872 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>TCP 协议（四）重传与超时 - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="TCP 协议（四）重传与超时" />
+<meta property="og:description" content="1.TCP 协议中的计时器 TCP 中有四种计时器（Timer），分别为：
+重传计时器：Retransmission Timer
+持久计时器：Persistent Timer
+保活计时器：Keeplive Timer
+等待计时器：Timer_Wait Timer
+1.1.重传计时器 TCP 是保证数据可靠传输的。怎么保证呢？带确认的重传机制。在滑动窗口协议中，接受窗口会在连续收到的包序列的最后一个包时，向发送端发送一个 ACK。当网络拥堵的时候，发送端的数据包和接收端的 ACK 包都有可能丢失。TCP 为了保证数据可靠传输，就规定在重传的“时间片”到了以后，如果还没有收到对方的 ACK，就重发此包，以避免陷入无限等待中。
+当 TCP 发送报文段时，就创建该特定报文的重传计时器。可能发生两种情况：
+1.若在计时器截止时间到之前收到了对此特定报文段的确认，则撤销此计时器。
+2.若在收到了对此特定报文段的确认之前计时器截止时间到，则重传此报文段，并将计时器复位。
+1.2.持久计时器 先来考虑一下情景：
+发送方向接收方发送数据包直到“接收窗口”填满了，然后“接收窗口”告诉发送方：“接收窗口”填满了，请停止发送数据。此时的状态称为“零窗口”状态，发送方和接收方窗口大小均为0，直到接收方发送 ACK 并宣布一个非零的窗口大小。我们知道 TCP 中，对 ACK 是不需要确认的。 若该 ACK 丢失了，接收方并不知道，并等待着发送方发送更多的报文；而发送方由于没有收到 ACK，继续等待接收方发送 ACK 来通知窗口大小。双方都在永远的等待着对方，陷入死锁状态。
+要打开这种死锁，TCP 为每一个连接使用一个持久计时器。当发送方收到窗口大小为0的 ACK 时，就坚持启动持久计时器。当持久计时器期限到时，发送方就发送一个特殊的报文段，叫做探测报文；该报文段只有一个字节的数据；他有一个序号，但该序号永远不需要确认；甚至在计算机对其他部分的数据的确认时该序号也被忽略。探测报文段提醒接收方：ACK 已丢失，必须重传！
+持久计时器的值设置为重传时间的数值。但是，若没有收到从接收方来的 ACK，则需发送另一个探测报文段，并将持久计时器的值加倍和复位。发送方继续发送探测报文段，将坚持计时器设定的值加倍和复位，直到这个值增大到门限值（通常是60秒）为止。在这以后，发送端每个60秒就发送一个探测报文，直到窗口重新打开。
+1.3.保活计时器 保活计时器用来防止 TCP 连接出现长时间的空闲。假定客户端打开了到服务器的连接，传送了一些数据，然后就保持静默了。也许这个客户端出故障了。在这种情况下，这个连接将永远的处在打开状态。
+要解决这种问题，可以在服务器设置保活计时器。每当服务器收到客户端的信息，就将保活计时器复位。
+超时时长通常设置为两小时。若服务器过了两小时还没有收到客户端的信息，他就发送探测报文段。若发送了10个探测报文段（每一个相隔75秒）还没有响应，就假定客户端出了故障，就可以终止该连接。
+这种连接的断开当然不会使用四次握手，而是直接硬性的中断和客户端的 TCP 连接。
+1.4.等待计时器 等待计时器是在四次挥手的时候使用的。四次挥手的简单过程是这样的：假设客户端准备中断连接，首先向服务器发送一个 FIN，然后由 ESTABLISHED 过渡到 FIN_WAIT_1 状态。服务器收到 FIN 包以后会发送一个ACK，然后自己由 ESTABLISHED 进入 CLOSE_WAIT 状态。客户端收到 ACK 之后由 FIN_WAIT_1 进入 FIN_WAIT_2 状态。此时通信进入半双工状态，即留给服务器一个机会将剩余数据传递给客户端，传递完后服务器发送一个 FIN 的包，表示我已经发送完数据可以断开连接了，由 CLOSE_WAIT 进入 LAST_ACK 状态。客户端收到 FIN 以后，发送一个 ACK 表示收到并同意请求，接着由 FIN_WAIT_2 进入 TIME_WAIT 状态。服务器收到 ACK，结束连接。此时（即客户端发送完 ACK 包之后），客户端还要等待 2MSL（MSL=maxinum segment lifetime 最长报文生存时间，2MSL 就是两倍的 MSL）才能真正的关闭连接。" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/d6fc9b987272454025d10919adb79872/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-07-12T16:53:58+08:00" />
+<meta property="article:modified_time" content="2023-07-12T16:53:58+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">TCP 协议（四）重传与超时</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <h2><a id="1TCP__0"></a>1.TCP 协议中的计时器</h2> 
+<p>TCP 中有四种计时器（Timer），分别为：<br> 重传计时器：Retransmission Timer<br> 持久计时器：Persistent Timer<br> 保活计时器：Keeplive Timer<br> 等待计时器：Timer_Wait Timer</p> 
+<h3><a id="11_6"></a>1.1.重传计时器</h3> 
+<p>TCP 是保证数据可靠传输的。怎么保证呢？带确认的重传机制。在滑动窗口协议中，接受窗口会在连续收到的包序列的最后一个包时，向发送端发送一个 ACK。当网络拥堵的时候，发送端的数据包和接收端的 ACK 包都有可能丢失。TCP 为了保证数据可靠传输，就规定在重传的“时间片”到了以后，如果还没有收到对方的 ACK，就重发此包，以避免陷入无限等待中。<br> 当 TCP 发送报文段时，就创建该特定报文的重传计时器。可能发生两种情况：<br> 1.若在计时器截止时间到之前收到了对此特定报文段的确认，则撤销此计时器。<br> 2.若在收到了对此特定报文段的确认之前计时器截止时间到，则重传此报文段，并将计时器复位。</p> 
+<h3><a id="12_11"></a>1.2.持久计时器</h3> 
+<p>先来考虑一下情景：<br> 发送方向接收方发送数据包直到“接收窗口”填满了，然后“接收窗口”告诉发送方：“接收窗口”填满了，请停止发送数据。此时的状态称为“零窗口”状态，发送方和接收方窗口大小均为0，直到接收方发送 ACK 并宣布一个非零的窗口大小。我们知道 TCP 中，对 ACK 是不需要确认的。 若该 ACK 丢失了，接收方并不知道，并等待着发送方发送更多的报文；而发送方由于没有收到 ACK，继续等待接收方发送 ACK 来通知窗口大小。双方都在永远的等待着对方，陷入死锁状态。<br> 要打开这种死锁，TCP 为每一个连接使用一个持久计时器。当发送方收到窗口大小为0的 ACK 时，就坚持启动持久计时器。当持久计时器期限到时，发送方就发送一个特殊的报文段，叫做探测报文；该报文段只有一个字节的数据；他有一个序号，但该序号永远不需要确认；甚至在计算机对其他部分的数据的确认时该序号也被忽略。探测报文段提醒接收方：ACK 已丢失，必须重传！<br> 持久计时器的值设置为重传时间的数值。但是，若没有收到从接收方来的 ACK，则需发送另一个探测报文段，并将持久计时器的值加倍和复位。发送方继续发送探测报文段，将坚持计时器设定的值加倍和复位，直到这个值增大到门限值（通常是60秒）为止。在这以后，发送端每个60秒就发送一个探测报文，直到窗口重新打开。</p> 
+<h3><a id="13_16"></a>1.3.保活计时器</h3> 
+<p>保活计时器用来防止 TCP 连接出现长时间的空闲。假定客户端打开了到服务器的连接，传送了一些数据，然后就保持静默了。也许这个客户端出故障了。在这种情况下，这个连接将永远的处在打开状态。<br> 要解决这种问题，可以在服务器设置保活计时器。每当服务器收到客户端的信息，就将保活计时器复位。<br> 超时时长通常设置为两小时。若服务器过了两小时还没有收到客户端的信息，他就发送探测报文段。若发送了10个探测报文段（每一个相隔75秒）还没有响应，就假定客户端出了故障，就可以终止该连接。<br> 这种连接的断开当然不会使用四次握手，而是直接硬性的中断和客户端的 TCP 连接。</p> 
+<h3><a id="14_21"></a>1.4.等待计时器</h3> 
+<p>等待计时器是在四次挥手的时候使用的。四次挥手的简单过程是这样的：假设客户端准备中断连接，首先向服务器发送一个 FIN，然后由 ESTABLISHED 过渡到 FIN_WAIT_1 状态。服务器收到 FIN 包以后会发送一个ACK，然后自己由 ESTABLISHED 进入 CLOSE_WAIT 状态。客户端收到 ACK 之后由 FIN_WAIT_1 进入 FIN_WAIT_2 状态。此时通信进入半双工状态，即留给服务器一个机会将剩余数据传递给客户端，传递完后服务器发送一个 FIN 的包，表示我已经发送完数据可以断开连接了，由 CLOSE_WAIT 进入 LAST_ACK 状态。客户端收到 FIN 以后，发送一个 ACK 表示收到并同意请求，接着由 FIN_WAIT_2 进入 TIME_WAIT 状态。服务器收到 ACK，结束连接。此时（即客户端发送完 ACK 包之后），客户端还要等待 2MSL（MSL=maxinum segment lifetime 最长报文生存时间，2MSL 就是两倍的 MSL）才能真正的关闭连接。</p> 
+<h2><a id="2TCP_TCP_Retransmission_23"></a>2.TCP 重传与优化（TCP Retransmission）</h2> 
+<p>TCP 重传原理与机制的核心是通过确认机制、滑动窗口、序号和重传计时器等多种手段，确保数据的可靠传输。发送方在未收到接收方的确认报文时，会通过重传机制重新发送数据包，从而保证数据传输的完整性和正确性。</p> 
+<h3><a id="21Retransmission_Principles_and_Mechanisms_26"></a>2.1.重传原理与机制（Retransmission Principles and Mechanisms）</h3> 
+<p>TCP 是一种面向连接、可靠的传输层协议。为了保证数据的可靠传输，TCP 采用了数据包重传的策略来应对在网络中传输过程中可能出现的丢包、错包、乱序等问题。下面我们详细介绍 TCP 重传的原理与机制。</p> 
+<h4><a id="211Acknowledgement_Mechanism_28"></a>2.1.1.确认机制（Acknowledgement Mechanism）</h4> 
+<p>TCP 通信中，接收方在收到数据包后会返回一个确认报文（ACK），用以通知发送方已经成功接收到了数据。发送方在发送数据包后等待接收方返回确认报文。如果在规定的时间内没有收到确认报文，发送方会认为数据包丢失，触发重传机制。</p> 
+<h4><a id="212Sliding_Window_30"></a>2.1.2.滑动窗口（Sliding Window）</h4> 
+<p>TCP 利用滑动窗口机制实现流量控制和拥塞控制。发送方的窗口大小决定了其可以发送的数据包数量。当接收方返回确认报文时，发送方的窗口滑动，可以继续发送新的数据包。如果有未确认的数据包，窗口将不再滑动，直到确认报文收到或触发重传机制。</p> 
+<h4><a id="213Sequence_Number_32"></a>2.1.3.序列号（Sequence Number）</h4> 
+<p>TCP 为每个数据包分配一个独立的序号，以保证数据包的有序传输。接收方在收到数据包后，会根据序号对数据包进行排序，确保最终传输结果的正确性。如果接收方检测到序号不连续的数据包，说明中间有丢包现象，将会请求发送方进行重传。</p> 
+<h4><a id="214Retransmission_Timer_34"></a>2.1.4.重传计时器（Retransmission Timer）</h4> 
+<p>TCP 发送方维护一个重传计时器，用于监控每个已发送但未收到确认报文的数据包。当计时器超时，发送方会认为对应的数据包丢失，触发重传机制。为了应对不同的网络环境，TCP 还采用了一种自适应的计时器调整策略，动态调整超时阈值。</p> 
+<h3><a id="22Conditions_for_Retransmission_Triggering_36"></a>2.2.重传触发条件（Conditions for Retransmission Triggering）</h3> 
+<p>TCP 重传机制是为了确保数据可靠传输而设计的关键策略。为了更好地理解 TCP 重传，我们需要了解触发重传的具体条件。<br> TCP 重传触发条件包括超时重传、快速重传、选择性确认重传和拥塞触发的重传。</p> 
+<h4><a id="221Timeout_Retransmission_39"></a>2.2.1.超时重传（Timeout Retransmission）</h4> 
+<p>当发送方发送数据包后，会启动一个重传计时器，等待接收方返回确认报文。如果在计时器超时之前仍未收到确认报文，发送方会认为数据包丢失，触发超时重传。超时重传的时间阈值会根据网络状况进行动态调整。</p> 
+<h4><a id="222Fast_Retransmission_41"></a>2.2.2.快速重传（Fast Retransmission）</h4> 
+<p>快速重传是一种提高TCP性能的重传策略。当接收方连续收到三个相同序号的确认报文（Duplicate ACKs）时，发送方会认为对应的数据包发生了丢失。为了尽快补发丢失的数据包，发送方会立即进行重传，而不再等待重传计时器超时。这种方法可以减小因数据包丢失导致的延迟。</p> 
+<h4><a id="223Selective_Acknowledgment_Retransmission_43"></a>2.2.3.选择性确认重传（Selective Acknowledgment Retransmission）</h4> 
+<p>选择性确认（SACK）是一种TCP扩展，允许接收方通知发送方哪些数据包已经被成功接收，哪些数据包需要重传。SACK可以提高TCP性能，因为发送方可以更精确地知道哪些数据包需要重传，避免不必要的全量重传。</p> 
+<h4><a id="224Congestiontriggered_Retransmission_45"></a>2.2.4.拥塞触发的重传（Congestion-triggered Retransmission）</h4> 
+<p>当发送方检测到网络拥塞时，可能会触发重传。这是因为在拥塞情况下，数据包丢失的概率增加，导致发送方需要重新发送数据包。拥塞控制算法（如TCP Tahoe、Reno、NewReno等）会在拥塞发生时动态调整发送方的窗口大小，限制发送速率，从而减小拥塞程度。</p> 
+<h3><a id="23Retransmission_Strategy_Optimization_47"></a>2.3.重传策略优化（Retransmission Strategy Optimization）</h3> 
+<p>为了提高TCP传输性能，降低重传带来的延迟，我们可以从以下几个方面对TCP重传策略进行优化：</p> 
+<h4><a id="231Optimizing_Retransmission_Timer_49"></a>2.3.1.优化重传计时器（Optimizing Retransmission Timer）</h4> 
+<p>调整重传计时器的超时阈值，使其更适应当前网络环境。例如，采用自适应调整策略，结合往返时间（RTT）和往返时间变化（RTTVAR）动态调整重传超时（RTO）值。减小不必要的重传延迟，提高TCP传输性能。</p> 
+<h4><a id="232Enabling_Fast_Retransmission_and_Fast_Recovery_51"></a>2.3.2.启用快速重传与快速恢复（Enabling Fast Retransmission and Fast Recovery）</h4> 
+<p>快速重传与快速恢复机制可以减小因数据包丢失导致的延迟。当发送方连续收到三个重复确认报文时，立即进行重传，而不再等待重传计时器超时。快速恢复算法则在快速重传之后，允许发送方继续传输新数据包，避免全局同步现象，提高网络吞吐量。</p> 
+<h4><a id="233Selective_Acknowledgment_53"></a>2.3.3.使用选择性确认（Selective Acknowledgment）</h4> 
+<p>启用选择性确认（SACK）机制，让接收方更精确地告知发送方哪些数据包已收到，哪些需要重传。这样，发送方可以避免不必要的全量重传，仅补发丢失的数据包，提高传输效率。</p> 
+<h4><a id="234Optimizing_Congestion_Control_Algorithms_55"></a>2.3.4.优化拥塞控制算法（Optimizing Congestion Control Algorithms）</h4> 
+<p>选择更适合当前网络环境的拥塞控制算法，如CUBIC、BBR等，以降低拥塞触发的重传。这些算法可以更有效地控制发送速率，避免因拥塞导致的数据包丢失和延迟增加。</p> 
+<h4><a id="235Forward_Error_Correction_FEC_57"></a>2.3.5.利用前向纠错技术（Forward Error Correction, FEC）</h4> 
+<p>前向纠错技术可以在不增加重传次数的情况下，提高数据传输的可靠性。通过在数据包中添加冗余信息，接收方可以在收到部分损坏或丢失的数据包时，仍然尝试恢复原始数据。这样，即使在丢包率较高的网络环境下，也可以保证数据传输的完整性和准确性。</p> 
+<h2><a id="3TCP_TCP_Timeout_59"></a>3.TCP 超时（TCP Timeout）</h2> 
+<h3><a id="31Timeout_Detection_Principles_60"></a>3.1.超时检测原理（Timeout Detection Principles）</h3> 
+<p>TCP 超时是指发送方在发送数据包后等待接收方返回确认报文的过程中，未能在预定的时间内收到确认报文。超时检测是 TCP 协议中确保数据可靠传输的关键机制之一。在本节中，我们将详细讨论 TCP 超时检测的原理。<br> TCP超时检测原理主要包括RTT估算、RTO设置、SRTT与RTTVAR计算以及Karn/Partridge算法。了解这些原理有助于我们更好地理解TCP超时机制，并为优化网络性能提供依据。</p> 
+<h4><a id="311RoundTrip_Time_RTT_63"></a>3.1.1.往返时间（Round-Trip Time, RTT）</h4> 
+<p>往返时间是指数据包从发送方发送出去到接收方返回确认报文所需的时间。发送方需要对 RTT 进行估算，以便根据网络状况设置合适的超时阈值。RTT 的估算通常基于已发送且已确认的数据包所需的时间。</p> 
+<h4><a id="312Retransmission_Timeout_RTO_65"></a>3.1.2.重传超时（Retransmission Timeout, RTO）</h4> 
+<p>RTO 是发送方等待接收方返回确认报文的最大时间。当发送方在 RTO 内未收到确认报文时，将触发重传机制。为了适应不同网络环境，发送方需要根据RTT动态调整 RTO 值。</p> 
+<h4><a id="313Smoothed_RoundTrip_Time_SRTTRoundTrip_Time_Variation_RTTVAR_67"></a>3.1.3.加权平均往返时间（Smoothed Round-Trip Time, SRTT）与往返时间变化（Round-Trip Time Variation, RTTVAR）</h4> 
+<p>TCP 发送方通常使用加权平均往返时间（SRTT）和往返时间变化（RTTVAR）来估算当前网络的RTT。SRTT是对历史RTT的加权平均值，而RTTVAR是历史RTT的变化幅度。这两个值结合起来，可以更准确地反映网络状况，帮助发送方设置合适的RTO。</p> 
+<h4><a id="314KarnPartridge__69"></a>3.1.4.Karn/Partridge 算法</h4> 
+<p>Karn/Partridge 算法是一种用于处理重传数据包的 RTT 估算问题的方法。当数据包被重传时，直接使用原始 RTT 可能会导致 RTO 的误估计。Karn/Partridge 算法通过在重传过程中不更新 SRTT 和 RTTVAR 值，避免了误估计问题，提高了超时检测的准确性。</p> 
+<h3><a id="32Timeout_Detection_Optimization_71"></a>3.2.超时检测优化（Timeout Detection Optimization）</h3> 
+<p>通过优化超时检测机制，我们可以在保持TCP可靠性的同时，降低超时对网络性能的影响。具体的优化方法需要根据实际网络环境和应用需求进行选择和调整。<br> 为了减小TCP超时对网络性能的影响，我们可以从以下几个方面对超时检测机制进行优化：</p> 
+<h4><a id="321Accurate_RTT_Estimation_74"></a>3.2.1.准确估算往返时间（Accurate RTT Estimation）</h4> 
+<p>提高往返时间估算的准确性有助于设置合适的重传超时阈值。发送方可以通过对历史RTT进行加权平均和计算RTT变化幅度来估算当前网络的RTT。更准确的RTT估算可以避免过早或过晚触发重传，提高网络性能。</p> 
+<h4><a id="322Dynamic_RTO_Adjustment_76"></a>3.2.2.动态调整重传超时（Dynamic RTO Adjustment）</h4> 
+<p>根据网络状况动态调整重传超时阈值。发送方可以结合SRTT和RTTVAR值来计算合适的RTO。动态调整RTO可以使发送方更灵敏地响应网络变化，减小不必要的重传延迟。</p> 
+<h4><a id="323Employing_More_Accurate_Timeout_Detection_Algorithms_78"></a>3.2.3.使用更准确的超时检测算法（Employing More Accurate Timeout Detection Algorithms）</h4> 
+<p>选择更准确的超时检测算法，如Karn/Partridge算法，以提高超时检测的准确性。Karn/Partridge算法可以在处理重传数据包时避免误估计问题，从而提高超时检测的准确性和网络性能。</p> 
+<h4><a id="324Exploring_Advanced_Transport_Protocols_80"></a>3.2.4.尝试使用更先进的传输协议（Exploring Advanced Transport Protocols）</h4> 
+<p>考虑使用一些具有更优超时检测机制的先进传输协议，如QUIC。QUIC协议使用单一的加密连接，减少了握手和超时的延迟。此外，QUIC还采用了一种新的丢包恢复机制，可以在不依赖重传超时的情况下进行数据包重传，从而降低延迟。</p> 
+<h3><a id="33Impact_of_Timeout_on_Network_Performance_82"></a>3.3.超时对网络性能的影响（Impact of Timeout on Network Performance）</h3> 
+<p>TCP超时机制在确保数据传输可靠性的同时，对网络性能产生了一定的影响。在本节中，我们将讨论超时如何影响网络性能。<br> 通过理解超时对网络性能的影响，我们可以更好地优化TCP协议，提高网络性能。在实际应用中，我们可以通过调整超时检测策略、优化拥塞控制算法以及尝试使用先进的传输协议等方法来降低超时对网络性能的影响。</p> 
+<h4><a id="331Increased_Latency_85"></a>3.3.1.延迟增加（Increased Latency）</h4> 
+<p>当TCP超时发生时，发送方需要等待重传计时器超时后才能重新发送数据包。这会增加数据传输的总时长，从而导致网络延迟的增加。在丢包率较高的网络环境下，延迟问题可能会变得更为严重。</p> 
+<h4><a id="332Decreased_Throughput_87"></a>3.3.2.吞吐量降低（Decreased Throughput）</h4> 
+<p>TCP超时可能导致发送方的发送窗口减小，从而限制了发送速率。由于发送方需要等待确认报文，较长的超时时间可能导致发送方长时间处于等待状态，进一步降低了网络吞吐量。</p> 
+<h4><a id="333Affected_Congestion_Control_89"></a>3.3.3.拥塞控制受影响（Affected Congestion Control）</h4> 
+<p>TCP超时与拥塞控制密切相关。当超时发生时，发送方通常会认为网络出现拥塞，从而触发拥塞控制算法。这会导致发送方降低发送速率，以减轻网络拥塞。然而，在某些情况下，过早或过晚的超时可能导致拥塞控制算法的误判，影响网络性能。</p> 
+<h4><a id="334Global_Synchronization_91"></a>3.3.4.全局同步现象（Global Synchronization）</h4> 
+<p>TCP超时可能导致全局同步现象。当多个TCP连接同时经历超时和重传时，它们的发送窗口大小和发送速率可能会同步减小，从而导致网络吞吐量的波动。全局同步现象可能导致网络资源的浪费和性能下降。</p> 
+<h3><a id="34Linux_C_TCP__93"></a>3.4.Linux C++ TCP 超时检测代码</h3> 
+<h4><a id="341setsockopt__94"></a>3.4.1.示例一：setsockopt 设置超时时间</h4> 
+<pre><code class="prism language-c"><span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;iostream&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;sys/socket.h&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;netinet/in.h&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;arpa/inet.h&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;unistd.h&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;string.h&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;stdexcept&gt;</span></span>
+
+<span class="token keyword">int</span> <span class="token function">main</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">int</span> sockfd <span class="token operator">=</span> <span class="token function">socket</span><span class="token punctuation">(</span>AF_INET<span class="token punctuation">,</span> SOCK_STREAM<span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>sockfd <span class="token operator">&lt;</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token function">perror</span><span class="token punctuation">(</span><span class="token string">"socket creation failed"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">return</span> <span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token keyword">struct</span> <span class="token class-name">sockaddr_in</span> server_addr<span class="token punctuation">;</span>
+    <span class="token function">memset</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>server_addr<span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">,</span> <span class="token keyword">sizeof</span><span class="token punctuation">(</span>server_addr<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    server_addr<span class="token punctuation">.</span>sin_family <span class="token operator">=</span> AF_INET<span class="token punctuation">;</span>
+    server_addr<span class="token punctuation">.</span>sin_port <span class="token operator">=</span> <span class="token function">htons</span><span class="token punctuation">(</span><span class="token number">12345</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token function">inet_pton</span><span class="token punctuation">(</span>AF_INET<span class="token punctuation">,</span> <span class="token string">"127.0.0.1"</span><span class="token punctuation">,</span> <span class="token operator">&amp;</span>server_addr<span class="token punctuation">.</span>sin_addr<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">connect</span><span class="token punctuation">(</span>sockfd<span class="token punctuation">,</span> <span class="token punctuation">(</span><span class="token keyword">struct</span> <span class="token class-name">sockaddr</span><span class="token operator">*</span><span class="token punctuation">)</span><span class="token operator">&amp;</span>server_addr<span class="token punctuation">,</span> <span class="token keyword">sizeof</span><span class="token punctuation">(</span>server_addr<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token operator">&lt;</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token function">perror</span><span class="token punctuation">(</span><span class="token string">"connect failed"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token function">close</span><span class="token punctuation">(</span>sockfd<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">return</span> <span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token comment">// 设置接收超时</span>
+    <span class="token keyword">struct</span> <span class="token class-name">timeval</span> timeout<span class="token punctuation">;</span>
+    timeout<span class="token punctuation">.</span>tv_sec <span class="token operator">=</span> <span class="token number">3</span><span class="token punctuation">;</span>  <span class="token comment">// 超时时间设置为3秒</span>
+    timeout<span class="token punctuation">.</span>tv_usec <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">setsockopt</span><span class="token punctuation">(</span>sockfd<span class="token punctuation">,</span> SOL_SOCKET<span class="token punctuation">,</span> SO_RCVTIMEO<span class="token punctuation">,</span> <span class="token punctuation">(</span><span class="token keyword">char</span> <span class="token operator">*</span><span class="token punctuation">)</span><span class="token operator">&amp;</span>timeout<span class="token punctuation">,</span> <span class="token keyword">sizeof</span><span class="token punctuation">(</span>timeout<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token operator">&lt;</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token function">perror</span><span class="token punctuation">(</span><span class="token string">"setsockopt failed"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token function">close</span><span class="token punctuation">(</span>sockfd<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">return</span> <span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token keyword">char</span> buffer<span class="token punctuation">[</span><span class="token number">1024</span><span class="token punctuation">]</span><span class="token punctuation">;</span>
+    <span class="token class-name">ssize_t</span> recv_len <span class="token operator">=</span> <span class="token function">recv</span><span class="token punctuation">(</span>sockfd<span class="token punctuation">,</span> buffer<span class="token punctuation">,</span> <span class="token keyword">sizeof</span><span class="token punctuation">(</span>buffer<span class="token punctuation">)</span> <span class="token operator">-</span> <span class="token number">1</span><span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>recv_len <span class="token operator">&lt;</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>errno <span class="token operator">==</span> EWOULDBLOCK <span class="token operator">||</span> errno <span class="token operator">==</span> EAGAIN<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            std<span class="token operator">::</span>cout <span class="token operator">&lt;&lt;</span> <span class="token string">"TCP receive timeout"</span> <span class="token operator">&lt;&lt;</span> std<span class="token operator">::</span>endl<span class="token punctuation">;</span>
+        <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token function">perror</span><span class="token punctuation">(</span><span class="token string">"recv failed"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+        <span class="token function">close</span><span class="token punctuation">(</span>sockfd<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">return</span> <span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    buffer<span class="token punctuation">[</span>recv_len<span class="token punctuation">]</span> <span class="token operator">=</span> <span class="token char">'\0'</span><span class="token punctuation">;</span>
+    std<span class="token operator">::</span>cout <span class="token operator">&lt;&lt;</span> <span class="token string">"Received message: "</span> <span class="token operator">&lt;&lt;</span> buffer <span class="token operator">&lt;&lt;</span> std<span class="token operator">::</span>endl<span class="token punctuation">;</span>
+
+    <span class="token function">close</span><span class="token punctuation">(</span>sockfd<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">return</span> <span class="token number">0</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<h4><a id="342select_152"></a>3.4.2.示例二：通过select设置超时时间</h4> 
+<pre><code class="prism language-c"><span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;iostream&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;sys/socket.h&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;netinet/in.h&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;arpa/inet.h&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;unistd.h&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;string.h&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;sys/select.h&gt;</span></span>
+
+<span class="token keyword">int</span> <span class="token function">main</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">int</span> sockfd <span class="token operator">=</span> <span class="token function">socket</span><span class="token punctuation">(</span>AF_INET<span class="token punctuation">,</span> SOCK_STREAM<span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>sockfd <span class="token operator">&lt;</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token function">perror</span><span class="token punctuation">(</span><span class="token string">"socket creation failed"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">return</span> <span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token keyword">struct</span> <span class="token class-name">sockaddr_in</span> server_addr<span class="token punctuation">;</span>
+    <span class="token function">memset</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>server_addr<span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">,</span> <span class="token keyword">sizeof</span><span class="token punctuation">(</span>server_addr<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    server_addr<span class="token punctuation">.</span>sin_family <span class="token operator">=</span> AF_INET<span class="token punctuation">;</span>
+    server_addr<span class="token punctuation">.</span>sin_port <span class="token operator">=</span> <span class="token function">htons</span><span class="token punctuation">(</span><span class="token number">12345</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token function">inet_pton</span><span class="token punctuation">(</span>AF_INET<span class="token punctuation">,</span> <span class="token string">"127.0.0.1"</span><span class="token punctuation">,</span> <span class="token operator">&amp;</span>server_addr<span class="token punctuation">.</span>sin_addr<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">connect</span><span class="token punctuation">(</span>sockfd<span class="token punctuation">,</span> <span class="token punctuation">(</span><span class="token keyword">struct</span> <span class="token class-name">sockaddr</span><span class="token operator">*</span><span class="token punctuation">)</span><span class="token operator">&amp;</span>server_addr<span class="token punctuation">,</span> <span class="token keyword">sizeof</span><span class="token punctuation">(</span>server_addr<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token operator">&lt;</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token function">perror</span><span class="token punctuation">(</span><span class="token string">"connect failed"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token function">close</span><span class="token punctuation">(</span>sockfd<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">return</span> <span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    fd_set read_fds<span class="token punctuation">;</span>
+    <span class="token function">FD_ZERO</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>read_fds<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token function">FD_SET</span><span class="token punctuation">(</span>sockfd<span class="token punctuation">,</span> <span class="token operator">&amp;</span>read_fds<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token comment">// 设置超时时间为3秒</span>
+    <span class="token keyword">struct</span> <span class="token class-name">timeval</span> timeout<span class="token punctuation">;</span>
+    timeout<span class="token punctuation">.</span>tv_sec <span class="token operator">=</span> <span class="token number">3</span><span class="token punctuation">;</span>
+    timeout<span class="token punctuation">.</span>tv_usec <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+
+    <span class="token keyword">int</span> max_fd <span class="token operator">=</span> sockfd <span class="token operator">+</span> <span class="token number">1</span><span class="token punctuation">;</span>
+    <span class="token keyword">int</span> result <span class="token operator">=</span> <span class="token function">select</span><span class="token punctuation">(</span>max_fd<span class="token punctuation">,</span> <span class="token operator">&amp;</span>read_fds<span class="token punctuation">,</span> nullptr<span class="token punctuation">,</span> nullptr<span class="token punctuation">,</span> <span class="token operator">&amp;</span>timeout<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>result <span class="token operator">&lt;</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token function">perror</span><span class="token punctuation">(</span><span class="token string">"select failed"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token function">close</span><span class="token punctuation">(</span>sockfd<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">return</span> <span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token keyword">if</span> <span class="token punctuation">(</span>result <span class="token operator">==</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        std<span class="token operator">::</span>cout <span class="token operator">&lt;&lt;</span> <span class="token string">"TCP receive timeout"</span> <span class="token operator">&lt;&lt;</span> std<span class="token operator">::</span>endl<span class="token punctuation">;</span>
+        <span class="token function">close</span><span class="token punctuation">(</span>sockfd<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">return</span> <span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">FD_ISSET</span><span class="token punctuation">(</span>sockfd<span class="token punctuation">,</span> <span class="token operator">&amp;</span>read_fds<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">char</span> buffer<span class="token punctuation">[</span><span class="token number">1024</span><span class="token punctuation">]</span><span class="token punctuation">;</span>
+            <span class="token class-name">ssize_t</span> recv_len <span class="token operator">=</span> <span class="token function">recv</span><span class="token punctuation">(</span>sockfd<span class="token punctuation">,</span> buffer<span class="token punctuation">,</span> <span class="token keyword">sizeof</span><span class="token punctuation">(</span>buffer<span class="token punctuation">)</span> <span class="token operator">-</span> <span class="token number">1</span><span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token keyword">if</span> <span class="token punctuation">(</span>recv_len <span class="token operator">&lt;</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                <span class="token function">perror</span><span class="token punctuation">(</span><span class="token string">"recv failed"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                <span class="token function">close</span><span class="token punctuation">(</span>sockfd<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                <span class="token keyword">return</span> <span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">;</span>
+            <span class="token punctuation">}</span>
+            buffer<span class="token punctuation">[</span>recv_len<span class="token punctuation">]</span> <span class="token operator">=</span> <span class="token char">'\0'</span><span class="token punctuation">;</span>
+            std<span class="token operator">::</span>cout <span class="token operator">&lt;&lt;</span> <span class="token string">"Received message: "</span> <span class="token operator">&lt;&lt;</span> buffer <span class="token operator">&lt;&lt;</span> std<span class="token operator">::</span>endl<span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token function">close</span><span class="token punctuation">(</span>sockfd<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">return</span> <span class="token number">0</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<h2><a id="4TCP_TCP_Congestion_Control_and_Retransmission_219"></a>4.TCP 拥塞控制与重传（TCP Congestion Control and Retransmission）</h2> 
+<h3><a id="41Practical_Application_Scenarios_of_Retransmission_and_Timeout_220"></a>4.1.重传与超时的实际应用场景（Practical Application Scenarios of Retransmission and Timeout）</h3> 
+<p>TCP重传与超时机制在不同类型的网络应用场景中发挥着关键作用。本节将介绍几个实际应用场景，说明重传与超时在这些场景中的重要性。<br> TCP重传与超时机制在不同类型的网络应用场景中具有重要作用。理解这些应用场景及其对重传与超时的要求，有助于我们更好地优化网络性能和提高用户体验。</p> 
+<h4><a id="411File_Transfer_223"></a>4.1.1.文件传输（File Transfer）</h4> 
+<p>在文件传输应用中，如FTP和HTTP文件下载，数据的完整性和正确性至关重要。TCP重传与超时机制可以确保数据包在传输过程中的可靠性，即使在网络环境不稳定的情况下也能保证文件完整无误地传输。</p> 
+<h4><a id="412Realtime_Communication_225"></a>4.1.2.实时通信（Real-time Communication）</h4> 
+<p>实时通信应用，如VoIP和视频会议，对延迟和数据完整性有较高要求。TCP重传与超时机制可以在一定程度上确保数据传输的可靠性。然而，由于实时通信对延迟非常敏感，过多的重传和超时可能导致通信质量下降。因此，在实时通信场景中，需要权衡可靠性与延迟，可能会采用其他协议如UDP来传输实时数据。</p> 
+<h4><a id="413Online_Gaming_227"></a>4.1.3.在线游戏（Online Gaming）</h4> 
+<p>在线游戏通常对延迟和数据完整性都有较高要求。游戏中的关键数据，如玩家操作和状态更新，需要通过TCP重传与超时机制确保可靠传输。同时，为了降低延迟，游戏开发者需要对重传策略和超时检测进行优化，以提高游戏性能和用户体验。</p> 
+<h4><a id="414Streaming_Media_229"></a>4.1.4.流媒体传输（Streaming Media）</h4> 
+<p>流媒体传输应用，如在线视频和音频播放，通常需要在保证数据传输可靠性的同时，降低延迟和缓冲。TCP重传与超时机制可以确保流媒体数据的正确传输，但过多的重传和超时可能导致播放卡顿。在这些场景中，可能会采用自适应流传输技术，结合TCP和其他协议如UDP，实现高效的数据传输。</p> 
+<h3><a id="42Challenges_and_Improvement_Directions_of_Retransmission_and_Timeout_231"></a>4.2.重传与超时的挑战与改进方向（Challenges and Improvement Directions of Retransmission and Timeout）</h3> 
+<p>TCP重传与超时机制在保证数据传输可靠性方面发挥了关键作用，但在实际应用中仍然面临一些挑战。本节将讨论这些挑战及改进方向。<br> 通过应对这些挑战并采取相应的改进措施，我们可以进一步提高TCP重传与超时机制的性能，更好地满足不同网络应用场景的需求。</p> 
+<h4><a id="421Accurate_Identification_of_Packet_Loss_Causes_234"></a>4.2.1.准确识别丢包原因（Accurate Identification of Packet Loss Causes）</h4> 
+<p>在TCP传输过程中，数据包丢失可能是由于网络拥塞或其他原因（如链路错误）导致的。发送方需要准确识别丢包原因，以采取合适的重传策略。然而，当前的TCP重传与超时机制很难准确识别丢包原因，可能导致误判和性能下降。未来的改进方向包括研究更准确的丢包识别技术，以提高重传策略的智能性。</p> 
+<h4><a id="422Distinguishing_Different_Application_Scenario_Requirements_236"></a>4.2.2.区分不同应用场景的需求（Distinguishing Different Application Scenario Requirements）</h4> 
+<p>不同类型的网络应用对重传与超时的要求各异。例如，实时通信和在线游戏对延迟敏感，而文件传输和流媒体传输则更关注数据完整性。未来的TCP协议改进需要针对不同应用场景，提供更灵活的重传与超时策略。</p> 
+<h4><a id="423Enhancing_Network_Congestion_Control_238"></a>4.2.3.提高网络拥塞控制效果（Enhancing Network Congestion Control）</h4> 
+<p>TCP重传与超时机制与网络拥塞控制密切相关。当前的拥塞控制算法可能在某些情况下出现误判，影响网络性能。未来的改进方向包括研究更准确和高效的拥塞控制技术，降低重传与超时对网络性能的影响。</p> 
+<h4><a id="424Exploring_New_Transport_Protocols_240"></a>4.2.4.探索新型传输协议（Exploring New Transport Protocols）</h4> 
+<p>考虑到TCP协议的局限性，研究人员和工程师正在开发新型传输协议以提高网络性能。例如，QUIC协议在传统TCP协议的基础上，引入了一系列改进措施，如加密连接、更有效的丢包恢复机制等。探索新型传输协议有助于解决TCP重传与超时机制面临的挑战，提升网络性能。</p> 
+<h3><a id="43Evaluation_and_Monitoring_Methods_for_Retransmission_and_Timeout_242"></a>4.3.评估与监控重传与超时的方法（Evaluation and Monitoring Methods for Retransmission and Timeout）</h3> 
+<p>为了优化TCP重传与超时机制，我们需要对其进行评估与监控。本节将介绍几种用于评估与监控重传与超时的方法。<br> 通过采用这些评估与监控方法，我们可以更好地了解TCP重传与超时机制的运行情况，从而针对性地进行优化，提高网络性能。</p> 
+<h4><a id="431Packet_Sniffing_Tools_245"></a>4.3.1.网络抓包工具（Packet Sniffing Tools）</h4> 
+<p>网络抓包工具，如Wireshark，可以捕获经过网络接口的数据包，帮助我们分析TCP连接中的重传与超时现象。通过分析抓取到的数据包，我们可以计算丢包率、重传次数、重传超时等指标，从而评估TCP重传与超时机制的效果。</p> 
+<h4><a id="432Network_Performance_Testing_Tools_247"></a>4.3.2.网络性能测试工具（Network Performance Testing Tools）</h4> 
+<p>网络性能测试工具，如Iperf，可以在两个网络节点之间建立TCP连接，以测量网络延迟、吞吐量等性能指标。通过这些工具，我们可以评估TCP重传与超时机制对网络性能的影响，从而进行优化。</p> 
+<h4><a id="433Applicationlayer_Performance_Monitoring_249"></a>4.3.3.应用层性能监控（Application-layer Performance Monitoring）</h4> 
+<p>在应用层，我们可以通过监控应用的响应时间、吞吐量等指标来评估TCP重传与超时机制的效果。例如，我们可以使用APM（Application Performance Management）工具来收集和分析应用性能数据，从而找出与重传与超时相关的性能瓶颈。</p> 
+<h4><a id="434Machine_Learning_and_Big_Data_Analysis_251"></a>4.3.4.机器学习与大数据分析（Machine Learning and Big Data Analysis）</h4> 
+<p>借助机器学习与大数据分析技术，我们可以从海量的网络数据中挖掘出有关TCP重传与超时的信息。通过训练机器学习模型，我们可以预测网络中可能出现的重传与超时现象，从而提前采取措施进行优化。</p> 
+<h4><a id="435Simulation_and_Modeling_253"></a>4.3.5.仿真与建模（Simulation and Modeling）</h4> 
+<p>通过建立TCP协议的仿真模型，我们可以在受控的环境中评估不同重传与超时策略对网络性能的影响。例如，我们可以使用NS-3等网络模拟器来模拟TCP连接，研究不同网络条件下的重传与超时行为。</p> 
+<h3><a id="44Linux_C__255"></a>4.4.Linux C++ 代码示例</h3> 
+<pre><code class="prism language-c"><span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;iostream&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;sys/socket.h&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;netinet/in.h&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;arpa/inet.h&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;unistd.h&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;cstring&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;ctime&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;chrono&gt;</span></span>
+
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name">SERVER_IP</span> <span class="token string">"127.0.0.1"</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name">PORT</span> <span class="token expression"><span class="token number">8080</span></span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name">BUFFER_SIZE</span> <span class="token expression"><span class="token number">1024</span></span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name">TIMEOUT_DURATION</span> <span class="token expression"><span class="token number">500</span> </span><span class="token comment">// ms</span></span>
+bool <span class="token function">send_with_timeout</span><span class="token punctuation">(</span><span class="token keyword">int</span> sockfd<span class="token punctuation">,</span> <span class="token keyword">const</span> <span class="token keyword">char</span> <span class="token operator">*</span>buffer<span class="token punctuation">,</span> <span class="token class-name">size_t</span> len<span class="token punctuation">,</span> <span class="token keyword">int</span> flags<span class="token punctuation">,</span> <span class="token keyword">unsigned</span> <span class="token keyword">int</span> max_retries<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">auto</span> start <span class="token operator">=</span> std<span class="token operator">::</span>chrono<span class="token operator">::</span>steady_clock<span class="token operator">::</span><span class="token function">now</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">auto</span> end <span class="token operator">=</span> std<span class="token operator">::</span>chrono<span class="token operator">::</span>steady_clock<span class="token operator">::</span><span class="token function">now</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    std<span class="token operator">::</span>chrono<span class="token operator">::</span>milliseconds <span class="token function">timeout</span><span class="token punctuation">(</span>TIMEOUT_DURATION<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token comment">// 当前重传次数</span>
+    <span class="token keyword">unsigned</span> <span class="token keyword">int</span> retries <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+
+    <span class="token keyword">while</span> <span class="token punctuation">(</span>retries <span class="token operator">&lt;</span> max_retries<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token class-name">ssize_t</span> sent <span class="token operator">=</span> <span class="token function">send</span><span class="token punctuation">(</span>sockfd<span class="token punctuation">,</span> buffer<span class="token punctuation">,</span> len<span class="token punctuation">,</span> flags<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+        <span class="token comment">// 数据发送成功，返回 true</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>sent <span class="token operator">==</span> len<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">return</span> true<span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+
+        end <span class="token operator">=</span> std<span class="token operator">::</span>chrono<span class="token operator">::</span>steady_clock<span class="token operator">::</span><span class="token function">now</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+        <span class="token comment">// 超时，增加重传次数，重置计时</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>std<span class="token operator">::</span>chrono<span class="token operator">::</span>duration_cast<span class="token operator">&lt;</span>std<span class="token operator">::</span>chrono<span class="token operator">::</span>milliseconds<span class="token operator">&gt;</span><span class="token punctuation">(</span>end <span class="token operator">-</span> start<span class="token punctuation">)</span> <span class="token operator">&gt;</span> timeout<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            retries<span class="token operator">++</span><span class="token punctuation">;</span>
+            start <span class="token operator">=</span> std<span class="token operator">::</span>chrono<span class="token operator">::</span>steady_clock<span class="token operator">::</span><span class="token function">now</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token comment">// 达到最大重传次数仍未成功发送，返回 false</span>
+    <span class="token keyword">return</span> false<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+<span class="token keyword">int</span> <span class="token function">main</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">int</span> client_fd<span class="token punctuation">;</span>
+    <span class="token keyword">struct</span> <span class="token class-name">sockaddr_in</span> server_addr<span class="token punctuation">;</span>
+    <span class="token keyword">char</span> buffer<span class="token punctuation">[</span>BUFFER_SIZE<span class="token punctuation">]</span><span class="token punctuation">;</span>
+
+    <span class="token comment">// 创建socket</span>
+    client_fd <span class="token operator">=</span> <span class="token function">socket</span><span class="token punctuation">(</span>AF_INET<span class="token punctuation">,</span> SOCK_STREAM<span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token comment">// 设置服务器地址</span>
+    server_addr<span class="token punctuation">.</span>sin_family <span class="token operator">=</span> AF_INET<span class="token punctuation">;</span>
+    server_addr<span class="token punctuation">.</span>sin_addr<span class="token punctuation">.</span>s_addr <span class="token operator">=</span> <span class="token function">inet_addr</span><span class="token punctuation">(</span>SERVER_IP<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    server_addr<span class="token punctuation">.</span>sin_port <span class="token operator">=</span> <span class="token function">htons</span><span class="token punctuation">(</span>PORT<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token comment">// 连接到服务器</span>
+    <span class="token function">connect</span><span class="token punctuation">(</span>client_fd<span class="token punctuation">,</span> <span class="token punctuation">(</span><span class="token keyword">struct</span> <span class="token class-name">sockaddr</span> <span class="token operator">*</span><span class="token punctuation">)</span><span class="token operator">&amp;</span>server_addr<span class="token punctuation">,</span> <span class="token keyword">sizeof</span><span class="token punctuation">(</span>server_addr<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token comment">// 与服务器进行数据通信</span>
+    <span class="token class-name">size_t</span> window_size <span class="token operator">=</span> <span class="token number">1</span><span class="token punctuation">;</span>
+    <span class="token class-name">size_t</span> num_packets_sent <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+    <span class="token class-name">size_t</span> num_acks_received <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+
+    <span class="token keyword">while</span> <span class="token punctuation">(</span>true<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token comment">// 发送数据</span>
+        <span class="token keyword">for</span> <span class="token punctuation">(</span><span class="token class-name">size_t</span> i <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span> i <span class="token operator">&lt;</span> window_size <span class="token operator">&amp;&amp;</span> num_packets_sent <span class="token operator">&lt;</span> <span class="token number">10</span><span class="token punctuation">;</span> <span class="token operator">++</span>i<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            std<span class="token operator">::</span>string packet <span class="token operator">=</span> <span class="token string">"Packet "</span> <span class="token operator">+</span> std<span class="token operator">::</span><span class="token function">to_string</span><span class="token punctuation">(</span>num_packets_sent<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            std<span class="token operator">::</span>cout <span class="token operator">&lt;&lt;</span> <span class="token string">"Sending: "</span> <span class="token operator">&lt;&lt;</span> packet <span class="token operator">&lt;&lt;</span> std<span class="token operator">::</span>endl<span class="token punctuation">;</span>
+            <span class="token function">send_with_timeout</span><span class="token punctuation">(</span>client_fd<span class="token punctuation">,</span> packet<span class="token punctuation">.</span><span class="token function">c_str</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span> packet<span class="token punctuation">.</span><span class="token function">size</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">,</span> <span class="token number">3</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token operator">++</span>num_packets_sent<span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+
+        <span class="token comment">// 接收ACK</span>
+        <span class="token function">memset</span><span class="token punctuation">(</span>buffer<span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">,</span> BUFFER_SIZE<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">int</span> read_size <span class="token operator">=</span> <span class="token function">recv</span><span class="token punctuation">(</span>client_fd<span class="token punctuation">,</span> buffer<span class="token punctuation">,</span> BUFFER_SIZE<span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>read_size <span class="token operator">&lt;=</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">break</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+        std<span class="token operator">::</span>cout <span class="token operator">&lt;&lt;</span> <span class="token string">"Received ACK: "</span> <span class="token operator">&lt;&lt;</span> buffer <span class="token operator">&lt;&lt;</span> std<span class="token operator">::</span>endl<span class="token punctuation">;</span>
+        <span class="token operator">++</span>num_acks_received<span class="token punctuation">;</span>
+
+        <span class="token comment">// 调整窗口大小</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>num_acks_received <span class="token operator">==</span> num_packets_sent<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            window_size <span class="token operator">*=</span> <span class="token number">2</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+            window_size <span class="token operator">=</span> <span class="token number">1</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token comment">// 关闭连接</span>
+    <span class="token function">close</span><span class="token punctuation">(</span>client_fd<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token keyword">return</span> <span class="token number">0</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<h2><a id="5TCP_TCP_Flow_Control_and_Retransmission_352"></a>5.TCP 流量控制与重传（TCP Flow Control and Retransmission）</h2> 
+<h3><a id="51Selective_AcknowledgmentSACKSelective_Acknowledgment_Mechanism_353"></a>5.1.Selective Acknowledgment（SACK）机制（Selective Acknowledgment Mechanism）</h3> 
+<p>为了进一步优化TCP重传与超时机制，研究人员和工程师们引入了选择性确认（Selective Acknowledgment，简称SACK）机制。本节将介绍SACK机制的基本原理及其优势。<br> 通过引入SACK机制，TCP协议能够更有效地处理数据包丢失和乱序的问题，进一步提高数据传输的可靠性与性能。</p> 
+<h4><a id="511SACKBasic_Principles_of_SACK_Mechanism_356"></a>5.1.1.SACK机制的基本原理（Basic Principles of SACK Mechanism）</h4> 
+<p>传统的TCP确认机制采用累积确认，接收方只确认按顺序接收到的最后一个数据包。当网络环境较差时，这种机制可能导致多次不必要的重传。SACK机制允许接收方更精确地确认接收到的数据包，即使这些数据包是乱序接收的。<br> 在SACK机制中，接收方可以通过SACK选项（SACK Option）在TCP报文中携带接收到的非连续数据段信息，通知发送方正确接收到的数据包。发送方根据接收到的SACK信息，仅重传未被确认的数据包，从而减少不必要的重传。</p> 
+<h4><a id="512SACKAdvantages_of_SACK_Mechanism_359"></a>5.1.2.SACK机制的优势（Advantages of SACK Mechanism）</h4> 
+<p>减少不必要的重传（Reducing Unnecessary Retransmissions）：SACK机制可以帮助发送方准确地了解接收方已接收到的数据包，从而减少不必要的重传，提高网络性能。<br> 提高拥塞控制效果（Enhancing Congestion Control）：SACK机制可以减轻因重传导致的网络拥塞，从而提高拥塞控制效果。<br> 适应乱序数据包的传输环境（Adapting to Out-of-order Packet Transmission Environments）：SACK机制在乱序数据包较多的传输环境中具有更好的性能，例如，对于使用多路径传输（Multipath Transmission）的网络，SACK能有效地提高数据传输的可靠性和效率。</p> 
+<h3><a id="52Fast_Retransmit_and_Fast_Recovery_363"></a>5.2.快速重传与快速恢复（Fast Retransmit and Fast Recovery）</h3> 
+<p>快速重传与快速恢复是TCP协议中的两种优化机制，用于减少不必要的重传超时等待，从而提高网络性能。本节将介绍快速重传与快速恢复的基本原理及其优势。<br> 快速重传与快速恢复作为TCP协议的优化机制，可以显著提高网络性能，降低数据包丢失时的等待时间，提高数据传输的可靠性和效率。</p> 
+<h4><a id="521Fast_Retransmit_366"></a>5.2.1.快速重传（Fast Retransmit）</h4> 
+<p>快速重传机制的目的是在等待重传超时之前就检测到数据包丢失，并尽快进行重传。在TCP连接中，当接收方连续收到三个重复的ACK时，发送方认为最早的未确认数据包已丢失，并立即进行重传，而不需要等待重传计时器超时。这样可以降低数据包丢失时的等待时间，提高数据传输的效率。</p> 
+<h4><a id="522Fast_Recovery_368"></a>5.2.2.快速恢复（Fast Recovery）</h4> 
+<p>快速恢复机制是在快速重传之后启动的，用于在一轮重传过程中更快地恢复拥塞窗口。当发送方进入快速恢复阶段时，它会把拥塞窗口减半，而不是像在传统拥塞控制中那样将拥塞窗口重置为1。这可以避免窗口大小过小导致的网络吞吐量下降。同时，发送方还会根据接收到的新ACK信息来调整拥塞窗口，以便在恢复期间继续发送数据。</p> 
+<h4><a id="523Advantages_of_Fast_Retransmit_and_Fast_Recovery_370"></a>5.2.3.快速重传与快速恢复的优势（Advantages of Fast Retransmit and Fast Recovery）</h4> 
+<p>减少重传延迟（Reducing Retransmission Delay）：快速重传机制可以在重传计时器超时之前检测到数据包丢失，从而减少重传延迟。<br> 避免全局同步（Avoiding Global Synchronization）：快速恢复机制可以避免因窗口大小重置而导致的全局同步现象，保持网络吞吐量的稳定性。<br> 提高拥塞控制效果（Enhancing Congestion Control）：快速重传与快速恢复机制可以在一定程度上降低拥塞控制对网络性能的负面影响，从而提高网络性能。</p> 
+<h3><a id="53TCP_NewReno_374"></a>5.3.拥塞窗口已验证的快速重传（TCP NewReno）</h3> 
+<p>拥塞窗口已验证的快速重传，即TCP NewReno，是TCP Reno的一个改进版本，用于解决多个数据包同时丢失时的性能问题。本节将介绍TCP NewReno的基本原理及其优势。</p> 
+<h4><a id="531TCP_NewRenoBasic_Principles_of_TCP_NewReno_376"></a>5.3.1.TCP NewReno的基本原理（Basic Principles of TCP NewReno）</h4> 
+<p>TCP Reno在处理多个数据包丢失时存在一定的局限性，因为它只能在一轮超时周期内恢复一个丢失的数据包。TCP NewReno改进了这一问题，使得在一个超时周期内可以恢复多个丢失的数据包。<br> 在TCP NewReno中，当发送方收到三个重复的ACK后，它会进入快速恢复阶段，同时设置一个“部分ACK”标志。当发送方收到部分ACK时，它会重传未被确认的数据包，而不是等待重传计时器超时。这样，在一个超时周期内，TCP NewReno可以恢复多个丢失的数据包。</p> 
+<h4><a id="532TCP_NewRenoAdvantages_of_TCP_NewReno_379"></a>5.3.2.TCP NewReno的优势（Advantages of TCP NewReno）</h4> 
+<p>更高效的丢包恢复（More Efficient Packet Loss Recovery）：TCP NewReno可以在一个超时周期内恢复多个丢失的数据包，提高丢包恢复的效率。<br> 降低重传延迟（Reducing Retransmission Delay）：通过在收到部分ACK时立即重传未被确认的数据包，TCP NewReno可以减少重传延迟。<br> 改善拥塞控制（Improved Congestion Control）：TCP NewReno可以更好地处理多个数据包丢失的情况，从而提高拥塞控制的效果。<br> 总之，TCP NewReno作为TCP Reno的改进版本，可以更有效地处理多个数据包丢失的情况，提高网络性能和数据传输的可靠性。通过采用TCP NewReno，我们可以进一步优化TCP重传与超时机制，以满足不同网络应用场景的需求。</p> 
+<h3><a id="54_384"></a>5.4.流量控制和重传的实现步骤</h3> 
+<p>1.导入必要的库：使用C++实现TCP流量控制和重传时，需要导入如下库：</p> 
+<pre><code class="prism language-c"><span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;iostream&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;cstdlib&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;cstring&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;unistd.h&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;arpa/inet.h&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;sys/socket.h&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;netinet/in.h&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;netinet/tcp.h&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;fcntl.h&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;errno.h&gt;</span></span>
+</code></pre> 
+<p>2.创建套接字：创建一个TCP套接字，并绑定到指定的地址和端口。然后使用listen()函数监听连接请求。</p> 
+<pre><code class="prism language-c"><span class="token keyword">int</span> sockfd <span class="token operator">=</span> <span class="token function">socket</span><span class="token punctuation">(</span>AF_INET<span class="token punctuation">,</span> SOCK_STREAM<span class="token punctuation">,</span> IPPROTO_TCP<span class="token punctuation">)</span><span class="token punctuation">;</span>
+</code></pre> 
+<p>3.设置套接字选项：为了实现流量控制和重传，需要设置一些套接字选项，如TCP_NODELAY（禁用Nagle算法）和TCP_QUICKACK（启用快速确认）。</p> 
+<pre><code class="prism language-c"><span class="token keyword">int</span> flag <span class="token operator">=</span> <span class="token number">1</span><span class="token punctuation">;</span>
+<span class="token function">setsockopt</span><span class="token punctuation">(</span>sockfd<span class="token punctuation">,</span> IPPROTO_TCP<span class="token punctuation">,</span> TCP_NODELAY<span class="token punctuation">,</span> <span class="token punctuation">(</span><span class="token keyword">char</span> <span class="token operator">*</span><span class="token punctuation">)</span><span class="token operator">&amp;</span>flag<span class="token punctuation">,</span> <span class="token keyword">sizeof</span><span class="token punctuation">(</span><span class="token keyword">int</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token function">setsockopt</span><span class="token punctuation">(</span>sockfd<span class="token punctuation">,</span> IPPROTO_TCP<span class="token punctuation">,</span> TCP_QUICKACK<span class="token punctuation">,</span> <span class="token punctuation">(</span><span class="token keyword">char</span> <span class="token operator">*</span><span class="token punctuation">)</span><span class="token operator">&amp;</span>flag<span class="token punctuation">,</span> <span class="token keyword">sizeof</span><span class="token punctuation">(</span><span class="token keyword">int</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+</code></pre> 
+<p>4.连接和接收数据：使用accept()函数接收客户端连接，并创建一个新的套接字。然后使用recv()函数接收数据。</p> 
+<pre><code class="prism language-c"><span class="token keyword">int</span> client_sock <span class="token operator">=</span> <span class="token function">accept</span><span class="token punctuation">(</span>sockfd<span class="token punctuation">,</span> <span class="token punctuation">(</span><span class="token keyword">struct</span> <span class="token class-name">sockaddr</span> <span class="token operator">*</span><span class="token punctuation">)</span><span class="token operator">&amp;</span>client_addr<span class="token punctuation">,</span> <span class="token operator">&amp;</span>addr_len<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token keyword">char</span> buffer<span class="token punctuation">[</span><span class="token number">1024</span><span class="token punctuation">]</span><span class="token punctuation">;</span>
+<span class="token class-name">ssize_t</span> bytes_received <span class="token operator">=</span> <span class="token function">recv</span><span class="token punctuation">(</span>client_sock<span class="token punctuation">,</span> buffer<span class="token punctuation">,</span> <span class="token keyword">sizeof</span><span class="token punctuation">(</span>buffer<span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+</code></pre> 
+<p>5.实现流量控制：使用滑动窗口算法来实现流量控制。可以使用setsockopt()函数设置SO_SNDBUF（发送缓冲区大小）和SO_RCVBUF（接收缓冲区大小）选项，以调整滑动窗口的大小。</p> 
+<pre><code class="prism language-c"><span class="token keyword">int</span> send_buffer_size <span class="token operator">=</span> <span class="token number">4096</span><span class="token punctuation">;</span>
+<span class="token keyword">int</span> recv_buffer_size <span class="token operator">=</span> <span class="token number">4096</span><span class="token punctuation">;</span>
+<span class="token function">setsockopt</span><span class="token punctuation">(</span>sockfd<span class="token punctuation">,</span> SOL_SOCKET<span class="token punctuation">,</span> SO_SNDBUF<span class="token punctuation">,</span> <span class="token operator">&amp;</span>send_buffer_size<span class="token punctuation">,</span> <span class="token keyword">sizeof</span><span class="token punctuation">(</span>send_buffer_size<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token function">setsockopt</span><span class="token punctuation">(</span>sockfd<span class="token punctuation">,</span> SOL_SOCKET<span class="token punctuation">,</span> SO_RCVBUF<span class="token punctuation">,</span> <span class="token operator">&amp;</span>recv_buffer_size<span class="token punctuation">,</span> <span class="token keyword">sizeof</span><span class="token punctuation">(</span>recv_buffer_size<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+</code></pre> 
+<p>6.实现重传机制：可以使用select()函数或poll()函数监视套接字的可读性和可写性，以实现超时和重传机制。同时，可以使用setsockopt()函数设置TCP_USER_TIMEOUT选项，以指定重传超时时间。</p> 
+<pre><code class="prism language-c"><span class="token keyword">struct</span> <span class="token class-name">timeval</span> timeout<span class="token punctuation">;</span>
+timeout<span class="token punctuation">.</span>tv_sec <span class="token operator">=</span> <span class="token number">5</span><span class="token punctuation">;</span>
+timeout<span class="token punctuation">.</span>tv_usec <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+
+fd_set read_fds<span class="token punctuation">;</span>
+<span class="token function">FD_ZERO</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>read_fds<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token function">FD_SET</span><span class="token punctuation">(</span>client_sock<span class="token punctuation">,</span> <span class="token operator">&amp;</span>read_fds<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+<span class="token keyword">int</span> user_timeout <span class="token operator">=</span> <span class="token number">5000</span><span class="token punctuation">;</span>
+<span class="token function">setsockopt</span><span class="token punctuation">(</span>client_sock<span class="token punctuation">,</span> IPPROTO_TCP<span class="token punctuation">,</span> TCP_USER_TIMEOUT<span class="token punctuation">,</span> <span class="token operator">&amp;</span>user_timeout<span class="token punctuation">,</span> <span class="token keyword">sizeof</span><span class="token punctuation">(</span>user_timeout<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+<span class="token keyword">int</span> ret <span class="token operator">=</span> <span class="token function">select</span><span class="token punctuation">(</span>client_sock <span class="token operator">+</span> <span class="token number">1</span><span class="token punctuation">,</span> <span class="token operator">&amp;</span>read_fds<span class="token punctuation">,</span> nullptr<span class="token punctuation">,</span> nullptr<span class="token punctuation">,</span> <span class="token operator">&amp;</span>timeout<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token keyword">if</span> <span class="token punctuation">(</span>ret <span class="token operator">&lt;</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token function">perror</span><span class="token punctuation">(</span><span class="token string">"select"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token keyword">if</span> <span class="token punctuation">(</span>ret <span class="token operator">==</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+std<span class="token operator">::</span>cout <span class="token operator">&lt;&lt;</span> <span class="token string">"Timeout, retransmitting data..."</span> <span class="token operator">&lt;&lt;</span> std<span class="token operator">::</span>endl<span class="token punctuation">;</span>
+<span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">FD_ISSET</span><span class="token punctuation">(</span>client_sock<span class="token punctuation">,</span> <span class="token operator">&amp;</span>read_fds<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token class-name">ssize_t</span> bytes_received <span class="token operator">=</span> <span class="token function">recv</span><span class="token punctuation">(</span>client_sock<span class="token punctuation">,</span> buffer<span class="token punctuation">,</span> <span class="token keyword">sizeof</span><span class="token punctuation">(</span>buffer<span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token comment">// 处理接收到的数据</span>
+<span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>7.发送数据：使用send()函数发送数据。在发送数据之前，可以检查套接字的可写性，以防止阻塞。</p> 
+<pre><code class="prism language-c"><span class="token class-name">ssize_t</span> bytes_sent <span class="token operator">=</span> <span class="token function">send</span><span class="token punctuation">(</span>client_sock<span class="token punctuation">,</span> buffer<span class="token punctuation">,</span> <span class="token function">strlen</span><span class="token punctuation">(</span>buffer<span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+</code></pre> 
+<p>8.关闭套接字：在完成数据传输后，使用close()函数关闭套接字。</p> 
+<pre><code class="prism language-c"><span class="token function">close</span><span class="token punctuation">(</span>client_sock<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token function">close</span><span class="token punctuation">(</span>sockfd<span class="token punctuation">)</span><span class="token punctuation">;</span>
+</code></pre> 
+<p>以上代码仅提供了一个简单的概述，用于实现TCP流量控制和重传。实际应用中，您需要根据具体需求对代码进行调整和优化。</p> 
+<h3><a id="55_456"></a>5.5.流量控制和重传的完整代码</h3> 
+<p>在代码中，我们使用一个名为unacked_packets的向量来存储未确认的数据包。每个数据包都有一个序列号，用于在发送方和接收方之间识别特定的数据包。接收方在成功接收一个数据包后，会向发送方发送一个确认消息（ACK），其中包含确认接收的数据包的序列号。<br> 发送方在接收到ACK后，会检查unacked_packets向量，并根据接收到的ACK序列号更新它。向量中所有具有小于或等于ACK序列号的序列号的数据包都被视为已确认，因为这意味着接收方已经接收到了这些数据包。</p> 
+<pre><code class="prism language-c"><span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;iostream&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;cstring&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;unistd.h&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;arpa/inet.h&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;sys/socket.h&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;netinet/in.h&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;netinet/tcp.h&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;sys/select.h&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;string&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;algorithm&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;vector&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;thread&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name">USE_SEPARATE_SEQUENCE_NUMBERS</span> <span class="token expression"><span class="token number">1</span></span></span>
+
+<span class="token keyword">struct</span> <span class="token class-name">Packet</span> <span class="token punctuation">{<!-- --></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">if</span> <span class="token expression">USE_SEPARATE_SEQUENCE_NUMBERS</span></span>
+    <span class="token class-name">uint32_t</span> seq_number<span class="token punctuation">;</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+    <span class="token keyword">char</span> data<span class="token punctuation">[</span><span class="token number">1024</span><span class="token punctuation">]</span><span class="token punctuation">;</span>
+    <span class="token keyword">int</span> retry_count<span class="token punctuation">;</span>
+<span class="token punctuation">}</span><span class="token punctuation">;</span>
+
+
+<span class="token keyword">void</span> <span class="token function">retransmit_data</span><span class="token punctuation">(</span><span class="token keyword">int</span> client_sock<span class="token punctuation">,</span> std<span class="token operator">::</span>vector<span class="token operator">&lt;</span>Packet<span class="token operator">&gt;</span><span class="token operator">&amp;</span> unacked_packets<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">const</span> <span class="token keyword">int</span> max_retries <span class="token operator">=</span> <span class="token number">5</span><span class="token punctuation">;</span> <span class="token comment">// Maximum number of retransmission attempts</span>
+    <span class="token keyword">const</span> <span class="token keyword">int</span> initial_backoff <span class="token operator">=</span> <span class="token number">1000</span><span class="token punctuation">;</span> <span class="token comment">// Initial backoff time in milliseconds (1 second)</span>
+    
+    std<span class="token operator">::</span>vector<span class="token operator">&lt;</span>Packet<span class="token operator">&gt;</span> new_unacked_packets<span class="token punctuation">;</span>
+
+    <span class="token keyword">for</span> <span class="token punctuation">(</span><span class="token keyword">auto</span><span class="token operator">&amp;</span> packet <span class="token operator">:</span> unacked_packets<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token comment">// Check if the retry counter has reached the maximum number of attempts</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>packet<span class="token punctuation">.</span>retry_count <span class="token operator">&gt;=</span> max_retries<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">if</span> <span class="token expression">USE_SEPARATE_SEQUENCE_NUMBERS</span></span>
+            std<span class="token operator">::</span>cerr <span class="token operator">&lt;&lt;</span> <span class="token string">"Maximum number of retransmission attempts reached for sequence number: "</span>
+                      <span class="token operator">&lt;&lt;</span> packet<span class="token punctuation">.</span>seq_number <span class="token operator">&lt;&lt;</span> std<span class="token operator">::</span>endl<span class="token punctuation">;</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">else</span></span>
+            std<span class="token operator">::</span>cerr <span class="token operator">&lt;&lt;</span> <span class="token string">"Maximum number of retransmission attempts reached for the packet"</span> <span class="token operator">&lt;&lt;</span> std<span class="token operator">::</span>endl<span class="token punctuation">;</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+            <span class="token keyword">continue</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+        
+        <span class="token comment">// Send the packet</span>
+        <span class="token class-name">ssize_t</span> bytes_sent <span class="token operator">=</span> <span class="token function">send</span><span class="token punctuation">(</span>client_sock<span class="token punctuation">,</span> <span class="token operator">&amp;</span>packet<span class="token punctuation">,</span> <span class="token keyword">sizeof</span><span class="token punctuation">(</span>packet<span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        
+        <span class="token comment">// Error in send()</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>bytes_sent <span class="token operator">&lt;</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            std<span class="token operator">::</span>cerr <span class="token operator">&lt;&lt;</span> <span class="token string">"Error in send: "</span> <span class="token operator">&lt;&lt;</span> <span class="token function">strerror</span><span class="token punctuation">(</span>errno<span class="token punctuation">)</span> <span class="token operator">&lt;&lt;</span> std<span class="token operator">::</span>endl<span class="token punctuation">;</span>
+        <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">if</span> <span class="token expression">USE_SEPARATE_SEQUENCE_NUMBERS</span></span>
+            std<span class="token operator">::</span>cout <span class="token operator">&lt;&lt;</span> <span class="token string">"Data retransmitted. Sequence number: "</span> <span class="token operator">&lt;&lt;</span> packet<span class="token punctuation">.</span>seq_number <span class="token operator">&lt;&lt;</span> std<span class="token operator">::</span>endl<span class="token punctuation">;</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">else</span></span>
+            std<span class="token operator">::</span>cout <span class="token operator">&lt;&lt;</span> <span class="token string">"Data retransmitted."</span> <span class="token operator">&lt;&lt;</span> std<span class="token operator">::</span>endl<span class="token punctuation">;</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+            <span class="token comment">// Increment the retry counter</span>
+            <span class="token operator">++</span>packet<span class="token punctuation">.</span>retry_count<span class="token punctuation">;</span>
+
+            <span class="token comment">// Apply exponential backoff</span>
+            <span class="token keyword">int</span> backoff_time <span class="token operator">=</span> initial_backoff <span class="token operator">*</span> <span class="token punctuation">(</span><span class="token number">1</span> <span class="token operator">&lt;&lt;</span> <span class="token punctuation">(</span>packet<span class="token punctuation">.</span>retry_count <span class="token operator">-</span> <span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            std<span class="token operator">::</span>this_thread<span class="token operator">::</span><span class="token function">sleep_for</span><span class="token punctuation">(</span>std<span class="token operator">::</span>chrono<span class="token operator">::</span><span class="token function">milliseconds</span><span class="token punctuation">(</span>backoff_time<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+            new_unacked_packets<span class="token punctuation">.</span><span class="token function">push_back</span><span class="token punctuation">(</span>packet<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+
+    unacked_packets<span class="token punctuation">.</span><span class="token function">swap</span><span class="token punctuation">(</span>new_unacked_packets<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+
+
+
+<span class="token keyword">int</span> <span class="token function">main</span><span class="token punctuation">(</span><span class="token keyword">int</span> argc<span class="token punctuation">,</span> <span class="token keyword">char</span> <span class="token operator">*</span>argv<span class="token punctuation">[</span><span class="token punctuation">]</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    std<span class="token operator">::</span>vector<span class="token operator">&lt;</span>Packet<span class="token operator">&gt;</span> unacked_packets<span class="token punctuation">;</span>
+
+    <span class="token comment">// 1. 创建套接字</span>
+    <span class="token keyword">int</span> sockfd <span class="token operator">=</span> <span class="token function">socket</span><span class="token punctuation">(</span>AF_INET<span class="token punctuation">,</span> SOCK_STREAM<span class="token punctuation">,</span> IPPROTO_TCP<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>sockfd <span class="token operator">&lt;</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        std<span class="token operator">::</span>cerr <span class="token operator">&lt;&lt;</span> <span class="token string">"Error in socket: "</span> <span class="token operator">&lt;&lt;</span> <span class="token function">strerror</span><span class="token punctuation">(</span>errno<span class="token punctuation">)</span> <span class="token operator">&lt;&lt;</span> std<span class="token operator">::</span>endl<span class="token punctuation">;</span>
+        <span class="token keyword">return</span> <span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token comment">// 2. 绑定地址和端口</span>
+    <span class="token keyword">struct</span> <span class="token class-name">sockaddr_in</span> server_addr<span class="token punctuation">;</span>
+    <span class="token function">memset</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>server_addr<span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">,</span> <span class="token keyword">sizeof</span><span class="token punctuation">(</span>server_addr<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    server_addr<span class="token punctuation">.</span>sin_family <span class="token operator">=</span> AF_INET<span class="token punctuation">;</span>
+    server_addr<span class="token punctuation">.</span>sin_addr<span class="token punctuation">.</span>s_addr <span class="token operator">=</span> <span class="token function">htonl</span><span class="token punctuation">(</span>INADDR_ANY<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    server_addr<span class="token punctuation">.</span>sin_port <span class="token operator">=</span> <span class="token function">htons</span><span class="token punctuation">(</span><span class="token number">8888</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">bind</span><span class="token punctuation">(</span>sockfd<span class="token punctuation">,</span> <span class="token punctuation">(</span><span class="token keyword">struct</span> <span class="token class-name">sockaddr</span> <span class="token operator">*</span><span class="token punctuation">)</span><span class="token operator">&amp;</span>server_addr<span class="token punctuation">,</span> <span class="token keyword">sizeof</span><span class="token punctuation">(</span>server_addr<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token operator">&lt;</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        std<span class="token operator">::</span>cerr <span class="token operator">&lt;&lt;</span> <span class="token string">"Error in bind: "</span> <span class="token operator">&lt;&lt;</span> <span class="token function">strerror</span><span class="token punctuation">(</span>errno<span class="token punctuation">)</span> <span class="token operator">&lt;&lt;</span> std<span class="token operator">::</span>endl<span class="token punctuation">;</span>
+        <span class="token function">close</span><span class="token punctuation">(</span>sockfd<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">return</span> <span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token comment">// 3. 监听连接</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">listen</span><span class="token punctuation">(</span>sockfd<span class="token punctuation">,</span> <span class="token number">5</span><span class="token punctuation">)</span> <span class="token operator">&lt;</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        std<span class="token operator">::</span>cerr <span class="token operator">&lt;&lt;</span> <span class="token string">"Error in listen: "</span> <span class="token operator">&lt;&lt;</span> <span class="token function">strerror</span><span class="token punctuation">(</span>errno<span class="token punctuation">)</span> <span class="token operator">&lt;&lt;</span> std<span class="token operator">::</span>endl<span class="token punctuation">;</span>
+        <span class="token function">close</span><span class="token punctuation">(</span>sockfd<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">return</span> <span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token comment">// 4. 接受连接</span>
+    <span class="token keyword">struct</span> <span class="token class-name">sockaddr_in</span> client_addr<span class="token punctuation">;</span>
+    <span class="token class-name">socklen_t</span> addr_len <span class="token operator">=</span> <span class="token keyword">sizeof</span><span class="token punctuation">(</span>client_addr<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">int</span> client_sock <span class="token operator">=</span> <span class="token function">accept</span><span class="token punctuation">(</span>sockfd<span class="token punctuation">,</span> <span class="token punctuation">(</span><span class="token keyword">struct</span> <span class="token class-name">sockaddr</span> <span class="token operator">*</span><span class="token punctuation">)</span><span class="token operator">&amp;</span>client_addr<span class="token punctuation">,</span> <span class="token operator">&amp;</span>addr_len<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>client_sock <span class="token operator">&lt;</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        std<span class="token operator">::</span>cerr <span class="token operator">&lt;&lt;</span> <span class="token string">"Error in accept: "</span> <span class="token operator">&lt;&lt;</span> <span class="token function">strerror</span><span class="token punctuation">(</span>errno<span class="token punctuation">)</span> <span class="token operator">&lt;&lt;</span> std<span class="token operator">::</span>endl<span class="token punctuation">;</span>
+        <span class="token function">close</span><span class="token punctuation">(</span>sockfd<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">return</span> <span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token comment">// 5. 设置流量控制</span>
+    <span class="token keyword">int</span> send_buffer_size <span class="token operator">=</span> <span class="token number">4096</span><span class="token punctuation">;</span>
+    <span class="token keyword">int</span> recv_buffer_size <span class="token operator">=</span> <span class="token number">4096</span><span class="token punctuation">;</span>
+    <span class="token function">setsockopt</span><span class="token punctuation">(</span>client_sock<span class="token punctuation">,</span> SOL_SOCKET<span class="token punctuation">,</span> SO_SNDBUF<span class="token punctuation">,</span> <span class="token operator">&amp;</span>send_buffer_size<span class="token punctuation">,</span> <span class="token keyword">sizeof</span><span class="token punctuation">(</span>send_buffer_size<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token function">setsockopt</span><span class="token punctuation">(</span>client_sock<span class="token punctuation">,</span> SOL_SOCKET<span class="token punctuation">,</span> SO_RCVBUF<span class="token punctuation">,</span> <span class="token operator">&amp;</span>recv_buffer_size<span class="token punctuation">,</span> <span class="token keyword">sizeof</span><span class="token punctuation">(</span>recv_buffer_size<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token comment">// 6. 初始化select</span>
+    fd_set read_fds<span class="token punctuation">;</span>
+    <span class="token function">FD_ZERO</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>read_fds<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token function">FD_SET</span><span class="token punctuation">(</span>client_sock<span class="token punctuation">,</span> <span class="token operator">&amp;</span>read_fds<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token keyword">struct</span> <span class="token class-name">timeval</span> timeout<span class="token punctuation">;</span>
+    timeout<span class="token punctuation">.</span>tv_sec <span class="token operator">=</span> <span class="token number">5</span><span class="token punctuation">;</span>
+    timeout<span class="token punctuation">.</span>tv_usec <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+
+    <span class="token comment">// 7. 使用select等待数据</span>
+    <span class="token comment">// Initialize a temporary file descriptor set for select()</span>
+    fd_set temp_fds<span class="token punctuation">;</span>
+
+    <span class="token comment">// Main loop</span>
+    <span class="token keyword">while</span> <span class="token punctuation">(</span>true<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token comment">// Update the timeout structure</span>
+        timeout<span class="token punctuation">.</span>tv_sec <span class="token operator">=</span> <span class="token number">5</span><span class="token punctuation">;</span>
+        timeout<span class="token punctuation">.</span>tv_usec <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+        <span class="token comment">// Copy the original file descriptor set (read_fds) to a temporary set (temp_fds)</span>
+        temp_fds <span class="token operator">=</span> read_fds<span class="token punctuation">;</span>
+
+        <span class="token comment">// Use select() to wait for events on the client socket (data available to read or timeout)</span>
+        <span class="token comment">// The last argument (timeout) specifies the maximum time select() should wait for an event</span>
+        <span class="token keyword">int</span> ret <span class="token operator">=</span> <span class="token function">select</span><span class="token punctuation">(</span>client_sock <span class="token operator">+</span> <span class="token number">1</span><span class="token punctuation">,</span> <span class="token operator">&amp;</span>temp_fds<span class="token punctuation">,</span> nullptr<span class="token punctuation">,</span> nullptr<span class="token punctuation">,</span> <span class="token operator">&amp;</span>timeout<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+        <span class="token comment">// Error in select()</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>ret <span class="token operator">&lt;</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            std<span class="token operator">::</span>cerr <span class="token operator">&lt;&lt;</span> <span class="token string">"Error in select: "</span> <span class="token operator">&lt;&lt;</span> <span class="token function">strerror</span><span class="token punctuation">(</span>errno<span class="token punctuation">)</span> <span class="token operator">&lt;&lt;</span> std<span class="token operator">::</span>endl<span class="token punctuation">;</span>
+            <span class="token keyword">break</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span> 
+        <span class="token comment">// Timeout occurred, indicating that no ACK was received during the specified time interval</span>
+        <span class="token comment">// This is used to detect lost packets and trigger retransmission</span>
+        <span class="token keyword">else</span> <span class="token keyword">if</span> <span class="token punctuation">(</span>ret <span class="token operator">==</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            std<span class="token operator">::</span>cout <span class="token operator">&lt;&lt;</span> <span class="token string">"Timeout, retransmitting data..."</span> <span class="token operator">&lt;&lt;</span> std<span class="token operator">::</span>endl<span class="token punctuation">;</span>
+            <span class="token function">retransmit_data</span><span class="token punctuation">(</span>client_sock<span class="token punctuation">,</span> unacked_packets<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token keyword">continue</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+
+      <span class="token comment">// If data is available to read on the client socket, process the ACK</span>
+      <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">FD_ISSET</span><span class="token punctuation">(</span>client_sock<span class="token punctuation">,</span> <span class="token operator">&amp;</span>temp_fds<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+          <span class="token comment">//从客户端接收到的ACK序列号</span>
+          <span class="token class-name">uint32_t</span> ack_seq_number<span class="token punctuation">;</span>
+          <span class="token class-name">ssize_t</span> bytes_received<span class="token punctuation">;</span>
+      
+      <span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">if</span> <span class="token expression">USE_SEPARATE_SEQUENCE_NUMBERS</span></span>
+          <span class="token comment">// Receive the ACK sequence number from the client</span>
+          bytes_received <span class="token operator">=</span> <span class="token function">recv</span><span class="token punctuation">(</span>client_sock<span class="token punctuation">,</span> <span class="token operator">&amp;</span>ack_seq_number<span class="token punctuation">,</span> <span class="token keyword">sizeof</span><span class="token punctuation">(</span>ack_seq_number<span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+          <span class="token keyword">if</span><span class="token punctuation">(</span>bytes_received<span class="token operator">&lt;=</span><span class="token number">0</span><span class="token punctuation">)</span> <span class="token keyword">goto</span> ret_process<span class="token punctuation">;</span>
+      <span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+          Packet data_packet<span class="token punctuation">;</span>
+          <span class="token comment">// Receive the ACK sequence number and data from the client</span>
+          bytes_received <span class="token operator">=</span> <span class="token function">recv</span><span class="token punctuation">(</span>client_sock<span class="token punctuation">,</span> <span class="token operator">&amp;</span>data_packet<span class="token punctuation">,</span> <span class="token keyword">sizeof</span><span class="token punctuation">(</span>data_packet<span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+          ack_seq_number <span class="token operator">=</span> data_packet<span class="token punctuation">.</span>seq_number<span class="token punctuation">;</span>
+          
+  ret_process：
+          <span class="token keyword">if</span> <span class="token punctuation">(</span>bytes_received <span class="token operator">&lt;</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+              std<span class="token operator">::</span>cerr <span class="token operator">&lt;&lt;</span> <span class="token string">"Error in recv: "</span> <span class="token operator">&lt;&lt;</span> std<span class="token operator">::</span><span class="token function">strerror</span><span class="token punctuation">(</span>errno<span class="token punctuation">)</span> <span class="token operator">&lt;&lt;</span> std<span class="token operator">::</span>endl<span class="token punctuation">;</span>
+              <span class="token keyword">if</span> <span class="token punctuation">(</span>errno <span class="token operator">==</span> EAGAIN <span class="token operator">||</span> errno <span class="token operator">==</span> EWOULDBLOCK<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span> <span class="token comment">// No data available for reading temporarily</span>
+                  std<span class="token operator">::</span>this_thread<span class="token operator">::</span><span class="token function">sleep_for</span><span class="token punctuation">(</span>std<span class="token operator">::</span>chrono<span class="token operator">::</span><span class="token function">milliseconds</span><span class="token punctuation">(</span><span class="token number">100</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span> <span class="token comment">// Wait for 100ms before continuing the loop</span>
+                  <span class="token keyword">continue</span><span class="token punctuation">;</span>
+              <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token keyword">if</span> <span class="token punctuation">(</span>errno <span class="token operator">==</span> ECONNRESET<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span> <span class="token comment">// Connection reset by the other party</span>
+                std<span class="token operator">::</span>cout <span class="token operator">&lt;&lt;</span> <span class="token string">"Connection reset by peer."</span> <span class="token operator">&lt;&lt;</span> std<span class="token operator">::</span>endl<span class="token punctuation">;</span>
+                <span class="token function">close</span><span class="token punctuation">(</span>client_sock<span class="token punctuation">)</span><span class="token punctuation">;</span> <span class="token comment">// Close the socket</span>
+                client_sock <span class="token operator">=</span> <span class="token function">socket</span><span class="token punctuation">(</span>AF_INET<span class="token punctuation">,</span> SOCK_STREAM<span class="token punctuation">,</span> IPPROTO_TCP<span class="token punctuation">)</span><span class="token punctuation">;</span> <span class="token comment">// Create a new socket and reconnect</span>
+                <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">connect</span><span class="token punctuation">(</span>client_sock<span class="token punctuation">,</span> <span class="token punctuation">(</span><span class="token keyword">struct</span> <span class="token class-name">sockaddr</span> <span class="token operator">*</span><span class="token punctuation">)</span><span class="token operator">&amp;</span>server_addr<span class="token punctuation">,</span> <span class="token keyword">sizeof</span><span class="token punctuation">(</span>server_addr<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token operator">&lt;</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                    std<span class="token operator">::</span>cerr <span class="token operator">&lt;&lt;</span> <span class="token string">"Error in connect: "</span> <span class="token operator">&lt;&lt;</span> <span class="token function">strerror</span><span class="token punctuation">(</span>errno<span class="token punctuation">)</span> <span class="token operator">&lt;&lt;</span> std<span class="token operator">::</span>endl<span class="token punctuation">;</span>
+                    <span class="token function">close</span><span class="token punctuation">(</span>client_sock<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                    <span class="token keyword">return</span> <span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">;</span>
+                <span class="token punctuation">}</span>
+                <span class="token keyword">continue</span><span class="token punctuation">;</span>
+              <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span> <span class="token comment">// Other error codes</span>
+                  std<span class="token operator">::</span>cerr <span class="token operator">&lt;&lt;</span> <span class="token string">"recv error: "</span> <span class="token operator">&lt;&lt;</span> std<span class="token operator">::</span><span class="token function">strerror</span><span class="token punctuation">(</span>errno<span class="token punctuation">)</span> <span class="token operator">&lt;&lt;</span> std<span class="token operator">::</span>endl<span class="token punctuation">;</span>
+                  <span class="token keyword">break</span><span class="token punctuation">;</span>
+              <span class="token punctuation">}</span>
+          <span class="token punctuation">}</span>
+          <span class="token comment">// Client disconnected</span>
+          <span class="token keyword">else</span> <span class="token keyword">if</span> <span class="token punctuation">(</span>bytes_received <span class="token operator">==</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+              std<span class="token operator">::</span>cout <span class="token operator">&lt;&lt;</span> <span class="token string">"Client disconnected."</span> <span class="token operator">&lt;&lt;</span> std<span class="token operator">::</span>endl<span class="token punctuation">;</span>
+              <span class="token keyword">break</span><span class="token punctuation">;</span>
+          <span class="token punctuation">}</span>
+          <span class="token comment">// Valid ACK received</span>
+          <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+              <span class="token comment">// Convert the received sequence number to host byte order</span>
+              ack_seq_number <span class="token operator">=</span> <span class="token function">ntohl</span><span class="token punctuation">(</span>ack_seq_number<span class="token punctuation">)</span><span class="token punctuation">;</span>
+      
+              <span class="token comment">// Remove the acknowledged packets from the unacked_packets vector</span>
+      <span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">ifdef</span> <span class="token expression">USE_SEPARATE_SEQUENCE_NUMBERS</span></span>
+              <span class="token comment">// Handle separate sequence numbers for each packet</span>
+              unacked_packets<span class="token punctuation">.</span><span class="token function">erase</span><span class="token punctuation">(</span>std<span class="token operator">::</span><span class="token function">remove_if</span><span class="token punctuation">(</span>unacked_packets<span class="token punctuation">.</span><span class="token function">begin</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span> unacked_packets<span class="token punctuation">.</span><span class="token function">end</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span>
+                  <span class="token punctuation">[</span><span class="token operator">&amp;</span>ack_seq_number<span class="token punctuation">]</span><span class="token punctuation">(</span><span class="token keyword">const</span> Packet<span class="token operator">&amp;</span> packet<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                      <span class="token keyword">return</span> packet<span class="token punctuation">.</span>seq_number <span class="token operator">==</span> ack_seq_number<span class="token punctuation">;</span>
+                  <span class="token punctuation">}</span><span class="token punctuation">)</span><span class="token punctuation">,</span> unacked_packets<span class="token punctuation">.</span><span class="token function">end</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+      <span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">else</span></span>
+              <span class="token comment">// Handle cumulative sequence numbers</span>
+              unacked_packets<span class="token punctuation">.</span><span class="token function">erase</span><span class="token punctuation">(</span>std<span class="token operator">::</span><span class="token function">remove_if</span><span class="token punctuation">(</span>unacked_packets<span class="token punctuation">.</span><span class="token function">begin</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span> unacked_packets<span class="token punctuation">.</span><span class="token function">end</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span>
+                  <span class="token punctuation">[</span><span class="token operator">&amp;</span>ack_seq_number<span class="token punctuation">]</span><span class="token punctuation">(</span><span class="token keyword">const</span> Packet<span class="token operator">&amp;</span> packet<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                      <span class="token keyword">return</span> packet<span class="token punctuation">.</span>seq_number <span class="token operator">&lt;=</span> ack_seq_number<span class="token punctuation">;</span>
+                  <span class="token punctuation">}</span><span class="token punctuation">)</span><span class="token punctuation">,</span> unacked_packets<span class="token punctuation">.</span><span class="token function">end</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+      <span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+      
+              std<span class="token operator">::</span>cout <span class="token operator">&lt;&lt;</span> <span class="token string">"Received ACK for sequence number: "</span> <span class="token operator">&lt;&lt;</span> ack_seq_number <span class="token operator">&lt;&lt;</span> std<span class="token operator">::</span>endl<span class="token punctuation">;</span>
+     
+              std<span class="token operator">::</span>cout <span class="token operator">&lt;&lt;</span> <span class="token string">"Received data: "</span> <span class="token operator">&lt;&lt;</span> data_packet<span class="token punctuation">.</span>data <span class="token operator">&lt;&lt;</span> std<span class="token operator">::</span>endl<span class="token punctuation">;</span>
+          <span class="token punctuation">}</span>
+      <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token comment">// 8. 关闭套接字</span>
+    <span class="token function">close</span><span class="token punctuation">(</span>client_sock<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token function">close</span><span class="token punctuation">(</span>sockfd<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token keyword">return</span> <span class="token number">0</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>客户端：</p> 
+<pre><code class="prism language-c"><span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;iostream&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;cstring&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;unistd.h&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;arpa/inet.h&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;sys/socket.h&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;netinet/in.h&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;netinet/tcp.h&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;string&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;thread&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name">USE_SEPARATE_SEQUENCE_NUMBERS</span> <span class="token expression"><span class="token number">1</span></span></span>
+
+<span class="token keyword">int</span> <span class="token function">main</span><span class="token punctuation">(</span><span class="token keyword">int</span> argc<span class="token punctuation">,</span> <span class="token keyword">char</span> <span class="token operator">*</span>argv<span class="token punctuation">[</span><span class="token punctuation">]</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token comment">// 1. 创建套接字</span>
+    <span class="token keyword">int</span> sockfd <span class="token operator">=</span> <span class="token function">socket</span><span class="token punctuation">(</span>AF_INET<span class="token punctuation">,</span> SOCK_STREAM<span class="token punctuation">,</span> IPPROTO_TCP<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>sockfd <span class="token operator">&lt;</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        std<span class="token operator">::</span>cerr <span class="token operator">&lt;&lt;</span> <span class="token string">"Error in socket: "</span> <span class="token operator">&lt;&lt;</span> <span class="token function">strerror</span><span class="token punctuation">(</span>errno<span class="token punctuation">)</span> <span class="token operator">&lt;&lt;</span> std<span class="token operator">::</span>endl<span class="token punctuation">;</span>
+        <span class="token keyword">return</span> <span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token comment">// 2. 连接到服务器</span>
+    <span class="token keyword">struct</span> <span class="token class-name">sockaddr_in</span> server_addr<span class="token punctuation">;</span>
+    <span class="token function">memset</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>server_addr<span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">,</span> <span class="token keyword">sizeof</span><span class="token punctuation">(</span>server_addr<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    server_addr<span class="token punctuation">.</span>sin_family <span class="token operator">=</span> AF_INET<span class="token punctuation">;</span>
+    server_addr<span class="token punctuation">.</span>sin_addr<span class="token punctuation">.</span>s_addr <span class="token operator">=</span> <span class="token function">inet_addr</span><span class="token punctuation">(</span><span class="token string">"127.0.0.1"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    server_addr<span class="token punctuation">.</span>sin_port <span class="token operator">=</span> <span class="token function">htons</span><span class="token punctuation">(</span><span class="token number">8888</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">connect</span><span class="token punctuation">(</span>sockfd<span class="token punctuation">,</span> <span class="token punctuation">(</span><span class="token keyword">struct</span> <span class="token class-name">sockaddr</span> <span class="token operator">*</span><span class="token punctuation">)</span><span class="token operator">&amp;</span>server_addr<span class="token punctuation">,</span> <span class="token keyword">sizeof</span><span class="token punctuation">(</span>server_addr<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token operator">&lt;</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        std<span class="token operator">::</span>cerr <span class="token operator">&lt;&lt;</span> <span class="token string">"Error in connect: "</span> <span class="token operator">&lt;&lt;</span> <span class="token function">strerror</span><span class="token punctuation">(</span>errno<span class="token punctuation">)</span> <span class="token operator">&lt;&lt;</span> std<span class="token operator">::</span>endl<span class="token punctuation">;</span>
+        <span class="token function">close</span><span class="token punctuation">(</span>sockfd<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">return</span> <span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token comment">// 3. 发送数据和ACK序列号给服务器</span>
+    <span class="token class-name">uint32_t</span> seq_number <span class="token operator">=</span> <span class="token number">1</span><span class="token punctuation">;</span>
+
+    <span class="token keyword">while</span> <span class="token punctuation">(</span>true<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        std<span class="token operator">::</span>string input<span class="token punctuation">;</span>
+        std<span class="token operator">::</span>cout <span class="token operator">&lt;&lt;</span> <span class="token string">"Enter data to send: "</span><span class="token punctuation">;</span>
+        std<span class="token operator">::</span><span class="token function">getline</span><span class="token punctuation">(</span>std<span class="token operator">::</span>cin<span class="token punctuation">,</span> input<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>input <span class="token operator">==</span> <span class="token string">"exit"</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">break</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+
+        <span class="token comment">// Convert the sequence number to network byte order</span>
+        <span class="token class-name">uint32_t</span> network_seq_number <span class="token operator">=</span> <span class="token function">htonl</span><span class="token punctuation">(</span>seq_number<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">if</span> <span class="token expression">USE_SEPARATE_SEQUENCE_NUMBERS</span></span>
+        <span class="token comment">// Send the ACK sequence number to the server</span>
+        <span class="token class-name">ssize_t</span> bytes_sent <span class="token operator">=</span> <span class="token function">send</span><span class="token punctuation">(</span>sockfd<span class="token punctuation">,</span> <span class="token operator">&amp;</span>network_seq_number<span class="token punctuation">,</span> <span class="token keyword">sizeof</span><span class="token punctuation">(</span>network_seq_number<span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>bytes_sent <span class="token operator">&lt;</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            std<span class="token operator">::</span>cerr <span class="token operator">&lt;&lt;</span> <span class="token string">"Error in send: "</span> <span class="token operator">&lt;&lt;</span> <span class="token function">strerror</span><span class="token punctuation">(</span>errno<span class="token punctuation">)</span> <span class="token operator">&lt;&lt;</span> std<span class="token operator">::</span>endl<span class="token punctuation">;</span>
+            <span class="token keyword">break</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+
+        <span class="token comment">// Send the data to the server</span>
+        bytes_sent <span class="token operator">=</span> <span class="token function">send</span><span class="token punctuation">(</span>sockfd<span class="token punctuation">,</span> input<span class="token punctuation">.</span><span class="token function">c_str</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span> input<span class="token punctuation">.</span><span class="token function">size</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">+</span> <span class="token number">1</span><span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">else</span></span>
+        <span class="token keyword">struct</span> <span class="token class-name">Packet</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token class-name">uint32_t</span> seq_number<span class="token punctuation">;</span>
+            <span class="token keyword">char</span> data<span class="token punctuation">[</span><span class="token number">1024</span><span class="token punctuation">]</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span><span class="token punctuation">;</span>
+
+        Packet data_packet<span class="token punctuation">;</span>
+        data_packet<span class="token punctuation">.</span>seq_number <span class="token operator">=</span> network_seq_number<span class="token punctuation">;</span>
+        <span class="token function">strncpy</span><span class="token punctuation">(</span>data_packet<span class="token punctuation">.</span>data<span class="token punctuation">,</span> input<span class="token punctuation">.</span><span class="token function">c_str</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token keyword">sizeof</span><span class="token punctuation">(</span>data_packet<span class="token punctuation">.</span>data<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+        <span class="token comment">// Send the data packet to the server</span>
+        <span class="token class-name">ssize_t</span> bytes_sent <span class="token operator">=</span> <span class="token function">send</span><span class="token punctuation">(</span>sockfd<span class="token punctuation">,</span> <span class="token operator">&amp;</span>data_packet<span class="token punctuation">,</span> <span class="token keyword">sizeof</span><span class="token punctuation">(</span>data_packet<span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>bytes_sent <span class="token operator">&lt;</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            std<span class="token operator">::</span>cerr <span class="token operator">&lt;&lt;</span> <span class="token string">"Error in send: "</span> <span class="token operator">&lt;&lt;</span> <span class="token function">strerror</span><span class="token punctuation">(</span>errno<span class="token punctuation">)</span> <span class="token operator">&lt;&lt;</span> std<span class="token operator">::</span>endl<span class="token punctuation">;</span>
+            <span class="token keyword">break</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+
+        std<span class="token operator">::</span>cout <span class="token operator">&lt;&lt;</span> <span class="token string">"Data sent. Sequence number: "</span> <span class="token operator">&lt;&lt;</span> seq_number <span class="token operator">&lt;&lt;</span> std<span class="token operator">::</span>endl<span class="token punctuation">;</span>
+
+        <span class="token comment">// Increment the sequence number</span>
+        <span class="token operator">++</span>seq_number<span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token comment">// 4. 关闭套接字</span>
+    <span class="token function">close</span><span class="token punctuation">(</span>sockfd<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token keyword">return</span> <span class="token number">0</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<h2><a id="6TCPTCP_Retransmission_and_Timeout_Optimization_Practices_780"></a>6.TCP重传与超时优化实践（TCP Retransmission and Timeout Optimization Practices）</h2> 
+<h3><a id="61TCPAdopting_Newer_TCP_Congestion_Control_Algorithms_781"></a>6.1.引入TCP比较新的拥塞控制算法（Adopting Newer TCP Congestion Control Algorithms）</h3> 
+<p>为了进一步优化TCP重传与超时机制，可以尝试采用一些比较新的拥塞控制算法。这些算法在不同的网络环境下具有更好的性能，可以有效地降低重传延迟和提高网络吞吐量。本节将介绍几种较新的TCP拥塞控制算法。<br> （1）CUBIC：CUBIC算法是一种面向高带宽网络和长距离传输的拥塞控制算法，通过引入三次方拥塞窗口增长函数，可以更好地平衡网络吞吐量和延迟。CUBIC算法在高速网络中表现尤为出色，可以显著提高数据传输性能。<br> （2）BBR（Bottleneck Bandwidth and RTT）：BBR算法通过估计网络的瓶颈带宽和往返时延来调整拥塞窗口，避免了传统拥塞控制算法中对丢包的过度敏感。BBR算法在拥塞网络和高丢包率的环境中具有较好的性能。<br> （3）Compound TCP：Compound TCP是一种结合了拥塞窗口和接收窗口调整的拥塞控制算法，旨在改善高带宽网络中的性能。通过同时考虑拥塞窗口和接收窗口，Compound TCP可以更好地平衡网络吞吐量和延迟。<br> （4）Vegas：Vegas算法通过测量往返时延来预测拥塞，从而提前调整拥塞窗口。Vegas算法在低延迟和低丢包率的网络中表现较好，可以有效地减少拥塞和重传延迟。<br> 通过引入这些较新的TCP拥塞控制算法，我们可以根据不同的网络环境和应用需求选择合适的算法，从而优化TCP重传与超时机制，提高网络性能。</p> 
+<h3><a id="62Forward_Error_Correction_FEC_788"></a>6.2.使用前向纠错技术（Forward Error Correction, FEC）</h3> 
+<p>前向纠错技术（FEC）是一种通过添加冗余数据来提高数据传输可靠性的方法。通过使用FEC，我们可以在一定程度上减少TCP重传的次数，从而降低重传延迟和提高网络性能。本节将介绍FEC的基本原理及其在TCP重传与超时机制中的应用。<br> 总之，FEC技术作为一种提高数据传输可靠性的方法，可以与TCP重传与超时机制相结合，进一步优化网络性能。通过使用FEC，我们可以在保证数据传输可靠性的同时，减少重传次数和降低重传延迟。</p> 
+<h4><a id="621FECBasic_Principles_of_FEC_791"></a>6.2.1.FEC的基本原理（Basic Principles of FEC）</h4> 
+<p>FEC通过对原始数据添加冗余信息，使接收方在收到部分损坏或丢失的数据包时仍能重建原始数据。FEC编码的方法有很多，如海明码（Hamming Code）、里德-所罗门码（Reed-Solomon Code）等。这些编码方法可以在不增加太多额外开销的前提下，为数据传输提供一定程度的纠错能力。</p> 
+<h4><a id="622FECTCPApplications_of_FEC_in_TCP_Retransmission_and_Timeout_Mechanisms_793"></a>6.2.2.FEC在TCP重传与超时机制中的应用（Applications of FEC in TCP Retransmission and Timeout Mechanisms）</h4> 
+<p>在TCP传输中，我们可以通过将FEC技术与传统的TCP重传机制相结合，以降低重传次数和提高网络性能。例如，发送方可以在发送数据包时附加FEC编码后的冗余数据，而接收方在收到部分损坏或丢失的数据包时可以利用这些冗余数据进行纠错，从而避免某些情况下的重传。<br> 需要注意的是，FEC技术虽然可以在一定程度上减少TCP重传，但它会增加一定的计算和带宽开销。因此，在实际应用中，需要权衡FEC带来的性能提升与其开销之间的关系，以找到适合特定场景的最佳解决方案。</p> 
+<h3><a id="63Multipath_Transmission_796"></a>6.3.采用多路径传输（Multipath Transmission）</h3> 
+<p>多路径传输是一种通过利用网络中的多条路径同时传输数据的方法，从而提高网络性能和可靠性。在TCP重传与超时机制中，可以通过使用多路径传输来降低数据包丢失的概率，减少重传次数和延迟。本节将介绍多路径传输的基本原理及其在TCP重传与超时机制中的应用。<br> 总之，多路径传输作为一种提高数据传输可靠性和性能的方法，可以与TCP重传与超时机制相结合，进一步优化网络性能。通过采用多路径传输，我们可以在保证数据传输可靠性的同时，降低重传次数和延迟。</p> 
+<h4><a id="631Basic_Principles_of_Multipath_Transmission_799"></a>6.3.1.多路径传输的基本原理（Basic Principles of Multipath Transmission）</h4> 
+<p>在多路径传输中，发送方将数据包分发到多个网络路径上进行传输，接收方则从不同路径上接收这些数据包并对它们进行重组。这样一来，即使某条路径出现问题导致数据包丢失，也可以通过其他路径上的数据包来保证数据的可靠传输。</p> 
+<h4><a id="632TCPApplications_of_Multipath_Transmission_in_TCP_Retransmission_and_Timeout_Mechanisms_801"></a>6.3.2.多路径传输在TCP重传与超时机制中的应用（Applications of Multipath Transmission in TCP Retransmission and Timeout Mechanisms）</h4> 
+<p>在TCP传输中，可以通过实现多路径TCP（MPTCP）来支持多路径传输。MPTCP在传统TCP的基础上进行了扩展，允许在多个网络路径上同时建立TCP连接，从而提高数据传输的可靠性和性能。<br> 通过使用多路径传输，可以降低数据包在单条路径上丢失的概率，从而减少TCP重传的次数和延迟。同时，多路径传输还可以在不同路径之间实现负载均衡，提高网络的吞吐量。<br> 需要注意的是，多路径传输需要对现有的TCP协议进行扩展，可能会带来一定的复杂性。此外，多路径传输对网络中的路径选择和负载均衡策略也有较高的要求。因此，在实际应用中，需要根据具体场景和需求来选择是否采用多路径传输技术。</p> 
+<h2><a id="7_805"></a>7.结语</h2> 
+<p>本博客从TCP重传、超时、拥塞控制、流量控制等方面进行了深入探讨，以帮助读者更好地理解TCP协议在网络传输过程中如何确保数据的可靠性和高效性。我们详细分析了各种重传原理、触发条件和优化策略，以及超时检测、动态调整和与重传的关系。同时，我们还探讨了拥塞控制与流量控制在调整网络传输速率、协同作用以确保网络稳定性的重要性。<br> 在实践中，我们针对不同的网络环境提供了优化策略，并对常见性能问题进行了分析和解决。此外，我们还展望了未来TCP重传与超时的发展趋势，为进一步提高网络性能提供了指导。<br> 我们相信，本博客对于那些希望深入了解TCP协议以解决网络传输中的挑战的读者具有很高的价值。请您收藏、关注并点赞，让更多的人受益于这些知识。我们期待您在未来的学习和实践中取得更多的成功！</p> 
+<p>参考：<br> https://blog.csdn.net/ynchyong/article/details/109110028<br> https://blog.csdn.net/qq_21438461/article/details/130442706</p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/93c80a0de31b0eb614a35218c601be16/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">java.lang.IllegalArgumentException: InputStream of class class org.apache.commons.compress.archivers</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/62e6e29ceac025267584e522e1b4d097/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">右键pdf文件没有打印</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

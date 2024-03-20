@@ -1,0 +1,748 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Android 12 系统源码分析 | Native Binder 代码变迁 - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="Android 12 系统源码分析 | Native Binder 代码变迁" />
+<meta property="og:description" content="作者：秋城
+注：广义上 Native Binder 可理解为包含 vnd，hw，rpc 等内容，本文所讨论的Native Binder 指的仅是 servicemanager 服务程序及 libbinder 中相关代码，不做广义的延伸
+一、前言 Servicemanager 程序（以下简称SM）是 Android 系统 binder 模块重要的组成部分，扮演着类似 C/S 架构中的 DNS 服务器的角色，提供服务增查和权限管理等功能支撑
+在 Android 11 之前的版本里，SM 是面向 binder 驱动编程，直接使用 open、mmap、ioctl 等 api 与 binder 驱动交互。而从 Android 11 开始，SM 放弃使用这些较底层的接口，转向 libbinder 库和 AIDL。标志性的提交如下，该提交奠定了新的 SM 架构基础，此后多次提交对此进行完善填充
+frameworks/native
+servicemanager: use libbinder Bug: 135768100 Test: boot Test: servicemanager_test Change-Id: I9d657b6c0d0be0f763b6d54e0e6c6bc1c1e3fc7a (cherry picked from commit 3e092daa14c63831d76d3ad6e56b2919a0523536) 本文代码基于 Android 12，以 SM 为主视角，从架构和情景流程上带大家认识新的 Native Binder" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/e0c547ca347afd0e90899c1dd61a079f/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2022-01-09T19:39:18+08:00" />
+<meta property="article:modified_time" content="2022-01-09T19:39:18+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Android 12 系统源码分析 | Native Binder 代码变迁</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-light">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <blockquote> 
+ <p>作者：秋城</p> 
+</blockquote> 
+<blockquote> 
+ <p>注：广义上 Native Binder 可理解为包含 vnd，hw，rpc 等内容，本文所讨论的Native Binder 指的仅是 servicemanager 服务程序及 libbinder 中相关代码，不做广义的延伸</p> 
+</blockquote> 
+<h2><a id="_4"></a>一、前言</h2> 
+<p>Servicemanager 程序（以下简称SM）是 Android 系统 binder 模块重要的组成部分，扮演着类似 C/S 架构中的 DNS 服务器的角色，提供服务增查和权限管理等功能支撑</p> 
+<p>在 Android 11 之前的版本里，SM 是<strong>面向 binder 驱动编程</strong>，直接使用 open、mmap、ioctl 等 api 与 binder 驱动交互。而从 Android 11 开始，SM 放弃使用这些较底层的接口，转向 libbinder 库和 AIDL。标志性的提交如下，该提交奠定了新的 SM 架构基础，此后多次提交对此进行完善填充</p> 
+<blockquote> 
+ <p>frameworks/native</p> 
+</blockquote> 
+<pre><code class="prism language-java">servicemanager<span class="token operator">:</span> use libbinder
+
+<span class="token class-name">Bug</span><span class="token operator">:</span> <span class="token number">135768100</span>
+<span class="token class-name">Test</span><span class="token operator">:</span> boot
+<span class="token class-name">Test</span><span class="token operator">:</span> servicemanager_test
+
+<span class="token class-name">Change</span><span class="token operator">-</span><span class="token class-name">Id</span><span class="token operator">:</span> <span class="token class-name">I9d657b6c0d0be0f763b6d54e0e6c6bc1c1e3fc7a</span>
+<span class="token punctuation">(</span>cherry picked from commit <span class="token number">3e092d</span>aa14c63831d76d3ad6e56b2919a0523536<span class="token punctuation">)</span>
+</code></pre> 
+<p>本文代码基于 Android 12，以 SM 为主视角，从架构和情景流程上带大家认识新的 Native Binder</p> 
+<h2><a id="__25"></a>二. 软件架构</h2> 
+<p>2.1 架构概述<br> <img src="https://images2.imgbox.com/bc/0c/HoLvSzw9_o.png" alt=""></p> 
+<p>图1：切换到 aidl 和 libbinder 后的 ServiceManager 类关系图</p> 
+<blockquote> 
+ <p>图注：</p> 
+ <p>为了画图方便，将 namespace 写成了下划线形式。</p> 
+ <p>android_os_BpServiceManager 和 android_os_BnServiceManager、android_os_IServiceManager 类均在 android os 的 namespace 中，其他无下划线的类名，处于 android namespace 中。</p> 
+</blockquote> 
+<p>一图胜千言，11 之前的 SM 是写在 c 文件里，没有类的概念，现在基于 aidl 和 libbinder，使用 cpp 语言，用 uml 就可以很形象地展示类关系了。就着这幅图我们大致描述新的软件架构</p> 
+<ul><li>红色线段大概地将服务端与客户端类相分隔，服务端在右下角</li></ul> 
+<p>一些 libbinder 的用于继承的公共类请读者自行剥离，而不是将其归入某一端。例如 IBinder，我们知道他是 BBinder 和 BpBinder 的父类，是公共的接口约束</p> 
+<ul><li>libbinder 中客户端的入口变为：IServiceManager.cpp#ServiceManagerShim</li></ul> 
+<p>之前无该辅助类，而是直接操作 BpServiceManager，这个辅助类封装了 aidl 自动生成的 BpServiceManager，所以现在的客户端代码流就变成如下三步：</p> 
+<pre><code class="prism language-java"><span class="token number">1.</span>用户代码
+<span class="token number">2.l</span>ibbinder代码 binder<span class="token operator">/</span><span class="token class-name">IServiceManager</span><span class="token punctuation">.</span>cpp#<span class="token class-name">ServiceManagerShim</span>
+<span class="token number">3.</span>aidl代码      android<span class="token operator">/</span>os<span class="token operator">/</span><span class="token class-name">IServiceManager</span><span class="token punctuation">.</span>cpp#<span class="token class-name">BpServiceManager</span>接口
+</code></pre> 
+<p>所以 libbinder 中的 ServiceManagerShim 起到了一个中转的作用，把请求转给 out 下 aidl 自动生成的 BpServiceManager</p> 
+<ul><li>BpServiceManager 的实现挪到 out</li></ul> 
+<p>原来是在 libbinder#IServiceManager.cpp 中手写实现，现在是 aidl 帮你实现。</p> 
+<p>当然，该文件中同样自动实现了 BnServiceManager 类</p> 
+<p>代码路径</p> 
+<blockquote> 
+ <p>out/soong/.intermediates/frameworks/native/libs/binder/libbinder/android_arm64_armv8-a_shared/gen/aidl/android/os/IServiceManager.cpp</p> 
+</blockquote> 
+<ul><li>服务端的核心实现在 ServiceManager.cpp</li></ul> 
+<p>原来是没有 Bn 的，而是一个 binder_loop 方法沟通驱动，现在则是ServiceManager 继承了 BnServiceManager 来获得代码流。</p> 
+<ul><li>waitForService 的改动：IServiceCallback.aidl</li></ul> 
+<p>Waiter 类。新增了 binder 匿名服务用来向 sm 注册跨进程的回调，当 sm 检测到有服务注册时，会返回通知</p> 
+<ul><li>服务的客户端数量监听：IServiceCallback.aidl</li></ul> 
+<p>IServiceCallback.aidl 这个匿名 binder 服务就是用于该目的，可以监听某个服务的客户端数量</p> 
+<p>2.2、文件路径</p> 
+<ul><li>AIDL</li></ul> 
+<p>AIDL 是一种方便的接口定义语言，用于 Binder-IPC 编程。详细介绍与使用可参考：AIDL Overview</p> 
+<p>我们关注三个 aidl，分别是 IServiceManager.aidl、IServiceCallback.aidl、IClientCallback.aidl，对应的编译后生成的文件路径为：</p> 
+<blockquote> 
+ <p>out/soong/.intermediates/frameworks/native/libs/binder/libbinder/android_arm_armv8-a_shared/gen/aidl/android/os/</p> 
+ <p>IClientCallback.cpp</p> 
+ <p>IServiceCallback.cpp</p> 
+ <p>IServiceManager.cpp</p> 
+</blockquote> 
+<ul><li>libbinder 中的代码路径</li></ul> 
+<blockquote> 
+ <p>frameworks/native/libs/binder/IServiceManager.cpp</p> 
+</blockquote> 
+<ul><li>SM 服务端代码路径</li></ul> 
+<blockquote> 
+ <p>frameworks/native/cmds/servicemanager/</p> 
+ <p>main.cpp</p> 
+ <p>Access.cpp</p> 
+ <p>ServiceManager.cpp</p> 
+</blockquote> 
+<p>本小节仅展示涉及变迁的文件路径。简洁起见只写了 cpp 文件，对应的 h 头文件可以附近查找。</p> 
+<p><strong>另外需要特别区分的是，有两个 IServiceManager。</strong></p> 
+<p>一个在 libbinder 中，是 Android 的 name space，直接被用户#include&lt;binder/IServiceManager&gt;使用。</p> 
+<p>另一个是 aidl 自动生成的 Android os 的 name space，被上面的 libbinder 所使#include&lt;android/os/IServiceManager&gt;。</p> 
+<p>2.3、小结</p> 
+<p>第二章节从全局的角度展示了 SM 切换到 aidl 和 libbinder的软件架构，结合图来看还是非常清楚易于理解的</p> 
+<p>接下来跟踪几个情景流程，展示新架构中的细节</p> 
+<h2><a id="_servicemanager__121"></a>三 servicemanager 启动流程分析</h2> 
+<p><img src="https://images2.imgbox.com/6c/3d/FETkK1MW_o.png" alt=""><br> 图2：servicemanager 启动时序图</p> 
+<p>如上图，启动流程的变动主要在进入循环的方式，Android 11 之前是通过binder_loop方法，而现在是通过 looper。下面展示细节</p> 
+<blockquote> 
+ <p>frameworks/native/cmds/servicemanager/main.cpp</p> 
+</blockquote> 
+<pre><code class="prism language-java"><span class="token keyword">int</span> <span class="token function">main</span><span class="token punctuation">(</span><span class="token keyword">int</span> argc<span class="token punctuation">,</span> <span class="token keyword">char</span><span class="token operator">*</span><span class="token operator">*</span> argv<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+   <span class="token keyword">if</span> <span class="token punctuation">(</span>argc <span class="token operator">&gt;</span> <span class="token number">2</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+       <span class="token function">LOG</span><span class="token punctuation">(</span>FATAL<span class="token punctuation">)</span> <span class="token operator">&lt;&lt;</span> <span class="token string">"usage: "</span> <span class="token operator">&lt;&lt;</span> argv<span class="token punctuation">[</span><span class="token number">0</span><span class="token punctuation">]</span> <span class="token operator">&lt;&lt;</span> <span class="token string">" [binder driver]"</span><span class="token punctuation">;</span>
+  <span class="token punctuation">}</span>
+
+   <span class="token keyword">const</span> <span class="token keyword">char</span><span class="token operator">*</span> driver <span class="token operator">=</span> argc <span class="token operator">==</span> <span class="token number">2</span> <span class="token operator">?</span> argv<span class="token punctuation">[</span><span class="token number">1</span><span class="token punctuation">]</span> <span class="token operator">:</span> <span class="token string">"/dev/binder"</span><span class="token punctuation">;</span>
+<span class="token comment">//沟通binder驱动，open，mmap</span>
+   sp<span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">ProcessState</span><span class="token punctuation">&gt;</span></span> ps <span class="token operator">=</span> <span class="token class-name">ProcessState</span><span class="token operator">::</span><span class="token function">initWithDriver</span><span class="token punctuation">(</span>driver<span class="token punctuation">)</span><span class="token punctuation">;</span>
+   ps<span class="token operator">-&gt;</span><span class="token function">setThreadPoolMaxThreadCount</span><span class="token punctuation">(</span><span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+   <span class="token comment">//oneway限制，sm发起的binder调用必须是单向，否则打印堆栈日志提示</span>
+   ps<span class="token operator">-&gt;</span><span class="token function">setCallRestriction</span><span class="token punctuation">(</span><span class="token class-name">ProcessState</span><span class="token operator">::</span><span class="token class-name">CallRestriction</span><span class="token operator">::</span>FATAL_IF_NOT_ONEWAY<span class="token punctuation">)</span><span class="token punctuation">;</span>
+   <span class="token comment">//实例化ServiceManager，传入Access类用于鉴权</span>
+   sp<span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">ServiceManager</span><span class="token punctuation">&gt;</span></span> manager <span class="token operator">=</span> sp<span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">ServiceManager</span><span class="token punctuation">&gt;</span></span><span class="token operator">::</span><span class="token function">make</span><span class="token punctuation">(</span>std<span class="token operator">::</span><span class="token function">make_unique</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">Access</span><span class="token punctuation">&gt;</span></span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+   <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span>manager<span class="token operator">-&gt;</span><span class="token function">addService</span><span class="token punctuation">(</span><span class="token string">"manager"</span><span class="token punctuation">,</span> manager<span class="token punctuation">,</span> <span class="token boolean">false</span> <span class="token comment">/*allowIsolated*/</span><span class="token punctuation">,</span> <span class="token class-name">IServiceManager</span><span class="token operator">::</span>DUMP_FLAG_PRIORITY_DEFAULT<span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">isOk</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+       <span class="token function">LOG</span><span class="token punctuation">(</span>ERROR<span class="token punctuation">)</span> <span class="token operator">&lt;&lt;</span> <span class="token string">"Could not self register servicemanager"</span><span class="token punctuation">;</span>
+  <span class="token punctuation">}</span>
+   <span class="token comment">//设置全局变量给IPCThreadState</span>
+   <span class="token class-name">IPCThreadState</span><span class="token operator">::</span><span class="token function">self</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token operator">-&gt;</span><span class="token function">setTheContextObject</span><span class="token punctuation">(</span>manager<span class="token punctuation">)</span><span class="token punctuation">;</span>
+   <span class="token comment">//注册到驱动，成为binder管理员，handle是0</span>
+   ps<span class="token operator">-&gt;</span><span class="token function">becomeContextManager</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+   <span class="token comment">//准备looper</span>
+   sp<span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">Looper</span><span class="token punctuation">&gt;</span></span> looper <span class="token operator">=</span> <span class="token class-name">Looper</span><span class="token operator">::</span><span class="token function">prepare</span><span class="token punctuation">(</span><span class="token boolean">false</span> <span class="token comment">/*allowNonCallbacks*/</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+   <span class="token comment">//通知驱动BC_ENTER_LOOPER，监听驱动fd，有消息时回调到handleEvent处理binder调用</span>
+   <span class="token class-name">BinderCallback</span><span class="token operator">::</span><span class="token function">setupTo</span><span class="token punctuation">(</span>looper<span class="token punctuation">)</span><span class="token punctuation">;</span>
+   <span class="token comment">//服务的注册监听相关</span>
+   <span class="token class-name">ClientCallbackCallback</span><span class="token operator">::</span><span class="token function">setupTo</span><span class="token punctuation">(</span>looper<span class="token punctuation">,</span> manager<span class="token punctuation">)</span><span class="token punctuation">;</span>
+   <span class="token comment">//无限循环等消息</span>
+   <span class="token keyword">while</span><span class="token punctuation">(</span><span class="token boolean">true</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+       looper<span class="token operator">-&gt;</span><span class="token function">pollAll</span><span class="token punctuation">(</span><span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+  <span class="token punctuation">}</span>
+
+   <span class="token comment">// should not be reached</span>
+   <span class="token keyword">return</span> EXIT_FAILURE<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>和原来的 servicemanager 服务相比较，使用了 libbinder 后，代码更规范化，和其他 native 的服务风格一致了。</p> 
+<ul><li>之前是直接 open、mmap 现在是借助 libbinder</li><li>之前是 binder_loop死 循环接收驱动的消息，现在是通过 looper 监听 fd 来handleEvent</li><li>之前的鉴权现在被独立到单独文件 Access.cpp</li></ul> 
+<p>突然想起一个题目，servicemanager 映射的虚拟内存有多大？现在的答案是和普通应用一样大：1M-2 页。</p> 
+<blockquote> 
+ <p>frameworks/native/libs/binder/ProcessState.cpp</p> 
+</blockquote> 
+<pre><code class="prism language-java">#define BINDER_VM_SIZE <span class="token punctuation">(</span><span class="token punctuation">(</span><span class="token number">1</span> <span class="token operator">*</span> <span class="token number">1024</span> <span class="token operator">*</span> <span class="token number">1024</span><span class="token punctuation">)</span> <span class="token operator">-</span> <span class="token function">sysconf</span><span class="token punctuation">(</span>_SC_PAGE_SIZE<span class="token punctuation">)</span> <span class="token operator">*</span> <span class="token number">2</span><span class="token punctuation">)</span>
+</code></pre> 
+<p>启动流程比较清晰不多赘述，下一小节看 addService 的流程。</p> 
+<h2><a id="addService__182"></a>四、addService 流程分析</h2> 
+<p><img src="https://images2.imgbox.com/2f/12/rqlKnCKE_o.png" alt=""></p> 
+<p>图3：defaultServiceManager流程</p> 
+<p><img src="https://images2.imgbox.com/fa/e9/fxkNUSox_o.png" alt=""></p> 
+<p>图4：addService 客户端流程</p> 
+<p><img src="https://images2.imgbox.com/94/f6/Jh2rFvxz_o.png" alt=""></p> 
+<p>图5：addService 服务端流程</p> 
+<p>先上图，总览 native 的代码流程，客户端是 libbinder 里的 IServiceManager.cpp，服务端是我们的 ServiceManager.cpp</p> 
+<p>4.1 ServiceManagerShim::addService</p> 
+<blockquote> 
+ <p>frameworks/native/libs/binder/IServiceManager.cpp</p> 
+</blockquote> 
+<pre><code class="prism language-java">status_t <span class="token class-name">ServiceManagerShim</span><span class="token operator">::</span><span class="token function">addService</span><span class="token punctuation">(</span><span class="token keyword">const</span> <span class="token class-name">String16</span><span class="token operator">&amp;</span> name<span class="token punctuation">,</span> <span class="token keyword">const</span> sp<span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">IBinder</span><span class="token punctuation">&gt;</span></span><span class="token operator">&amp;</span> service<span class="token punctuation">,</span>
+                                       bool allowIsolated<span class="token punctuation">,</span> <span class="token keyword">int</span> dumpsysPriority<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+   <span class="token class-name">Status</span> status <span class="token operator">=</span> mTheRealServiceManager<span class="token operator">-&gt;</span><span class="token function">addService</span><span class="token punctuation">(</span>
+       <span class="token class-name">String8</span><span class="token punctuation">(</span>name<span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">c_str</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span> service<span class="token punctuation">,</span> allowIsolated<span class="token punctuation">,</span> dumpsysPriority<span class="token punctuation">)</span><span class="token punctuation">;</span>
+   <span class="token keyword">return</span> status<span class="token punctuation">.</span><span class="token function">exceptionCode</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>直接使用的 mTheRealServiceManager，澄清疑问，mTheRealServiceManager 是谁？</p> 
+<p>4.1.1 mTheRealServiceManager 是谁？</p> 
+<blockquote> 
+ <p>frameworks/native/libs/binder/IServiceManager.cpp</p> 
+</blockquote> 
+<pre><code class="prism language-java">#include <span class="token operator">&lt;</span>android<span class="token operator">/</span>os<span class="token operator">/</span><span class="token class-name">IServiceManager</span><span class="token punctuation">.</span>h<span class="token operator">&gt;</span>
+using <span class="token class-name">AidlServiceManager</span> <span class="token operator">=</span> android<span class="token operator">::</span><span class="token function">os</span><span class="token operator">::</span><span class="token class-name">IServiceManager</span><span class="token punctuation">;</span>
+<span class="token keyword">class</span> <span class="token class-name">ServiceManagerShim</span> <span class="token operator">:</span> <span class="token keyword">public</span> <span class="token class-name">IServiceManager</span>
+<span class="token punctuation">{<!-- --></span>
+<span class="token keyword">protected</span><span class="token operator">:</span>
+   sp<span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">AidlServiceManager</span><span class="token punctuation">&gt;</span></span> mTheRealServiceManager<span class="token punctuation">;</span>
+<span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+<span class="token class-name">ServiceManagerShim</span><span class="token operator">::</span><span class="token class-name">ServiceManagerShim</span><span class="token punctuation">(</span><span class="token keyword">const</span> sp<span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">AidlServiceManager</span><span class="token punctuation">&gt;</span></span><span class="token operator">&amp;</span> impl<span class="token punctuation">)</span>
+<span class="token operator">:</span> <span class="token function">mTheRealServiceManager</span><span class="token punctuation">(</span>impl<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span><span class="token punctuation">}</span>
+</code></pre> 
+<p>可以看到，mTheRealServiceManager 就是一个 android::os::IServiceManager 类型的实例，并且在 ServiceManagerShim 实例化时赋值。</p> 
+<p>那么 ServiceManagerShim 何时实例化呢？答案是 defaultServiceManager() 中</p> 
+<blockquote> 
+ <p>frameworks/native/libs/binder/IServiceManager.cpp</p> 
+</blockquote> 
+<pre><code class="prism language-java">sp<span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">IServiceManager</span><span class="token punctuation">&gt;</span></span> <span class="token function">defaultServiceManager</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+   std<span class="token operator">::</span><span class="token function">call_once</span><span class="token punctuation">(</span>gSmOnce<span class="token punctuation">,</span> <span class="token punctuation">[</span><span class="token punctuation">]</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+       sp<span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">AidlServiceManager</span><span class="token punctuation">&gt;</span></span> sm <span class="token operator">=</span> nullptr<span class="token punctuation">;</span>
+       <span class="token keyword">while</span> <span class="token punctuation">(</span>sm <span class="token operator">==</span> nullptr<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+           <span class="token comment">//1、拿到AidlServiceManager类型的BpServiceManager(new BpBinder(0))实例</span>
+           sm <span class="token operator">=</span> interface_cast<span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">AidlServiceManager</span><span class="token punctuation">&gt;</span></span><span class="token punctuation">(</span><span class="token class-name">ProcessState</span><span class="token operator">::</span><span class="token function">self</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token operator">-&gt;</span><span class="token function">getContextObject</span><span class="token punctuation">(</span>nullptr<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+           <span class="token keyword">if</span> <span class="token punctuation">(</span>sm <span class="token operator">==</span> nullptr<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+               <span class="token function">ALOGE</span><span class="token punctuation">(</span><span class="token string">"Waiting 1s on context object on %s."</span><span class="token punctuation">,</span> <span class="token class-name">ProcessState</span><span class="token operator">::</span><span class="token function">self</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token operator">-&gt;</span><span class="token function">getDriverName</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">c_str</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+               <span class="token function">sleep</span><span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+          <span class="token punctuation">}</span>
+      <span class="token punctuation">}</span>
+       <span class="token comment">//2、new ServiceManagerShim</span>
+       gDefaultServiceManager <span class="token operator">=</span> sp<span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">ServiceManagerShim</span><span class="token punctuation">&gt;</span></span><span class="token operator">::</span><span class="token function">make</span><span class="token punctuation">(</span>sm<span class="token punctuation">)</span><span class="token punctuation">;</span>
+  <span class="token punctuation">}</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+   <span class="token keyword">return</span> gDefaultServiceManager<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>如注释1、2，mTheRealServiceManager 就是在这样流程中赋值的。他的真是面目是BpServiceManager(new BpBinder(0))。</p> 
+<p>由图1可知，我们拿到了操作 binder 驱动的入口，BpServiceManager–&gt;BpBinder–&gt;IPCThreadState–&gt;ioctl</p> 
+<p>关于一部分旧知识会贴拓展链接本文不做展开。interface_cast 的实现可参考：浅谈 <strong>Android 系统进程间通信（IPC）机制Binder</strong> 中的 Server 和 Client 获得 Service Manager 接口之路</p> 
+<p>好现在返回上节，直接走入 BpServiceManager#addService 方法</p> 
+<p>4.2 BpServiceManager::addService</p> 
+<blockquote> 
+ <p>out/soong/.intermediates/frameworks/native/libs/binder/libbinder/android_arm_armv8-a_shared/gen/aidl/android/os/IServiceManager.cpp</p> 
+</blockquote> 
+<pre><code class="prism language-java">namespace android <span class="token punctuation">{<!-- --></span>
+namespace os <span class="token punctuation">{<!-- --></span>
+
+<span class="token class-name">BpServiceManager</span><span class="token operator">::</span><span class="token class-name">BpServiceManager</span><span class="token punctuation">(</span><span class="token keyword">const</span> <span class="token operator">::</span><span class="token function">android</span><span class="token operator">::</span><span class="token function">sp</span><span class="token operator">&lt;</span><span class="token operator">::</span><span class="token function">android</span><span class="token operator">::</span><span class="token class-name">IBinder</span><span class="token operator">&gt;</span><span class="token operator">&amp;</span> _aidl_impl<span class="token punctuation">)</span>
+  <span class="token operator">:</span> <span class="token class-name">BpInterface</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">IServiceManager</span><span class="token punctuation">&gt;</span></span><span class="token punctuation">(</span>_aidl_impl<span class="token punctuation">)</span><span class="token punctuation">{<!-- --></span><span class="token comment">//_aidl_impl就是BpBinder(0)实例</span>
+<span class="token punctuation">}</span>
+<span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span>
+  <span class="token operator">::</span><span class="token function">android</span><span class="token operator">::</span><span class="token function">binder</span><span class="token operator">::</span><span class="token class-name">Status</span> <span class="token class-name">BpServiceManager</span><span class="token operator">::</span><span class="token function">addService</span><span class="token punctuation">(</span><span class="token keyword">const</span> <span class="token operator">::</span><span class="token function">std</span><span class="token operator">::</span><span class="token function">string</span><span class="token operator">&amp;</span> name<span class="token punctuation">,</span> <span class="token keyword">const</span> <span class="token operator">::</span><span class="token function">android</span><span class="token operator">::</span><span class="token function">sp</span><span class="token operator">&lt;</span><span class="token operator">::</span><span class="token function">android</span><span class="token operator">::</span><span class="token class-name">IBinder</span><span class="token operator">&gt;</span><span class="token operator">&amp;</span> service<span class="token punctuation">,</span> bool allowIsolated<span class="token punctuation">,</span> int32_t dumpPriority<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+<span class="token operator">::</span><span class="token function">android</span><span class="token operator">::</span><span class="token class-name">Parcel</span> _aidl_data<span class="token punctuation">;</span>
+ _aidl_data<span class="token punctuation">.</span><span class="token function">markForBinder</span><span class="token punctuation">(</span><span class="token function">remoteStrong</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span><span class="token comment">//0、和rpc binder有关</span>
+<span class="token operator">::</span><span class="token function">android</span><span class="token operator">::</span><span class="token class-name">Parcel</span> _aidl_reply<span class="token punctuation">;</span>
+<span class="token operator">::</span><span class="token function">android</span><span class="token operator">::</span><span class="token function">status_t</span> _aidl_ret_status <span class="token operator">=</span> <span class="token operator">::</span><span class="token function">android</span><span class="token operator">::</span>OK<span class="token punctuation">;</span>
+<span class="token operator">::</span><span class="token function">android</span><span class="token operator">::</span><span class="token function">binder</span><span class="token operator">::</span><span class="token class-name">Status</span> _aidl_status<span class="token punctuation">;</span>
+ <span class="token comment">//1、写interface</span>
+ _aidl_ret_status <span class="token operator">=</span> _aidl_data<span class="token punctuation">.</span><span class="token function">writeInterfaceToken</span><span class="token punctuation">(</span><span class="token function">getInterfaceDescriptor</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+ <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token punctuation">(</span><span class="token punctuation">(</span>_aidl_ret_status<span class="token punctuation">)</span> <span class="token operator">!=</span> <span class="token punctuation">(</span><span class="token operator">::</span><span class="token function">android</span><span class="token operator">::</span>OK<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+   <span class="token keyword">goto</span> _aidl_error<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+ <span class="token comment">//2、写name</span>
+ _aidl_ret_status <span class="token operator">=</span> _aidl_data<span class="token punctuation">.</span><span class="token function">writeUtf8AsUtf16</span><span class="token punctuation">(</span>name<span class="token punctuation">)</span><span class="token punctuation">;</span>
+ <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token punctuation">(</span><span class="token punctuation">(</span>_aidl_ret_status<span class="token punctuation">)</span> <span class="token operator">!=</span> <span class="token punctuation">(</span><span class="token operator">::</span><span class="token function">android</span><span class="token operator">::</span>OK<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+   <span class="token keyword">goto</span> _aidl_error<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+ <span class="token comment">//3、写binder对象</span>
+ _aidl_ret_status <span class="token operator">=</span> _aidl_data<span class="token punctuation">.</span><span class="token function">writeStrongBinder</span><span class="token punctuation">(</span>service<span class="token punctuation">)</span><span class="token punctuation">;</span>
+ <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token punctuation">(</span><span class="token punctuation">(</span>_aidl_ret_status<span class="token punctuation">)</span> <span class="token operator">!=</span> <span class="token punctuation">(</span><span class="token operator">::</span><span class="token function">android</span><span class="token operator">::</span>OK<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+   <span class="token keyword">goto</span> _aidl_error<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+ <span class="token comment">//4、写allowIsolated</span>
+ _aidl_ret_status <span class="token operator">=</span> _aidl_data<span class="token punctuation">.</span><span class="token function">writeBool</span><span class="token punctuation">(</span>allowIsolated<span class="token punctuation">)</span><span class="token punctuation">;</span>
+ <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token punctuation">(</span><span class="token punctuation">(</span>_aidl_ret_status<span class="token punctuation">)</span> <span class="token operator">!=</span> <span class="token punctuation">(</span><span class="token operator">::</span><span class="token function">android</span><span class="token operator">::</span>OK<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+   <span class="token keyword">goto</span> _aidl_error<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+ <span class="token comment">//5、写dumpPriority</span>
+ _aidl_ret_status <span class="token operator">=</span> _aidl_data<span class="token punctuation">.</span><span class="token function">writeInt32</span><span class="token punctuation">(</span>dumpPriority<span class="token punctuation">)</span><span class="token punctuation">;</span>
+ <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token punctuation">(</span><span class="token punctuation">(</span>_aidl_ret_status<span class="token punctuation">)</span> <span class="token operator">!=</span> <span class="token punctuation">(</span><span class="token operator">::</span><span class="token function">android</span><span class="token operator">::</span>OK<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+   <span class="token keyword">goto</span> _aidl_error<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+ <span class="token comment">//6、借助BpBinder(0)-transact来发起binder通信</span>
+ _aidl_ret_status <span class="token operator">=</span> <span class="token function">remote</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token operator">-&gt;</span><span class="token function">transact</span><span class="token punctuation">(</span><span class="token class-name">BnServiceManager</span><span class="token operator">::</span><span class="token class-name">TRANSACTION_addService</span><span class="token punctuation">,</span> _aidl_data<span class="token punctuation">,</span> <span class="token operator">&amp;</span>_aidl_reply<span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+ <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">UNLIKELY</span><span class="token punctuation">(</span>_aidl_ret_status <span class="token operator">==</span> <span class="token operator">::</span><span class="token function">android</span><span class="token operator">::</span>UNKNOWN_TRANSACTION <span class="token operator">&amp;&amp;</span> <span class="token class-name">IServiceManager</span><span class="token operator">::</span><span class="token function">getDefaultImpl</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">return</span> <span class="token class-name">IServiceManager</span><span class="token operator">::</span><span class="token function">getDefaultImpl</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token operator">-&gt;</span><span class="token function">addService</span><span class="token punctuation">(</span>name<span class="token punctuation">,</span> service<span class="token punctuation">,</span> allowIsolated<span class="token punctuation">,</span> dumpPriority<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+ <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token punctuation">(</span><span class="token punctuation">(</span>_aidl_ret_status<span class="token punctuation">)</span> <span class="token operator">!=</span> <span class="token punctuation">(</span><span class="token operator">::</span><span class="token function">android</span><span class="token operator">::</span>OK<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+   <span class="token keyword">goto</span> _aidl_error<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+ <span class="token comment">//7、如果有返回值就从这个parcel包里读</span>
+ _aidl_ret_status <span class="token operator">=</span> _aidl_status<span class="token punctuation">.</span><span class="token function">readFromParcel</span><span class="token punctuation">(</span>_aidl_reply<span class="token punctuation">)</span><span class="token punctuation">;</span>
+ <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token punctuation">(</span><span class="token punctuation">(</span>_aidl_ret_status<span class="token punctuation">)</span> <span class="token operator">!=</span> <span class="token punctuation">(</span><span class="token operator">::</span><span class="token function">android</span><span class="token operator">::</span>OK<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+   <span class="token keyword">goto</span> _aidl_error<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+ <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span>_aidl_status<span class="token punctuation">.</span><span class="token function">isOk</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+   <span class="token keyword">return</span> _aidl_status<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+ _aidl_error<span class="token operator">:</span>
+ _aidl_status<span class="token punctuation">.</span><span class="token function">setFromStatusT</span><span class="token punctuation">(</span>_aidl_ret_status<span class="token punctuation">)</span><span class="token punctuation">;</span>
+ <span class="token keyword">return</span> _aidl_status<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>把 Android 10 的贴上来，我们对比看看</p> 
+<blockquote> 
+ <p>frameworks/native/libs/binder/IServiceManager.cpp</p> 
+</blockquote> 
+<pre><code class="prism language-java">   virtual status_t <span class="token function">addService</span><span class="token punctuation">(</span><span class="token keyword">const</span> <span class="token class-name">String16</span><span class="token operator">&amp;</span> name<span class="token punctuation">,</span> <span class="token keyword">const</span> sp<span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">IBinder</span><span class="token punctuation">&gt;</span></span><span class="token operator">&amp;</span> service<span class="token punctuation">,</span>
+                               bool allowIsolated<span class="token punctuation">,</span> <span class="token keyword">int</span> dumpsysPriority<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+       <span class="token class-name">Parcel</span> data<span class="token punctuation">,</span> reply<span class="token punctuation">;</span>
+       data<span class="token punctuation">.</span><span class="token function">writeInterfaceToken</span><span class="token punctuation">(</span><span class="token class-name">IServiceManager</span><span class="token operator">::</span><span class="token function">getInterfaceDescriptor</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+       data<span class="token punctuation">.</span><span class="token function">writeString16</span><span class="token punctuation">(</span>name<span class="token punctuation">)</span><span class="token punctuation">;</span>
+       data<span class="token punctuation">.</span><span class="token function">writeStrongBinder</span><span class="token punctuation">(</span>service<span class="token punctuation">)</span><span class="token punctuation">;</span>
+       data<span class="token punctuation">.</span><span class="token function">writeInt32</span><span class="token punctuation">(</span>allowIsolated <span class="token operator">?</span> <span class="token number">1</span> <span class="token operator">:</span> <span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+       data<span class="token punctuation">.</span><span class="token function">writeInt32</span><span class="token punctuation">(</span>dumpsysPriority<span class="token punctuation">)</span><span class="token punctuation">;</span>
+       status_t err <span class="token operator">=</span> <span class="token function">remote</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token operator">-&gt;</span><span class="token function">transact</span><span class="token punctuation">(</span>ADD_SERVICE_TRANSACTION<span class="token punctuation">,</span> data<span class="token punctuation">,</span> <span class="token operator">&amp;</span>reply<span class="token punctuation">)</span><span class="token punctuation">;</span>
+       <span class="token keyword">return</span> err <span class="token operator">==</span> NO_ERROR <span class="token operator">?</span> reply<span class="token punctuation">.</span><span class="token function">readExceptionCode</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">:</span> err<span class="token punctuation">;</span>
+  <span class="token punctuation">}</span>
+</code></pre> 
+<p>和11之前手写的 BpServiceManager 相比，本质是没变的，就是多了些花里胡哨的规范性代码。</p> 
+<p>到这里，客户端的代码就大致展示完了，transact 再往后就是旧有的流程，可参考：<strong>浅谈 Android 系统进程间通信（IPC）机制 Binder</strong> 中的 Server 和 Client 获得Service Manager 接口之路</p> 
+<p>之后走到 binder 驱动，驱动又根据 handle == 0 找到对端，我们的 servicemanager 进程，唤醒他开始处理请求。</p> 
+<p>4.3 BinderCallback::handleEvent</p> 
+<p>如图4：addService 服务端流程，现在开始服务端的流程展示</p> 
+<blockquote> 
+ <p>frameworks/native/cmds/servicemanager/main.cpp</p> 
+</blockquote> 
+<pre><code class="prism language-java"><span class="token keyword">class</span> <span class="token class-name">BinderCallback</span> <span class="token operator">:</span> <span class="token keyword">public</span> <span class="token class-name">LooperCallback</span> <span class="token punctuation">{<!-- --></span>
+<span class="token keyword">public</span><span class="token operator">:</span>
+<span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+       <span class="token keyword">int</span> <span class="token function">handleEvent</span><span class="token punctuation">(</span><span class="token keyword">int</span> <span class="token comment">/* fd */</span><span class="token punctuation">,</span> <span class="token keyword">int</span> <span class="token comment">/* events */</span><span class="token punctuation">,</span> <span class="token keyword">void</span><span class="token operator">*</span> <span class="token comment">/* data */</span><span class="token punctuation">)</span> override <span class="token punctuation">{<!-- --></span>
+       <span class="token class-name">IPCThreadState</span><span class="token operator">::</span><span class="token function">self</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token operator">-&gt;</span><span class="token function">handlePolledCommands</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+       <span class="token keyword">return</span> <span class="token number">1</span><span class="token punctuation">;</span>  <span class="token comment">// Continue receiving callbacks.</span>
+  <span class="token punctuation">}</span>
+<span class="token punctuation">}</span><span class="token punctuation">;</span>
+</code></pre> 
+<p>之后走到 BR_TRANSACTION</p> 
+<blockquote> 
+ <p>frameworks/native/libs/binder/IPCThreadState.cpp</p> 
+</blockquote> 
+<pre><code class="prism language-java">status_t <span class="token class-name">IPCThreadState</span><span class="token operator">::</span><span class="token function">executeCommand</span><span class="token punctuation">(</span>int32_t cmd<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+<span class="token keyword">switch</span> <span class="token punctuation">(</span><span class="token punctuation">(</span>uint32_t<span class="token punctuation">)</span>cmd<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+<span class="token keyword">case</span> BR_TRANSACTION<span class="token operator">:</span>
+      <span class="token punctuation">{<!-- --></span>
+      <span class="token keyword">if</span> <span class="token punctuation">(</span>tr<span class="token punctuation">.</span>target<span class="token punctuation">.</span>ptr<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+      <span class="token comment">//因为目的端sm所以是tr.target.ptr是0</span>
+      <span class="token punctuation">}</span><span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span><span class="token comment">//开始业务分发</span>
+          error <span class="token operator">=</span> the_context_object<span class="token operator">-&gt;</span><span class="token function">transact</span><span class="token punctuation">(</span>tr<span class="token punctuation">.</span>code<span class="token punctuation">,</span> buffer<span class="token punctuation">,</span> <span class="token operator">&amp;</span>reply<span class="token punctuation">,</span> tr<span class="token punctuation">.</span>flags<span class="token punctuation">)</span><span class="token punctuation">;</span>
+      <span class="token punctuation">}</span>
+</code></pre> 
+<p>the_context_object 是 SM 启动的时候设置好的</p> 
+<pre><code class="prism language-java">sp<span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">BBinder</span><span class="token punctuation">&gt;</span></span> the_context_object<span class="token punctuation">;</span>
+
+<span class="token keyword">void</span> <span class="token class-name">IPCThreadState</span><span class="token operator">::</span><span class="token function">setTheContextObject</span><span class="token punctuation">(</span><span class="token keyword">const</span> sp<span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">BBinder</span><span class="token punctuation">&gt;</span></span><span class="token operator">&amp;</span> obj<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+   the_context_object <span class="token operator">=</span> obj<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>是 ServiceManager 类实例，所以也是一个 BBinder 对象，所以就有了 transact()–&gt;onTransact() 的处理能力。</p> 
+<p>所以现在the_context_object-&gt;transact()调用就走到 BBinder 的 transact 又走到BnServiceManager的onTransact()方法，回到了这个aidl自动生成的IServiceManager.cpp文件里</p> 
+<p>兜兜转转还是在这个文件</p> 
+<blockquote> 
+ <p>out/soong/.intermediates/frameworks/native/libs/binder/libbinder/android_arm_armv8-a_shared/gen/aidl/android/os/IServiceManager.cpp</p> 
+</blockquote> 
+<pre><code class="prism language-java"><span class="token operator">::</span><span class="token function">android</span><span class="token operator">::</span><span class="token function">status_t</span> <span class="token class-name">BnServiceManager</span><span class="token operator">::</span><span class="token function">onTransact</span><span class="token punctuation">(</span>uint32_t _aidl_code<span class="token punctuation">,</span> <span class="token keyword">const</span> <span class="token operator">::</span><span class="token function">android</span><span class="token operator">::</span><span class="token class-name">Parcel</span><span class="token operator">&amp;</span> _aidl_data<span class="token punctuation">,</span> <span class="token operator">::</span><span class="token function">android</span><span class="token operator">::</span><span class="token class-name">Parcel</span><span class="token operator">*</span> _aidl_reply<span class="token punctuation">,</span> uint32_t _aidl_flags<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+<span class="token operator">::</span><span class="token function">android</span><span class="token operator">::</span><span class="token function">status_t</span> _aidl_ret_status <span class="token operator">=</span> <span class="token operator">::</span><span class="token function">android</span><span class="token operator">::</span>OK<span class="token punctuation">;</span>
+ <span class="token keyword">switch</span> <span class="token punctuation">(</span>_aidl_code<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+ <span class="token keyword">case</span> <span class="token class-name">BnServiceManager</span><span class="token operator">::</span><span class="token class-name">TRANSACTION_addService</span><span class="token operator">:</span>
+<span class="token punctuation">{<!-- --></span>
+  <span class="token operator">::</span><span class="token function">std</span><span class="token operator">::</span><span class="token function">string</span> in_name<span class="token punctuation">;</span>
+  <span class="token operator">::</span><span class="token function">android</span><span class="token operator">::</span><span class="token function">sp</span><span class="token operator">&lt;</span><span class="token operator">::</span><span class="token function">android</span><span class="token operator">::</span><span class="token class-name">IBinder</span><span class="token operator">&gt;</span> in_service<span class="token punctuation">;</span>
+   bool in_allowIsolated<span class="token punctuation">;</span>
+   int32_t in_dumpPriority<span class="token punctuation">;</span>
+   <span class="token comment">//检查interface</span>
+   <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span><span class="token punctuation">(</span>_aidl_data<span class="token punctuation">.</span><span class="token function">checkInterface</span><span class="token punctuation">(</span><span class="token keyword">this</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+     _aidl_ret_status <span class="token operator">=</span> <span class="token operator">::</span><span class="token function">android</span><span class="token operator">::</span>BAD_TYPE<span class="token punctuation">;</span>
+     <span class="token keyword">break</span><span class="token punctuation">;</span>
+  <span class="token punctuation">}</span>
+   <span class="token comment">//读name</span>
+   _aidl_ret_status <span class="token operator">=</span> _aidl_data<span class="token punctuation">.</span><span class="token function">readUtf8FromUtf16</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>in_name<span class="token punctuation">)</span><span class="token punctuation">;</span>
+   <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token punctuation">(</span><span class="token punctuation">(</span>_aidl_ret_status<span class="token punctuation">)</span> <span class="token operator">!=</span> <span class="token punctuation">(</span><span class="token operator">::</span><span class="token function">android</span><span class="token operator">::</span>OK<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+     <span class="token keyword">break</span><span class="token punctuation">;</span>
+  <span class="token punctuation">}</span>
+   <span class="token comment">//读binder</span>
+   _aidl_ret_status <span class="token operator">=</span> _aidl_data<span class="token punctuation">.</span><span class="token function">readStrongBinder</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>in_service<span class="token punctuation">)</span><span class="token punctuation">;</span>
+   <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token punctuation">(</span><span class="token punctuation">(</span>_aidl_ret_status<span class="token punctuation">)</span> <span class="token operator">!=</span> <span class="token punctuation">(</span><span class="token operator">::</span><span class="token function">android</span><span class="token operator">::</span>OK<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+     <span class="token keyword">break</span><span class="token punctuation">;</span>
+  <span class="token punctuation">}</span>
+   <span class="token comment">//读in_allowIsolated</span>
+   _aidl_ret_status <span class="token operator">=</span> _aidl_data<span class="token punctuation">.</span><span class="token function">readBool</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>in_allowIsolated<span class="token punctuation">)</span><span class="token punctuation">;</span>
+   <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token punctuation">(</span><span class="token punctuation">(</span>_aidl_ret_status<span class="token punctuation">)</span> <span class="token operator">!=</span> <span class="token punctuation">(</span><span class="token operator">::</span><span class="token function">android</span><span class="token operator">::</span>OK<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+     <span class="token keyword">break</span><span class="token punctuation">;</span>
+  <span class="token punctuation">}</span>
+   <span class="token comment">//读in_dumpPriority</span>
+   _aidl_ret_status <span class="token operator">=</span> _aidl_data<span class="token punctuation">.</span><span class="token function">readInt32</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>in_dumpPriority<span class="token punctuation">)</span><span class="token punctuation">;</span>
+   <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token punctuation">(</span><span class="token punctuation">(</span>_aidl_ret_status<span class="token punctuation">)</span> <span class="token operator">!=</span> <span class="token punctuation">(</span><span class="token operator">::</span><span class="token function">android</span><span class="token operator">::</span>OK<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+     <span class="token keyword">break</span><span class="token punctuation">;</span>
+  <span class="token punctuation">}</span>
+   <span class="token comment">//调用真正的ServiceManager.cpp中的实现</span>
+  <span class="token operator">::</span><span class="token function">android</span><span class="token operator">::</span><span class="token function">binder</span><span class="token operator">::</span><span class="token class-name">Status</span> <span class="token function">_aidl_status</span><span class="token punctuation">(</span><span class="token function">addService</span><span class="token punctuation">(</span>in_name<span class="token punctuation">,</span> in_service<span class="token punctuation">,</span> in_allowIsolated<span class="token punctuation">,</span> in_dumpPriority<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+   <span class="token comment">//如果有返回写返回到_aidl_reply</span>
+   _aidl_ret_status <span class="token operator">=</span> _aidl_status<span class="token punctuation">.</span><span class="token function">writeToParcel</span><span class="token punctuation">(</span>_aidl_reply<span class="token punctuation">)</span><span class="token punctuation">;</span>
+   <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token punctuation">(</span><span class="token punctuation">(</span>_aidl_ret_status<span class="token punctuation">)</span> <span class="token operator">!=</span> <span class="token punctuation">(</span><span class="token operator">::</span><span class="token function">android</span><span class="token operator">::</span>OK<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+     <span class="token keyword">break</span><span class="token punctuation">;</span>
+  <span class="token punctuation">}</span>
+   <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span>_aidl_status<span class="token punctuation">.</span><span class="token function">isOk</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+     <span class="token keyword">break</span><span class="token punctuation">;</span>
+  <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>和Bp端是对称的操作，下一步走到 ServiceManager.cpp::addService 方法</p> 
+<p>4.4 ServiceManager::addService</p> 
+<blockquote> 
+ <p>frameworks/native/cmds/servicemanager/ServiceManager.cpp</p> 
+</blockquote> 
+<pre><code class="prism language-java">
+<span class="token class-name">Status</span> <span class="token class-name">ServiceManager</span><span class="token operator">::</span><span class="token function">addService</span><span class="token punctuation">(</span><span class="token keyword">const</span> std<span class="token operator">::</span><span class="token function">string</span><span class="token operator">&amp;</span> name<span class="token punctuation">,</span> <span class="token keyword">const</span> sp<span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">IBinder</span><span class="token punctuation">&gt;</span></span><span class="token operator">&amp;</span> binder<span class="token punctuation">,</span> bool allowIsolated<span class="token punctuation">,</span> int32_t dumpPriority<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+   auto ctx <span class="token operator">=</span> mAccess<span class="token operator">-&gt;</span><span class="token function">getCallingContext</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+   <span class="token comment">// uid鉴权</span>
+   <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">multiuser_get_app_id</span><span class="token punctuation">(</span>ctx<span class="token punctuation">.</span>uid<span class="token punctuation">)</span> <span class="token operator">&gt;=</span> AID_APP<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+       <span class="token keyword">return</span> <span class="token class-name">Status</span><span class="token operator">::</span><span class="token function">fromExceptionCode</span><span class="token punctuation">(</span><span class="token class-name">Status</span><span class="token operator">::</span>EX_SECURITY<span class="token punctuation">)</span><span class="token punctuation">;</span>
+  <span class="token punctuation">}</span>
+   <span class="token comment">//selinux鉴权</span>
+   <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span>mAccess<span class="token operator">-&gt;</span><span class="token function">canAdd</span><span class="token punctuation">(</span>ctx<span class="token punctuation">,</span> name<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+       <span class="token keyword">return</span> <span class="token class-name">Status</span><span class="token operator">::</span><span class="token function">fromExceptionCode</span><span class="token punctuation">(</span><span class="token class-name">Status</span><span class="token operator">::</span>EX_SECURITY<span class="token punctuation">)</span><span class="token punctuation">;</span>
+  <span class="token punctuation">}</span>
+
+   <span class="token keyword">if</span> <span class="token punctuation">(</span>binder <span class="token operator">==</span> nullptr<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+       <span class="token keyword">return</span> <span class="token class-name">Status</span><span class="token operator">::</span><span class="token function">fromExceptionCode</span><span class="token punctuation">(</span><span class="token class-name">Status</span><span class="token operator">::</span>EX_ILLEGAL_ARGUMENT<span class="token punctuation">)</span><span class="token punctuation">;</span>
+  <span class="token punctuation">}</span>
+   <span class="token comment">//检查name命名</span>
+   <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span><span class="token function">isValidServiceName</span><span class="token punctuation">(</span>name<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+       <span class="token function">LOG</span><span class="token punctuation">(</span>ERROR<span class="token punctuation">)</span> <span class="token operator">&lt;&lt;</span> <span class="token string">"Invalid service name: "</span> <span class="token operator">&lt;&lt;</span> name<span class="token punctuation">;</span>
+       <span class="token keyword">return</span> <span class="token class-name">Status</span><span class="token operator">::</span><span class="token function">fromExceptionCode</span><span class="token punctuation">(</span><span class="token class-name">Status</span><span class="token operator">::</span>EX_ILLEGAL_ARGUMENT<span class="token punctuation">)</span><span class="token punctuation">;</span>
+  <span class="token punctuation">}</span>
+   <span class="token comment">//如果vndservicemanager则检查VINTF manifest</span>
+#ifndef <span class="token class-name">VENDORSERVICEMANAGER</span>
+   <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span><span class="token function">meetsDeclarationRequirements</span><span class="token punctuation">(</span>binder<span class="token punctuation">,</span> name<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+       <span class="token comment">// already logged</span>
+       <span class="token keyword">return</span> <span class="token class-name">Status</span><span class="token operator">::</span><span class="token function">fromExceptionCode</span><span class="token punctuation">(</span><span class="token class-name">Status</span><span class="token operator">::</span>EX_ILLEGAL_ARGUMENT<span class="token punctuation">)</span><span class="token punctuation">;</span>
+  <span class="token punctuation">}</span>
+#endif  <span class="token comment">// !VENDORSERVICEMANAGER</span>
+   <span class="token comment">//和rpc有关，死亡监听</span>
+   <span class="token comment">// implicitly unlinked when the binder is removed</span>
+   <span class="token keyword">if</span> <span class="token punctuation">(</span>binder<span class="token operator">-&gt;</span><span class="token function">remoteBinder</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">!=</span> nullptr <span class="token operator">&amp;&amp;</span>
+       binder<span class="token operator">-&gt;</span><span class="token function">linkToDeath</span><span class="token punctuation">(</span>sp<span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">ServiceManager</span><span class="token punctuation">&gt;</span></span><span class="token operator">::</span><span class="token function">fromExisting</span><span class="token punctuation">(</span><span class="token keyword">this</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token operator">!=</span> OK<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+       <span class="token function">LOG</span><span class="token punctuation">(</span>ERROR<span class="token punctuation">)</span> <span class="token operator">&lt;&lt;</span> <span class="token string">"Could not linkToDeath when adding "</span> <span class="token operator">&lt;&lt;</span> name<span class="token punctuation">;</span>
+       <span class="token keyword">return</span> <span class="token class-name">Status</span><span class="token operator">::</span><span class="token function">fromExceptionCode</span><span class="token punctuation">(</span><span class="token class-name">Status</span><span class="token operator">::</span>EX_ILLEGAL_STATE<span class="token punctuation">)</span><span class="token punctuation">;</span>
+  <span class="token punctuation">}</span>
+   <span class="token comment">//新增一个结构体到map中</span>
+   <span class="token comment">// Overwrite the old service if it exists</span>
+   mNameToService<span class="token punctuation">[</span>name<span class="token punctuation">]</span> <span class="token operator">=</span> <span class="token class-name">Service</span> <span class="token punctuation">{<!-- --></span>
+      <span class="token punctuation">.</span>binder <span class="token operator">=</span> binder<span class="token punctuation">,</span>
+      <span class="token punctuation">.</span>allowIsolated <span class="token operator">=</span> allowIsolated<span class="token punctuation">,</span>
+      <span class="token punctuation">.</span>dumpPriority <span class="token operator">=</span> dumpPriority<span class="token punctuation">,</span>
+      <span class="token punctuation">.</span>debugPid <span class="token operator">=</span> ctx<span class="token punctuation">.</span>debugPid<span class="token punctuation">,</span>
+  <span class="token punctuation">}</span><span class="token punctuation">;</span>
+   <span class="token comment">//架构中提到的waiteForService的跨进程</span>
+   auto it <span class="token operator">=</span> mNameToRegistrationCallback<span class="token punctuation">.</span><span class="token function">find</span><span class="token punctuation">(</span>name<span class="token punctuation">)</span><span class="token punctuation">;</span>
+   <span class="token keyword">if</span> <span class="token punctuation">(</span>it <span class="token operator">!=</span> mNameToRegistrationCallback<span class="token punctuation">.</span><span class="token function">end</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+       <span class="token keyword">for</span> <span class="token punctuation">(</span><span class="token keyword">const</span> sp<span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">IServiceCallback</span><span class="token punctuation">&gt;</span></span><span class="token operator">&amp;</span> cb <span class="token operator">:</span> it<span class="token operator">-&gt;</span>second<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+           mNameToService<span class="token punctuation">[</span>name<span class="token punctuation">]</span><span class="token punctuation">.</span>guaranteeClient <span class="token operator">=</span> <span class="token boolean">true</span><span class="token punctuation">;</span>
+           <span class="token comment">// permission checked in registerForNotifications</span>
+           cb<span class="token operator">-&gt;</span><span class="token function">onRegistration</span><span class="token punctuation">(</span>name<span class="token punctuation">,</span> binder<span class="token punctuation">)</span><span class="token punctuation">;</span>
+      <span class="token punctuation">}</span>
+  <span class="token punctuation">}</span>
+
+   <span class="token keyword">return</span> <span class="token class-name">Status</span><span class="token operator">::</span><span class="token function">ok</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<h2><a id="_522"></a>五、其他值得关注的细节</h2> 
+<p>前两节是全局总览、经典情景的视角看代码，现在我们换一个视角，展示一些边边角角的内容为上面的主干填充细节。</p> 
+<p>5.1 Servicemanager 的能力变化</p> 
+<p>Android 11 之前仅有 4 种接口暴露给应用</p> 
+<blockquote> 
+ <p>frameworks/native/libs/binder/include/binder/IServiceManager.h</p> 
+</blockquote> 
+<pre><code class="prism language-java">  <span class="token keyword">enum</span> <span class="token punctuation">{<!-- --></span>
+      GET_SERVICE_TRANSACTION <span class="token operator">=</span> <span class="token class-name">IBinder</span><span class="token operator">::</span>FIRST_CALL_TRANSACTION<span class="token punctuation">,</span>
+      CHECK_SERVICE_TRANSACTION<span class="token punctuation">,</span>
+      ADD_SERVICE_TRANSACTION<span class="token punctuation">,</span>
+      LIST_SERVICES_TRANSACTION<span class="token punctuation">,</span>
+  <span class="token punctuation">}</span><span class="token punctuation">;</span>
+</code></pre> 
+<p>而 Android 11 增加到9个，Android 12 又增加到 13 个</p> 
+<blockquote> 
+ <p>out/soong/.intermediates/frameworks/native/libs/binder/libbinder/android_arm_armv8-a_shared/gen/aidl/android/os/BnServiceManager.h</p> 
+</blockquote> 
+<pre><code class="prism language-java"><span class="token keyword">class</span> <span class="token class-name">BnServiceManager</span> <span class="token operator">:</span> <span class="token keyword">public</span> <span class="token operator">::</span><span class="token function">android</span><span class="token operator">::</span><span class="token class-name">BnInterface</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">IServiceManager</span><span class="token punctuation">&gt;</span></span> <span class="token punctuation">{<!-- --></span>
+<span class="token keyword">public</span><span class="token operator">:</span>
+ <span class="token keyword">static</span> constexpr uint32_t <span class="token class-name">TRANSACTION_getService</span> <span class="token operator">=</span> <span class="token operator">::</span><span class="token function">android</span><span class="token operator">::</span><span class="token class-name">IBinder</span><span class="token operator">::</span>FIRST_CALL_TRANSACTION <span class="token operator">+</span> <span class="token number">0</span><span class="token punctuation">;</span>
+ <span class="token keyword">static</span> constexpr uint32_t <span class="token class-name">TRANSACTION_checkService</span> <span class="token operator">=</span> <span class="token operator">::</span><span class="token function">android</span><span class="token operator">::</span><span class="token class-name">IBinder</span><span class="token operator">::</span>FIRST_CALL_TRANSACTION <span class="token operator">+</span> <span class="token number">1</span><span class="token punctuation">;</span>
+ <span class="token keyword">static</span> constexpr uint32_t <span class="token class-name">TRANSACTION_addService</span> <span class="token operator">=</span> <span class="token operator">::</span><span class="token function">android</span><span class="token operator">::</span><span class="token class-name">IBinder</span><span class="token operator">::</span>FIRST_CALL_TRANSACTION <span class="token operator">+</span> <span class="token number">2</span><span class="token punctuation">;</span>
+ <span class="token keyword">static</span> constexpr uint32_t <span class="token class-name">TRANSACTION_listServices</span> <span class="token operator">=</span> <span class="token operator">::</span><span class="token function">android</span><span class="token operator">::</span><span class="token class-name">IBinder</span><span class="token operator">::</span>FIRST_CALL_TRANSACTION <span class="token operator">+</span> <span class="token number">3</span><span class="token punctuation">;</span>
+ <span class="token keyword">static</span> constexpr uint32_t <span class="token class-name">TRANSACTION_registerForNotifications</span> <span class="token operator">=</span> <span class="token operator">::</span><span class="token function">android</span><span class="token operator">::</span><span class="token class-name">IBinder</span><span class="token operator">::</span>FIRST_CALL_TRANSACTION <span class="token operator">+</span> <span class="token number">4</span><span class="token punctuation">;</span>
+ <span class="token keyword">static</span> constexpr uint32_t <span class="token class-name">TRANSACTION_unregisterForNotifications</span> <span class="token operator">=</span> <span class="token operator">::</span><span class="token function">android</span><span class="token operator">::</span><span class="token class-name">IBinder</span><span class="token operator">::</span>FIRST_CALL_TRANSACTION <span class="token operator">+</span> <span class="token number">5</span><span class="token punctuation">;</span>
+ <span class="token keyword">static</span> constexpr uint32_t <span class="token class-name">TRANSACTION_isDeclared</span> <span class="token operator">=</span> <span class="token operator">::</span><span class="token function">android</span><span class="token operator">::</span><span class="token class-name">IBinder</span><span class="token operator">::</span>FIRST_CALL_TRANSACTION <span class="token operator">+</span> <span class="token number">6</span><span class="token punctuation">;</span>
+ <span class="token keyword">static</span> constexpr uint32_t <span class="token class-name">TRANSACTION_getDeclaredInstances</span> <span class="token operator">=</span> <span class="token operator">::</span><span class="token function">android</span><span class="token operator">::</span><span class="token class-name">IBinder</span><span class="token operator">::</span>FIRST_CALL_TRANSACTION <span class="token operator">+</span> <span class="token number">7</span><span class="token punctuation">;</span>
+ <span class="token keyword">static</span> constexpr uint32_t <span class="token class-name">TRANSACTION_updatableViaApex</span> <span class="token operator">=</span> <span class="token operator">::</span><span class="token function">android</span><span class="token operator">::</span><span class="token class-name">IBinder</span><span class="token operator">::</span>FIRST_CALL_TRANSACTION <span class="token operator">+</span> <span class="token number">8</span><span class="token punctuation">;</span>
+ <span class="token keyword">static</span> constexpr uint32_t <span class="token class-name">TRANSACTION_getConnectionInfo</span> <span class="token operator">=</span> <span class="token operator">::</span><span class="token function">android</span><span class="token operator">::</span><span class="token class-name">IBinder</span><span class="token operator">::</span>FIRST_CALL_TRANSACTION <span class="token operator">+</span> <span class="token number">9</span><span class="token punctuation">;</span>
+ <span class="token keyword">static</span> constexpr uint32_t <span class="token class-name">TRANSACTION_registerClientCallback</span> <span class="token operator">=</span> <span class="token operator">::</span><span class="token function">android</span><span class="token operator">::</span><span class="token class-name">IBinder</span><span class="token operator">::</span>FIRST_CALL_TRANSACTION <span class="token operator">+</span> <span class="token number">10</span><span class="token punctuation">;</span>
+ <span class="token keyword">static</span> constexpr uint32_t <span class="token class-name">TRANSACTION_tryUnregisterService</span> <span class="token operator">=</span> <span class="token operator">::</span><span class="token function">android</span><span class="token operator">::</span><span class="token class-name">IBinder</span><span class="token operator">::</span>FIRST_CALL_TRANSACTION <span class="token operator">+</span> <span class="token number">11</span><span class="token punctuation">;</span>
+ <span class="token keyword">static</span> constexpr uint32_t <span class="token class-name">TRANSACTION_getServiceDebugInfo</span> <span class="token operator">=</span> <span class="token operator">::</span><span class="token function">android</span><span class="token operator">::</span><span class="token class-name">IBinder</span><span class="token operator">::</span>FIRST_CALL_TRANSACTION <span class="token operator">+</span> <span class="token number">12</span><span class="token punctuation">;</span>
+</code></pre> 
+<p>从这些接口的变动我们也可以很清晰地把握住 servicemanager 的前进方向</p> 
+<p>5.2 DO_NOT_DIRECTLY_USE_ME_IMPLEMENT_META_INTERFACE</p> 
+<blockquote> 
+ <p>frameworks/native/libs/binder/include/binder/IInterface.h</p> 
+</blockquote> 
+<pre><code class="prism language-java">#define <span class="token function">IMPLEMENT_META_INTERFACE</span><span class="token punctuation">(</span>INTERFACE<span class="token punctuation">,</span> NAME<span class="token punctuation">)</span>                       \
+   <span class="token function">static_assert</span><span class="token punctuation">(</span>internal<span class="token operator">::</span><span class="token function">allowedManualInterface</span><span class="token punctuation">(</span>NAME<span class="token punctuation">)</span><span class="token punctuation">,</span>               \
+                 <span class="token string">"b/64223827: Manually written binder interfaces are "</span> \
+                 <span class="token string">"considered error prone and frequently have bugs. "</span>   \
+                 <span class="token string">"The preferred way to add interfaces is to define "</span>   \
+                 <span class="token string">"an .aidl file to auto-generate the interface. If "</span>   \
+                 <span class="token string">"an interface must be manually written, add its "</span>     \
+                 <span class="token string">"name to the whitelist."</span><span class="token punctuation">)</span><span class="token punctuation">;</span>                           \
+   <span class="token function">DO_NOT_DIRECTLY_USE_ME_IMPLEMENT_META_INTERFACE</span><span class="token punctuation">(</span>INTERFACE<span class="token punctuation">,</span> NAME<span class="token punctuation">)</span>   \
+<span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">-</span>
+constexpr <span class="token keyword">const</span> <span class="token keyword">char</span><span class="token operator">*</span> <span class="token keyword">const</span> kManualInterfaces<span class="token punctuation">[</span><span class="token punctuation">]</span> <span class="token operator">=</span> <span class="token punctuation">{<!-- --></span>
+ <span class="token string">"android.app.IActivityManager"</span><span class="token punctuation">,</span>
+ <span class="token string">"android.app.IUidObserver"</span><span class="token punctuation">,</span>
+ <span class="token string">"android.drm.IDrm"</span><span class="token punctuation">,</span>
+ <span class="token string">"android.dvr.IVsyncCallback"</span><span class="token punctuation">,</span>
+ <span class="token string">"android.dvr.IVsyncService"</span><span class="token punctuation">,</span>
+ <span class="token string">"android.gfx.tests.ICallback"</span><span class="token punctuation">,</span>
+ <span class="token string">"android.gfx.tests.IIPCTest"</span><span class="token punctuation">,</span>
+<span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+</code></pre> 
+<p>以后手写的 native 服务需要关注下这个宏，做了限制。谷歌建议是现在的 native服务都用 aidl，别手写</p> 
+<p>5.3 String16、String8 与 name</p> 
+<p>aidl 改造之前，都是一路 String16 从客户端传到服务端，而现在需要绕一些路了。还是以 addService 为例</p> 
+<pre><code class="prism language-java">status_t <span class="token class-name">ServiceManagerShim</span><span class="token operator">::</span><span class="token function">addService</span><span class="token punctuation">(</span><span class="token keyword">const</span> <span class="token class-name">String16</span><span class="token operator">&amp;</span> name<span class="token punctuation">,</span><span class="token punctuation">)</span><span class="token punctuation">{<!-- --></span>
+   <span class="token class-name">Status</span> status <span class="token operator">=</span> mTheRealServiceManager<span class="token operator">-&gt;</span><span class="token function">addService</span><span class="token punctuation">(</span>
+       <span class="token class-name">String8</span><span class="token punctuation">(</span>name<span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">c_str</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token punctuation">)</span><span class="token punctuation">;</span>
+在这里转一次，<span class="token number">16</span>转成<span class="token number">8</span>
+<span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span>
+_aidl_ret_status <span class="token operator">=</span> _aidl_data<span class="token punctuation">.</span><span class="token function">writeUtf8AsUtf16</span><span class="token punctuation">(</span>name<span class="token punctuation">)</span><span class="token punctuation">;</span>
+在<span class="token class-name">BpServiceManager</span>里又转了一次，<span class="token number">8</span>转<span class="token number">16</span>
+<span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span>
+_aidl_ret_status <span class="token operator">=</span> _aidl_data<span class="token punctuation">.</span><span class="token function">readUtf8FromUtf16</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>in_name<span class="token punctuation">)</span><span class="token punctuation">;</span>
+现在来到<span class="token class-name">BnServiceManager</span>继续转，<span class="token number">16</span>转<span class="token number">8</span>
+</code></pre> 
+<p>转来转去快晕了。总结就是，SM 服务端都是操作的 utf8，而 libbinder 客户端都是 utf16。有修改的话需要注意下编码问题</p> 
+<p>也可能是由于这个转换问题，在服务端加了个服务名检查</p> 
+<pre><code class="prism language-java">bool <span class="token function">isValidServiceName</span><span class="token punctuation">(</span><span class="token keyword">const</span> std<span class="token operator">::</span><span class="token function">string</span><span class="token operator">&amp;</span> name<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+   <span class="token keyword">if</span> <span class="token punctuation">(</span>name<span class="token punctuation">.</span><span class="token function">size</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">==</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token keyword">return</span> <span class="token boolean">false</span><span class="token punctuation">;</span>
+   <span class="token keyword">if</span> <span class="token punctuation">(</span>name<span class="token punctuation">.</span><span class="token function">size</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">&gt;</span> <span class="token number">127</span><span class="token punctuation">)</span> <span class="token keyword">return</span> <span class="token boolean">false</span><span class="token punctuation">;</span>
+
+   <span class="token keyword">for</span> <span class="token punctuation">(</span><span class="token keyword">char</span> c <span class="token operator">:</span> name<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+       <span class="token keyword">if</span> <span class="token punctuation">(</span>c <span class="token operator">==</span> <span class="token string">'_'</span> <span class="token operator">||</span> c <span class="token operator">==</span> <span class="token string">'-'</span> <span class="token operator">||</span> c <span class="token operator">==</span> <span class="token string">'.'</span> <span class="token operator">||</span> c <span class="token operator">==</span> <span class="token string">'/'</span><span class="token punctuation">)</span> <span class="token keyword">continue</span><span class="token punctuation">;</span>
+       <span class="token keyword">if</span> <span class="token punctuation">(</span>c <span class="token operator">&gt;=</span> <span class="token string">'a'</span> <span class="token operator">&amp;&amp;</span> c <span class="token operator">&lt;=</span> <span class="token string">'z'</span><span class="token punctuation">)</span> <span class="token keyword">continue</span><span class="token punctuation">;</span>
+       <span class="token keyword">if</span> <span class="token punctuation">(</span>c <span class="token operator">&gt;=</span> <span class="token string">'A'</span> <span class="token operator">&amp;&amp;</span> c <span class="token operator">&lt;=</span> <span class="token string">'Z'</span><span class="token punctuation">)</span> <span class="token keyword">continue</span><span class="token punctuation">;</span>
+       <span class="token keyword">if</span> <span class="token punctuation">(</span>c <span class="token operator">&gt;=</span> <span class="token string">'0'</span> <span class="token operator">&amp;&amp;</span> c <span class="token operator">&lt;=</span> <span class="token string">'9'</span><span class="token punctuation">)</span> <span class="token keyword">continue</span><span class="token punctuation">;</span>
+       <span class="token keyword">return</span> <span class="token boolean">false</span><span class="token punctuation">;</span>
+  <span class="token punctuation">}</span>
+
+   <span class="token keyword">return</span> <span class="token boolean">true</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>5.4 服务保存的数据结构</p> 
+<p>SM 需要保存服务及其对应的信息，Android 11 前用的链表 svc_list，成员是 svc_info 结构体；Android 11 后用的 map，成员也是结构体</p> 
+<blockquote> 
+ <p>frameworks/native/cmds/servicemanager/ServiceManager.h</p> 
+</blockquote> 
+<pre><code class="prism language-java">   struct <span class="token class-name">Service</span> <span class="token punctuation">{<!-- --></span>
+       sp<span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">IBinder</span><span class="token punctuation">&gt;</span></span> binder<span class="token punctuation">;</span> <span class="token comment">// not null</span>
+       bool allowIsolated<span class="token punctuation">;</span>
+       int32_t dumpPriority<span class="token punctuation">;</span>
+       bool hasClients <span class="token operator">=</span> <span class="token boolean">false</span><span class="token punctuation">;</span> <span class="token comment">// notifications sent on true -&gt; false.</span>
+       bool guaranteeClient <span class="token operator">=</span> <span class="token boolean">false</span><span class="token punctuation">;</span> <span class="token comment">// forces the client check to true</span>
+       pid_t debugPid <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span> <span class="token comment">// the process in which this service runs</span>
+
+       <span class="token comment">// the number of clients of the service, including servicemanager itself</span>
+       ssize_t <span class="token function">getNodeStrongRefCount</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+  <span class="token punctuation">}</span><span class="token punctuation">;</span>
+   using <span class="token class-name">ServiceMap</span> <span class="token operator">=</span> std<span class="token operator">::</span><span class="token function">map</span><span class="token operator">&lt;</span>std<span class="token operator">::</span><span class="token function">string</span><span class="token punctuation">,</span> <span class="token class-name">Service</span><span class="token operator">&gt;</span><span class="token punctuation">;</span>
+   <span class="token class-name">ServiceMap</span> mNameToService<span class="token punctuation">;</span>
+</code></pre> 
+<p>这个 Service 结构体有了更多的信息和能力，getNodeStrongRefCount() 方法可以获取该服务有多少个客户端</p> 
+<p>5.5 listServices 返回值</p> 
+<p>Android 11 之前的实现是客户端循环 checkService，Android 11 之后是直接返回的是 std::vector</p> 
+<ul><li>客户端</li></ul> 
+<blockquote> 
+ <p>frameworks/native/libs/binder/IServiceManager.cpp</p> 
+</blockquote> 
+<pre><code class="prism language-java"><span class="token class-name">Vector</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">String16</span><span class="token punctuation">&gt;</span></span> <span class="token class-name">ServiceManagerShim</span><span class="token operator">::</span><span class="token function">listServices</span><span class="token punctuation">(</span><span class="token keyword">int</span> dumpsysPriority<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+   std<span class="token operator">::</span><span class="token function">vector</span><span class="token operator">&lt;</span>std<span class="token operator">::</span><span class="token function">string</span><span class="token operator">&gt;</span> ret<span class="token punctuation">;</span>
+   <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span>mTheRealServiceManager<span class="token operator">-&gt;</span><span class="token function">listServices</span><span class="token punctuation">(</span>dumpsysPriority<span class="token punctuation">,</span> <span class="token operator">&amp;</span>ret<span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">isOk</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+       <span class="token keyword">return</span> <span class="token punctuation">{<!-- --></span><span class="token punctuation">}</span><span class="token punctuation">;</span>
+  <span class="token punctuation">}</span>
+
+   <span class="token class-name">Vector</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">String16</span><span class="token punctuation">&gt;</span></span> res<span class="token punctuation">;</span>
+   res<span class="token punctuation">.</span><span class="token function">setCapacity</span><span class="token punctuation">(</span>ret<span class="token punctuation">.</span><span class="token function">size</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+   <span class="token keyword">for</span> <span class="token punctuation">(</span><span class="token keyword">const</span> std<span class="token operator">::</span><span class="token function">string</span><span class="token operator">&amp;</span> name <span class="token operator">:</span> ret<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+       res<span class="token punctuation">.</span><span class="token function">push</span><span class="token punctuation">(</span><span class="token class-name">String16</span><span class="token punctuation">(</span>name<span class="token punctuation">.</span><span class="token function">c_str</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+  <span class="token punctuation">}</span>
+   <span class="token keyword">return</span> res<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<ul><li>服务端</li></ul> 
+<blockquote> 
+ <p>frameworks/native/cmds/servicemanager/ServiceManager.cpp</p> 
+</blockquote> 
+<pre><code class="prism language-java"><span class="token class-name">Status</span> <span class="token class-name">ServiceManager</span><span class="token operator">::</span><span class="token function">listServices</span><span class="token punctuation">(</span>int32_t dumpPriority<span class="token punctuation">,</span> std<span class="token operator">::</span><span class="token function">vector</span><span class="token operator">&lt;</span>std<span class="token operator">::</span><span class="token function">string</span><span class="token operator">&gt;</span><span class="token operator">*</span> outList<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+   size_t toReserve <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+   <span class="token keyword">for</span> <span class="token punctuation">(</span>auto <span class="token keyword">const</span><span class="token operator">&amp;</span> <span class="token punctuation">[</span>name<span class="token punctuation">,</span> service<span class="token punctuation">]</span> <span class="token operator">:</span> mNameToService<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+      <span class="token punctuation">(</span><span class="token keyword">void</span><span class="token punctuation">)</span> name<span class="token punctuation">;</span>
+
+       <span class="token keyword">if</span> <span class="token punctuation">(</span>service<span class="token punctuation">.</span>dumpPriority <span class="token operator">&amp;</span> dumpPriority<span class="token punctuation">)</span> <span class="token operator">++</span>toReserve<span class="token punctuation">;</span>
+  <span class="token punctuation">}</span>
+
+   outList<span class="token operator">-&gt;</span><span class="token function">reserve</span><span class="token punctuation">(</span>toReserve<span class="token punctuation">)</span><span class="token punctuation">;</span>
+   <span class="token keyword">for</span> <span class="token punctuation">(</span>auto <span class="token keyword">const</span><span class="token operator">&amp;</span> <span class="token punctuation">[</span>name<span class="token punctuation">,</span> service<span class="token punctuation">]</span> <span class="token operator">:</span> mNameToService<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+      <span class="token punctuation">(</span><span class="token keyword">void</span><span class="token punctuation">)</span> service<span class="token punctuation">;</span>
+
+       <span class="token keyword">if</span> <span class="token punctuation">(</span>service<span class="token punctuation">.</span>dumpPriority <span class="token operator">&amp;</span> dumpPriority<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+           outList<span class="token operator">-&gt;</span><span class="token function">push_back</span><span class="token punctuation">(</span>name<span class="token punctuation">)</span><span class="token punctuation">;</span>
+      <span class="token punctuation">}</span>
+  <span class="token punctuation">}</span>
+</code></pre> 
+<p>这里也可以看到字符编码的问题，客户端用的是 utf16，而服务端用的是 utf8</p> 
+<ul><li>顺便提一嘴 dumpsys 的画蛇添足的修改</li></ul> 
+<blockquote> 
+ <p>frameworks/native/cmds/dumpsys/dumpsys.cpp</p> 
+</blockquote> 
+<pre><code class="prism language-java">    <span class="token keyword">if</span> <span class="token punctuation">(</span>services<span class="token punctuation">.</span><span class="token function">empty</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">||</span> showListOnly<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        services <span class="token operator">=</span> <span class="token function">listServices</span><span class="token punctuation">(</span>priorityFlags<span class="token punctuation">,</span> asProto<span class="token punctuation">)</span><span class="token punctuation">;</span>                                                                        
+<span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token class-name">N</span> <span class="token operator">&gt;</span> <span class="token number">1</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">for</span> <span class="token punctuation">(</span>size_t i<span class="token operator">=</span><span class="token number">0</span><span class="token punctuation">;</span> i<span class="token operator">&lt;</span><span class="token class-name">N</span><span class="token punctuation">;</span> i<span class="token operator">++</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            sp<span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">IBinder</span><span class="token punctuation">&gt;</span></span> service <span class="token operator">=</span> sm_<span class="token operator">-&gt;</span><span class="token function">checkService</span><span class="token punctuation">(</span>services<span class="token punctuation">[</span>i<span class="token punctuation">]</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+</code></pre> 
+<p>获取到服务列表后为什么再循环 check 一遍呢？我感觉是没有必要的。</p> 
+<p>5.6 waitForService 与 IServiceCallback.aidl</p> 
+<p>利用了匿名 binder 来传递回调，有兴趣可以自己看看</p> 
+<ul><li>回调注册</li></ul> 
+<blockquote> 
+ <p>frameworks/native/libs/binder/IServiceManager.cpp</p> 
+</blockquote> 
+<pre><code class="prism language-java">sp<span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">IBinder</span><span class="token punctuation">&gt;</span></span> <span class="token class-name">ServiceManagerShim</span><span class="token operator">::</span><span class="token function">waitForService</span><span class="token punctuation">(</span><span class="token keyword">const</span> <span class="token class-name">String16</span><span class="token operator">&amp;</span> name16<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+ <span class="token keyword">class</span> <span class="token class-name">Waiter</span> <span class="token operator">:</span> <span class="token keyword">public</span> android<span class="token operator">::</span><span class="token function">os</span><span class="token operator">::</span><span class="token class-name">BnServiceCallback</span> <span class="token punctuation">{<!-- --></span>
+       <span class="token class-name">Status</span> <span class="token function">onRegistration</span><span class="token punctuation">(</span><span class="token keyword">const</span> std<span class="token operator">::</span><span class="token function">string</span><span class="token operator">&amp;</span> <span class="token comment">/*name*/</span><span class="token punctuation">,</span>
+                             <span class="token keyword">const</span> sp<span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">IBinder</span><span class="token punctuation">&gt;</span></span><span class="token operator">&amp;</span> binder<span class="token punctuation">)</span> override <span class="token punctuation">{<!-- --></span>
+<span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+    sp<span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">Waiter</span><span class="token punctuation">&gt;</span></span> waiter <span class="token operator">=</span> sp<span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">Waiter</span><span class="token punctuation">&gt;</span></span><span class="token operator">::</span><span class="token function">make</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token class-name">Status</span> status <span class="token operator">=</span> mTheRealServiceManager<span class="token operator">-&gt;</span><span class="token function">registerForNotifications</span><span class="token punctuation">(</span>name<span class="token punctuation">,</span> waiter<span class="token punctuation">)</span><span class="token punctuation">;</span>
+</code></pre> 
+<ul><li>回调响应</li></ul> 
+<blockquote> 
+ <p>frameworks/native/cmds/servicemanager/ServiceManager.cpp</p> 
+</blockquote> 
+<pre><code class="prism language-java"><span class="token class-name">Status</span> <span class="token class-name">ServiceManager</span><span class="token operator">::</span><span class="token function">addService</span><span class="token punctuation">(</span><span class="token keyword">const</span> std<span class="token operator">::</span><span class="token function">string</span><span class="token operator">&amp;</span> name<span class="token punctuation">,</span> <span class="token keyword">const</span> sp<span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">IBinder</span><span class="token punctuation">&gt;</span></span><span class="token operator">&amp;</span> binder<span class="token punctuation">,</span> bool allowIsolated<span class="token punctuation">,</span> int32_t dumpPriority<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+auto it <span class="token operator">=</span> mNameToRegistrationCallback<span class="token punctuation">.</span><span class="token function">find</span><span class="token punctuation">(</span>name<span class="token punctuation">)</span><span class="token punctuation">;</span>
+   <span class="token keyword">if</span> <span class="token punctuation">(</span>it <span class="token operator">!=</span> mNameToRegistrationCallback<span class="token punctuation">.</span><span class="token function">end</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+       <span class="token keyword">for</span> <span class="token punctuation">(</span><span class="token keyword">const</span> sp<span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">IServiceCallback</span><span class="token punctuation">&gt;</span></span><span class="token operator">&amp;</span> cb <span class="token operator">:</span> it<span class="token operator">-&gt;</span>second<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+           mNameToService<span class="token punctuation">[</span>name<span class="token punctuation">]</span><span class="token punctuation">.</span>guaranteeClient <span class="token operator">=</span> <span class="token boolean">true</span><span class="token punctuation">;</span>
+           <span class="token comment">// permission checked in registerForNotifications</span>
+           cb<span class="token operator">-&gt;</span><span class="token function">onRegistration</span><span class="token punctuation">(</span>name<span class="token punctuation">,</span> binder<span class="token punctuation">)</span><span class="token punctuation">;</span>
+      <span class="token punctuation">}</span>
+  <span class="token punctuation">}</span>
+</code></pre> 
+<ul><li>aidl 及其生成的代码位置</li></ul> 
+<blockquote> 
+ <p>frameworks/native/libs/binder/aidl/android/os/IServiceCallback.aidl</p> 
+ <p>out/soong/.intermediates/frameworks/native/libs/binder/libbinder/android_arm_armv8-a_shared/gen/aidl/android/os/IServiceCallback.cpp</p> 
+</blockquote> 
+<p>5.7 IClientCallback.aidl</p> 
+<p>IServiceManager.aidl 中定义的接口，都是在#include &lt;binder/IServiceManager.h&gt;吗？答案为否。IClientCallback 就是这样一个例子</p> 
+<p>想用 registerClientCallback 方法注册回调，需要直接使用#include &lt;android/os/IServiceManager.h&gt;拿到 BpServiceManager 实例，来通信</p> 
+<p>这个接口没有暴露在 libbinder 的 IServiceManager 中</p> 
+<p>这个回调用于监听某个服务有 client，和 IServiceCallback.aidl 一样是匿名 binder服务，一个例子 LazyServiceRegistrar.cpp，可自行了解。</p> 
+<p>代码路径</p> 
+<blockquote> 
+ <p>frameworks/native/libs/binder/aidl/android/os/IClientCallback.aidl</p> 
+ <p>frameworks/native/libs/binder/LazyServiceRegistrar.cpp</p> 
+ <p>out/soong/.intermediates/frameworks/native/libs/binder/libbinder/android_arm_armv8-a_shared/gen/aidl/android/os/IClientCallback.cpp</p> 
+ <p>frameworks/native/cmds/servicemanager/ServiceManager.cpp</p> 
+</blockquote> 
+<h2><a id="_781"></a>六、总结</h2> 
+<ul><li>SM 经过 aidl 和 libbinder 改造后，对于开发者来说，修改会更加规范和省心</li><li>新引入的特性展示了 SM 功能更多的可能性，可为特定需求提供思路，native aidl和匿名 binder 回调值得学习</li></ul>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/8dd9387daef962de1221cce407583a93/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">Go操作Redis</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/85c6c1a88665963a09946ebac293fa17/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">我理解的前端发展方向</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

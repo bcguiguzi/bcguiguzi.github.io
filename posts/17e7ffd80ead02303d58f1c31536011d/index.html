@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Docker容器跨主机通讯的几种方式 - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="Docker容器跨主机通讯的几种方式" />
+<meta property="og:description" content="Docker容器跨主机通讯的几种方式 前言：Docker的5种网络模式BridgeHostNoneContainerNetwork 1. 直接路由方式2. 基于OVS&#43;GRE的大二层通信 前言：Docker的5种网络模式 Bridge 此时docker引擎会创建一个veth对，一端连接到容器实例并命名为eth0，另一端连接到指定的网桥中（比如docker0），因此同在一个主机的容器实例由于连接在同一个网桥中，它们能够互相通信。容器创建时还会自动创建一条SNAT规则，用于容器与外部通信时，类似家里上网用的ISP提供给我们的动态IP。如果用户使用了-p或者-P端口，还会创建对应的端口映射规则，使得外部请求能够访问容器的服务，但是你不能通过IP直接访问，本文提供了3种方式实现容器的跨主机访问。
+Host 与宿主机共享网络，此时容器没有使用网络的namespace，宿主机的所有设备，会暴露到容器中，因此存在安全隐患。
+None 不设置网络，相当于容器内没有配置网卡，用户可以手动配置。
+Container 指定与某个容器实例共享网络
+Network 使用自定义网络，可以使用docker network create创建，并且默认支持多种网络驱动，用户可以自由创建桥接网络或者overlay网络。
+Prework：
+安装Docker安装OVS（非编译）
+apt-get install openvswitch-switch编译安装OVS： apt-get install git apt-get install autoconf automake libtool apt-get install openssl apt-get install libssl-dev apt-get install make apt-get install make-guile apt-get install python-six 获取代码：
+git clone https://github.com/openvswitch/ovs.git
+编译操作：
+cd ovs ./boot.sh ./configure make make install 加载模块
+/sbin/modprobe openvswitch
+查看安装是否成功：
+/sbin/lsmod | grep openvswitch
+修改环境变量：
+export PATH=$PATH:/usr/local/share/openvswitch/scripts" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/17e7ffd80ead02303d58f1c31536011d/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2018-10-16T17:46:15+08:00" />
+<meta property="article:modified_time" content="2018-10-16T17:46:15+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Docker容器跨主机通讯的几种方式</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p></p> 
+<div class="toc"> 
+ <h4>Docker容器跨主机通讯的几种方式</h4> 
+ <ul><li><a href="#Docker5_3" rel="nofollow">前言：Docker的5种网络模式</a></li><li><ul><li><a href="#Bridge_5" rel="nofollow">Bridge</a></li><li><a href="#Host_7" rel="nofollow">Host</a></li><li><a href="#None_9" rel="nofollow">None</a></li><li><a href="#Container_11" rel="nofollow">Container</a></li><li><a href="#Network_13" rel="nofollow">Network</a></li></ul> 
+  </li><li><a href="#1__51" rel="nofollow">1. 直接路由方式</a></li><li><a href="#2_OVSGRE_66" rel="nofollow">2. 基于OVS+GRE的大二层通信</a></li></ul> 
+</div> 
+<p></p> 
+<hr> 
+<h2><a id="Docker5_3"></a>前言：Docker的5种网络模式</h2> 
+<h3><a id="Bridge_5"></a>Bridge</h3> 
+<p>此时docker引擎会创建一个veth对，一端连接到容器实例并命名为eth0，另一端连接到指定的网桥中（比如docker0），因此同在一个主机的容器实例由于连接在同一个网桥中，它们能够互相通信。容器创建时还会自动创建一条SNAT规则，用于容器与外部通信时，类似家里上网用的ISP提供给我们的动态IP。如果用户使用了-p或者-P端口，还会创建对应的端口映射规则，使得外部请求能够访问容器的服务，但是你不能通过IP直接访问，本文提供了3种方式实现容器的跨主机访问。</p> 
+<h3><a id="Host_7"></a>Host</h3> 
+<p>与宿主机共享网络，此时容器没有使用网络的namespace，宿主机的所有设备，会暴露到容器中，因此存在安全隐患。</p> 
+<h3><a id="None_9"></a>None</h3> 
+<p>不设置网络，相当于容器内没有配置网卡，用户可以手动配置。</p> 
+<h3><a id="Container_11"></a>Container</h3> 
+<p>指定与某个容器实例共享网络</p> 
+<h3><a id="Network_13"></a>Network</h3> 
+<p>使用自定义网络，可以使用docker network create创建，并且默认支持多种网络驱动，用户可以自由创建桥接网络或者overlay网络。</p> 
+<p>Prework：</p> 
+<ol><li><a href="https://docs.docker.com/install/linux/docker-ce/ubuntu/" rel="nofollow">安装Docker</a></li><li>安装OVS（非编译）<br> <code>apt-get install openvswitch-switch</code></li><li>编译安装OVS：</li></ol> 
+<pre><code>	apt-get install git
+	apt-get install autoconf automake libtool
+	apt-get install openssl
+	apt-get install libssl-dev
+	apt-get install make
+	apt-get install make-guile
+	apt-get install python-six
+</code></pre> 
+<p>获取代码：<br> <code>git clone https://github.com/openvswitch/ovs.git</code></p> 
+<p>编译操作：</p> 
+<pre><code>	cd ovs
+	./boot.sh
+	./configure
+	make
+	make install
+</code></pre> 
+<p>加载模块<br> <code>/sbin/modprobe openvswitch</code><br> 查看安装是否成功：<br> <code>/sbin/lsmod | grep openvswitch</code><br> 修改环境变量：<br> <code>export PATH=$PATH:/usr/local/share/openvswitch/scripts</code></p> 
+<hr> 
+<h2><a id="1__51"></a>1. 直接路由方式</h2> 
+<p>这种方式最简单，只需一步：在左侧本机增加一个静态路由。<br> <code>ip route add 172.17.42.0/24 via 172.31.4.143</code></p> 
+<p>在右侧主机新增一条静态路由：<br> <code>ip route add 172.17.43.0/24 via 172.31.15.168</code></p> 
+<p>当然前提是，docker0 网桥的网段改掉，参照下图的方式，同时需要提醒的是，需要把本机的路由转发打开。</p> 
+<ul><li>ubuntu的话：<br> 修改 <strong>/etc/sysctl.conf</strong>，把ip_forward = 1 的注释去掉即可</li><li>centos的话：<br> 修改 <strong>/etc/sysctl.d/99-sysctl.conf</strong><br> 添加net.ipv4.ip_forward = 1，然后试试sysctl -p<br> 很简单的方式，其实很像flannel网络的Host-Gateway的原理</li></ul> 
+<h2><a id="2_OVSGRE_66"></a>2. 基于OVS+GRE的大二层通信</h2> 
+<p>示意图如下：<br> <img src="https://images2.imgbox.com/99/41/n19RipWc_o.jpg" alt="在这里插入图片描述"></p> 
+<ul><li> <p>修改Docker0的网络地址</p> 
+  <ol><li>编辑主机1上的 /etc/docker/daemon.json 文件，添加内容：<br> <code>{ "bip": "172.17.43.1/24" }</code></li><li>编辑主机2上的 /etc/docker/daemon.json 文件，添加内容：<br> <code>{ "bip":"172.17.42.1/24" }</code></li></ol> </li><li> <p>重启docker服务</p> <p>主机1和主机2上均执行如下命令重启docker服务以使修改后的docker0网段生效<br> <code>systemctl restart docker</code></p> </li><li> <p>创建ovs bridge</p> <pre><code>ovs-vsctl add-br br0 
+ifconfig 
+</code></pre> <p>通过ifconfig命令，我们发现多了一个br0网桥。</p> </li><li> <p>设置gre端口 (主机2上面也一样，只是remote_ip为172.31.15.168)</p> <pre><code>ovs-vsctl add-port br0 gre0 – set Interface gre0 type=gre option:remote_ip=172.31.4.143
+brctl addif docker0 br0 
+ip link set dev br0 up 
+ip link set dev docker0 up 
+ip route add 172.17.0.0/16 dev docker0
+</code></pre> </li><li> <p>启动容器测试下<br> <code>docker run -it nginx /bin/bash</code><br> <img src="https://images2.imgbox.com/92/16/B5TP5K7D_o.png" alt="在这里插入图片描述"></p> </li></ul> 
+<p>显示两个跨主机容器能互相ping通。</p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/d96c9b0dda0b33762cf0798b8573f594/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">面试必备的经典SQL语句大全</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/bdb14eb5e25aa7c4c152292de31fbec2/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">经典数字游戏——数独（Sudoku）解法的Python代码实现</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

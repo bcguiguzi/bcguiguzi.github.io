@@ -1,0 +1,671 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>【重识云原生】第2.5节——商用云主机方案 - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="【重识云原生】第2.5节——商用云主机方案" />
+<meta property="og:description" content="上一节内容《【重识云原生】第2.4节——主流虚拟化技术之KVM》
+三、商用云主机解决方案 在大规模商用云主机解决方案中，目前头部厂商大部分是基于KVM来实现各自云主机的虚拟化方案。不过虚拟化技术如果要大规模商用，仅有KVM还不够。上述ESXi、Xen、KVM等虚拟化技术方案，均聚焦于单宿主机级别的资源虚拟化实现，而面向整个数据中心规模的大型计算资源的虚拟化，除了解决单宿主机虚拟化问题，还需要大型分布式资源调度系统来真正实现计算资源的全局调度、部署交付、运维管控。云计算行业经过年发展，确实也先后产生了多种分布式调度实现方案，比较知名的有 Hadoop YARN、Mesos、阿里伏羲、Google Borg、Kubernetes等。
+3.1 调度系统架构演进简述 Google 和 UC Berkeley 提出的调度系统的架构演进分类，分为统一调度架构、两级调度架构和共享状态调度架构。
+三类调度架构 1. 统一调度架构
+如上图所示，左侧的架构即为统一调度架构，下方是集群的宿主机；中间是集群状态信息，用于保存宿主机的资源状态；上方是统一的调度器，负责接收调度请求，并在集群状态信息的基础上进行调度决策。许多调度系统最初都被设计为这种架构，例如第一代 Hadoop MapReduce。
+这种架构，设计简单，可以便捷的保持资源数据一致性，但是当宿主机规模增大时，调度器处理单次资源调度请求的时间会开始增加。当资源调度请求增大到一定程度时，调度器的吞吐量不足，调度请求开始排队，造成任务阻塞积压。
+2. 两级调度架构
+两级调度系统，其典型代表是 Mesos。Mesos Master 通过 Resource Offer 的形式和上层 Framework 的调度器进行资源通信。在灵活性上和并发性上有了一定的改善。但是仍然存在局限性。
+缺乏全局资源视图。上层调度器只能在分配给它的 Resource Offer 的范围内进行调度，相当于只有子集资源视图，没有全局资源视图，无法保证调度决策全局最优。特别是在需要抢占的情况下，无法实现跨调度器抢占，例如公有云中竞价实例的场景。
+并发度仍然受限，Resource Offer 机制本质上是在不同的 Framework 之间进行串行轮询，相当于悲观加锁并发控制，并发度仍然有提升空间。
+和 Mesos 同时期的 Hadoop YARN 是另一款著名的分布式调度系统，其类型划分一直存在争议。Hadoop YARN 的支持者[3]表示 YARN 是一款两级调度系统，而 Google 系的研究成果则通常认为 YARN 属于统一调度架构。我们更加认同 Google 的看法，认为 YARN 属于统一调度架构。
+统一调度、两级调度、共享调度是 Omega 提出的分类方法，这里的调度是指为任务分配资源，而不是处理任务间的关系。在这个前提下，Hadoop YARN 的调度过程是由 Resource Manager 完成的，而 Application Master 主要负责任务间关系的管理工作，并未实际参与调度过程。因此，Hadoop YARN 属于统一调度架构。" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/bee0f53e09810c15c38494d4c33f8a63/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2022-03-17T20:57:18+08:00" />
+<meta property="article:modified_time" content="2022-03-17T20:57:18+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">【重识云原生】第2.5节——商用云主机方案</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <div style="font-size: 16px;"> 
+ <article class="_2rhmJa"> 
+  <p>上一节内容<a href="https://www.jianshu.com/p/8bab4bf96564" rel="nofollow noopener noreferrer" target="_blank">《【重识云原生】第2.4节——主流虚拟化技术之KVM》</a></p> 
+  <div class="image-package"> 
+   <div class="image-container"> 
+    <div class="image-view" style="text-align: center;"> 
+     <img src="https://images2.imgbox.com/2c/df/XoupHW7D_o.png" style="outline: none;"> 
+    </div> 
+   </div> 
+  </div> 
+  <h2>三、商用云主机解决方案</h2> 
+  <p>        在大规模商用云主机解决方案中，目前头部厂商大部分是基于KVM来实现各自云主机的虚拟化方案。不过虚拟化技术如果要大规模商用，仅有KVM还不够。上述ESXi、Xen、KVM等虚拟化技术方案，均聚焦于单宿主机级别的资源虚拟化实现，而面向整个数据中心规模的大型计算资源的虚拟化，除了解决单宿主机虚拟化问题，还需要大型分布式资源调度系统来真正实现计算资源的全局调度、部署交付、运维管控。云计算行业经过年发展，确实也先后产生了多种分布式调度实现方案，比较知名的有 Hadoop YARN、Mesos、阿里伏羲、Google Borg、Kubernetes等。</p> 
+  <h3>3.1 调度系统架构演进简述</h3> 
+  <p>        Google 和 UC Berkeley 提出的调度系统的架构演进分类，分为统一调度架构、两级调度架构和共享状态调度架构。</p> 
+  <div class="image-package"> 
+   <div class="image-container"> 
+    <div class="image-view" style="text-align: center;"> 
+     <img src="https://images2.imgbox.com/25/54/vZmFnn9A_o.png" style="outline: none;"> 
+    </div> 
+   </div> 
+   <div class="image-caption">
+     三类调度架构 
+   </div> 
+  </div> 
+  <p>1. 统一调度架构</p> 
+  <p>如上图所示，左侧的架构即为统一调度架构，下方是集群的宿主机；中间是集群状态信息，用于保存宿主机的资源状态；上方是统一的调度器，负责接收调度请求，并在集群状态信息的基础上进行调度决策。许多调度系统最初都被设计为这种架构，例如第一代 Hadoop MapReduce。</p> 
+  <p>这种架构，设计简单，可以便捷的保持资源数据一致性，但是当宿主机规模增大时，调度器处理单次资源调度请求的时间会开始增加。当资源调度请求增大到一定程度时，调度器的吞吐量不足，调度请求开始排队，造成任务阻塞积压。</p> 
+  <p>2. 两级调度架构</p> 
+  <p>        两级调度系统，其典型代表是 Mesos。Mesos Master 通过 Resource Offer 的形式和上层 Framework 的调度器进行资源通信。在灵活性上和并发性上有了一定的改善。但是仍然存在局限性。</p> 
+  <p>        缺乏全局资源视图。上层调度器只能在分配给它的 Resource Offer 的范围内进行调度，相当于只有子集资源视图，没有全局资源视图，无法保证调度决策全局最优。特别是在需要抢占的情况下，无法实现跨调度器抢占，例如公有云中竞价实例的场景。</p> 
+  <p>        并发度仍然受限，Resource Offer 机制本质上是在不同的 Framework 之间进行串行轮询，相当于悲观加锁并发控制，并发度仍然有提升空间。</p> 
+  <p>        和 Mesos 同时期的 Hadoop YARN 是另一款著名的分布式调度系统，其类型划分一直存在争议。Hadoop YARN 的支持者[3]表示 YARN 是一款两级调度系统，而 Google 系的研究成果则通常认为 YARN 属于统一调度架构。我们更加认同 Google 的看法，认为 YARN 属于统一调度架构。</p> 
+  <p>        统一调度、两级调度、共享调度是 Omega 提出的分类方法，这里的调度是指为任务分配资源，而不是处理任务间的关系。在这个前提下，Hadoop YARN 的调度过程是由 Resource Manager 完成的，而 Application Master 主要负责任务间关系的管理工作，并未实际参与调度过程。因此，Hadoop YARN 属于统一调度架构。</p> 
+  <p>3. 共享状态调度架构</p> 
+  <p>        两级调度架构在资源视图、调度并发度方面存在的问题，业界提出了共享状态调度架构，其典型代表是 Google Borg 和 Omega。调度系统具有多个调度器，调度器之间采用无锁乐观并发机制，每个调度器都具有全局资源视图，可接收待调度任务，同时进行调度。</p> 
+  <p>        但是，并发调度也带来一个明显的问题——调度冲突：即多个调度器同时工作并选中了相同的宿主机，只有一个调度器可以调度成功，其余调度器需要重新进行调度。在调度并发度较大的情况下，其实调度冲突的概率是比较大的，重新调度的代价偏大。</p> 
+  <h3>3.2 阿里云方案</h3> 
+  <p>        如下图所示，在阿里云整体产品体系中，计算产品属于IaaS基础服务层，包括云主机ECS、弹性伸缩ESS、资源编排ROS等产品服务。</p> 
+  <div class="image-package"> 
+   <div class="image-container"> 
+    <div class="image-view" style="text-align: center;"> 
+     <img src="https://images2.imgbox.com/87/ef/dghCvDog_o.png" style="outline: none;"> 
+    </div> 
+   </div> 
+   <div class="image-caption">
+     阿里云产品体系图 
+   </div> 
+  </div> 
+  <h4>3.2.1 依托业务上云生命周期管理设计的计算层产品服务落地方案</h4> 
+  <p>        而从整体计算资源保障体系建设来看，整个弹性计算产品服务可以从下图看出阿里云的落地解决方案思路，技术底座依然基于飞天云操作系统，包括神龙计算平台、盘古存储平台、洛神虚拟网络平台、后裔超大规模调度平台，而上层产品服务分为面向业务应用的资源型产品服务与面向运维用户的工具型产品服务——资源型产品服务具备包括ECS虚拟机实例服务、弹性裸金属实例服务、专有宿主机实例服务、ECI弹性容器实例服务、镜像与客户机操作系统仓库服务，运维工具型产品服务包括SMC服务器迁移服务、ROS资源编排服务、OOS运维编排服务、弹性伸缩服务、弹性供应服务，而此两类服务均支持OpenAPI、控制台、命令行工具三类管控模式。</p> 
+  <div class="image-package"> 
+   <div class="image-container"> 
+    <div class="image-view" style="text-align: center;"> 
+     <img src="https://images2.imgbox.com/23/ca/nEJBIUOe_o.png" style="outline: none;"> 
+    </div> 
+   </div> 
+   <div class="image-caption">
+     弹性计算产品与底层技术概览图 
+   </div> 
+  </div> 
+  <p>        其中运维工具产品，整体确实是遵循业务上云的全生命周期管理思路来做的整体解决方案设计，分迁移上云、交付部署、弹性运行、自动运维四个阶段提供计算资源层面的产品服务，可以参见下图：</p> 
+  <div class="image-package"> 
+   <div class="image-container"> 
+    <div class="image-view" style="text-align: center;"> 
+     <img src="https://images2.imgbox.com/22/6b/PA4U7imc_o.png" style="outline: none;"> 
+    </div> 
+   </div> 
+  </div> 
+  <p>        1.在第一阶段迁移上云，阿里云考虑了线下服务器迁移上云、软件镜像云上存储、操作系统镜像云上存储三类资源层面的场景，当然业务应用上云是一个很复杂的方案，软件上云会在微服务、容器等领域方案中阐述，便不在此章细述。</p> 
+  <p>        2.在资源上云后，在第二阶段交付部署环节，计算层主要提供计算资源编排服务，在业务应用的部署方案设定之后，ROS服务来协助实现应用自动化发布，完成应用部署前的资源交付与部署工作。</p> 
+  <p>        3.当应用成功部署上线后，应用程序持续运行的第三阶段，阿里云提供弹性伸缩服务，以应对互联网业务的潮汐流量场景，当然，资源的扩缩容并然后业务并发量传导而来，从而能实现自动化扩缩容。</p> 
+  <p>        4.除了运行支持，应用的日常运维工作中，自然也包含资源的日常运维部分，此即是阿里云设计的自动运维阶段，在此阶段与计算资源相关的，阿里云提供了OOS运维编排服务，配合云平台本身的监控、日志服务，以及应用的链路监控、微服务监控等手段，来实现运维自动化的目标。</p> 
+  <h4>3.2.2 阿里云大规模资源调度方案</h4> 
+  <p>        云计算将单台PC计算能力通过分布式调度软件连接起来，形成数以万计的集群算力，其中最核心的问题是如何把成千上万台普通PC机高效组织起来，灵活地进行任务调度和管理，从而可以像使用单台台式机一样无差别使用整朵云的算力。故在云计算底座能力模块中，最核心的便是分布式调度系统，它好比云计算的中央处理器。目前，业界已存在多种分布式调度实现方案，如伏羲、Hadoop MapReduce、YARN、Mesos等系统。</p> 
+  <h5>3.2.2.1 伏羲调度系统简介</h5> 
+  <p>        伏羲系统在前人的基础上进行了一系列改造，首先与YARN和Mesos系统类似，将资源调度和任务调度分离，形成两层架构，使其具备以下优势：</p> 
+  <p>        规模：两层架构易于横向扩展，资源管理与调度模块仅负责资源的整体分配，不负责具体任务调度，可以轻松扩展集群节点规模；</p> 
+  <p>        容错：当某个任务运行失败不会影响其他任务的执行；同时资源调度失败也不影响任务调度；</p> 
+  <p>        扩展性：不同的计算任务可以采用不同的参数配置和调度策略，同时支持资源抢占；</p> 
+  <p>        调度效率：计算framework决定资源的生命周期，可以复用资源，提高资源交互效率。</p> 
+  <p>        这套系统目前已经在阿里集团进行了大范围的应用，能支持单集群5000节点、并发运行10000作业、30分钟完成100T数据terasort，性能是Yahoo在Sort Benchmark的世界纪录的两倍。</p> 
+  <h5>3.2.2.2 伏羲的系统架构</h5> 
+  <p>        伏羲的系统架构如下图所示，整个集群包括一台Fuxi Master以及多台Tubo。其中Fuxi Master是集群的中控角色，负责资源的管理和调度；Tubo是每台机器上都有的一个Agent，负责管理本台机器上的用户进程；同时集群中还有一个叫Package Manager的角色，用户的可执行程序以及一些配置需要事先打成一个压缩包并上传到Package Manager上，Package Manager专门负责集群中包的分发。</p> 
+  <div class="image-package"> 
+   <div class="image-container"> 
+    <div class="image-view" style="text-align: center;"> 
+     <img src="https://images2.imgbox.com/64/a6/xQQrt4FA_o.png" style="outline: none;"> 
+    </div> 
+   </div> 
+   <div class="image-caption">
+     伏羲系统架构图 
+   </div> 
+  </div> 
+  <p>1. 集群部署完后，用户通过Client端的工具向Fuxi Master提交计算任务；</p> 
+  <p>2. Fuxi Master接收到任务后首先通知某一个Tubo启动这个计算任务所对应的APP Master；</p> 
+  <p>3. APP Master启动之后，它获知了自己的计算任务，包括数据分布在哪里、有多少的任务需要计算等等信息；</p> 
+  <p>4. 接着APP Master会向Fuxi Master提交资源申请，表明它需要多少计算资源；</p> 
+  <p>5. Fuxi Master经过资源调度以后，将资源的分配结果下发给APP Master；</p> 
+  <p>6. APP Master在这个资源的基础之上进行它的任务调度，来决定哪些机器上运行哪些计算任务，并且将这个计算任务发送给对应机器上的Tubo进程；</p> 
+  <p>7. Tubo接受到命令之后就会从Package Manager中下载对应的可执行程序并解压；</p> 
+  <p>8. 然后启动用户的可执行程序，加载用户的配置(上图中的APP Worker)；</p> 
+  <p>9. APP Worker根据配置中的信息读取文件存储系统中的数据，然后进行计算并且将计算结果发往下一个APP Worker。其中，数据的切片称之为Instance或者叫计算实例。</p> 
+  <p>10. Fuxi Master与Tubo这套结构解决了分布式调度中的资源调度，每个计算任务的APP Master以及一组APP Worker组合起来解决任务调度的问题。</p> 
+  <h5>3.2.2.3 任务调度</h5> 
+  <p>        伏羲在进行任务调度时，主要涉及两个角色：计算框架所需的APP Master以及若干个APP Worker。</p> 
+  <div class="image-package"> 
+   <div class="image-container"> 
+    <div class="image-view" style="text-align: center;"> 
+     <img src="https://images2.imgbox.com/c3/cf/mweoyR64_o.png" style="outline: none;"> 
+    </div> 
+   </div> 
+   <div class="image-caption">
+     伏羲在任务调度时涉及的主要角色 
+   </div> 
+  </div> 
+  <p>1. APP Master首先向Fuxi Master申请/释放资源；</p> 
+  <p>2. 拿到Fuxi Master分配的资源以后会调度相应的APP Worker到集群中的节点上，并分配Instance(数据切片)到APP Worker；</p> 
+  <p>3. APP Master同时还要负责APP Worker之间的数据传递以及最终汇总生成Job Status；</p> 
+  <p>4. 同时为了达到容错效果，APP Master还要负责管理APP Worker的生命周期，例如当发生故障之后它要负责重启APP Worker。</p> 
+  <p>        而APP Worker的职责相对比较简单，首先它需要接收App Master发来的Instance，并执行用户计算逻辑；其次它需要不断地向APP Master报告它的执行进度等运行状态；其最为主要的任务是负责读取输入数据，将计算结果写到输出文件；此处的Instance是指输入数据的切片。伏羲任务调度系统的技术要点主要包括数据的Locality、数据的Shuffle以及Instance重试和Backup Instance三点。</p> 
+  <p><b>数据Locality</b></p> 
+  <p>        数据Locality是指调度时要考虑数据的亲近性，也就是说APP Worker在处理数据时，尽量从本地的磁盘读取数据，输出也尽量写到本地磁盘，避免远程的读写。要实现这一目标，在任务调度时，尽量让Instance(数据分片)数据最多的节点上的AppWorker来处理该Instance。</p> 
+  <p><b>数据Shuffle</b></p> 
+  <p>        数据Shuffle指的是APP Worker之间的数据传递。在实际运行中，APP Worker之间是有多种传递形态的，如一对一、一对N、M对N等模式。如果用户去处理不同形态的传输模式，势必会带来较大的代价。伏羲分布式调度系统将数据传递的过程封装成streamline lib，用户无需关心数据传递的细节。首先Map进行运算，将结果直接交给streamline，streamline底层会根据不同的配置将数据传给下游计算任务的streamline；然后streamline将接到的数据交给上层的计算任务。</p> 
+  <p><b>Instance重试和backup instance</b></p> 
+  <p>        在Instance的运行过程中可能有多种原因导致Instance失败，比如APP Worker进程重启或运行时机器、磁盘发生故障，种种原因都可能导致一个Instance在运行时最终失败；另外APP Master还会监控Instance的运行速度，如果发现Instance运行非常慢(容易造成长尾)，会在另外的APP Worker上同时运行该Instance，也就是同时有两个APP Worker处理同一份数据，APP Master会选取最先结束的结果为最终结果。判断一个Instance运行缓慢的依据有：</p> 
+  <p>    该Instance运行时间超过其他Instance的平均运行时间；</p> 
+  <p>    该Instance数据处理速度低于其他Instance平均值；</p> 
+  <p>    目前已完成的Instance比例，防止在整体任务运行初期发生误判。</p> 
+  <h5>3.2.2.4 资源调度</h5> 
+  <p>        资源调度要考虑几个目标：一是集群资源利用率最大化；二是每个任务的资源等待时间最小化；三是能分组控制资源配额；四是能支持临时紧急任务。在飞天分布式系统中，Fuxi Master与Tubo两者配合完成资源调度。</p> 
+  <div class="image-package"> 
+   <div class="image-container"> 
+    <div class="image-view" style="text-align: center;"> 
+     <img src="https://images2.imgbox.com/e0/4d/X4Qc6YNj_o.png" style="outline: none;"> 
+    </div> 
+   </div> 
+   <div class="image-caption">
+     飞天分布式系统中的资源调度 
+   </div> 
+  </div> 
+  <p>        在飞天分布式系统中，Fuxi Master与Tubo两者配合完成资源调度。Tubo是每个节点都有的，用于收集每个机器的硬件资源(CPU、Memory、Disk、Net)，并发送给FuxiMaster；FuxiMaster是中控节点，负责整个集群的资源调度。当启动计算任务时，会生成APP Master，它根据自己的需要向Fuxi Master申请资源，当计算完成不再需要时，归还该资源。</p> 
+  <p>        飞天分布式调度常用的分配资源策略包括优先级和抢占、公平调度、配额。在实际应用场景中，不同策略可配合起来使用。</p> 
+  <p><b>策略之优先级和抢占</b></p> 
+  <p>        每个Job在提交时会带一个priority值(整数值)，该值越小优先级越高；相同优先级按提交时间，先提交的优先级高；FuxiMaster在调度时，资源优先分配给高优先级的Job，剩余的资源继续分配给次高优先级Job。</p> 
+  <p>        如果临时有高优先级的紧急任务加入，FuxiMaster会从当前正在运行的任务中，从最低优先级任务开始强制收回资源，以分配给紧急任务，此过程称为“抢占”。抢占递归进行，直到被抢任务优先级不高于紧急任务，也就是不能抢占比自己优先级高的任务。</p> 
+  <p><b>策略之公平调度</b></p> 
+  <p>        公平调度策略是指当有资源时Fuxi Master依次轮询地将部分资源分配给各个Job，它避免了较大Job抢占全部资源导致其他Job饿死现象发生。公平调度首先按优先级分组，同一优先级组内的平均分配，如果有剩余资源再去下一个优先级组进行分配，依此类推。</p> 
+  <p><b>配额</b></p> 
+  <p>        配额是资源分配时的第三个策略，通常是按照不同的业务进行区分，多个任务组成一个组，例如淘宝、支付宝等；集群管理员会设立每一个组的资源上限，意味着这个组最多能使用这么多CPU、Memory、磁盘等，该上限值称为Quota；每个组的Job所分配的资源总和不会超过该组内的Quota，当然如果每一个组内没有用完的Quota是可以分享给其他组的，会按照Quota的比例进行均分。</p> 
+  <h5>3.2.2.5 容错机制</h5> 
+  <p>        在大规模进程集群中故障是常态，这些常态会来自硬件，比如主板、电源、内存条；也可能来自软件，比如进程有Bug导致进程Crash，机器故障导致性能慢。因此，分布式调度必须具有容错机制，以保证正在运行的任务不受影响，并对用户透明，能够从故障中恢复过来，保障系统的高可用。下面将从任务调度的Failover和资源调度的Failover两个方面介绍。</p> 
+  <p><b>AppMaster进程重启后的任务调度Failover</b></p> 
+  <p>        每个计算任务有自己的APP Master，如果APP Master进程发生了重启，那其重启之后的任务调度如何进行Failover呢？这里采用了Snapshot机制，它将Instance的运行进度保存下来，当APP Master重启之后会自动加载Snapshot以获取之前每个Instance的执行进度，然后继续运行Instance；当APP Master进程重启之后，从APP Worker汇报的状态中重建出之前的调度结果，继续运行Instance。</p> 
+  <p><b>FuxiMaster进程重启后的资源调度Failover</b></p> 
+  <p>        另一种情况是Fuxi Master发生了Failover。Fuxi Master Failover起来之后需要重建内部状态，该状态通常分为两种：一是Hard State，主要是之前提交的Application配置信息，如不同的Job配置参数等，它们来自于Fuxi Master写的Snapshot；另一类是Soft State，Fuxi Master会收集来自各个Tubo以及APP Master的信息重建出自己的状态，这些信息包括机器列表、每个APP Master的资源请求以及之前的资源分配结果。</p> 
+  <p>        Fuxi Master进程重启之后的资源调度过程如下图所示，首先会从Checkpoint中读取出所有Job的配置信息；同时会收集所有的Tubo以及APP Master上报上来的关于资源分配的结果，如CPU多少、Memory多少等等。</p> 
+  <div class="image-package"> 
+   <div class="image-container"> 
+    <div class="image-view" style="text-align: center;"> 
+     <img src="https://images2.imgbox.com/1b/a3/hPb12wtY_o.png" style="outline: none;"> 
+    </div> 
+   </div> 
+   <div class="image-caption">
+     Fuxi Master进程重启之后的资源调度过程 
+   </div> 
+  </div> 
+  <p><b>规模挑战</b></p> 
+  <p>        分布式系统设计主要目标之一就是横向扩展(scale-out)，目前阿里云飞天在2013年时已支撑单个集群5000个节点、并发1万个任务。在做横向扩展设计时，需要注意两个要点：一是多线程异步；二是增量的资源调度。</p> 
+  <p><b>多线程异步</b></p> 
+  <p>        多线程异步是编写分布式程序一个非常重要而且常用的技术手段。在网络通信模块中，每个APP Master都需要跟Fuxi Master进行资源通信，同时也需要跟多个Tubo进行通信以启动它们的APP Worker。APP Master处理网络通信的过程称之为RPC，RPC通信时必须采用线程池来处理。如图5中采用四个线程池来处理这些消息。由于Fuxi Master是一个中控节点，而Tubo的数量非常众多，如果将这些消息都在同一个线程池中处理，则Fuxi Master的消息有可能会被大量的Tubo消息阻塞(对头阻塞问题)。为了解决该问题，在伏羲系统当中设立了一个独立的线程池来处理Fuxi Master的消息；另外一个线程池来处理Tubo的消息，将线程池进行分开，也称之为泳道；独立的泳道能有效解决Fuxi Master的消息被对头阻塞的问题。</p> 
+  <div class="image-package"> 
+   <div class="image-container"> 
+    <div class="image-view" style="text-align: center;"> 
+     <img src="https://images2.imgbox.com/cf/ea/djSFseMc_o.png" style="outline: none;"> 
+    </div> 
+   </div> 
+   <div class="image-caption">
+     RPC通信时采用的四个线程池 
+   </div> 
+  </div> 
+  <p><b>增量的资源调度</b></p> 
+  <p>        伏羲解决规模问题的另一个技术点是增量。目前，伏羲采用增量的消息通信和资源调度，下面通过具体例子，来介绍伏羲所采用的增量资源调度的协议。</p> 
+  <div class="image-package"> 
+   <div class="image-container"> 
+    <div class="image-view" style="text-align: center;"> 
+     <img src="https://images2.imgbox.com/be/97/PHVaYVM1_o.png" style="outline: none;"> 
+    </div> 
+   </div> 
+   <div class="image-caption">
+     伏羲所采用的增量资源调度的协议示例 
+   </div> 
+  </div> 
+  <p>        上图左侧是中控节点Fuxi Master；右边为某一个APP Master，如果说APP Master需要1000份资源，最直接的一种实现方式是将“我要1000个资源”这样的消息直接发送给Fuxi Master；Fuxi Master在接到消息之后可能当前的剩余资源只有200份，它将会“我分配给你200”这样的消息发送给APP Master；那APP Master还会继续发送消息“我还要剩余的800”，Fuxi Master回复“此时没有资源，我分配0个给你”；则APP Master在下一次通信的时候需要继续发送“我还要剩余的800”……依此类推，可能某一个时刻Fuxi Master还能分一点资源下来。这就是最直观的全量消息通信，每一次APP Master提出请求时都要指明它总共需要多少。</p> 
+  <p>        而在伏羲的实现当中为了减小通信量和不必要的开销，采用了增量的语义。首先APP Master发送一个请求“我要1000个资源”，Fuxi Master收到之后将当时空闲的200个资源返回给APP Master；之后APP Master无需再提交请求说我还需要800，因为Fuxi Master会将这1000个请求记录下来等到某一时刻又有更多的资源，比如150个资源释放，它直接将150个分配结果发送给APP Master即可。这期间APP Master无需再发多余的网络通信。</p> 
+  <h5>3.2.2.6 安全与性能隔离</h5> 
+  <p>        在分布式系统当中通常有多个用户在执行自己的计算任务，多个任务之间需要互相隔离、互相不影响。飞天伏羲实现了全链路的访问控制，采用了两种访问控制进行安全的验证，一种是Capability，指通信双方基于私钥进行解密并验证的一种方式；还有一种称为Token的方式，这种方式需要通信的双方临时生成基于私钥加密的口令，在通信时进行验证。</p> 
+  <p>        两种方式最大区别在于口令生成的时机，Capability方式是在通信之前就已经加密好；而Token是需要在通信时临时生成。</p> 
+  <div class="image-package"> 
+   <div class="image-container"> 
+    <div class="image-view" style="text-align: center;"> 
+     <img src="https://images2.imgbox.com/f1/52/9piljFb3_o.png" style="outline: none;"> 
+    </div> 
+   </div> 
+   <div class="image-caption">
+     访问控制的两种安全验证方式 
+   </div> 
+  </div> 
+  <p>        两种方式使用于不同的场景，如上图所示FuxiMaster与Tubo通信采用的是Capability方式，因为这两个角色在集群部署时就已启动，可以事先进行加密生成好Capability；FuxiMaster与APP之间是采用Token的方式，这是因为APP与FuxiMaster进行通信时，当每个任务执行完计算之后会退出；在进程与进程之间，伏羲采用了沙箱的方式将不同的进程进行隔离开、互不干扰。</p> 
+  <p>        除了安全的隔离之外，还需要考虑性能的隔离。目前伏羲采用的几种技术手段：Cgroup(Linux LXC)、Docker container、VM等。这几种技术的隔离性、资源配额/度量、移动性、安全性的比较如下图所示，不再一一叙述。</p> 
+  <div class="image-package"> 
+   <div class="image-container"> 
+    <div class="image-view" style="text-align: center;"> 
+     <img src="https://images2.imgbox.com/ed/7d/l1eNDRBX_o.png" style="outline: none;"> 
+    </div> 
+   </div> 
+   <div class="image-caption">
+     性能隔离的技术手段对比表 
+   </div> 
+  </div> 
+  <p>        伏羲目前采用的隔离技术是基于Docker和LXC混合部署的方式，之所以抛弃虚拟机的方式，是因为其性能损耗太多。当运行计算任务时，如果完全放在虚拟机当中，它的IO以及CPU时间片会受到很大的影响，会降低任务的执行效率。在目前阿里的生产环境中，实践发现基于Docker和LXC的隔离技术已经可以很好地满足需求。</p> 
+  <h5>3.2.2.7 分布式调度的发展方向</h5> 
+  <p>        随着计算能力和数据量的持续增长，分布式调度未来可能朝向以下几个方向发展：</p> 
+  <p>        <b>在线服务与离线任务混跑</b>。云计算最终的目的是降低IT成本，最大限度地利用单台PC的CPU处理能力，所以未来的趋势一定是在线服务与离线任务能够在同一物理集群上运行从而实现削峰填谷效果、最大化提高集群利用率。但是由于两种任务的特点不同，在线运用对于响应时间要求很高，而离线运用则对调度的吞吐率要求比较高，因此混跑会带来性能隔离与资源利用率之间的矛盾。</p> 
+  <p>        <b>实时计算的发展</b>，Map Reduce是一个很伟大的框架，但其是为数据量一定的批处理而设计的。随着云计算越来越普及，很多计算形态需要实时拿到计算结果，并且其输入数据可能是不间断的。目前，伏羲也已经开发出了实时的计算框架——OnlineJob，它可以提供更快的执行速度。</p> 
+  <p>        <b>更大的规模</b>，目前已能够支撑5000台的节点，随着计算量越来越大，客户的需求越来越多，需要进一步优化伏羲系统，能够支撑起1万、5万、10万等更大规模单集群，同时能够支撑更多的并发任务。</p> 
+  <h3>3.3 腾讯云方案</h3> 
+  <h4>3.3.1 计算产品服务简述</h4> 
+  <p>        在腾讯云的产品全景图中，计算属于IaaS层服务，对外提供云服务器CVM、裸金属服务BMS、弹性伸缩AS以及专有宿主机服务CDH等产品服务。</p> 
+  <div class="image-package"> 
+   <div class="image-container"> 
+    <div class="image-view" style="text-align: center;"> 
+     <img src="https://images2.imgbox.com/78/2d/C1aYAvM8_o.png" style="outline: none;"> 
+    </div> 
+   </div> 
+   <div class="image-caption">
+     腾讯云产品全景图 
+   </div> 
+  </div> 
+  <div class="image-package"> 
+   <div class="image-container"> 
+    <div class="image-view" style="text-align: center;"> 
+     <img src="https://images2.imgbox.com/c1/97/Du6poaqh_o.png" style="outline: none;"> 
+    </div> 
+   </div> 
+   <div class="image-caption">
+     腾讯云计算产品能力 
+   </div> 
+  </div> 
+  <p>        腾讯云云服务器CVM的实现基于开源KVM方案，不过全云资源调度方案基于自研VStation实现。KVM实现方案因前文已经详述，接下来着重讲述VStation的机制。</p> 
+  <p>3.3.2 VStation实现机制</p> 
+  <p>        腾讯云的 VStation 从诞生之初，便肩负着大规模调度、海量并发和支持异构计算的历史使命，历经五年的打磨和历练，VStation 通过消息压缩、镜像缓存、快照回滚等系列优化实践，实现了生产吞吐率从数百台/分钟到数万台/分钟、平均创建时间由300秒下降到30秒以下的惊人蜕变。</p> 
+  <p>3.3.2.1 VStation 总体架构</p> 
+  <p> 作为腾讯云新一代的调度系统，VStation 承载了腾讯云 CVM 后台的整体集群管理与系统调度，其架构如下图所示。在 VStation 架构中存在多种模块：</p> 
+  <div class="image-package"> 
+   <div class="image-container"> 
+    <div class="image-view" style="text-align: center;"> 
+     <img src="https://images2.imgbox.com/13/40/NM3lcQfg_o.png" style="outline: none;"> 
+    </div> 
+   </div> 
+   <div class="image-caption">
+     VStation架构 
+   </div> 
+  </div> 
+  <p>Compute，是宿主机上的 agent 程序，负责和后端通信，并调用 libvirt 等工具；</p> 
+  <p>Compute Access，是 Compute 与后台架构通信的一个接入层。</p> 
+  <p>Network，负责云主机的网络相关操作；</p> 
+  <p>Image，负责云主机的镜像相关操作；</p> 
+  <p>Scheduler，负责调度功能，为云主机挑选最佳宿主机；</p> 
+  <p>Resource，负责资源数据的操作；</p> 
+  <p>Volume，负责磁盘相关操作；</p> 
+  <p>        在 VStation 中，每个模块并不直接相互调用，而是监听特定的队列并提供一个回调函数，框架会将参数传递给回调函数执行，业务层的开发人员只需专注于自身的业务逻辑，不必关心消息通信，通信会由框架统一进行管理。</p> 
+  <p>        那么各个模块如何协同完成任务的呢？这些模块会通过消息队列进行间接通信，具体的通信策略由上层 VStation API 进行配置化，API 定义每个流程需要执行的具体步骤和顺序。</p> 
+  <p>        这样的架构设计理念类似于 Unix，只做一件事并把它做好。每个模块就像 Unix 中的命令一样，专注于自身的逻辑，如果它们需要互相组合，开发人员可以通过上层 API 进行配置化组合。</p> 
+  <p>        以创建云主机为例，当 VStation API 收到用户的创建任务时，API 会构造一个消息模板，设置好用户的参数，填充好预先定义的配置步骤，按照配置步骤发送给第一个步骤对应的模块，第一个步骤的模块执行完成后会发送给第二个步骤的模块，依次类推。Scheduler 则属于其中的一个模块，其中的一个消费者收到任务信息后，选择合适的选宿主机，当完成调度后，将数据包转发给下一个接收模块进行处理。最后所有的步骤按照配置的顺序执行完成，虚拟机创建流程也就自然完成了。</p> 
+  <h5>3.3.2.2 VStation 的调度架构与优化实践</h5> 
+  <p><b>调度架构</b></p> 
+  <p>        VStation 的调度架构，本质上与 Google Borg/Omega类似，采用共享状态调度架构，众多调度器采用无锁乐观并发机制、基于全局资源视图进行调度决策，显著提升了调度器的吞吐率； 提交调度结果保证事务性，保证资源数据的强一致性。另一方面，针对 Google Omega 存在的隐患，对调度冲突进行优化。</p> 
+  <div class="image-package"> 
+   <div class="image-container"> 
+    <div class="image-view" style="text-align: center;"> 
+     <img src="https://images2.imgbox.com/87/75/LM4phQNx_o.png" style="outline: none;"> 
+    </div> 
+   </div> 
+  </div> 
+  <p>        总体来说，调度过程包括资源同步、调度决策和提交调度结果三个环节。</p> 
+  <p><b>资源同步</b></p> 
+  <p>        调度器在接收待调度虚拟机后，会先进行资源同步，拉取集群状态信息，以此为数据基础进行调度决策。资源同步操作在逻辑上看较为直观，但是在超大规模数据中心中遇到了挑战。腾讯云单个 Region 宿主机的规模达到了十万量级，调度器达到了数百规模，即调度总量数据为千万级规模，即使使用高配置的数据库集群也会在调度高峰时出现明显的延迟。</p> 
+  <p>        为此，我们采用私有缓存和增量更新的方法拉取数据。调度器启动后首次调度时，会全量拉取数据，并缓存在调度器本地内存中，形成私有缓存；后续调度时会根据时间戳进行增量更新，对上一次调度之后发生变化的数据进行更新。这样，在大规模调度的场景下，同步数据量可减少95%以上。</p> 
+  <p><b>调度决策</b></p> 
+  <p>        在资源同步之后，调度器会在全局资源视图的基础上，为虚拟机选择合适的宿主机，整体包括3个环节过滤、排序和打散。</p> 
+  <p>        过滤，应对硬性约束。根据虚拟机信息中的资源需求和私有缓存中的宿主机信息，对宿主机集合进行过滤，保留符合标准的宿主机，剔除不符合标准的宿主机，得到候选宿主机列表。</p> 
+  <p>        排序，应对软性约束。根据候选宿主机列表，计算每台宿主机多个维度的优先级值，并对宿主机进行优先级排序，得到候选宿主机排序列表。\\t</p> 
+  <p>        打散。根据候选宿主机排序列表，对其中第一档前 k 个宿主机进行随机打散重新排序，得到新的排序列表，这样做的目的是防止众多调度器在并发场景下都选择相同的宿主机，尽量防止调度冲突，降低其发生概率。</p> 
+  <p><b>提交调度结果</b></p> 
+  <p>        VStation 提交调度结果，会保证资源数据更新的事务性。这一点非常重要，因为在并发调度的场景下，很容易出现调度冲突，我们通过事务来保证资源数据的一致性。主要环节如下：</p> 
+  <p>    按序遍历宿主机候选列表；</p> 
+  <p>    对当前宿主机模拟扣减资源；</p> 
+  <p>    提交资源变更事务：更新资源数据、反亲和性记录；</p> 
+  <p>    如果事务成功，则本次调度成功，同时更新私有缓存中的数据；</p> 
+  <p>    如果事务多次失败，则发生调度冲突，尝试下一台宿主机；</p> 
+  <p>    如果发生调度冲突，VStation 会选择次优宿主机。相比 Google Omega 重新调度的做法，对调度冲突的处理代价显著减小。在公有云海量并发创建的场景下，VStation 在调度决策和调度吞吐率进行权衡，选择次优解来保证调度吞吐率。</p> 
+  <p><b>海量并发场景下的极速创建</b></p> 
+  <p>    在调度专题优化以外，针对其他问题，VStation 也进行了相应优化，包括：</p> 
+  <p>    消息压缩、合并，提升系统内部消息流转效率；</p> 
+  <p>    宿主机缓存高频使用镜像，调度器优先选择命中镜像缓存的镜像，尽量避免下载镜像；</p> 
+  <p>    采用 CBS 云盘快照回滚技术，避免下载镜像，减少创建时间；</p> 
+  <p>        结合这些技术优化，VStation 生产流程的整体吞吐率得到了大幅提升。在十万量级的宿主机环境下，采用数百个 Scheduler 消费者，我们对 CVM 进行了多次海量并发创建演习，生产吞吐率从原来的数百台/分钟提升到数万台/分钟；而平均创建时间降低了90%，部分公有镜像的创建时间更是可以缩减到10秒以内。成功应对了2016、2017年以来的海量并发创建的挑战，为腾讯云 CVM 业务的爆发式增长提供了坚实的技术基础。</p> 
+  <h5>3.3.2.3 腾讯云分布式调度系统的技术优势</h5> 
+  <p>        与业界系统对比，VStation 具有大规模调度能力、速度快、高可用、支持异构计算调度等方面的优势：</p> 
+  <p>        <b>速度快</b>：VStation 在腾讯云数十万集群规模中，得到了充分的考验。结合腾讯云的真实业务场景来看，调度模块的吞吐量可达每分钟数万台，整个系统的生产吞吐率可达每分钟数万台，相比业界 OpenStack Nova，其并发调度和创建100台虚拟机，则系统运行开始变慢，在冲突加剧的场景则会导致创建失败，需要重新进行调度资源，调度效率低。</p> 
+  <p>        <b>高可用</b>：得益于框架的能力，VStation 的每个调度进程都是无状态、可平行扩容的。同时，在一些特殊情况如消费者崩溃、MQ 崩溃等极端场景下，VStation 能够基于 MQ 的 ACK 机制、Mirror 机制、消息持久化机制等，将未执行完成的消息重新发送给活跃的进程，重新进行调度。</p> 
+  <p>        <b>支持异构计算</b>：随着硬件产品的丰富，例如 GPU、FPGA、智能网卡等专用设备的出现，以前的调度系统也需要考虑相关新硬件的资源统筹调度。在 VStation 中，针对这类的 PCI 设备进行统一管理，可以快速适配和纳管新型异构硬件。</p> 
+  <h5>3.3.2.4 未来改进策略</h5> 
+  <p><b>任务间调度</b></p> 
+  <p>        目前，VStation 侧重点是一个资源调度系统，未来会对加强任务间的管理与调度，能够对任务关系和资源统一进行管理，整合资源的负载情况，做出最优的调度决策。</p> 
+  <p><b>调度系统的可视化运营</b></p> 
+  <p>        对于资源运营同学来看，资源调度的内部逻辑相当于黑盒。例如这台宿主机为何没有被分配资源，整个调度过程是如何层层筛选的、又是如何优选排序的等运营问题。VStation后续计划开发一个为调度系统服务的实时可视化系统，使得调度逻辑更加透明化、直观化，让使用的人员可以了解调度系统的内部运行机制。</p> 
+  <h3>3.4 OpenStack - Nova 方案</h3> 
+  <h4>3.4.1 Nova简介</h4> 
+  <p>        Nova是OpenStack最核心的服务模块，负责管理和维护云计算环境的计算资源，负责整个云环境虚拟机生命周期的管理。Nova和Swift是OpenStack最早诞生的两个组件。Nova分为控制节点和计算节点，计算节点通过Nova Computer进行虚拟机创建，通过libvirt调用kvm创建虚拟机。Nova之间通信通过rabbitMQ队列进行通信。如下图所示，Nova位于Openstack架构的中心，其他服务或者组件(比如Glance、Cinder、Neutron等)对它提供支持——Glance 为 VM 提供<a href="https://links.jianshu.com/go?to=https%3A%2F%2Fso.csdn.net%2Fso%2Fsearch%3Fq%3D%25E9%2595%259C%25E5%2583%258F%26spm%3D1001.2101.3001.7020" rel="nofollow noopener noreferrer" target="_blank">镜像</a>，Cinder 和 <a href="https://links.jianshu.com/go?to=https%3A%2F%2Fso.csdn.net%2Fso%2Fsearch%3Fq%3DSwift%26spm%3D1001.2101.3001.7020" rel="nofollow noopener noreferrer" target="_blank">Swift</a> 分别为 VM 提供块存储和对象存储，Neutron 为 VM 提供网络连接。</p> 
+  <div class="image-package"> 
+   <div class="image-container"> 
+    <div class="image-view" style="text-align: center;"> 
+     <img src="https://images2.imgbox.com/32/94/1dSgyBDE_o.png" style="outline: none;"> 
+    </div> 
+   </div> 
+   <div class="image-caption">
+     Nova在OpenStack中的位置 
+   </div> 
+  </div> 
+  <h4>3.4.2 Nova系统架构</h4> 
+  <p>        Nova 逻辑架构如下图所示(红色方框内为 Nova 组件，方框外为 Nova 和 OpenStack 其他服务之间的调用关系)： </p> 
+  <div class="image-package"> 
+   <div class="image-container"> 
+    <div class="image-view" style="text-align: center;"> 
+     <img src="https://images2.imgbox.com/a9/87/s7q8near_o.png" style="outline: none;"> 
+    </div> 
+   </div> 
+   <div class="image-caption">
+     Nova 逻辑架构图 
+   </div> 
+  </div> 
+  <h4>3.4.3 Nova工作流程</h4> 
+  <div class="image-package"> 
+   <div class="image-container"> 
+    <div class="image-view" style="text-align: center;"> 
+     <img src="https://images2.imgbox.com/d3/f2/nALXXql4_o.png" style="outline: none;"> 
+    </div> 
+   </div> 
+   <div class="image-caption">
+     Nova创建虚机流程 
+   </div> 
+  </div> 
+  <p>        1. 界面或命令行通过RESTful API向keystone获取认证信息。</p> 
+  <p>        2. keystone通过用户请求认证信息，正确后生成token返回给对应的认证请求。</p> 
+  <p>        3. 界面或命令行通过RESTful API向nova-api发送一个创建虚拟机的请求(携带token)。</p> 
+  <p>        4. nova-api接受请求后向keystone发送认证请求，查看token是否为有效用户。</p> 
+  <p>        5. keystone验证token是否有效，如有效则返回有效的认证和对应的角色(注：有些操作需要有角色权限才能操作)。</p> 
+  <p>        6. 通过认证后nova-api检查创建虚拟机参数是否有效合法后和数据库通讯。</p> 
+  <p>        7. 当所有的参数有效后初始化新建虚拟机的数据库记录。</p> 
+  <p>        8. nova-api通过rpc.call向nova-scheduler请求是否有创建虚拟机的资源(Host ID)。</p> 
+  <p>        9. nova-scheduler进程侦听消息队列，获取nova-api的请求。</p> 
+  <p>       10. nova-scheduler通过查询nova数据库中计算资源的情况，并通过调度算法计算符合虚拟机创建需要的主机。</p> 
+  <p>       11. 对于有符合虚拟机创建的主机，nova-scheduler更新数据库中虚拟机对应的物理主机信息。</p> 
+  <p>       12. nova-scheduler通过rpc.cast向nova-compute发送对应的创建虚拟机请求的消息。</p> 
+  <p>       13. nova-compute会从对应的消息队列中获取创建虚拟机请求的消息。</p> 
+  <p>       14. nova-compute通过rpc.call向nova-conductor请求获取虚拟机消息。</p> 
+  <p>       15. nova-conductor从消息队队列中拿到nova-compute请求消息。</p> 
+  <p>       16. nova-conductor根据消息查询虚拟机对应的信息。</p> 
+  <p>       17. nova-conductor从数据库中获得虚拟机对应信息。</p> 
+  <p>       18. nova-conductor把虚拟机信息通过消息的方式发送到消息队列中。</p> 
+  <p>       19. nova-compute从对应的消息队列中获取虚拟机信息消息。</p> 
+  <p>        20. nova-compute通过keystone的RESTfull API拿到认证的token，并通过HTTP请求glance-api获取创建虚拟机所需要镜像。</p> 
+  <p>        21. glance-api向keystone认证token是否有效，并返回验证结果。</p> 
+  <p>        22. token验证通过，nova-compute获得虚拟机镜像信息(URL)。</p> 
+  <p>        23. nova-compute通过keystone的RESTfull API拿到认证k的token，并通过HTTP请求neutron-server获取创建虚拟机所需要的网络信息。</p> 
+  <p>        24. neutron-server向keystone认证token是否有效，并返回验证结果。</p> 
+  <p>        25. token验证通过，nova-compute获得虚拟机网络信息。</p> 
+  <p>        26. nova-compute通过keystone的RESTfull API拿到认证的token，并通过HTTP请求cinder-api获取创建虚拟机所需要的持久化存储信息。</p> 
+  <p>        27. cinder-api向keystone认证token是否有效，并返回验证结果。</p> 
+  <p>        28. token验证通过，nova-compute获得虚拟机持久化存储信息。</p> 
+  <p>        29. nova-compute根据instance的信息调用配置的虚拟化驱动来创建虚拟机。</p> 
+  <h4>3.4.4 Nova组件设计思想</h4> 
+  <p>        Nova 组件设计思想，其实也是 OpenStack 的组件设计思想，OpenStack 的所有组件设计都遵循此思想：</p> 
+  <p>1. API 前端服务</p> 
+  <p>        nova-api 作为 Nova 组件对外的唯一窗口，向客户暴露 Nova 能够提供的功能。当客户需要执行虚机相关的操作，能且只能向 nova-api 发送 REST 请求。</p> 
+  <p>        设计 API 前端服务的好处在于：</p> 
+  <p>    对外提供统一接口，隐藏实现细节</p> 
+  <p>    API 提供 REST 标准调用服务，便于与第三方系统集成</p> 
+  <p>    可以通过运行多个 API 服务实例轻松实现 API 的高可用，比如运行多个 nova-api 进程</p> 
+  <p>2. Scheduler 调度服务</p> 
+  <p>        对于某项操作，如果有多个实体都能够完成任务，那么通常会有一个 scheduler 负责从这些实体中挑选出一个最合适的来执行操作。</p> 
+  <p>        Nova 有多个计算节点， 当需要创建虚机时，nova-scheduler 会根据计算节点当时的资源使用情况选择一个最合适的计算节点来运行虚机。</p> 
+  <p>        除了 Nova，块服务组件 Cinder 也有 scheduler 子服务。</p> 
+  <p>3. Worker 工作服务</p> 
+  <p>        调度服务只管分配任务，真正执行任务的是 Worker 工作服务。</p> 
+  <p>        在 Nova 中，这个 Worker 就是 nova-compute 了。 将 Scheduler 和 Worker 从职能上进行划分使得 OpenStack 非常容易扩展：</p> 
+  <p>        当计算资源不够了无法创建虚机时，可以增加计算节点(增加 Worker)</p> 
+  <p>        当客户的请求量太大调度不过来时，可以增加 Scheduler</p> 
+  <p>4. Driver 框架</p> 
+  <p>        OpenStack 作为开放的云操作系统，支持业界各种优秀的技术。这种开放的架构使得 OpenStack 能够在技术上保持先进性，具有很强的竞争力，同时又不会造成厂商锁定(Lock-in)。OpenStack 的这种开放性一个重要的方面就是采用基于 Driver 的框架。</p> 
+  <p>        以 Nova 为例，OpenStack 的计算节点支持多种 Hypervisor。 包括 KVM, Hyper-V, VMWare, Xen, Docker, LXC 等。</p> 
+  <p>        nova-compute 为这些 Hypervisor 定义了统一的接口，hypervisor 只需要实现这些接口，就可以 driver 的形式即插即用到 OpenStack 中。</p> 
+  <div class="image-package"> 
+   <div class="image-container"> 
+    <div class="image-view" style="text-align: center;"> 
+     <img src="https://images2.imgbox.com/5c/bc/TRW3tKr7_o.png" style="outline: none;"> 
+    </div> 
+   </div> 
+   <div class="image-caption">
+     基于Driver框架的 nova-compute组件 
+   </div> 
+  </div> 
+  <p>         Glance、Cinder 和 Neutron 都有 driver 框架的应用 。</p> 
+  <p>5. Messaging 服务</p> 
+  <p>        nova-* 子服务之间的调用严重依赖 Messaging。Messaging 是 nova-* 子服务交互的中枢。带来以下好处：</p> 
+  <p>        解耦各子服务。子服务不需要知道其他服务在哪里运行，只需要发送消息给 Messaging 就能完成调用。</p> 
+  <p>        提高性能。异步调用使得调用者无需等待结果返回。这样可以继续执行更多的工作，提高系统总的吞吐量。</p> 
+  <p>        提高伸缩性。子服务可以根据需要进行扩展，启动更多的实例处理更多的请求，在提高可用性的同时也提高了整个系统的伸缩性。而且这种变化不会影响到其他子服务，也就是说变化对别人是透明的。</p> 
+  <p>6. Database</p> 
+  <p>        OpenStack 各组件都需要维护自己的状态信息。比如 Nova 中有虚机的规格、状态，这些信息都是在数据库中维护的。每个 OpenStack 组件都有自己的数据库。</p> 
+  <p>7. 基于分离设备驱动模型实现的I/O虚拟化</p> 
+  <div class="image-package"> 
+   <div class="image-container"> 
+    <div class="image-view" style="text-align: center;"> 
+     <img src="https://images2.imgbox.com/05/12/7kHM8ZRc_o.png" style="outline: none;"> 
+    </div> 
+   </div> 
+   <div class="image-caption">
+     Nova-IO虚拟化示意图 
+   </div> 
+  </div> 
+  <p>        为了提升I/O虚拟化性能，子系统采用分离设备驱动模型实现I/O的虚拟化。该模型将设备驱动划分为前端驱动程序、后端驱动程序和原生驱动三个部分，其中前端驱动在虚拟机中运行，而后端驱动和原生驱动则在VMM中运行。前端驱动负责将虚拟机的I/O请求传递到VMM中的后端驱动，后端驱动解析I/O请求并映射到物理设备，提交给相应的设备驱动程序控制硬件完成I/O操作。</p> 
+  <p><b>总结 Nova 组件设计思想的特点：</b></p> 
+  <p>        分布式：由多个逻辑和物理上均可分离的组件组成，实现灵活部署；</p> 
+  <p>        无中心：可以通过增加组件部署实例来实现水平扩展；</p> 
+  <p>        无状态：所有组件无本地持久化状态数据；</p> 
+  <p>        异步执行：大部分执行流通过消息机制实现异步执行；</p> 
+  <p>        插件化、可配置：大量使用插件机制、配置参数实现灵活的扩展与变更；</p> 
+  <p>        RESTful API：支持 RESTful 方式访问的 API，方便客户端访问，方便集成到其他应用系统</p> 
+  <h4>3.4.5 Nova各组件功能简介</h4> 
+  <h5>3.4.5.1 Nova-api</h5> 
+  <p>        nova-api 是整个 Nova 组件的门户，所有对 Nova 的请求都首先由 nova-api 处理。 nova-api 向外界暴露若干 HTTP REST API 接口。OpenStack CLI，Dashboard 和其他需要跟 Nova 交换的组件会使用这些 API。Nova接收到外部的请求并通过Message Queue将请求发送给其他的服务组件，同时也兼容EC2 API，所以也可以用EC2的管理工具对nova进行日常管理。</p> 
+  <div class="image-package"> 
+   <div class="image-container"> 
+    <div class="image-view" style="text-align: center;"> 
+     <img src="https://images2.imgbox.com/26/bc/j9qzO5Le_o.png" style="outline: none;"> 
+    </div> 
+   </div> 
+   <div class="image-caption">
+     Nova-api工作逻辑图 
+   </div> 
+  </div> 
+  <p>        在 keystone 中我们可以查询 nova-api 的 endponits。客户端就可以将请求发送到 endponits 指定的地址，向 nova-api 请求操作。</p> 
+  <p>        nova-api 对接收到的 HTTP API 请求会做如下处理：</p> 
+  <p>1)检查客户端传人的参数是否合法有效</p> 
+  <p>2)调用 Nova 其他子服务的处理客户端 HTTP 请求</p> 
+  <p>3)格式化 Nova 其他子服务返回的结果并返回给客户端</p> 
+  <p>        只要是跟虚拟机生命周期相关的操作，nova-api 都可以响应。大部分操作都可以在 Dashboard 上找到。</p> 
+  <div class="image-package"> 
+   <div class="image-container"> 
+    <div class="image-view" style="text-align: center;"> 
+     <img src="https://images2.imgbox.com/57/e9/1GBdku5A_o.png" style="outline: none;"> 
+    </div> 
+   </div> 
+   <div class="image-caption">
+     虚拟机生命周期操作功能菜单 
+   </div> 
+  </div> 
+  <h5>3.4.5.2 Nova-scheduler</h5> 
+  <p>        nova-scheduler是调度组件，决策虚拟机创建在哪个宿主机(计算节点)上。当用户提出创建虚拟机实例的资源需求，例如 CPU、内存、磁盘各需要多少，OpenStack将这些需求定义在 flavor 中，用户只需要指定用哪个 flavor 就可以了。nova-scheduler 会按照 flavor 去选择合适的计算节点。</p> 
+  <p>        zcdOpenStack 的虚拟机调度策略主要是由 FilterScheduler 和 ChanceScheduler 实现的，其中FilterScheduler 作为默认的调度器实现了基于主机过滤(filtering)和权值计算(weighing)的调度算法，而 ChanceScheduler 则是基于随机算法来选择可用主机的简单调度器。</p> 
+  <p>        总体而言，决策一个虚拟机应该调度到某物理节点，需要分为两个步骤：</p> 
+  <p>     1. 过滤(filter)：过滤出可以创建虚拟机的主机。</p> 
+  <div class="image-package"> 
+   <div class="image-container"> 
+    <div class="image-view" style="text-align: center;"> 
+     <img src="https://images2.imgbox.com/d6/65/wk5blywa_o.png" style="outline: none;"> 
+    </div> 
+   </div> 
+  </div> 
+  <p>     2. 计算权值(weight)：根据权重大小进行分配，默认根据资源可用空间进行权重排序。 </p> 
+  <div class="image-package"> 
+   <div class="image-container"> 
+    <div class="image-view" style="text-align: center;"> 
+     <img src="https://images2.imgbox.com/42/0d/MMRsGY5h_o.png" style="outline: none;"> 
+    </div> 
+   </div> 
+  </div> 
+  <h5> 3.4.5.3 Nova-compute</h5> 
+  <p>        nova-compute负责虚拟机的生命周期管理，创建并终止虚拟机实例的工作后台程序hypervisor api。</p> 
+  <div class="image-package"> 
+   <div class="image-container"> 
+    <div class="image-view" style="text-align: center;"> 
+     <img src="https://images2.imgbox.com/fd/7f/IAS3SVeq_o.png" style="outline: none;"> 
+    </div> 
+   </div> 
+   <div class="image-caption">
+     nova-compute工作原理图 
+   </div> 
+  </div> 
+  <p>        nova-compute 在计算节点上运行，负责管理节点上的实例。OpenStack 对实例的操作，最后都是交给 nova-compute 来完成。nova-compute 与 Hypervisor 一起实现 OpenStack 对实例生命周期的管理。</p> 
+  <p>        由前面介绍的 Driver 框架可知，nova-compute 通过 Driver 架构支持多种 Hypervisor。nova-compute 为各种 Hypervisor 定义了统一的接口，Hypervisor 只需要实现这些接口，就可以 Driver 的形式即插即用到 OpenStack 系统中。可以在 /nova/nova/virt/ 目录下查看到 OpenStack 源代码中已经自带了上面这几个 Hypervisor 的 Driver。</p> 
+  <p>        某个特定的计算节点上只会运行一种 Hypervisor，只需在该节点 nova-compute 的配置文件 /etc/nova/nova.conf 中配置所对应的 compute_driver 就可以了。</p> 
+  <p>nova-compute 的功能可以分为两类：</p> 
+  <p>        定时向 OpenStack 报告计算节点的状态，每隔一段时间，nova-compute 就会报告当前计算节点的资源使用情况和 nova-compute 服务状态。可以查看日志 /var/log/nova/nova-compute.log。这样OpenStack 就能得知每个计算节点的 vcpu、ram、disk 等信息。nova-scheduler 的很多 Filter 才能根据计算节点的资源使用情况进行过滤，选择符合 flavor 要求的计算节点。</p> 
+  <p>        实现实例生命周期的管理，OpenStack 对实例最主要的操作都是通过 nova-compute 实现的，包括实例的启动、关闭、重启、暂停、恢复、删除、调整实例大小、迁移、创建快照等。</p> 
+  <h5>3.4.5.4 Nova-conductor</h5> 
+  <p>       nova-compute 需要获取和更新数据库中实例的信息。但 nova-compute 并不会直接访问数据库，而是通过 nova-conductor 实现数据的访问：</p> 
+  <p>1)实现更高的系统安全性</p> 
+  <p>        在 OpenStack 的早期版本中，nova-compute 可以直接访问数据库，但这样存在非常大的安全隐患。因为 nova-compute 这个服务是部署在计算节点上的，为了能够访问控制节点上的数据库，就必须在计算节点的 /etc/nova/nova.conf 中配置访问数据库的连接信息。如果任意一个计算节点被黑客入侵，都会导致部署在控制节点上的数据库面临极大风险。</p> 
+  <p>        为了解决这个问题，从 G 版本开始，Nova 引入了一个新服务 nova-conductor，将 nova-compute 访问数据库的全部操作都放到 nova-conductor 中，而且 nova-conductor 是部署在控制节点上的。这样就避免了 nova-compute 直接访问数据库，增加了系统的安全性。</p> 
+  <p>2)实现更好的系统伸缩性</p> 
+  <p>        nova-compute 与 nova-conductor 是通过消息中间件交互的。这种松散的架构允许配置多个 nova-conductor 实例。在一个大规模的 OpenStack 部署环境里，管理员可以通过增加 nova-conductor 的数量来应对日益增长的计算节点对数据库的访问。</p> 
+  <h5>3.4.5.5 Nova-api-metadata</h5> 
+  <p>        nova-api-metadata负责从实例中接收元数据请求。nova-api-metadata服务通常在nova-network安装时使用的是多宿主模式运行。</p> 
+  <h5>3.4.5.6 Nova-placement-api</h5> 
+  <p>        nova-placement-api负责跟踪每个计算提供者的仓库和使用情况。</p> 
+  <h5>3.4.5.7 Nova-consoleauth</h5> 
+  <p>        nova-consoleauth用于控制台的授权验证，授权控制台代理提供的用户令牌。此服务必须运行用于控制台代理工作。您可以运行任何类型的代理，而不是集群配置中的单nova-consoleauth服务。</p> 
+  <h5>3.4.5.8 Queue</h5> 
+  <p>        Queue用于在守护进程之间传递消息的中心。通常使用RabbitMQ也可以用另一个基于AMQP的消息队列，例如ZeroMQ。</p> 
+  <div class="image-package"> 
+   <div class="image-container"> 
+    <div class="image-view" style="text-align: center;"> 
+     <img src="https://images2.imgbox.com/46/f1/dG7UKlB3_o.png" style="outline: none;"> 
+    </div> 
+   </div> 
+   <div class="image-caption">
+     Nova组件功能简介 
+   </div> 
+  </div> 
+  <h4>3.4.7 常用操作</h4> 
+  <p>    一、生命周期和虚拟机管理</p> 
+  <div class="image-package"> 
+   <div class="image-container"> 
+    <div class="image-view" style="text-align: center;"> 
+     <img src="https://images2.imgbox.com/8b/d5/r4flbSMM_o.png" style="outline: none;"> 
+    </div> 
+   </div> 
+  </div> 
+  <p>    二、云主机类型和安全组管理</p> 
+  <div class="image-package"> 
+   <div class="image-container"> 
+    <div class="image-view" style="text-align: center;"> 
+     <img src="https://images2.imgbox.com/60/0f/Rhu69kyP_o.png" style="outline: none;"> 
+    </div> 
+   </div> 
+  </div> 
+  <p>    三、网络、浮动IP、密匙和配额管理</p> 
+  <div class="image-package"> 
+   <div class="image-container"> 
+    <div class="image-view" style="text-align: center;"> 
+     <img src="https://images2.imgbox.com/19/74/BqvZiOJH_o.png" style="outline: none;"> 
+    </div> 
+   </div> 
+  </div> 
+ </article> 
+</div>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/f327d276969abe81418247d60abf3769/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">CentOS8最新镜像</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/c96af85cc77bdfcadef5c30e22bc6309/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">仿苹果官网首页面（Hbuilder X&#43;CSS）</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

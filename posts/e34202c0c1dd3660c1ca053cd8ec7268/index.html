@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>分布式事务CAP与Base理论以及2PC、3PC模式、XA模式、TCC模式、Saga模式、Seata框架介绍 - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="分布式事务CAP与Base理论以及2PC、3PC模式、XA模式、TCC模式、Saga模式、Seata框架介绍" />
+<meta property="og:description" content="一、分布式事务理论知识 1、CAP（强一致性） CAP定理，又被叫作布鲁尔定理。对于共享数据系统，最多只能同时拥有CAP其中的两个，任意两个都有其适应的场景。
+2、BASE（最终一致性） BASE 是指基本可用（Basically Available）、软状态（Soft State）、最终一致性（Eventual Consistency）。它的核心思想是即使无法做到强一致性（CAP就是强一致性），但应用可以采用适合的方式达到最终一致性。
+BA指的是基本业务可用性，支持分区失败；S表示柔性状态，也就是允许短时间内不同步；E表示最终一致性，数据最终是一致的，但是实时是不一致的。 原子性和持久性必须从根本上保障，为了可用性、性能和服务降级的需要，只有降低一致性和隔离性的要求。
+BASE解决了CAP理论中没有考虑到的网络延迟问题，在BASE中用软状态和最终一致，保证了延迟后的一致性。
+3、分布式事务模式 分布式解决方案：
+2PC模式（强一致性）
+2PC是Two-PhaseCommit缩写，即两阶段提交，就是将事务的提交过程分为两个阶段来进行处理。事务的发起者称协调者，事务的执行者称参与者。协调者统一协调参与者执行。
+阶段1：准备阶段
+协调者向所有参与者发送事务内容，询问是否可以提交事务，并等待所有参与者答复。各参与者执行事务操作，但不提交事务，将undo和redo信息记入事务日志中。
+如参与者执行成功，给协调者反馈yes；如执行失败，给协调者反馈no。
+阶段2：提交阶段
+如果协调者收到了参与者的失败消息或者超时，直接给每个参与者发送回滚（rolback）消息；否则，发送提交（commit）消息。 2PC方案实现起来简单，实际项目中使用比较少，主要因为以下问题：
+性能问题：所有参与者在事务提交阶段处于同步阻塞状态，占用系统资源，容易导致性能瓶颈。可靠性问题：如果协调者存在单点故障问题，如果协调者出现故障，参与者将一直处于锁定状态。数据一致性问题：在阶段2中，如果发生局部网络问题，一部分事务参与者收到了提交消息，另一部分事务参与者没收到提交消息，那么就导致了节点之间数据的不一致。 3PC模式（强一致性）
+PC三阶段提交，是两阶段提交的改进版本，与两阶段提交不同的是，引入超时机制。同时在协调者和参与者中都引入超时机制。三阶段提交将两阶段的准备阶段拆分为2个阶段，插入了一个preCommit阶段，解决了原先在两阶段提交中，参与者在准备之后，由于协调者或参与者发生崩溃或错误，而导致参与者无法知晓处于长时间等待的问题。如果在指定的时间内协调者没有收到参与者的消息则默认失败。 阶段1：canCommit协调者向参与者发送commit请求，参与者如果可以提交就返回yes响应，否则返回no响应。阶段2：preCommit协调者根据阶段1 canCommit参与者的反应情况执行预提交事务或中断事务操作。
+参与者均反馈 yes：协调者向所有参与者发出preCommit请求，参与者收到preCommit请求后，执行事务操作，但不提交；将undo和redo信息记入事务日志中；各参与者向协调者反馈ack响应或no响应，并等待最终指令。
+任何一个参与者反馈no或等待超时：协调者向所有参与者发出abort请求，无论收到协调者发出的abort请求，或者在等待协调者请求过程中出现超时，参与者均会中断事务。阶段3：do Commit该阶段进行真正的事务提交，根据阶段2 preCommit反馈的结果完成事务提交或中断操作。 相比2PC模式，3PC模式降低了阻塞范围，在等待超时后协调者或参与者会中断事务。避免了协调者单点问题，阶段3中协调者出现问题时（比如网络中断等），参与者会继续提交事务。
+XA（强一致性）
+XA是由X/Open组织提出的分布式事务的规范，是基于两阶段提交协议。XA规范主要定义了全局事务管理器（TM）和局部资源管理器（RM）之间的接口。目前主流的关系型数据库产品都是实现了XA接口。 XA之所以需要引入事务管理器，是因为在分布式系统中，从理论上讲两台机器理论上无法达到一致的状态，需要引入一个单点进行协调。由全局事务管理器管理和协调的事务，可以跨越多个资源（数据库）和进程。
+事务管理器用来保证所有的事务参与者都完成了准备工作（第一阶段）。如果事务管理器收到所有参与者都准备好的消息，就会通知所有的事务都可以提交了（第二阶段）。MySQL在这个XA事务中扮演的是参与者的角色，而不是事务管理器。
+TCC模式（最终一致性）
+TCC（Try-Confirm-Cancel）的概念，最早是由Pat Helland于2007年发表的一篇名为《Life beyond Distributed Iransactions:an Apostate’s Opinion》的论文提出。TCC是服务化的两阶段编程模型，其Try、Confirm、Cancel3个方法均由业务编码实现： Try操作作为一阶段，负责资源的检查和预留；Confirm操作作为二阶段提交操作，执行真正的业务；Cancel是预留资源的取消； TCC事务模式相对于XA等传统模型如下图所示：
+TCC模式相比于XA，解决了如下几个缺点：
+解决了协调者单点，由主业务方发起并完成这个业务活动。业务活动管理器可以变成多点，引入集群。同步阻塞：引入超时机制，超时后进行补偿，并且不会锁定整个资源，将资源转换为业务逻辑形式，粒度变小。数据一致性，有了补偿机制之后，由业务活动管理器控制一致性。 消息队列模式（最终一致性）
+消息队列的方案最初是由eBay提出，基于TCC模式，消息中间件可以基于Kafka、RocketMQ等消息队列。
+此方案的核心是将分布式事务拆分成本地事务进行处理，将需要分布式处理的任务通过消息日志的方式来异步执行。消息日志可以存储到本地文本、数据库或MQ中间件，再通过业务规则自动或人工发起重试。 事务的处理流程：
+步骤1：事务主动方处理本地事务。
+事务主动方在本地事务中处理业务更新操作和MQ写消息操作。步骤2：事务主动方通过消息中间件，通知事务被动方处理事务通知事务待消息。
+事务主动方主动写消息到MQ，事务消费方接收并处理MQ中的消息。步骤3：事务被动方通过MQ中间件，通知事务主动方事务已处理的消息，事务主动方根据反馈结果提交或回滚事务。 为了数据的一致性，当流程中遇到错误需要重试，容错处理规则如下：
+当步骤1处理出错，事务回滚，相当于什么都没发生。当步骤2处理出错，由于未处理的事务消息还是保存在事务发送方，可以重试或撤销本地业务操作。如果事务被动方消费消息异常，需要不断重试，业务处理逻辑需要保证幂等。如果是事务被动方业务上的处理失败，可以通过MQ通知事务主动方进行补偿或者事务回滚。如果多个事务被动方已经消费消息，事务主动方需要回滚事务时需要通知事务被动方回滚。 Saga模式（最终一致性）
+Saga这个概念源于1987年普林斯顿大学的Hecto和Kenneth发表的一篇数据库论文Sagas，一个Saga事务是一个有多个短时事务组成的长时的事务。在分布式事务场景下，我们把一个Saga分布式事务看做是一个由多个本地事务组成的事务，每个本地事务都有一个与之对应的补偿事务。在Saga事务的执行过程中，如果某一步执行出现异常，Saga事务会被终止，同时会调用对应的补偿事务完成相关的恢复操作，这样保证Saga相关的本地事务要么都是执行成功，要么通过补偿恢复成为事务执行之前的状态。（自动反向补偿机制）。 Saga事务基本协议：
+每个Saga事务由一系列幂等的有序子事务（sub-transaction）Ti组成。每个Ti都有对应的幂等补偿动作Ci，补偿动作用于撤销Ti造成的结果。 Saga是一种补偿模式，它定义了两种补偿策略：
+向前恢复（forward recovery）：对应于上面第一种执行顺序，发生失败进行重试，适用于必须要成功的场景。向后恢复（backward recovery）：对应于上面提到的第二种执行顺序，发生错误后撤销掉之前所有成功的子事务，使得整个Saga的执行结果撤销。 二、Seata框架介绍 Seata（Simple Extensible Autonomous Transaction Architecture）是一套一站式分布式事务解决方案，是阿里集团和蚂蚁金服联合打造的分布式事务框架。Seata目前的事务模式有AT、ICC、Saga三种模式，默认是AT模式，AT本质上是2PC协议的一种实现。" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/e34202c0c1dd3660c1ca053cd8ec7268/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2022-03-06T18:02:26+08:00" />
+<meta property="article:modified_time" content="2022-03-06T18:02:26+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">分布式事务CAP与Base理论以及2PC、3PC模式、XA模式、TCC模式、Saga模式、Seata框架介绍</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <h3><a id="_0"></a>一、分布式事务理论知识</h3> 
+<h4><a id="1CAP_1"></a>1、CAP（强一致性）</h4> 
+<p>CAP定理，又被叫作布鲁尔定理。对于共享数据系统，最多只能同时拥有CAP其中的两个，任意两个都有其适应的场景。<br> <img src="https://images2.imgbox.com/66/92/O7qeguxa_o.png" alt="在这里插入图片描述"></p> 
+<h4><a id="2BASE_5"></a>2、BASE（最终一致性）</h4> 
+<p>BASE 是指基本可用（Basically Available）、软状态（Soft State）、最终一致性（Eventual Consistency）。它的核心思想是即使无法做到强一致性（CAP就是强一致性），但应用可以采用适合的方式达到最终一致性。</p> 
+<ul><li>BA指的是基本业务可用性，支持分区失败；</li><li>S表示柔性状态，也就是允许短时间内不同步；</li><li>E表示最终一致性，数据最终是一致的，但是实时是不一致的。</li></ul> 
+<p>原子性和持久性必须从根本上保障，为了可用性、性能和服务降级的需要，只有降低一致性和隔离性的要求。<br> BASE解决了CAP理论中没有考虑到的网络延迟问题，在BASE中用软状态和最终一致，保证了延迟后的一致性。</p> 
+<h4><a id="3_14"></a>3、分布式事务模式</h4> 
+<p>分布式解决方案：</p> 
+<ol><li>2PC模式（强一致性）<br> 2PC是Two-PhaseCommit缩写，即两阶段提交，就是将事务的提交过程分为两个阶段来进行处理。事务的发起者称协调者，事务的执行者称参与者。协调者统一协调参与者执行。<br> 阶段1：准备阶段<br> 协调者向所有参与者发送事务内容，询问是否可以提交事务，并等待所有参与者答复。各参与者执行事务操作，但不提交事务，将undo和redo信息记入事务日志中。<br> 如参与者执行成功，给协调者反馈yes；如执行失败，给协调者反馈no。<br> 阶段2：提交阶段<br> 如果协调者收到了参与者的失败消息或者超时，直接给每个参与者发送回滚（rolback）消息；否则，发送提交（commit）消息。</li></ol> 
+<p>2PC方案实现起来简单，实际项目中使用比较少，主要因为以下问题：</p> 
+<ul><li>性能问题：所有参与者在事务提交阶段处于同步阻塞状态，占用系统资源，容易导致性能瓶颈。</li><li>可靠性问题：如果协调者存在单点故障问题，如果协调者出现故障，参与者将一直处于锁定状态。</li><li>数据一致性问题：在阶段2中，如果发生局部网络问题，一部分事务参与者收到了提交消息，另一部分事务参与者没收到提交消息，那么就导致了节点之间数据的不一致。</li></ul> 
+<ol start="2"><li>3PC模式（强一致性）<br> PC三阶段提交，是两阶段提交的改进版本，与两阶段提交不同的是，引入超时机制。同时在协调者和参与者中都引入超时机制。三阶段提交将两阶段的准备阶段拆分为2个阶段，插入了一个preCommit阶段，解决了原先在两阶段提交中，参与者在准备之后，由于协调者或参与者发生崩溃或错误，而导致参与者无法知晓处于长时间等待的问题。如果在指定的时间内协调者没有收到参与者的消息则默认失败。</li></ol> 
+<ul><li>阶段1：canCommit协调者向参与者发送commit请求，参与者如果可以提交就返回yes响应，否则返回no响应。</li><li>阶段2：preCommit协调者根据阶段1 canCommit参与者的反应情况执行预提交事务或中断事务操作。<br> 参与者均反馈 yes：协调者向所有参与者发出preCommit请求，参与者收到preCommit请求后，执行事务操作，但不提交；将undo和redo信息记入事务日志中；各参与者向协调者反馈ack响应或no响应，并等待最终指令。<br> 任何一个参与者反馈no或等待超时：协调者向所有参与者发出abort请求，无论收到协调者发出的abort请求，或者在等待协调者请求过程中出现超时，参与者均会中断事务。</li><li>阶段3：do Commit该阶段进行真正的事务提交，根据阶段2 preCommit反馈的结果完成事务提交或中断操作。</li></ul> 
+<p>相比2PC模式，3PC模式降低了阻塞范围，在等待超时后协调者或参与者会中断事务。避免了协调者单点问题，阶段3中协调者出现问题时（比如网络中断等），参与者会继续提交事务。</p> 
+<ol start="3"><li>XA（强一致性）<br> XA是由X/Open组织提出的分布式事务的规范，是基于两阶段提交协议。XA规范主要定义了全局事务管理器（TM）和局部资源管理器（RM）之间的接口。目前主流的关系型数据库产品都是实现了XA接口。</li></ol> 
+<p><img src="https://images2.imgbox.com/63/b6/OgYUSbyZ_o.png" alt="在这里插入图片描述"></p> 
+<p>XA之所以需要引入事务管理器，是因为在分布式系统中，从理论上讲两台机器理论上无法达到一致的状态，需要引入一个单点进行协调。由全局事务管理器管理和协调的事务，可以跨越多个资源（数据库）和进程。<br> 事务管理器用来保证所有的事务参与者都完成了准备工作（第一阶段）。如果事务管理器收到所有参与者都准备好的消息，就会通知所有的事务都可以提交了（第二阶段）。MySQL在这个XA事务中扮演的是参与者的角色，而不是事务管理器。</p> 
+<ol start="4"><li>TCC模式（最终一致性）<br> TCC（Try-Confirm-Cancel）的概念，最早是由Pat Helland于2007年发表的一篇名为《Life beyond Distributed Iransactions:an Apostate’s Opinion》的论文提出。TCC是服务化的两阶段编程模型，其Try、Confirm、Cancel3个方法均由业务编码实现：</li></ol> 
+<ul><li>Try操作作为一阶段，负责资源的检查和预留；</li><li>Confirm操作作为二阶段提交操作，执行真正的业务；</li><li>Cancel是预留资源的取消；</li></ul> 
+<p>TCC事务模式相对于XA等传统模型如下图所示：<br> <img src="https://images2.imgbox.com/8a/e9/CSxGUZ3C_o.png" alt="在这里插入图片描述"></p> 
+<p>TCC模式相比于XA，解决了如下几个缺点：</p> 
+<ul><li>解决了协调者单点，由主业务方发起并完成这个业务活动。业务活动管理器可以变成多点，引入集群。</li><li>同步阻塞：引入超时机制，超时后进行补偿，并且不会锁定整个资源，将资源转换为业务逻辑形式，粒度变小。</li><li>数据一致性，有了补偿机制之后，由业务活动管理器控制一致性。</li></ul> 
+<ol start="5"><li>消息队列模式（最终一致性）<br> 消息队列的方案最初是由eBay提出，基于TCC模式，消息中间件可以基于Kafka、RocketMQ等消息队列。<br> 此方案的核心是将分布式事务拆分成本地事务进行处理，将需要分布式处理的任务通过消息日志的方式来异步执行。消息日志可以存储到本地文本、数据库或MQ中间件，再通过业务规则自动或人工发起重试。</li></ol> 
+<p>事务的处理流程：<br> <img src="https://images2.imgbox.com/2a/03/LGoZbDv5_o.png" alt="在这里插入图片描述"></p> 
+<ul><li>步骤1：事务主动方处理本地事务。<br> 事务主动方在本地事务中处理业务更新操作和MQ写消息操作。</li><li>步骤2：事务主动方通过消息中间件，通知事务被动方处理事务通知事务待消息。<br> 事务主动方主动写消息到MQ，事务消费方接收并处理MQ中的消息。</li><li>步骤3：事务被动方通过MQ中间件，通知事务主动方事务已处理的消息，事务主动方根据反馈结果提交或回滚事务。</li></ul> 
+<p>为了数据的一致性，当流程中遇到错误需要重试，容错处理规则如下：</p> 
+<ul><li>当步骤1处理出错，事务回滚，相当于什么都没发生。</li><li>当步骤2处理出错，由于未处理的事务消息还是保存在事务发送方，可以重试或撤销本地业务操作。</li><li>如果事务被动方消费消息异常，需要不断重试，业务处理逻辑需要保证幂等。</li><li>如果是事务被动方业务上的处理失败，可以通过MQ通知事务主动方进行补偿或者事务回滚。</li><li>如果多个事务被动方已经消费消息，事务主动方需要回滚事务时需要通知事务被动方回滚。</li></ul> 
+<ol start="6"><li>Saga模式（最终一致性）<br> Saga这个概念源于1987年普林斯顿大学的Hecto和Kenneth发表的一篇数据库论文Sagas，一个Saga事务是一个有多个短时事务组成的长时的事务。在分布式事务场景下，我们把一个Saga分布式事务看做是一个由多个本地事务组成的事务，每个本地事务都有一个与之对应的补偿事务。在Saga事务的执行过程中，如果某一步执行出现异常，Saga事务会被终止，同时会调用对应的补偿事务完成相关的恢复操作，这样保证Saga相关的本地事务要么都是执行成功，要么通过补偿恢复成为事务执行之前的状态。（自动反向补偿机制）。</li></ol> 
+<p>Saga事务基本协议：</p> 
+<ul><li>每个Saga事务由一系列幂等的有序子事务（sub-transaction）Ti组成。</li><li>每个Ti都有对应的幂等补偿动作Ci，补偿动作用于撤销Ti造成的结果。</li></ul> 
+<p>Saga是一种补偿模式，它定义了两种补偿策略：</p> 
+<ul><li>向前恢复（forward recovery）：对应于上面第一种执行顺序，发生失败进行重试，适用于必须要成功的场景。</li><li>向后恢复（backward recovery）：对应于上面提到的第二种执行顺序，发生错误后撤销掉之前所有成功的子事务，使得整个Saga的执行结果撤销。</li></ul> 
+<p><img src="https://images2.imgbox.com/8b/c0/u8W9uGuA_o.png" alt="在这里插入图片描述"></p> 
+<h3><a id="Seata_95"></a>二、Seata框架介绍</h3> 
+<p>Seata（Simple Extensible Autonomous Transaction Architecture）是一套一站式分布式事务解决方案，是阿里集团和蚂蚁金服联合打造的分布式事务框架。Seata目前的事务模式有AT、ICC、Saga三种模式，默认是AT模式，AT本质上是2PC协议的一种实现。</p> 
+<p>Seata AT事务模型包含TM（事务管理器），RM（资源管理器），TC（事务协调器）。其中TC是一个独立的服务需要单独部署，TM和RM以jar包的方式同业务应用部署在一起，它们同TC建立长连接，在整个事务生命周期内，保持RPC通信。</p> 
+<ul><li>全局事务的发起方作为TM，全局事务的参与者作为RM</li><li>TM负责全局事务的begin和commit/rollback</li><li>RM负责分支事务的执行结果上报，并且通过TC的协调进行commit/rollback。</li></ul> 
+<p><img src="https://images2.imgbox.com/ca/66/mFqKWXYz_o.png" alt="在这里插入图片描述"></p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/76f790914d3804d3dff5aac3a4411f14/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">C&#43;&#43;头文件 ＜algorithm＞的 常用函数(详细）</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/97f2b5f531552020a54ba0839d432fb0/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">以太坊虚拟机（ EVM ）</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

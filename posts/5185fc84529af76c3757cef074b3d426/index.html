@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>apollo在Spring boot加载过程解析 - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="apollo在Spring boot加载过程解析" />
+<meta property="og:description" content="前言 apollo 是一个开源的配置中心项目，功能很强大，apollo 本身的配置项并不复杂，但是因为配置的路径特别多，非常容易搞混了， 所以本文试图聚焦 spring-boot 的场景，在 spring-boot 微服务场景下，搞清楚 apollo-client 的加载过程
+集成使用 1、添加 gradle 依赖 implementation &#34;com.ctrip.framework.apollo:apollo-client:1.6.0&#34; 2、配置 application.properties apollo 自身的配置共包含 9 项，必要配置只有 3 项，其他的都是可选的配置。apollo 在 spring-boot 环境下的配置命名和 System 参数的命名保持了一直，最终 spring 的配置会注入到 System 中，具体的逻辑下文分析。
+必须配置 #应用的ID app.id = java-project # apollo 的 config-service 服务发现地址 apollo.meta = http://apollo.meta # 启用 apollo apollo.bootstrap.enabled = true 可选配置 # 在日志系统初始化前加载 apollo 配置 apollo.bootstrap.eagerLoad.enabled=true # 加载的命名空间，默认加载 application ，多个以逗号隔开 apollo.bootstrap.namespaces = application # apollo 的安全拉取 secret 配置 apollo." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/5185fc84529af76c3757cef074b3d426/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2021-03-24T22:58:26+08:00" />
+<meta property="article:modified_time" content="2021-03-24T22:58:26+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">apollo在Spring boot加载过程解析</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <h2>前言</h2> 
+<p>apollo 是一个开源的配置中心项目，功能很强大，apollo 本身的配置项并不复杂，但是因为配置的路径特别多，非常容易搞混了， 所以本文试图聚焦 spring-boot 的场景，在 spring-boot 微服务场景下，搞清楚 apollo-client 的加载过程</p> 
+<p><img alt="" src="https://images2.imgbox.com/9f/86/j4TpHOJE_o.png"></p> 
+<h2>集成使用</h2> 
+<h2>1、添加 gradle 依赖</h2> 
+<pre><code>    implementation "com.ctrip.framework.apollo:apollo-client:1.6.0"
+</code></pre> 
+<h2>2、配置 application.properties</h2> 
+<p>apollo 自身的配置共包含 9 项，必要配置只有 3 项，其他的都是可选的配置。apollo 在 spring-boot 环境下的配置命名和 System 参数的命名保持了一直，最终 spring 的配置会注入到 System 中，具体的逻辑下文分析。</p> 
+<h2>必须配置</h2> 
+<pre><code>#应用的ID
+app.id = java-project
+# apollo 的 config-service 服务发现地址
+apollo.meta = http://apollo.meta
+# 启用 apollo
+apollo.bootstrap.enabled = true
+</code></pre> 
+<h2>可选配置</h2> 
+<pre><code># 在日志系统初始化前加载 apollo 配置
+apollo.bootstrap.eagerLoad.enabled=true
+# 加载的命名空间，默认加载 application ，多个以逗号隔开
+apollo.bootstrap.namespaces = application
+# apollo 的安全拉取 secret 配置
+apollo.accesskey.secret = xx
+# 集群配置
+apollo.cluster = hk
+# 缓存路径
+apollo.cacheDir = /opt
+# 是否保持和 apollo 配置页面的配置顺序一致
+apollo.property.order.enable = true
+</code></pre> 
+<h2>加载过程解析</h2> 
+<pre><code>public class ApolloApplicationContextInitializer implements ApplicationContextInitializer&lt;ConfigurableApplicationContext&gt; , EnvironmentPostProcessor, Ordered {
+  public static final int DEFAULT_ORDER = 0;
+
+  private static final Logger logger = LoggerFactory.getLogger(ApolloApplicationContextInitializer.class);
+  private static final Splitter NAMESPACE_SPLITTER = Splitter.on(",").omitEmptyStrings().trimResults();
+  private static final String[] APOLLO_SYSTEM_PROPERTIES = {"app.id", ConfigConsts.APOLLO_CLUSTER_KEY,
+      "apollo.cacheDir", "apollo.accesskey.secret", ConfigConsts.APOLLO_META_KEY, PropertiesFactory.APOLLO_PROPERTY_ORDER_ENABLE};
+
+  private final ConfigPropertySourceFactory configPropertySourceFactory = SpringInjector.getInstance(ConfigPropertySourceFactory.class);
+
+  private int order = DEFAULT_ORDER;
+
+  @Override
+  public void initialize(ConfigurableApplicationContext context) {
+    ConfigurableEnvironment environment = context.getEnvironment();
+
+    if (!environment.getProperty(PropertySourcesConstants.APOLLO_BOOTSTRAP_ENABLED, Boolean.class, false)) {
+      logger.debug("Apollo bootstrap config is not enabled for context {}, see property: ${<!-- -->{}}", context, PropertySourcesConstants.APOLLO_BOOTSTRAP_ENABLED);
+      return;
+    }
+    logger.debug("Apollo bootstrap config is enabled for context {}", context);
+
+    initialize(environment);
+  }
+
+
+  /**
+   * Initialize Apollo Configurations Just after environment is ready.
+   *
+   * @param environment
+   */
+  protected void initialize(ConfigurableEnvironment environment) {
+
+    if (environment.getPropertySources().contains(PropertySourcesConstants.APOLLO_BOOTSTRAP_PROPERTY_SOURCE_NAME)) {
+      //already initialized
+      return;
+    }
+
+    String namespaces = environment.getProperty(PropertySourcesConstants.APOLLO_BOOTSTRAP_NAMESPACES, ConfigConsts.NAMESPACE_APPLICATION);
+    logger.debug("Apollo bootstrap namespaces: {}", namespaces);
+    List&lt;String&gt; namespaceList = NAMESPACE_SPLITTER.splitToList(namespaces);
+
+    CompositePropertySource composite = new CompositePropertySource(PropertySourcesConstants.APOLLO_BOOTSTRAP_PROPERTY_SOURCE_NAME);
+    for (String namespace : namespaceList) {
+      Config config = ConfigService.getConfig(namespace);
+
+      composite.addPropertySource(configPropertySourceFactory.getConfigPropertySource(namespace, config));
+    }
+
+    environment.getPropertySources().addFirst(composite);
+  }
+
+  /**
+   * To fill system properties from environment config
+   */
+  void initializeSystemProperty(ConfigurableEnvironment environment) {
+    for (String propertyName : APOLLO_SYSTEM_PROPERTIES) {
+      fillSystemPropertyFromEnvironment(environment, propertyName);
+    }
+  }
+
+  private void fillSystemPropertyFromEnvironment(ConfigurableEnvironment environment, String propertyName) {
+    if (System.getProperty(propertyName) != null) {
+      return;
+    }
+
+    String propertyValue = environment.getProperty(propertyName);
+
+    if (Strings.isNullOrEmpty(propertyValue)) {
+      return;
+    }
+
+    System.setProperty(propertyName, propertyValue);
+  }
+
+  /**
+   *
+   * In order to load Apollo configurations as early as even before Spring loading logging system phase,
+   * this EnvironmentPostProcessor can be called Just After ConfigFileApplicationListener has succeeded.
+   *
+   * &lt;br /&gt;
+   * The processing sequence would be like this: &lt;br /&gt;
+   * Load Bootstrap properties and application properties -----&gt; load Apollo configuration properties ----&gt; Initialize Logging systems
+   *
+   * @param configurableEnvironment
+   * @param springApplication
+   */
+  @Override
+  public void postProcessEnvironment(ConfigurableEnvironment configurableEnvironment, SpringApplication springApplication) {
+
+    // should always initialize system properties like app.id in the first place
+    initializeSystemProperty(configurableEnvironment);
+
+    Boolean eagerLoadEnabled = configurableEnvironment.getProperty(PropertySourcesConstants.APOLLO_BOOTSTRAP_EAGER_LOAD_ENABLED, Boolean.class, false);
+
+    //EnvironmentPostProcessor should not be triggered if you don't want Apollo Loading before Logging System Initialization
+    if (!eagerLoadEnabled) {
+      return;
+    }
+
+    Boolean bootstrapEnabled = configurableEnvironment.getProperty(PropertySourcesConstants.APOLLO_BOOTSTRAP_ENABLED, Boolean.class, false);
+
+    if (bootstrapEnabled) {
+      initialize(configurableEnvironment);
+    }
+
+  }
+
+  /**
+   * @since 1.3.0
+   */
+  @Override
+  public int getOrder() {
+    return order;
+  }
+
+  /**
+   * @since 1.3.0
+   */
+  public void setOrder(int order) {
+    this.order = order;
+  }
+}
+</code></pre> 
+<p>apollo 在 spring-boot 中的加载逻辑都在如上的代码中了，代码的关键是实现了两个 spring 生命周期的接口，</p> 
+<ul><li>ApplicationContextInitializer</li></ul> 
+<p>在被 ConfigurableApplicationContext.refresh()刷新之前初始化 ConfigurableApplicationContext 的回调接口。</p> 
+<ul><li>EnvironmentPostProcessor</li></ul> 
+<p>比 ApplicationContextInitializer 的加载时机还要提前，此时 spring-boot 的日志系统还未初始化，</p> 
+<h2>postProcessEnvironment 方法逻辑解析</h2> 
+<ul><li>1、初始化 System 的配置，将 spring 上下文中的配置(环境变量、System 参数、application.properties) 拷贝到 System 配置中， 如果 System 已经存在同名的配置则跳过，保证了 -D 设置的 System 参数的最高优先级。但是也带来了一个隐含的问题，默认，apollo 的配置设计支持从环境变量中取值，也遵循了环境变量大写的规范，将 System 参数的 "." 换成 "_" 拼接，然后变成大写。 比如 apollo.meta 对应环境变量的 APOLLO_META。但是在 spring-boot 的环境下，因为 spring 的配置系统默认也会加载环境变量的配置，最终在环境变量里配置 apollo.meta 也会生效。甚至比正确配置的 APOLLO_META 环境变量值的优先级还高。</li><li>2、根据 apollo.bootstrap.eagerLoad.enabled 和 apollo.bootstrap.enabled 的配置来判断是否在这个阶段初始化 apollo。 postProcessEnvironment() 执行的时候， 此时日志系统并未初始化，在这个阶段加载 apollo，可以解决将日志配置托管到 apollo 里直接生效的问题。 带来的问题是， 假如在这个阶段的 apollo 加载出现问题，由于日志系统未初始化，看不到 apollo 的加载日志，不方便定位 apollo 的加载问题。 所以博主建议，如果有托管日志配置的场景，可以先不启用 apollo.bootstrap.eagerLoad.enabled 的配置，等 apollo 集成完成后再启用。</li></ul> 
+<h2>initialize 方法逻辑解析</h2> 
+<ul><li>1、根据 apollo.bootstrap.enabled 的配置来判断，是否在这个阶段初始化 apollo ，如果此时 spring 上下文中已经包含了 apollo 的 PropertySources，代表 apollo 已经 初始化过，则直接 return 掉</li><li>2、根据 apollo.bootstrap.namespaces 的配置，默认不配置为 "application" ，依次获取对应的 namespace 的配置， 并将配置使用 addFirst() 具有最高优先级属性源的设置方法， 添加到了 spring 的配置上下文中。这里解释了为什么 apollo 的配置的优先级最高，比 application.properties 中直接配置都要高， 这个优先级的问题会经常闹乌龙，在本地开发调试阶段，会直接在 application.properties 里调试配置，然后怎么改都不生效，因为 apollo 李 存在了同名的配置，启动的时候直接覆盖了本地的配置。博主也犯过几次这个错误</li></ul> 
+<h2>结语</h2> 
+<p>上面列出的 9 项 apollo 配置，只有三项配置（apollo.bootstrap.enabled、apollo.bootstrap.eagerLoad.enabled、apollo.bootstrap.namespaces）是在 spring-boot 启动过程中用到的，其他的配置都被透传到 System ，供 apollo 底层 sdk 使用。 基于此而发现了一个 apollo 初始化配置时的小彩蛋，在 spring-boot 应用里，如果使用环境变量来驱动 apollo 的配置项，则带 "." 风格的配置(apollo.meta)和 "_" 风格的大写配置(APOLLO_META)的效果是等价的，并且如果两个配置同时存在环境变量中，前者的优先级要高于后者</p> 
+<blockquote> 
+ <p>原文链接：https://my.oschina.net/klblog/blog/4995716</p> 
+</blockquote> 
+<p>如果觉得本文对你有帮助，可以关注一下我公众号，回复关键字【面试】即可得到一份Java核心知识点整理与一份面试大礼包！另有更多技术干货文章以及相关资料共享，大家一起学习进步！</p> 
+<p><img alt="" height="344" src="https://images2.imgbox.com/65/3c/tkeOiNr1_o.png" width="344"></p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/eb6cfa4d53241982d082b3a086823d42/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">学习Oneindex的搭建[国际Onedrive]</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/53eac613ad06113d22faf0a06ff0b32a/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">小程序什么时候会被销毁</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

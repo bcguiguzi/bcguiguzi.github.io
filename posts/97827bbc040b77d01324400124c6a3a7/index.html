@@ -1,0 +1,254 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>使用Squashfs和Overlayfs提高嵌入式Linux文件系统可靠性 - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="使用Squashfs和Overlayfs提高嵌入式Linux文件系统可靠性" />
+<meta property="og:description" content="By Toradex胡珊逢
+在使用嵌入式 Linux 系统的时，会出现由于设备意外断电引起文件系统损坏而最终使该设备无法启动的现象。为了应对这种情况，通常会从硬件设计如采用备用电源，无论是锂电池还是超级电容等，或者从系统软件设上加以规避。本文接下来将介绍如何使用 squashfs 只读文件系统制作 Linux 系统文件，并采用 overlayfs 为用户目录增加可写权限。演示采用 Colibri iMX6 计算机模块，该方法同样也适用于 Toradex 其他产品，如 iMX8 计算机模块。
+Squashfs 是一种只读压缩文件系统，通常被用于数据备份或者系统资源受限的计算机系统上使用，如 Linux 发行版的 LiveCD，OpenWRT 系统也采用 squashfs。OverlayFS 一个结合其他文件系统的联合挂载，将多个挂载点叠加为一个目录。常见的应用是在一个只读的分区上叠加可读写的另一个分区。嵌入式 Linux 设备通常的功能都是被设计好的，极少需要在后期安装其他软件或更改 Linux 系统软件，更多的是更新设备应用程序和相关数据。因此基于 squashfs 的只读文件系统，结合 overlayfs 为用户应用和数据提供读写操作，能够提高嵌入式 Linux 文件系统可靠性。
+在 Colibri iMX6 的 eMMC 上我们将使用以下分区规划。BootFS 为 FAT32 格式，该分区上包含 Linux 内核文件，device tree 等启动文件，如果是 iMX8，则还包含一些其他固件文件。该分区通常只在文件系统烧写阶段被写入。RootFS 分区是 Linux 运行的文件系统，usr, bin, lib, etc, home 等目录都在上面。一般该分区是EXT3，EXT4 格式，支持文件的写入和删除。而文件系统的损坏也常发生于此，最终导致设备启动失败。因此我们这里会采用只读格式的 squashfs 。UserData 是能够读写的 EXT4 分区。该分区通过 overlayfs 会被挂载到原本位于只读 squashfs 中的 /home/root 目录。用户应用可以毫无察觉得使用该目录，在上面写入和删除文件，但不破坏只读 squashfs 文件系统，所有的操作都会被转移到 UserData 分区上。用户的应用也会存在 UserData 分区上，启动的时候从这里加载应用程序。该分区是可写的，所有这上面的文件是可以被更新。" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/97827bbc040b77d01324400124c6a3a7/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2020-11-17T10:48:06+08:00" />
+<meta property="article:modified_time" content="2020-11-17T10:48:06+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">使用Squashfs和Overlayfs提高嵌入式Linux文件系统可靠性</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p>By Toradex胡珊逢</p> 
+<p> </p> 
+<p>在使用嵌入式 Linux 系统的时，会出现由于设备意外断电引起文件系统损坏而最终使该设备无法启动的现象。为了应对这种情况，通常会从硬件设计如采用备用电源，无论是锂电池还是超级电容等，或者从系统软件设上加以规避。本文接下来将介绍如何使用 squashfs 只读文件系统制作 Linux 系统文件，并采用 overlayfs 为用户目录增加可写权限。演示采用 Colibri iMX6 计算机模块，该方法同样也适用于 Toradex 其他产品，如 iMX8 计算机模块。</p> 
+<p> </p> 
+<p>Squashfs 是一种只读压缩文件系统，通常被用于数据备份或者系统资源受限的计算机系统上使用，如 Linux 发行版的 LiveCD，OpenWRT 系统也采用 squashfs。OverlayFS 一个结合其他文件系统的联合挂载，将多个挂载点叠加为一个目录。常见的应用是在一个只读的分区上叠加可读写的另一个分区。嵌入式 Linux 设备通常的功能都是被设计好的，极少需要在后期安装其他软件或更改 Linux 系统软件，更多的是更新设备应用程序和相关数据。因此基于 squashfs 的只读文件系统，结合 overlayfs 为用户应用和数据提供读写操作，能够提高嵌入式 Linux 文件系统可靠性。</p> 
+<p> </p> 
+<p>在 Colibri iMX6 的 eMMC 上我们将使用以下分区规划。BootFS 为 FAT32 格式，该分区上包含 Linux 内核文件，device tree 等启动文件，如果是 iMX8，则还包含一些其他固件文件。该分区通常只在文件系统烧写阶段被写入。RootFS 分区是 Linux 运行的文件系统，usr, bin, lib, etc, home 等目录都在上面。一般该分区是EXT3，EXT4 格式，支持文件的写入和删除。而文件系统的损坏也常发生于此，最终导致设备启动失败。因此我们这里会采用只读格式的 squashfs 。UserData 是能够读写的 EXT4 分区。该分区通过 overlayfs 会被挂载到原本位于只读 squashfs  中的 /home/root 目录。用户应用可以毫无察觉得使用该目录，在上面写入和删除文件，但不破坏只读 squashfs 文件系统，所有的操作都会被转移到 UserData 分区上。用户的应用也会存在 UserData 分区上，启动的时候从这里加载应用程序。该分区是可写的，所有这上面的文件是可以被更新。</p> 
+<p><img alt="image001.png" src="https://images2.imgbox.com/23/fe/l74t9YkU_o.png">​</p> 
+<p>下面我们会具体说明如何在 Yocto 环境生成符合上面规划的 BSP ，并通过 Toradex Easy Installer 工具实现这些分区和写入文件。</p> 
+<p> </p> 
+<p>首先需要在 Yocto 环境中生成 squashfs 格式的系统文件 rootfs。修改 build/conf/local.conf ，结尾添加以下内容。</p> 
+<p>------------------------------------</p> 
+<p>IMAGE_FSTYPES_append = " squashfs"</p> 
+<p>------------------------------------</p> 
+<p> </p> 
+<p>默认 Linux 内核配置下 squahfs 是通过加载内核驱动模块实现对其支持，而模块驱动文件位于 rootfs 中，为了保证 Linux 内核在启动时能够正确处理该格式，需要将 squahfs 内核驱动模块配置为静态驱动，直接编译进内核中。为内核配置的文件系统支持添加 squahfs 和 overlay 格式。</p> 
+<p>------------------------------------</p> 
+<p>$ MACHINE=colibri-imx6 bitbake -c menuconfig virtual/kernel</p> 
+<p>→ File systems</p> 
+<p>&lt;*&gt; Overlay filesystem support</p> 
+<p> </p> 
+<p> → File systems → Miscellaneous filesystems</p> 
+<p> &lt;*&gt;   SquashFS 4.0 - Squashed file system support </p> 
+<p>------------------------------------</p> 
+<p> </p> 
+<p>EXT4 格式的 UserData 分区会通过 overlay 机制挂载到只读的 rootfs 上的 /home/root，但这之前需要通过 fstab 将该分区挂载到系统中，/dev/mmcblk0p3 -&gt; /media/data-&gt; /home/root。在 Yocto 中，layers/meta-toradex-demos/recipes-core/base-files/base-files/fstab 会被编译到 Colibri IMX6 BSP 中，在该文件中添加：</p> 
+<p>------------------------------------</p> 
+<p>/dev/mmcblk0p3       /media/data         auto       defaults,sync,noauto  0  0</p> 
+<p>------------------------------------</p> 
+<p> </p> 
+<p>然后再添加一个开机自启动脚本，将  /media/data 使用 overlay挂载到 /home/root。 在 layers/meta-toradex-bsp-common/recipes-core目录中添加 <a href="https://gitlab.com/tdx_sh/squashfs-overlayfs/-/tree/master/mount-overlayfs" rel="nofollow">mount-overlayfs</a> 文件夹，里面包含编译需要的 bb 文件和 systemd service。mount-overlayfs.bb 中 install -d ${D}/media/data 会在 /media 目录中创建 data 文件夹，FILES_${PN} = "/media/data" 将该空文件夹添加到 BSP 中。 <a href="https://gitlab.com/tdx_sh/squashfs-overlayfs/-/blob/master/mount-overlayfs/files/mount-overlayfs.service" rel="nofollow">mount-overlayfs.service</a> 通过 RequiresMountsFor 保证 /media/data 目录通过 fstab 挂载后才运行。Overlay 的目录结构如下，lowerdir 为/home/root upperdir 为 /media/data/home/root/upper，workdir 为 /media/data/home/root/work。这样应用可以在 /home/root 下直接读写文件，overlayfs 对应用和用户都是透明的。</p> 
+<p>------------------------------------</p> 
+<p>[Service]</p> 
+<p>Type=simple</p> 
+<p>ExecStart=/bin/sh -c 'mount -t overlay -o lowerdir=/home/root,upperdir=/media/data/home/root/upper,workdir=/media/data/home/root/work overlay /home/root'</p> 
+<p>------------------------------------</p> 
+<p> </p> 
+<p>在 build/conf/local.conf 中将 mount-overlayfs 添加到 BSP 中。</p> 
+<p>------------------------------------</p> 
+<p>IMAGE_INSTALL_append = " mount-overlayfs"</p> 
+<p>------------------------------------</p> 
+<p> </p> 
+<p>由于 rootfs 是只读格式，无法像之前一样直接在开发板上运行 systemctl 命令添加开机自启动脚本。我们需要像上面一样，在 Yocto 中增加一个 <a href="https://gitlab.com/tdx_sh/squashfs-overlayfs/-/tree/master/test-app" rel="nofollow">test-app</a> 来开机自动运行位于 UserData 分区（该分区通过 overlay 会被最终挂载到 /home/root 目录）上的测试程序 test。在 layers/meta-toradex-bsp-common/recipes-core目录中添加 <a href="https://gitlab.com/tdx_sh/squashfs-overlayfs/-/tree/master/test-app" rel="nofollow">test-app</a> 文件夹，里面包含编译需要的 bb 文件和 systemd service。</p> 
+<p> </p> 
+<p>在 build/conf/local.conf 中将 test-app 添加到 BSP 中。</p> 
+<p>------------------------------------</p> 
+<p>IMAGE_INSTALL_append = " mount-overlayfs test-app"</p> 
+<p>------------------------------------</p> 
+<p> </p> 
+<p>至此我们已经通过修改 Yocto 能够生成所需结构的BSP，执行下面命令完成编译任务。</p> 
+<p>------------------------------------</p> 
+<p>$ MACHINE=colibri-imx6 bitbake tdx-reference-minimal-image</p> 
+<p>------------------------------------</p> 
+<p> </p> 
+<p>在 build/deploy/images/colibri-imx6 有相关文件生成，我们需要下面两个文件，文件名字中的时间戳对应具体编译的日期。</p> 
+<p>Colibri-iMX6_Reference-Minimal-Image-Tezi_5.1.0-devel-20201112022057+build.0.tar</p> 
+<p>Colibri-iMX6_Reference-Minimal-Image.rootfs.squashfs</p> 
+<p> </p> 
+<p>解压 Colibri-iMX6_Reference-Minimal-Image-Tezi_5.1.0-devel-20201112022057+build.0.tar。因为rootfs 是 squahfs 格式，需要使用定制的 boot.src 来启动。</p> 
+<p>------------------------------------</p> 
+<p>$ cd ~/</p> 
+<p>$ tar vxf Colibri-iMX6_Reference-Minimal-Image-Tezi_5.1.0-devel-20201112022057+build.0.tar</p> 
+<p>$ cd Colibri-iMX6_Reference-Minimal-Image-Tezi_5.1.0-devel-20201112022057+build.0</p> 
+<p>$ tar vxf Reference-Minimal-Image-colibri-imx6.bootfs.tar.xz</p> 
+<p>------------------------------------</p> 
+<p> </p> 
+<p>修改其中的 emmcargs_set 参数。</p> 
+<p>------------------------------------</p> 
+<p>env set emmcargs_set 'env set rootfsargs root=/dev/mmcblk0p2 rootfstype=squashfs ro rootwait'</p> 
+<p>------------------------------------</p> 
+<p> </p> 
+<p>可以使用该 <a href="https://gitlab.com/tdx_sh/squashfs-overlayfs/-/blob/master/toradex_easy_installer_files/boot.cmd" rel="nofollow">boot.cmd</a> 直接生成对应的 boot.src, 替换解压目录中同名文件, 重新打包 Reference-Minimal-Image-colibri-imx6.bootfs.tar.xz</p> 
+<p>------------------------------------</p> 
+<p>$ cd Reference-Minimal-Image-colibri-imx6.bootfs</p> 
+<p>$ rm boot.src</p> 
+<p>$ mkimage -A arm -O linux -T script -C none -a 0 -e 0 -n "Distro boot script" -d boot.cmd boot.scr</p> 
+<p>$ cd ..</p> 
+<p>$ tar cJf Reference-Minimal-Image-colibri-imx6.bootfs.tar.xz -C Reference-Minimal-Image-colibri-imx6.bootfs .</p> 
+<p>------------------------------------</p> 
+<p> </p> 
+<p>将 squashfs 的 rootfs 文件系统复制到 Colibri-iMX6_Reference-Minimal-Image-Tezi_5.1.0-devel-20201112022057+build.0 目录中。</p> 
+<p>------------------------------------</p> 
+<p>$ cp Colibri-iMX6_Reference-Minimal-Image.rootfs.squashfs Colibri-iMX6_Reference-Minimal-Image-Tezi_5.1.0-devel-20201112022057+build.0</p> 
+<p>------------------------------------</p> 
+<p> </p> 
+<p>接下来创建需要复制到 UserData 分区中的文件。如上面提到的 overlay 挂载需要有对应目录结构，依次创建以下目录，并将测试程序 test 复制到 upper 目录中。这里的测试程序 test 是一个非常简单的 C 应用，它会输出“Hello Toradex!”到系统日志中。</p> 
+<p>------------------------------------</p> 
+<p>$ cd ~/Colibri-iMX6_Reference-Minimal-Image-Tezi_5.1.0-devel-20201112022057+build.0</p> 
+<p>$ mkdir rootfs</p> 
+<p>$ cd rootfs</p> 
+<p>$ mkdir -p home/root/upper</p> 
+<p>$ mkdir -p home/root/work</p> 
+<p>$ cp ~/test home/root/upper</p> 
+<p>$ tree</p> 
+<p>------------------------------------</p> 
+<p><img alt="image002.png" height="83" src="https://images2.imgbox.com/32/2e/N8JpYL5w_o.png" width="266"></p> 
+<p> </p> 
+<p>打包为 rootfs.tar.xz。</p> 
+<p>------------------------------------</p> 
+<p>$ cd ..</p> 
+<p>$ sudo tar cJf rootfs.tar.xz -C rootfs .</p> 
+<p>------------------------------------</p> 
+<p> </p> 
+<p>修改 <a href="https://gitlab.com/tdx_sh/squashfs-overlayfs/-/blob/master/toradex_easy_installer_files/image.json" rel="nofollow">image.json</a> 文件，在blockdevs 中增加 RAW 格式分区用于直接写入 squashfs 系统文件，以及 EXT4 格式的DATA分区用于写入上面生成的 rootfs.tar.xz。</p> 
+<p><img alt="image003.png" height="274" src="https://images2.imgbox.com/01/48/S4uTaStQ_o.png" width="441"></p> 
+<p> </p> 
+<p>Colibri-iMX6_Reference-Minimal-Image-Tezi_5.1.0-devel-20201112022057+build.0 目录下最终包含以下文件。</p> 
+<p><img alt="image004.png" height="153" src="https://images2.imgbox.com/01/25/J5clGeQy_o.png" width="275"></p> 
+<p>将上面的 BSP 通过 Toradex Easy Installer 重新安装到 Colibri iMX6 上，安装的时候注意需要点击 Erase 擦除 eMMC 上的内容。</p> 
+<p> </p> 
+<p>烧写后重启模块。可以通过 mount 命令查看挂载分区的情况。</p> 
+<p>------------------------------------</p> 
+<p>root@colibri-imx6:~# mount</p> 
+<p>/dev/mmcblk0p2 on / type squashfs (ro,noatime)</p> 
+<p>……</p> 
+<p>/dev/mmcblk0p3 on /media/data type ext4 (rw,relatime,sync)</p> 
+<p>overlay on /home/root type overlay (rw,relatime,lowerdir=/home/root,upperdir=/media/data/home/root/upper,workdir=/media/data/home/root/work)</p> 
+<p>------------------------------------</p> 
+<p> </p> 
+<p>mmcblk0p2 为写入 squashfs 只读文件系统的分区，例如在 /etc 目录无法创建文件。</p> 
+<p>------------------------------------</p> 
+<p>root@colibri-imx6:/etc# mkdir test-folder</p> 
+<p>mkdir: can't create directory 'test-folder': Read-only file system</p> 
+<p>------------------------------------</p> 
+<p> </p> 
+<p>EXT4 格式的 /dev/mmcblk0p3 分区上是用户文件，被挂载到 /media/data。而 /home/root 会通过 overlay 具有可读写权限。</p> 
+<p>------------------------------------</p> 
+<p>root@colibri-imx6:~# cd ~/</p> 
+<p>root@colibri-imx6:~# pwd</p> 
+<p>/home/root</p> 
+<p>root@colibri-imx6:~# mkdir test-folder</p> 
+<p>root@colibri-imx6:~# ls</p> 
+<p>test         test-folder</p> 
+<p>root@colibri-imx6:~# ls -lh</p> 
+<p>-rwxrwxr-x    1 1000     1000       11.3K Nov 11  2020 test</p> 
+<p>drwxr-xr-x    2 root     root        4.0K Feb  7 16:25 test-folder</p> 
+<p>------------------------------------</p> 
+<p> </p> 
+<p>位于 UserData 上的测试程序 test  也在开机的时候自动运行。</p> 
+<p>------------------------------------</p> 
+<p>root@colibri-imx6:~# journalctl -u test-app</p> 
+<p>-- Logs begin at Fri 2020-02-07 15:50:53 UTC, end at Fri 2020-02-07 16:11:49 UTC. --</p> 
+<p>Feb 07 15:50:57 colibri-imx6 systemd[1]: Started start a demo on overlay mount folder.</p> 
+<p>Feb 07 15:50:57 colibri-imx6 test[456]: Hello Toradex!</p> 
+<p>Feb 07 15:50:57 colibri-imx6 systemd[1]: test-app.service: Succeeded.</p> 
+<p>------------------------------------</p> 
+<p> </p> 
+<p> </p> 
+<p>总结</p> 
+<p>上面我们演示结合使用 squashfs 和 overlay，将系统文件放在一个只读分区，把读写操作在单独的分区上进行。降低系统文件因意外断电受损从而导致无法启动的风险。在使用只读 squashfs 只读文件系统时需要保证 rootfs 尽量精简，建议在 Reference-Minimal-Image 基础上构建用户自己的 BSP，甚至对其进行裁剪。</p> 
+<p> </p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/0861fabe127f4815327aa4ff9707f749/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">A. Knapsack------------------------------------思维(贪心)</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/4e69a9f15a50a9b10ba87735e2eb227e/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">C&#43;&#43;核心编程-------1.内存分区模型</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

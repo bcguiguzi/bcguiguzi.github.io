@@ -1,0 +1,350 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Linux—进程间通信和同步（消息队列） - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="Linux—进程间通信和同步（消息队列）" />
+<meta property="og:description" content="目录
+消息队列
+1. 消息缓冲区结构
+2. 结构msgid_ds
+3. 结构 ipc_perm
+4. 内核中的消息队列关系
+5. 键值构建ftok()函数
+6. 获得消息msgget()函数
+7. 发送消息msgsnd()函数
+8. 接收消息msgrcv()函数
+9. 消息控制msgctl()函数
+4. 消息队列的例子
+1. 显示消息属性的函数msg_show_attr()
+2. 主函数main()
+消息队列 消息队列是内核地址空间中的内部链表，通过Linux内核在各个进程之间传递内容。消息顺序地发送到消息队列中，并以几种不同的方式从队列中获取，每个消息队列可以用IPC标识符唯一地进行标识。内核中的消息队列是通过IPC的标识符来区别的，不同的消息队列之间是相对独立的。每个消息队列中的消息，又构成一个独立的链表。（进程间通信—IPC(Inter-Process Communication)）
+1. 消息缓冲区结构 常用的结构是msgbuf结构。程序员可以以这个结构为模板定义自己的消息结构。在头文件&lt;linux/msg.h&gt;中，它的定义如下：
+struct msgbuf { long mtype; char mtext[1]; }； 在结构msgbuf中有以下两个成员。
+□ mtype：消息类型，以正数来表示。用户可以给某个消息设定一个类型，可以在消息队列中正确地发送和接收自己的消息。
+例如，在socket编程过程中，一个服务器可以接受多个客户端的连接，可以为每个客户端设定一个消息类型，服务器和客户端之间的通信可以通过此消息类型来发送和接收消息，并且多个客户端之间通过消息类型来区分。
+□ mtext：消息数据。消息数据的类型为char,长度为1。在构建自己的消息结构时，这个域并不一定要设为char或者长度为1。可以根据实际的情况进行设定，这个域能存放任意形式的任意数据，应用程序编程人员可以重新定义msgbuf结构。
+例如：
+struct msgbuf { long mtype; char mtext[10]; long length; }； 上面定义的消息结构与系统模板定义的不一致，但是mtype是一致的。
+消息在通过内核在进程之间收发时，内核不对mtext域进行转换，任意的消息都可以发送。具体的转换工作是在应用程序之间进行的。
+但是，消息的大小，存在一个内部的限制。在Linux中，它在Linux/msg.h屮的定义如下：
+#define MSGMAX 8192 消息总的大小不能超过8192个字节，这其中包括mtype成员，它的长度是4个字节(long 类型)。
+2. 结构msgid_ds 内核msgid_ds结构—IPC对象分为3类，每一类都有一个内部数据结构，该数据结构是由内核维护的。对于消息队列而言，它的内部数据结构是msgid_ds结构。对于系统上创建的每个消息队列，内核均为其创建、存储和维护该结构的一个实例。该结构在Linux/msg.h中定义，如下所示。" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/c8233564fa8e734ce050e4e31772cabc/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2019-08-13T14:59:20+08:00" />
+<meta property="article:modified_time" content="2019-08-13T14:59:20+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Linux—进程间通信和同步（消息队列）</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p id="main-toc"><strong>目录</strong></p> 
+<p id="%E6%B6%88%E6%81%AF%E9%98%9F%E5%88%97-toc" style="margin-left:0px;"><a href="#%E6%B6%88%E6%81%AF%E9%98%9F%E5%88%97" rel="nofollow">消息队列</a></p> 
+<p id="1.%20%E6%B6%88%E6%81%AF%E7%BC%93%E5%86%B2%E5%8C%BA%E7%BB%93%E6%9E%84-toc" style="margin-left:40px;"><a href="#1.%20%E6%B6%88%E6%81%AF%E7%BC%93%E5%86%B2%E5%8C%BA%E7%BB%93%E6%9E%84" rel="nofollow">1. 消息缓冲区结构</a></p> 
+<p id="2.%20%E7%BB%93%E6%9E%84msgid_ds-toc" style="margin-left:40px;"><a href="#2.%20%E7%BB%93%E6%9E%84msgid_ds" rel="nofollow">2. 结构msgid_ds</a></p> 
+<p id="3.%20%E7%BB%93%E6%9E%84%20ipc_perm-toc" style="margin-left:40px;"><a href="#3.%20%E7%BB%93%E6%9E%84%20ipc_perm" rel="nofollow">3. 结构 ipc_perm</a></p> 
+<p id="4.%20%E5%86%85%E6%A0%B8%E4%B8%AD%E7%9A%84%E6%B6%88%E6%81%AF%E9%98%9F%E5%88%97%E5%85%B3%E7%B3%BB-toc" style="margin-left:40px;"><a href="#4.%20%E5%86%85%E6%A0%B8%E4%B8%AD%E7%9A%84%E6%B6%88%E6%81%AF%E9%98%9F%E5%88%97%E5%85%B3%E7%B3%BB" rel="nofollow">4. 内核中的消息队列关系</a></p> 
+<p id="5.%20%E9%94%AE%E5%80%BC%E6%9E%84%E5%BB%BAftok()%E5%87%BD%E6%95%B0-toc" style="margin-left:40px;"><a href="#5.%20%E9%94%AE%E5%80%BC%E6%9E%84%E5%BB%BAftok%28%29%E5%87%BD%E6%95%B0" rel="nofollow">5. 键值构建ftok()函数</a></p> 
+<p id="6.%20%E8%8E%B7%E5%BE%97%E6%B6%88%E6%81%AFmsgget()%E5%87%BD%E6%95%B0-toc" style="margin-left:40px;"><a href="#6.%20%E8%8E%B7%E5%BE%97%E6%B6%88%E6%81%AFmsgget%28%29%E5%87%BD%E6%95%B0" rel="nofollow">6. 获得消息msgget()函数</a></p> 
+<p id="7.%20%E5%8F%91%E9%80%81%E6%B6%88%E6%81%AFmsgsnd()%E5%87%BD%E6%95%B0-toc" style="margin-left:40px;"><a href="#7.%20%E5%8F%91%E9%80%81%E6%B6%88%E6%81%AFmsgsnd%28%29%E5%87%BD%E6%95%B0" rel="nofollow">7. 发送消息msgsnd()函数</a></p> 
+<p id="8.%20%E6%8E%A5%E6%94%B6%E6%B6%88%E6%81%AFmsgrcv()%E5%87%BD%E6%95%B0-toc" style="margin-left:40px;"><a href="#8.%20%E6%8E%A5%E6%94%B6%E6%B6%88%E6%81%AFmsgrcv%28%29%E5%87%BD%E6%95%B0" rel="nofollow">8. 接收消息msgrcv()函数</a></p> 
+<p id="9.%20%E6%B6%88%E6%81%AF%E6%8E%A7%E5%88%B6msgctl()%E5%87%BD%E6%95%B0-toc" style="margin-left:40px;"><a href="#9.%20%E6%B6%88%E6%81%AF%E6%8E%A7%E5%88%B6msgctl%28%29%E5%87%BD%E6%95%B0" rel="nofollow">9. 消息控制msgctl()函数</a></p> 
+<p id="4.%20%E6%B6%88%E6%81%AF%E9%98%9F%E5%88%97%E7%9A%84%E4%BE%8B%E5%AD%90-toc" style="margin-left:40px;"><a href="#4.%20%E6%B6%88%E6%81%AF%E9%98%9F%E5%88%97%E7%9A%84%E4%BE%8B%E5%AD%90" rel="nofollow">4. 消息队列的例子</a></p> 
+<p id="1.%20%E6%98%BE%E7%A4%BA%E6%B6%88%E6%81%AF%E5%B1%9E%E6%80%A7%E7%9A%84%E5%87%BD%E6%95%B0msg_show_attr()-toc" style="margin-left:80px;"><a href="#1.%20%E6%98%BE%E7%A4%BA%E6%B6%88%E6%81%AF%E5%B1%9E%E6%80%A7%E7%9A%84%E5%87%BD%E6%95%B0msg_show_attr%28%29" rel="nofollow">1. 显示消息属性的函数msg_show_attr()</a></p> 
+<p id="2.%20%E4%B8%BB%E5%87%BD%E6%95%B0main()-toc" style="margin-left:80px;"><a href="#2.%20%E4%B8%BB%E5%87%BD%E6%95%B0main%28%29" rel="nofollow">2. 主函数main()</a></p> 
+<hr id="hr-toc"> 
+<h2 id="%E6%B6%88%E6%81%AF%E9%98%9F%E5%88%97">消息队列</h2> 
+<p style="text-indent:50px;"><strong><u>消息队列是内核地址空间中的内部链表，通过Linux内核在各个进程之间传递内容</u>。<u>消息顺序地发送到消息队列中</u>，并以几种不同的方式从队列中获取，<u>每个消息队列可以用IPC标识符唯一地进行标识</u>。<span style="color:#7030a0;">内核中的消息队列是通过IPC的标识符来区别的，不同的消息队列之间是相对独立的。每个消息队列中的消息，又构成一个独立的链表。</span>（进程间通信—<em>IPC(</em>Inter-Process Communication)）</strong></p> 
+<h3 id="1.%20%E6%B6%88%E6%81%AF%E7%BC%93%E5%86%B2%E5%8C%BA%E7%BB%93%E6%9E%84">1. 消息缓冲区结构</h3> 
+<p style="text-indent:50px;"><strong>常用的结构是msgbuf结构</strong>。程序员<u>可以以这个结构为模板<strong>定义自己的消息结构</strong></u>。在头文件<strong>&lt;linux/msg.h&gt;</strong>中，它的定义如下：</p> 
+<pre class="has"><code class="language-cpp">struct msgbuf
+
+{
+
+      long mtype;
+
+      char mtext[1];
+
+}；</code></pre> 
+<p style="text-indent:50px;">在结构msgbuf中有以下两个成员。</p> 
+<blockquote> 
+ <p style="text-indent:50px;">□ <strong>mtype</strong>：<strong>消息类型</strong>，以<strong><span style="color:#7030a0;">正数</span></strong>来表示。<u>用户可以给某个消息设定一个类型</u><u>，</u><u>可以在消息队列中正确地发送和接收自己的消息</u>。</p> 
+</blockquote> 
+<p style="text-indent:50px;">例如，在socket编程过程中，一个服务器可以接受多个客户端的连接，可以为每个客户端设定一个消息类型，服务器和客户端之间的通信可以通过此消息类型来发送和接收消息，并且多个客户端之间通过消息类型来区分。</p> 
+<blockquote> 
+ <p style="text-indent:50px;">□ <strong>mtext</strong>：<strong>消息数据</strong>。消息数据的<strong>类型为</strong><strong>char,</strong><strong>长度为</strong><strong>1</strong>。<u>在构建自己的消息结构时，这个域并<strong>不一定</strong>要设为</u><u>char</u><u>或者长度为</u><u>1</u>。<u>可以根据实际的情况进行设定，<strong>这个域能存放任意形式的任意数据</strong>，</u>应用程序编程人员可以重新定义msgbuf结构。</p> 
+</blockquote> 
+<p style="text-indent:50px;">例如：</p> 
+<pre class="has"><code class="language-cpp">struct msgbuf
+
+{
+
+       long mtype;
+
+       char mtext[10];
+
+       long length;
+
+}；</code></pre> 
+<p style="text-indent:50px;">上面定义的消息结构与系统模板定义的不一致，但是mtype是一致的。</p> 
+<p style="text-indent:50px;"><strong>消息在通过内核在进程之间收发时，内核不对</strong><strong>mtext</strong><strong>域进行转换，任意的消息都可以发送。具体的转换工作是在应用程序之间进行的</strong>。</p> 
+<p style="text-indent:50px;"><span style="color:#0070c0;">但是，消息的大小，存在一个内部的限制</span>。在Linux中，它在Linux/msg.h屮的定义如下：</p> 
+<pre class="has"><code class="language-cpp">#define MSGMAX 8192</code></pre> 
+<p style="text-indent:50px;"><span style="color:#7030a0;">消息总的大小不能超过</span><span style="color:#7030a0;">8192</span><span style="color:#7030a0;">个字节，这其中包括</span><span style="color:#7030a0;">mtype</span><span style="color:#7030a0;">成员，它的长度是</span><span style="color:#7030a0;">4</span><span style="color:#7030a0;">个字节</span><span style="color:#7030a0;">(long </span><span style="color:#7030a0;">类型</span><span style="color:#7030a0;">)</span><span style="color:#7030a0;">。</span></p> 
+<h3 id="2.%20%E7%BB%93%E6%9E%84msgid_ds">2. 结构msgid_ds</h3> 
+<p style="text-indent:50px;"><strong>内核</strong><strong>msgid_ds</strong><strong>结构</strong>—<span style="color:#0070c0;">IPC</span><span style="color:#0070c0;">对象分为</span><span style="color:#0070c0;">3</span><span style="color:#0070c0;">类</span>，<u>每一类都有一个内部数据结构，该数据结构是由内核维护的</u>。<strong>对于消息队列而言，它的内部数据结构是</strong><strong>ms</strong><strong>gid_ds</strong><strong>结构。对于系统上创建的每个消息队列，内核均为其创建、存储和维护该结构的一个实例</strong>。该结构在<strong>Linux/msg.h</strong>中定义，如下所示。</p> 
+<pre class="has"><code class="language-cpp">struct msgid_ds
+
+{
+
+       struct ipc_perm msg_perm;
+
+       time_t  msg_stime; /*发送到队列的最后一个消息的时间戳*/
+
+       time__t  msg__rtime;    /*从队列中获取的最后一个消息的时间戮*/
+
+       time_t  msg_ctime; /*对队列进行最后一次变动的时间戳*/
+
+       unsigned long  _msg_cbytes;      /*在队列上所驻留的字节总数*/
+
+       msgqnum_t  msg_qnum;    /*当前处丁队列中的消息数目*/
+
+       msglen_t  msg_qbytes;   /*队列中能容纳的字节的最大数目*/
+
+       pid_t  msg_lspid;   /*发送最后一个消息进程的PID */
+
+       pid_t  msg_lrpid;   /*接收最后一个消息进程的PID */
+
+};</code></pre> 
+<p style="text-indent:50px;">为了叙述的完整性，下面对每个成员都给出一个简短的介绍。</p> 
+<blockquote> 
+ <p style="text-indent:50px;">□   <strong>msg</strong><strong>_</strong><strong>perm</strong>：它是<strong>ipc_p</strong><strong>erm</strong><strong>结构</strong>的一个实例，<strong>ipc_perm</strong><strong>结构是在</strong><strong>Linux/ipc.h</strong><strong>中定</strong>义的。用于存放消息队列的许可权限信息，其中包括访问许可信息，以及队列创建者的有关信息（如uid等）。</p> 
+ <p style="text-indent:50px;">□   <strong>msg_stime</strong>：发送到队列的最后一个消息的时间戳（time_t)。</p> 
+ <p style="text-indent:50px;">□   <strong>msg_rtime</strong>：从队列中获取最后一个消息的时间戳。</p> 
+ <p style="text-indent:50px;">□   <strong>msg_ctime</strong>：对队列进行最后一次变动的时间戳。</p> 
+ <p style="text-indent:50px;">□   <strong>msg_cbytes</strong>：在队列上所驻留的字节总数（即所有消息的大小的总和）。</p> 
+ <p style="text-indent:50px;">□   <strong>msg_qnum</strong>：当前处于队列中的消息数目。</p> 
+ <p style="text-indent:50px;">□   <strong>msg_qbytes</strong>：队列中能容纳的字节的最大数目。</p> 
+ <p style="text-indent:50px;">□   <strong>msg_lspid</strong>：发送最后一个消息进程的PID。</p> 
+ <p style="text-indent:50px;">□   <strong>msg_lrpid</strong>：接收最后一个消息进程的PID。</p> 
+</blockquote> 
+<h3 id="3.%20%E7%BB%93%E6%9E%84%20ipc_perm">3. 结构 ipc_perm</h3> 
+<p style="text-indent:50px;">       <u>内核把</u><u>IPC</u><u>对象的许可权限信息存放在</u><strong><u>ipc_perm</u></strong><u>类型的结构中</u>。例如某些消息队列的内部结构中，<strong>msg_perm</strong><strong>成员就是</strong><strong>ipc_perm</strong><strong>类型的</strong>，它的定义是在文件 <strong>&lt;linux/ipc.h&gt;</strong>中，如下所示：</p> 
+<pre class="has"><code class="language-cpp">struct ipc_perm
+
+{
+
+       key_t key;                    /*函数msgget ()使用的键值*/
+
+       uid_t uid;                     /*用户的UID*/
+
+       gid_t gid;                     /*用户的GID*/
+
+       uid_t cuid;                    /*建立者的UID*/
+
+       gid_t cgid;                   /*建立者的GID*/
+
+       unsigned short mode;  /*权限*/
+
+       unsigned short seq;      /*序列号*/
+
+};</code></pre> 
+<p style="text-indent:50px;"><u>这个结构描述的主要是一些底层的东西</u>，简单介绍如下：</p> 
+<blockquote> 
+ <p style="text-indent:50px;">□   key：key参数用于区分消息队列。</p> 
+ <p style="text-indent:50px;">□   uid：消息队列用户的ID号。</p> 
+ <p style="text-indent:50px;">□   gid：消息队列用户组的ID号。</p> 
+ <p style="text-indent:50px;">□   cuid：消息队列创建者的ID号。</p> 
+ <p style="text-indent:50px;">□   cgid：消息队列创建者的组ID号。</p> 
+ <p style="text-indent:50px;">□   mode：权限，用户控制读写，例如0666,可以对消息进行读写操作。</p> 
+ <p style="text-indent:50px;">□   seq：序列号。</p> 
+</blockquote> 
+<h3 id="4.%20%E5%86%85%E6%A0%B8%E4%B8%AD%E7%9A%84%E6%B6%88%E6%81%AF%E9%98%9F%E5%88%97%E5%85%B3%E7%B3%BB">4. 内核中的消息队列关系</h3> 
+<p style="text-indent:50px;"><strong><u>作为I</u></strong><strong><u>PC</u></strong><strong><u>的消息队列，其消息的传递是通过</u></strong><strong><u>Linux</u></strong><strong><u>内核来进行的</u></strong>。如下图所示的结构成员与用户空间的表述基本一致。<strong><u>在消息的发送和接收的时候，内核通过一个比较巧妙的设置来实现消息插入队列的动作和从消息队列中查找消息的算法</u></strong>。</p> 
+<p style="text-align:center;"><img alt="" class="has" height="753" src="https://images2.imgbox.com/af/d1/3VTDrpNL_o.png" width="686"></p> 
+<p style="margin-left:0cm;"><strong>                                                                            图</strong><strong> </strong><strong>消息机制在内核中的实现</strong></p> 
+<p style="text-indent:50px;">结构list_head形成一个链表,而结构msg_msg之中的<strong>m_list</strong>成员是一个struct list_head类型的变量，<u>通过此变量，消息形成了一个链表</u>，在查找和插入时，对m_list域进偏移操作就可以找到对应的消息体位置。内核中的代码在头文件<strong> &lt;linux/msg.h&gt;和&lt;linux/msg.c</strong>&gt;中，主要的实现是<strong>插入消息和取出消息的操作</strong>。</p> 
+<h3 id="5.%20%E9%94%AE%E5%80%BC%E6%9E%84%E5%BB%BAftok()%E5%87%BD%E6%95%B0" style="margin-left:0cm;">5. 键值构建ftok()函数</h3> 
+<p style="text-indent:50px;">ftok()函数将路径名和项目的表示符转变为一个系统V的IPC键值。其原型如下：</p> 
+<pre class="has"><code class="language-cpp">#include &lt;sys/types.h&gt;
+
+#include &lt;sys/ipc.h&gt;
+
+key_t ftok(const char *pathname, int proj_id);</code></pre> 
+<p style="text-indent:50px;">其中pathname必须是已经存在的目录，而proj_id则是一个8位的值，通常用a、b等表示。例如建立如下目录：</p> 
+<pre class="has"><code class="language-bash">$mkdir -p /ipc/msg/</code></pre> 
+<p style="text-indent:50px;">然后用如下代码生成一个键值:</p> 
+<p style="text-align:center;"><img alt="" class="has" height="527" src="https://images2.imgbox.com/ee/19/rWEbz5WT_o.png" width="820"></p> 
+<p style="text-align:center;"><img alt="" class="has" height="34" src="https://images2.imgbox.com/48/99/lSezfQzB_o.png" width="718"></p> 
+<h3 id="6.%20%E8%8E%B7%E5%BE%97%E6%B6%88%E6%81%AFmsgget()%E5%87%BD%E6%95%B0" style="margin-left:0cm;">6. 获得消息msgget()函数</h3> 
+<p style="text-indent:50px;"><strong><u>创建一个新的消息队列，或者访问一个现有的队列，可以使用函数msgget(),</u></strong>其原型如下:</p> 
+<pre class="has"><code class="language-cpp">#include &lt;sys/types.h&gt;
+
+#include &lt;sys/ipc.h&gt;
+
+#include &lt;sys/msg.h&gt;
+
+int msgget(key_t key, int msgflg);</code></pre> 
+<p style="text-indent:50px;">msgget()函数的第一个参数是键值，可以用ftok()函数生成，这个关键字的值将被拿来与内核中其他消息队列的现有关键字值相比较。比较之后，打开或者访问操作依赖于msgflg参数的内容。</p> 
+<blockquote> 
+ <p style="margin-left:0cm;">□   IPC_CREAT:如果在内核中不存在该队列，则创建它。</p> 
+ <p style="margin-left:0cm;">□   IPC_EXCL:当与IPC_CREAT一起使用时，如果队列早已存在则将出错。</p> 
+</blockquote> 
+<p style="text-indent:50px;"><u>如果<strong>只使用了 IPC_CREAT</strong>，msgget()函数会返回新创建消息队列的消息队列标识符，<strong>或者</strong>会返回现有的具有同一个关键字值的队列的标识符</u>。如果<strong><u>同时使用了IPC_EXCL和IPC_CREAT</u></strong><u>，那么将可能会有两个结果：创建一个新的队列，如果该队列存在，则调用将出错，并返回-1。</u><strong>IPC_EXCL本身是没有什么用处的，但在与IPC_CREAT组合使用时，它可以用于保证没有一个现存的队列为了访问而被打开。</strong>例如，下面的代码创建一个消息队列：</p> 
+<p style="text-align:center;"><img alt="" class="has" height="515" src="https://images2.imgbox.com/33/8c/0noHG4VD_o.png" width="814"></p> 
+<p style="text-indent:50px;">第一次执行时，会显示消息建立成功，再次执行时，会显示消息建立失败。</p> 
+<h3 id="7.%20%E5%8F%91%E9%80%81%E6%B6%88%E6%81%AFmsgsnd()%E5%87%BD%E6%95%B0" style="margin-left:0cm;">7. 发送消息msgsnd()函数</h3> 
+<p style="text-indent:50px;">一旦获得了队列标识符，用户就可以开始在该消息队列上执行相关操作了。为了<strong><u>向队列传递消息，用户可以使用msgsnd()函数</u></strong>：</p> 
+<pre class="has"><code class="language-cpp">#include &lt;sys/types.h&gt;
+
+#include &lt;sys/ipc.h&gt;
+
+#include &lt;sys/msg.h&gt;
+
+int msgsnd(int msqid, const void *msgp, size_t msgsz, int msgflg);</code></pre> 
+<p style="text-indent:50px;"><strong>msgsnd()函数的第1个参数是队列标识符，它是前面调用msgget()获得的返回值。第二个参数是msgp,它是一个void类型的指针，指向一个消息缓冲区。msgsz参数则包含着消息的大小，它是以字节为单位的，其中不包括消息类型的长度（4个字节长)。</strong></p> 
+<p style="text-indent:50px;"><u>msgflg参数可以设置为0 (表示忽略)，也可以设置为IPC_NOWAIT</u>。<span style="color:#7030a0;">如果消息队列已满，则消息将不会被写入到队列中。如果没有指定IPC_N0WA1T，则调用进程将被中断 (阻塞），直到可以写消息为止</span>。例如，如下代码向己经打开的消息队列发送消息：</p> 
+<p style="text-align:center;"><img alt="" class="has" height="331" src="https://images2.imgbox.com/c6/43/30zK0Pl2_o.png" width="760"></p> 
+<p style="margin-left:0cm;"> </p> 
+<p style="text-indent:50px;"><u>首先将要发送的消息打包到msg_mbuf.mtext域中，然后调用msgsnd发送消息给内核</u>。<strong>这里的mtype设置了类型为10，当接收时必须设置此域为10，才能接收到这时发送的消息。 </strong>msgsnd()函数的msg_id是之前msgget创建的。</p> 
+<h3 id="8.%20%E6%8E%A5%E6%94%B6%E6%B6%88%E6%81%AFmsgrcv()%E5%87%BD%E6%95%B0" style="margin-left:0cm;">8. 接收消息msgrcv()函数</h3> 
+<p style="text-indent:50px;">当获得队列标识符后，用户就可以开始在该消息队列上执行消息队列的接收操作。msgrcv()函数用于接收队列标识符中的消息，函数原型如下：</p> 
+<pre class="has"><code class="language-cpp">#include &lt;sys/types.h&gt;
+
+#include &lt;sys/ipc.h&gt;
+
+#include &lt;sys/msg.h&gt;
+
+ssize_t msgrcv(int msqid, void *msgp, size_t msgsz, long msgtyp, int msgflg);</code></pre> 
+<p style="text-indent:50px;"><strong>msgrcv()函数的四个参数</strong>：</p> 
+<blockquote> 
+ <p style="text-indent:50px;">□第1个参数msqid是用来指定，在消息获取过程中所使用的队列(该值是由前面调用msgget()得到的返回值）。</p> 
+ <p style="text-indent:50px;">□ 第2个参数msgp代表消息缓冲区变量的地址，获取的消息将存放在这里。</p> 
+ <p style="text-indent:50px;">□ 第3个参数msgsz代表消息缓冲区结构的大小，不包括mtype成员的长度。</p> 
+ <p style="text-indent:50px;">□ 第4个参数msgtyp指定要从队列中获取的消息类型。</p> 
+</blockquote> 
+<p style="text-indent:50px;">决定从队列中返回哪条消息：</p> 
+<blockquote> 
+ <p style="text-indent:50px;">=0 返回消息队列中第一条消息</p> 
+ <p style="text-indent:50px;">&gt;0 返回消息队列中等于msgtyp类型的第一条消息。</p> 
+ <p style="text-indent:50px;">&lt;0 返回msgtyp&lt;=type 绝对值最小值的第一条消息。</p> 
+</blockquote> 
+<p style="text-indent:50px;">内核将查找队列中具有匹配类型的第一个到达的消息，并把它复制返回到由msgp参数所指定的地址中。如果msgtyp参数传送一个为0的值，则将返回队列中最老的消息，不管该消息的类型是什么。</p> 
+<p style="text-indent:50px;"><u>如果把<strong>IPC_NOWAIT</strong>作为一个标志传送给该函数，而队列中没有任何消息，则该次调用将会向调用进程返回<strong>ENOMSG</strong>。否则，调用进程将阻塞，直到满足msgrcv()参数的消息到达队列为止。</u><u>如果在客户等待消息的时候队列被删除了，则返回EIDRM。如果在进程阻塞并等待消息的到来时捕获到一个信号，则返回EINTR</u>。函数msgrcv的使用代码如下：</p> 
+<p style="text-align:center;"><img alt="" class="has" height="196" src="https://images2.imgbox.com/64/d7/LTP37GDf_o.png" width="608"></p> 
+<p style="text-indent:50px;">上面的代码中将msgtyp设置为10，可以获得之前发送的内核的消息获得（因为之前发送的msgtyp值也设置为10)，msgrcv返回值为接收到的消息长度。</p> 
+<h3 id="9.%20%E6%B6%88%E6%81%AF%E6%8E%A7%E5%88%B6msgctl()%E5%87%BD%E6%95%B0" style="margin-left:0cm;">9. 消息控制msgctl()函数</h3> 
+<p style="text-indent:50px;">通过前面的介绍己经知道如何在应用程序中简单地创建和利用消息队列。下面介绍一下如何直接地对那些与特定的消息队列相联系的内部结构进行操作。为了在一个消息队列上执行控制操作，用户可以使用msgctl()函数。</p> 
+<pre class="has"><code class="language-cpp">#include &lt;sys/types.h&gt;
+
+#include &lt;sys/ipc.h&gt;
+
+#include &lt;sys/msg.h&gt;
+
+int msgctl(int msqid, int cmd, struct msqid_ds *buf);</code></pre> 
+<p style="text-indent:50px;"><strong><u>msgctl()向内核发送一个cmd命令，内核根据此来判断进行何种操作，buf为应用层和内核空间进行数据交换的指针</u>。</strong>其中的<strong><u>cmd</u></strong>可以为如下值：</p> 
+<blockquote> 
+ <p style="text-indent:50px;">□   IPC_STAT：获取队列的msqid_ds结构，并把它存放在buf变量所指定的地址中，通过这种方式，应用层可以获得当前消息队列的设置情况，例如是否有消息到来、消息队列的缓冲区设置等。</p> 
+ <p style="text-indent:50px;">□   IPC_SET：设置队列的msqid_ds结构的ipc_perm成员值，它是从buf中取得该值的。通过IPC_SET命令，应用层可以设置消息队列的状态，例如修改消息队列的权限，使其他用户可以访问或者不能访问当前的队列；甚至可以设置消息队列的某些当前值来伪装。</p> 
+ <p style="text-indent:50px;">□   IPC_RMID：内核删除队列。使用此命令执行后，内核会把此消息队列从系统中删除。</p> 
+</blockquote> 
+<h3 id="4.%20%E6%B6%88%E6%81%AF%E9%98%9F%E5%88%97%E7%9A%84%E4%BE%8B%E5%AD%90" style="margin-left:0cm;"><strong>4. </strong><strong>消息队列的例子</strong></h3> 
+<p style="text-indent:50px;">本例在建立消息队列后，打印其属性，并在每次发送和接收后均查看其属性，最后对消息队列进行修改。</p> 
+<h4 id="1.%20%E6%98%BE%E7%A4%BA%E6%B6%88%E6%81%AF%E5%B1%9E%E6%80%A7%E7%9A%84%E5%87%BD%E6%95%B0msg_show_attr()" style="margin-left:0cm;"><strong>1. 显示消息属性的函数msg_show_attr()</strong></h4> 
+<p style="text-indent:50px;"><strong>msg_show_attr()函数根据用户输入的消息ID，将消息队列中的字节数、消息数、最大字节数、最后发送消息的进程、最后接收消息的进程、最后发送消息的时间、最后接收消息的时间、最后消息变化的时间，以及消息的UID和GID等信息进行打印</strong>。</p> 
+<p style="text-align:center;"><img alt="" class="has" height="550" src="https://images2.imgbox.com/cc/40/fX1Zdb0L_o.png" width="812"></p> 
+<h4 id="2.%20%E4%B8%BB%E5%87%BD%E6%95%B0main()" style="margin-left:0cm;">2. 主函数main()</h4> 
+<p style="text-indent:50px;">主函数先用函数ftok()使用路径“/tmp/msg/b”获得一个键值，之后进行相关的操作并打印消息的属性。</p> 
+<blockquote> 
+ <p style="text-indent:50px;">□调用函数<strong>msgget()获得</strong>一个消息后，打印消息的属性；</p> 
+ <p style="text-indent:50px;">□调用函数<strong>msgsnd()发送</strong>一个消息后，打印消息的属性；</p> 
+ <p style="text-indent:50px;">□调用函数<strong>msgrcv()接收</strong>一个消息后，打印消息的属性；</p> 
+ <p style="text-indent:50px;">□最后，调用函数msgctl()并发送命令IPC_RMID销毁消息队列。</p> 
+</blockquote> 
+<p style="text-align:center;"><img alt="" class="has" height="771" src="https://images2.imgbox.com/33/d9/Nq5IWRM5_o.png" width="814"></p> 
+<p style="text-align:center;"><img alt="" class="has" height="589" src="https://images2.imgbox.com/03/17/ISH3F9IH_o.png" width="820"></p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/b77dd489fad31e46de567083f6c28e30/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">H3C三层交换机之IRF虚拟化技术详解及配置</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/e4ab0b80756bf6715894782ca4626a6f/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">MAC下安装nginx的正确姿势 实践笔记</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

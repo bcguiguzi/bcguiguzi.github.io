@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>depot_tools原理和实现 - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="depot_tools原理和实现" />
+<meta property="og:description" content="depot_tools原理和实现 depot_tools是Google的构建工具，所有Google系的项目构建都离不开depot_tools。
+但是中文网络相关的文章基本都是简单的提一下用法，几乎没有讲解depot_tools原理实现的文章，所以这篇文章将讲解depot_tools的原理和实现。
+此文章基于2022年6月的depot_tools代码。
+此文章的基于Windows实现讲解，不过depot_tools是跨平台工具，基本大同小异。
+部署 depot_tools本身是一个git仓库(https://chromium.googlesource.com/chromium/tools/depot_tools)，其部署就是将仓库本身clone并将目录加入PATH环境变量即可。
+其本身默认在每次运行时也会自动从仓库中拉取最新的代码来完成更新。
+组件 depot_tools是一个工具集，其由几个主要组件组成，来完成构建过程中的代码拉取和构建。
+工具主要由shell脚本和python脚本实现，在运行过程中会不断下载可执行组件。
+depot_tools会使用git、python等可执行文件。但是第一次部署之后，depot_tools会使用bootstrap下载自己的git、python可执行文件，除非强制指定，否则不再使用系统安装的可执行文件。
+bootstrap 拉取depot_tools的基础工具，如下载python、git。fetch 初始化项目。gclient 拉取所有项目依赖代码并执行项目hook。cipd 用来下载大的二进制文件的工具。vpython python虚拟环境，隔离不同版本的python环境，方便使用不同版本的python。git 拉取代码的工具，depot_tools扩展了一系列git的脚本，以更加方便的使用git。 上文只列出了几个主要组件，还有很多辅助脚本由于篇幅原因不做讲解。
+代理脚本 depot_tools的所有组件一般都会创建一个代理脚本，代理脚本一般是和组件同名的shell脚本，一般对组件的调用都会先调用代理脚本。然后代理脚本会对真正的组件进行更新或者初始化之类检查工作，最后默认会启动对应的组件并转发参数。
+如果启动时不想更新，可以使用python update_depot_tools_toggle.py --disable关闭自动更新。python update_depot_tools_toggle.py --enable可以打开自动更新。
+但是切记第一次使用的时候必须打开自动更新，因为要下载一些组件。
+下文只介绍实际的组件，不再描述代理脚本的逻辑。
+CIPD CIPD全称Chrome Infrastructure Package Deployment(https://chromium.googlesource.com/infra/luci/luci-go/&#43;/main/cipd/README.md)，主要用于管理Google项目构建中用到的二进制文件（例如编译器之类的），你可以简单的认为是针对大文件的git系统。
+CIPD管理的所有文件可以在(https://chrome-infra-packages.appspot.com)上查看。
+bootstrap 每次运行depot_tools中的组件时，主要用于自动进行更新并拉取基础工具
+首先会尝试下载或者更新cipd_client的可执行文件
+然后启动bootstrap，bootstrap会读取bootstrap/manifest.txt，下载文件中指定的工具。
+并创建对应的代理脚本。
+vpython vpython是Google的python虚拟化环境，主要的用于隔离不同版本的python环境，因为Google项目中使用了大量的python脚本，但是有些python脚本只能运行于特定版本的python中，所以需要同时运行不同版本的python。
+git depot_tools使用python脚本扩展了一系列git操作，来更方便的使用git。
+fetch fetch是用来初始化项目配置的工具。一般会在第一次拉取项目时用到。
+fetch根据传入的参数拉取初始化项目配置。fetch所支持的项目在fetch_configs目录下,也是一系列python脚本,其中描述了项目的代码仓库和拉取方式以及默认目录。
+当然你也可以自己扩展其他使用Google代码管理工具的项目配置。
+目前所有的项目配置中拉取方式都是使用gclient_git，fetch初始化后会调用gclient在运行目录下生成一个.gclient文件，里面描述了项目的仓库地址等信息，之后gclient就依据此配置文件工作。
+然后fetch使用默认参数调用gclient sync进行代码的拉取，当然fetch的也会把其他的命令行参数中透传给gclient。
+在一些Google项目的文档、博客中你有时会看到不使用fetch，只使用gclient的方法。这就是在理解了fetch的原理后，自己完成第一步的生成gclient_git初始化过程，然后用gclient拉取代码。
+gclient gclient是进行代码拉取、工具部署、代码管理的关键组件。一旦拥有了.gclient配置文件，那么之后的工作就都可以通过gclient完成，不再需要fetch了。
+因为gclient包含了很多大部分人不使用的功能，所以本文只重点讲解通常拉取代码、构建项目用到的sync命令。其他指令只简单介绍功能。
+config 在运行目录里生成.gclient配置文件。
+root 输出项目的根目录。
+runhooks 执行项目配置里的hooks。当你执行sync时使用了–nohooks参数时，就可以使用该命令来手动执行hooks。
+recurse 在项目中的每个依赖中都执行一条命令。
+fetch 拉取所有模块中的更新。
+diff 显示项目中每个依赖的本地修改。
+status 显示项目中每个依赖的修改状态。" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/5de5c92d249efbd1fe239de6b85beb9b/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2022-07-01T14:40:03+08:00" />
+<meta property="article:modified_time" content="2022-07-01T14:40:03+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">depot_tools原理和实现</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <h2><a id="depot_tools_0"></a>depot_tools原理和实现</h2> 
+<p>depot_tools是Google的构建工具，所有Google系的项目构建都离不开depot_tools。<br> 但是中文网络相关的文章基本都是简单的提一下用法，几乎没有讲解depot_tools原理实现的文章，所以这篇文章将讲解depot_tools的原理和实现。</p> 
+<p>此文章基于2022年6月的depot_tools代码。</p> 
+<p>此文章的基于Windows实现讲解，不过depot_tools是跨平台工具，基本大同小异。</p> 
+<h2><a id="_9"></a>部署</h2> 
+<p>depot_tools本身是一个git仓库(https://chromium.googlesource.com/chromium/tools/depot_tools)，其部署就是将仓库本身clone并将目录加入<code>PATH</code>环境变量即可。</p> 
+<p>其本身默认在每次运行时也会自动从仓库中拉取最新的代码来完成更新。</p> 
+<h2><a id="_15"></a>组件</h2> 
+<p>depot_tools是一个工具集，其由几个主要组件组成，来完成构建过程中的代码拉取和构建。<br> 工具主要由shell脚本和python脚本实现，在运行过程中会不断下载可执行组件。</p> 
+<p>depot_tools会使用git、python等可执行文件。但是第一次部署之后，depot_tools会使用bootstrap下载自己的git、python可执行文件，除非强制指定，否则不再使用系统安装的可执行文件。</p> 
+<ul><li>bootstrap 拉取depot_tools的基础工具，如下载python、git。</li><li>fetch 初始化项目。</li><li>gclient 拉取所有项目依赖代码并执行项目hook。</li><li>cipd 用来下载大的二进制文件的工具。</li><li>vpython python虚拟环境，隔离不同版本的python环境，方便使用不同版本的python。</li><li>git 拉取代码的工具，depot_tools扩展了一系列git的脚本，以更加方便的使用git。</li></ul> 
+<p>上文只列出了几个主要组件，还有很多辅助脚本由于篇幅原因不做讲解。</p> 
+<h4><a id="_31"></a>代理脚本</h4> 
+<p>depot_tools的所有组件一般都会创建一个代理脚本，代理脚本一般是和组件同名的shell脚本，一般对组件的调用都会先调用代理脚本。然后代理脚本会对真正的组件进行更新或者初始化之类检查工作，最后默认会启动对应的组件并转发参数。</p> 
+<p>如果启动时不想更新，可以使用<code>python update_depot_tools_toggle.py --disable</code>关闭自动更新。<code>python update_depot_tools_toggle.py --enable</code>可以打开自动更新。</p> 
+<p>但是切记第一次使用的时候必须打开自动更新，因为要下载一些组件。</p> 
+<p>下文只介绍实际的组件，不再描述代理脚本的逻辑。</p> 
+<h3><a id="CIPD_41"></a>CIPD</h3> 
+<p>CIPD全称Chrome Infrastructure Package Deployment(https://chromium.googlesource.com/infra/luci/luci-go/+/main/cipd/README.md)，主要用于管理Google项目构建中用到的二进制文件（例如编译器之类的），你可以简单的认为是针对大文件的git系统。</p> 
+<p>CIPD管理的所有文件可以在(https://chrome-infra-packages.appspot.com)上查看。</p> 
+<h3><a id="bootstrap_47"></a>bootstrap</h3> 
+<p>每次运行depot_tools中的组件时，主要用于自动进行更新并拉取基础工具</p> 
+<p>首先会尝试下载或者更新cipd_client的可执行文件</p> 
+<p>然后启动bootstrap，bootstrap会读取bootstrap/manifest.txt，下载文件中指定的工具。<br> 并创建对应的代理脚本。</p> 
+<h3><a id="vpython_58"></a>vpython</h3> 
+<p>vpython是Google的python虚拟化环境，主要的用于隔离不同版本的python环境，因为Google项目中使用了大量的python脚本，但是有些python脚本只能运行于特定版本的python中，所以需要同时运行不同版本的python。</p> 
+<h3><a id="git_62"></a>git</h3> 
+<p>depot_tools使用python脚本扩展了一系列git操作，来更方便的使用git。</p> 
+<h3><a id="fetch_66"></a>fetch</h3> 
+<p>fetch是用来初始化项目配置的工具。一般会在第一次拉取项目时用到。</p> 
+<p>fetch根据传入的参数拉取初始化项目配置。fetch所支持的项目在fetch_configs目录下,也是一系列python脚本,其中描述了项目的代码仓库和拉取方式以及默认目录。</p> 
+<p>当然你也可以自己扩展其他使用Google代码管理工具的项目配置。</p> 
+<p>目前所有的项目配置中拉取方式都是使用<code>gclient_git</code>，fetch初始化后会调用gclient在运行目录下生成一个<code>.gclient</code>文件，里面描述了项目的仓库地址等信息，之后gclient就依据此配置文件工作。</p> 
+<p>然后fetch使用默认参数调用<code>gclient sync</code>进行代码的拉取，当然fetch的也会把其他的命令行参数中透传给gclient。</p> 
+<p>在一些Google项目的文档、博客中你有时会看到不使用fetch，只使用gclient的方法。这就是在理解了fetch的原理后，自己完成第一步的生成<code>gclient_git</code>初始化过程，然后用gclient拉取代码。</p> 
+<h3><a id="gclient_80"></a>gclient</h3> 
+<p>gclient是进行代码拉取、工具部署、代码管理的关键组件。一旦拥有了<code>.gclient</code>配置文件，那么之后的工作就都可以通过gclient完成，不再需要fetch了。</p> 
+<p>因为gclient包含了很多大部分人不使用的功能，所以本文只重点讲解通常拉取代码、构建项目用到的sync命令。其他指令只简单介绍功能。</p> 
+<ul><li> <p>config 在运行目录里生成.gclient配置文件。</p> </li><li> <p>root 输出项目的根目录。</p> </li><li> <p>runhooks 执行项目配置里的hooks。当你执行sync时使用了–nohooks参数时，就可以使用该命令来手动执行hooks。</p> </li><li> <p>recurse 在项目中的每个依赖中都执行一条命令。</p> </li><li> <p>fetch 拉取所有模块中的更新。</p> </li><li> <p>diff 显示项目中每个依赖的本地修改。</p> </li><li> <p>status 显示项目中每个依赖的修改状态。</p> </li></ul> 
+<h4><a id="sync_100"></a>sync</h4> 
+<p>此命令主要负责拉取项目代码、执行代码hook等操作，是gclient最重要的功能。</p> 
+<p>sync命令主要依赖两个文件工作，所以在这里先讲解这两个文件格式</p> 
+<ul><li><code>.glicnet</code> 此文件一般通过fetch自动生成，也可以手动生成，其格式就是python语法。其中记录一个solution数组，每个solution表示一个项目的基础配置。其中最重要的是三个属性: 
+  <ul><li>name 项目名</li><li>url 项目仓库地址</li><li>deps_file 依赖配置文件</li></ul> </li></ul> 
+<pre><code>solutions = [
+  {
+    "name": "src",
+    "url": "https://webrtc.googlesource.com/src.git",
+    "deps_file": "DEPS",
+    "managed": False,
+    "custom_deps": {},
+  },
+]
+
+</code></pre> 
+<ul><li> <p>DEPS 此文件就是上一节中的依赖配置文件，默认文件名称为DEP,也可以自定义。此文件存放在项目仓库的根目录下，其格式就是python语法。其中最重要的是4个属性</p> 
+  <ul><li><code>deps</code> 这个属性是一个数组，包含了一系列引用项信息，引用项有两种，一种是git类型，表示一个git仓库，注意每个git类型引用项可能也会在自己的仓库根目录下含有自己的DEPS文件；一种是CIPD类型，表示一个CIPD仓库。引用项可能会含有<code>condition</code>属性，表示引用项生效的条件。比如有些引用项只在特性的操作系统上生效。</li><li><code>hooks</code> 这个属性是一个包含了一系列可执行项目。可能会含有<code>condition</code>属性，表示执行项生效的条件，最重要的是action属性，其通常是一个命令行参数数组。表示要执行的一个命令。</li><li><code>pre_deps_hooks</code> 此属性的性质和hooks一样，只不过执行的顺序有所不同。</li><li><code>vars</code> 这个属性定义了一系列的属性。这些属性将用于在deps和hooks中替换对应的变量。</li></ul> </li></ul> 
+<ol><li> <p>sync命令先使用git根据.glicnet中solution的url将代码仓库以<code>no-checkout</code>的方式<code>clone</code>到一个临时目录，然后将仓库内容移动到以solution的name命名的目录中。这样下次拉取的时候只要检查目录就可以知道仓库是否拉取完成。</p> </li><li> <p>从仓库中检出最新的提交或者按照参数检出指定的提交。</p> </li><li> <p>解析deps_file属性指定的依赖配置文件。</p> </li><li> <p>如果配置文件中有pre_deps_hooks属性的话，先执行pre_deps_hooks中的所有生效的执行项目。</p> </li><li> <p>然后对deps属性中的引用项进行处理，下载生效的git引用项以及引用项仓库所依赖的引用项，。同时对过程中的CIPD类型的引用项做记录。在下载这些引用项时，gclient默认会使用多线程同时进行下载。下载方式和第1步类似，也是先下载到一个临时目录，再移动。</p> </li><li> <p>当完成了所git引用项的下载后，开始使用CIPD统一下载刚才记录的CIPD引用项。</p> </li><li> <p>当完成了所有引用项的下载后，会在根目录生成一个文件<code>.gclient_entries</code>，其中列举了实际完成下载的引用项。</p> </li><li> <p>最后开始执行hooks中所有的生效的执行项目。</p> </li></ol> 
+<p>这就是sync指令的整个执行流程。</p> 
+<p><strong>下面介绍一些sync指令的参数</strong></p> 
+<p>gclient使用optparse库来做参数解析，所以参数的输入方式可以参考optparse库的说明。</p> 
+<ul><li> <p><code>--nohooks</code> 跳过执行hook阶段，hook阶段所执行的任务通常来说是和构建和编译有关。如果暂时不需要构建编译的话，可以跳过hook阶段。等需要的时候再使用runhooks命令手动执行hook。</p> </li><li> <p><code>-v</code> 这个参数用来控制输出信息的详细程度。gclient使用了optparse命令行参数解析库中的次数参数来处理这个参数，也即通过重复输入这个参数来控制日志的等级。总共有四个等级，不输入参数的时候为默认的等级，如果需要最详细的日志，可以重复输入三个<code>-v</code>。</p> </li><li> <p><code>--with_branch_heads</code> 这个参数可以在拉取仓库的时候拉取分支的信息。chrome系列的代码仓库的分支使用了非git默认的分支引用命名，所以默认情况下clone是无法clone到分支信息的。当你有切换分支的需求时，你应该使用这个参数。但是它会导致你的代码仓库占用更多的磁盘空间。<strong>注意，这个参数应该在第一次使用sync指令时就使用。如果已经完成了代码的拉取，再次使用这个参数执行sync命令是没有用的。</strong></p> </li><li> <p><code>--with_tags</code> 作用类似<code>--with_branch_heads</code>。只不过是针对仓库的tag。</p> </li><li> <p><code>-r</code> 指定仓库的版本，参数值形如name@version，name可以是solution的name或者引用项的名称。version可以是仓库的branch名或者tag名或者hash。此参数可以重复多次指定多个仓库的版本。</p> </li><li> <p><code>-j</code> 一个整数参数，控制同时多少个线程来执行依赖，因为大部分引用项都是git拉取任务，耗时主要在IO层，多线程可以提高拉取的速度，但是会导致日志输出比较凌乱。</p> </li></ul> 
+<h5><a id="_167"></a>如何拉取指定版本</h5> 
+<p>拉取指定版本是构建中的一个非常常用需求，但是大多数项目的构建文档中都没有明确给出步骤，给出的都是默认拉取最新版本。这里给出明确的方法，如果需要拉取指定项目的指定版本，有三种方法：</p> 
+<ul><li>使用-r参数执行sync命令，指定<code>.gclient</code>中solution的引用版本为要使用的版本。</li><li>先使用<code>--nohooks</code> <code>--with_tags</code> <code>--with_branch_heads</code>拉取最新版本参数执行sync命令，然后手动checkout到指定的版本后，重新执行无参数的sync命令。</li><li>修改<code>.gclient</code>中solution的url，在仓库地址后加上@version，version可以是仓库的branch名或者tag名或者hash。</li></ul> 
+<h5><a id="_175"></a>如何管理自己的修改</h5> 
+<p>当我们有时候会对某些代码做一些修改以适应自身的需求，但是通常来说chrome的项目都是由一大堆独立的仓库通过依赖关系组织在一起的。由于chrome的仓库平台并不提供个人仓库，所以只能将自己的修改提交到个人仓库。那么该如何组织自己的仓库呢？</p> 
+<p>根据上文对gclient工作原理的描述可以知道，gclient是根据DEPS中的依赖项配置来下载模块代码的。那么我们只要把需要修改的模块修改后提交到自己的仓库中。然后将DEPS中的依赖项更新为自己的仓库地址和提交号。然后将包含DEPS的主仓库也提交到自己的仓库中。</p> 
+<p>之后只要将<code>.gclient</code>中主仓库地址改为自己的主仓库地址后，gclient就会按照DEPS自动拉取我们修改过的依赖仓库了。</p> 
+<p>需要注意的是，git默认的所有分支引用是放在<code>heads</code>下面的，google为了避免拉取已经不在使用的提交，将分支的引用全部放在了<code>branch-heads</code>下面。这样导致一般的git指令无法拉取到分支信息。必须使用gclient的时候传入<code>--with_branch_heads</code>参数或者手动修改仓库的fetch引用规范（具体可以参考gclient源码中对<code>with_branch_heads</code>属性的处理）。</p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/6847aafae407b96c19eb43673d5d86cb/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">C中结构体释放问题</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/312740845a0f4da9d518c19c84357bed/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">2022年十三届蓝桥杯国赛（C/C&#43;&#43;大学B组）个人题解</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

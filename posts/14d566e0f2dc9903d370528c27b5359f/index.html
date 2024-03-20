@@ -1,0 +1,407 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>B树、B&#43;树详解 - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="B树、B&#43;树详解" />
+<meta property="og:description" content="文章目录 1. 前言，概念，定义2. B树实例讲解2.1 B树的插入操作2.2 B树的删除操作 3. 磁盘IO与预读4. B树的高度5. B&#43;树6. B树和B&#43;树比较 1. 前言，概念，定义 前言
+首先，为什么要总结B树、B&#43;树的知识呢？最近在学习数据库索引调优相关知识，数据库系统普遍采用B-/&#43;Tree作为索引结构（例如mysql的InnoDB引擎使用的B&#43;树），理解不透彻B树，则无法理解数据库的索引机制；接下来将用最简洁直白的内容来了解B树、B&#43;树的数据结构
+另外，B-树，即为B树。因为B树的原英文名称为B-tree，而国内很多人喜欢把B-tree译作B-树，其实，这是个非常不好的直译，很容易让人产生误解。如人们可能会以为B-树是一种树，而B树又是一种树。而事实上是，B-tree就是指的B树，目前理解B的意思为平衡
+B树的出现是为了弥合不同的存储级别之间的访问速度上的巨大差异，实现高效的 I/O。平衡二叉树的查找效率是非常高的，并可以通过降低树的深度来提高查找的效率。但是当数据量非常大，树的存储的元素数量是有限的，这样会导致二叉查找树结构由于树的深度过大而造成磁盘I/O读写过于频繁，进而导致查询效率低下。另外数据量过大会导致内存空间不够容纳平衡二叉树所有结点的情况。B树是解决这个问题的很好的结构
+概念
+首先，B树不要和二叉树混淆，在计算机科学中，B树是一种自平衡树数据结构，它维护有序数据并允许以对数时间进行搜索，顺序访问，插入和删除。B树是二叉搜索树的一般化，因为节点可以有两个以上的子节点。[1]与其他自平衡二进制搜索树不同，B树非常适合读取和写入相对较大的数据块（如光盘）的存储系统。它通常用于数据库和文件系统。
+定义
+B树是一种平衡的多分树，通常我们说 m阶(B树中一个节点的子节点数目的最大值) 的B树，它必须满足如下条件：
+每个节点最多只有m个子节点。每个非叶子节点（除了根）具有至少⌈ m/2⌉子节点。如果根不是叶节点，则根至少有两个子节点。具有k个子节点的非叶节点包含k -1个键。所有叶子都出现在同一水平，没有任何信息（高度一致）。 2. B树实例讲解 什么是B树的阶 ？
+B树中一个节点的子节点数目的最大值，用m表示，假如最大值为10，则为10阶，如下图，所有节点中，节点【13,16,19】拥有的子节点数目最多，四个子节点（灰色节点），所以可以定义上面的图片为4阶B树。
+什么是根节点 ？
+节点【10】即为根节点，特征：根节点拥有的子节点数量的上限和内部节点相同，如果根节点不是树中唯一节点的话，至少有俩个子节点（不然就变成单支了）。在m阶B树中（根节点非树中唯一节点），那么有关系式2&lt;= M &lt;=m，M为子节点数量；包含的元素数量 1&lt;= K &lt;=m-1,K为元素数量。
+什么是内部节点 ？
+节点【13,16,19】、节点【3,6】都为内部节点，特征：内部节点是除叶子节点和根节点之外的所有节点，拥有父节点和子节点。假定m阶B树的内部节点的子节点数量为M，则一定要符合（m/2）&lt;= M &lt;=m关系式，包含元素数量M-1；包含的元素数量 （m/2）-1&lt;= K &lt;=m-1,K为元素数量。m/2向上取整。
+什么是叶子节点？
+节点【1,2】、节点【11,12】等最后一层都为叶子节点，叶子节点对元素的数量有相同的限制，但是没有子节点，也没有指向子节点的指针。特征：在m阶B树中叶子节点的元素符合（m/2）-1&lt;= K &lt;=m-1。
+2.1 B树的插入操作 针对m阶高度h的B树，插入一个元素时，首先在B树中是否存在，如果不存在，即在叶子结点处结束，然后在叶子结点中插入该新的元素。
+若该节点元素个数小于m-1，直接插入；若该节点元素个数等于m-1，引起节点分裂；以该节点中间元素为分界，取中间元素（偶数个数，中间两个随机选取）插入到父节点中；重复上面动作，直到所有节点符合B树的规则；最坏的情况一直分裂到根节点，生成新的根节点，高度增加1； 上面三段话为插入动作的核心，接下来以5阶B树为例，详细讲解插入的动作；
+5阶B树关键点:
+2&lt;=根节点子节点个数&lt;=53&lt;=内节点子节点个数&lt;=51&lt;=根节点元素个数&lt;=42&lt;=非根节点元素个数&lt;=4 原本的B树 插入8 图（1）插入元素【8】后变为图（2），此时根节点元素个数为5，不符合 1&lt;=根节点元素个数&lt;=4，进行分裂（ 真实情况是先分裂，然后插入元素，这里是为了直观而先插入元素，下面的操作都一样，不再赘述），取节点中间元素【7】，加入到父节点，左右分裂为2个节点，如图（3）。 中间节点加入父节点，两边分裂为两个节点 插入【5】,【11】,【17】 插入【13】 节点元素超出最大数量，进行分裂，提取中间元素【13】，插入到父节点当中，如图（6） 接着插入元素【6】,【12】,【20】,【23】时,不需要任何分裂操作，如图（7） 插入【26】时，最右的叶子结点空间满了，需要进行分裂操作，中间元素【20】上移到父节点中，注意通过上移中间元素，树最终还是保持平衡，分裂结果的结点存在2个关键字元素。 插入【4】时，导致最左边的叶子结点被分裂，【4】恰好也是中间元素，上移到父节点中，然后元素【16】,【18】,【24】,【25】陆续插入不需要任何分裂操作 最后，当插入【19】时，含有【14】,【16】,【17】,【18】的结点需要分裂，把中间元素【17】上移到父节点中，但是情况来了，父节点中空间已经满了，所以也要进行分裂，将父节点中的中间元素【13】上移到新形成的根结点中，这样具体插入操作的完成。 2." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/14d566e0f2dc9903d370528c27b5359f/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2021-07-14T21:53:47+08:00" />
+<meta property="article:modified_time" content="2021-07-14T21:53:47+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">B树、B&#43;树详解</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-light">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p></p> 
+<div class="toc"> 
+ <h4>文章目录</h4> 
+ <ul><li><ul><li><a href="#1__5" rel="nofollow">1. 前言，概念，定义</a></li><li><a href="#2_B_34" rel="nofollow">2. B树实例讲解</a></li><li><ul><li><a href="#21_B_53" rel="nofollow">2.1 B树的插入操作</a></li><li><a href="#22_B_108" rel="nofollow">2.2 B树的删除操作</a></li></ul> 
+   </li><li><a href="#3_IO_147" rel="nofollow">3. 磁盘IO与预读</a></li><li><a href="#4_B_170" rel="nofollow">4. B树的高度</a></li><li><a href="#5_B_176" rel="nofollow">5. B+树</a></li><li><a href="#6_BB_212" rel="nofollow">6. B树和B+树比较</a></li></ul> 
+ </li></ul> 
+</div> 
+<p></p> 
+<hr> 
+<hr> 
+<h3><a id="1__5"></a>1. 前言，概念，定义</h3> 
+<hr> 
+<p><font color="blue"><strong>前言</strong></font></p> 
+<p>  首先，为什么要总结B树、B+树的知识呢？最近在学习数据库索引调优相关知识，数据库系统普遍采用B-/+Tree作为索引结构（例如mysql的InnoDB引擎使用的B+树），理解不透彻B树，则无法理解数据库的索引机制；接下来将用最简洁直白的内容来了解B树、B+树的数据结构</p> 
+<p>  另外，B-树，即为B树。因为B树的原英文名称为B-tree，而国内很多人喜欢把B-tree译作B-树，其实，这是个非常不好的直译，很容易让人产生误解。如人们可能会以为B-树是一种树，而B树又是一种树。而事实上是，B-tree就是指的B树，目前理解B的意思为平衡</p> 
+<p>  B树的出现是为了弥合不同的存储级别之间的访问速度上的巨大差异，实现高效的 I/O。平衡二叉树的查找效率是非常高的，并可以通过降低树的深度来提高查找的效率。但是当数据量非常大，树的存储的元素数量是有限的，这样会导致二叉查找树结构由于树的深度过大而造成磁盘I/O读写过于频繁，进而导致查询效率低下。另外数据量过大会导致内存空间不够容纳平衡二叉树所有结点的情况。B树是解决这个问题的很好的结构</p> 
+<hr> 
+<p><font color="blue"><strong>概念</strong></font></p> 
+<p>  首先，B树不要和二叉树混淆，在计算机科学中，B树是一种自平衡树数据结构，它维护有序数据并允许以对数时间进行搜索，顺序访问，插入和删除。B树是二叉搜索树的一般化，因为节点可以有两个以上的子节点。[1]与其他自平衡二进制搜索树不同，B树非常适合读取和写入相对较大的数据块（如光盘）的存储系统。它通常用于数据库和文件系统。</p> 
+<hr> 
+<p><font color="blue"><strong>定义</strong></font></p> 
+<p>B树是一种平衡的多分树，通常我们说 <strong>m阶(B树中一个节点的子节点数目的最大值)</strong> 的B树，它必须满足如下条件：</p> 
+<ul><li>每个节点最多只有m个子节点。</li><li>每个非叶子节点（除了根）具有至少⌈ m/2⌉子节点。</li><li>如果根不是叶节点，则根至少有两个子节点。</li><li>具有k个子节点的非叶节点包含k -1个键。</li><li>所有叶子都出现在同一水平，没有任何信息（高度一致）。</li></ul> 
+<hr> 
+<hr> 
+<h3><a id="2_B_34"></a>2. B树实例讲解</h3> 
+<p><font color="green"><strong>什么是B树的阶 ？</strong></font><br> B树中一个节点的子节点数目的最大值，用m表示，假如最大值为10，则为10阶，如下图，所有节点中，节点【13,16,19】拥有的子节点数目最多，四个子节点（灰色节点），所以可以定义上面的图片为4阶B树。</p> 
+<p><img src="https://images2.imgbox.com/0e/9b/HaKfAifE_o.png" alt="在这里插入图片描述"></p> 
+<p><font color="green"><strong>什么是根节点 ？</strong></font><br> 节点【10】即为根节点，特征：根节点拥有的子节点数量的上限和内部节点相同，如果根节点不是树中唯一节点的话，至少有俩个子节点（不然就变成单支了）。<font color="cyran">在m阶B树中（根节点非树中唯一节点），那么有关系式2&lt;= M &lt;=m，M为子节点数量；包含的元素数量 1&lt;= K &lt;=m-1,K为元素数量。</font></p> 
+<p><font color="green"><strong>什么是内部节点 ？</strong></font><br> 节点【13,16,19】、节点【3,6】都为内部节点，特征：内部节点是除叶子节点和根节点之外的所有节点，拥有父节点和子节点。<font color="cyran">假定m阶B树的内部节点的子节点数量为M，则一定要符合（m/2）&lt;= M &lt;=m关系式，包含元素数量M-1；包含的元素数量 （m/2）-1&lt;= K &lt;=m-1,K为元素数量。m/2向上取整。</font></p> 
+<p><font color="green"><strong>什么是叶子节点？</strong></font><br> 节点【1,2】、节点【11,12】等最后一层都为叶子节点，叶子节点对元素的数量有相同的限制，但是没有子节点，也没有指向子节点的指针。特征：<font color="cyran">在m阶B树中叶子节点的元素符合（m/2）-1&lt;= K &lt;=m-1。</font></p> 
+<hr> 
+<h4><a id="21_B_53"></a>2.1 B树的插入操作</h4> 
+<p>针对m阶高度h的B树，插入一个元素时，首先在B树中是否存在，如果不存在，即在叶子结点处结束，然后在叶子结点中插入该新的元素。</p> 
+<ul><li><font color="cyran">若该节点元素个数小于m-1，直接插入；</font></li><li><font color="cyran">若该节点元素个数等于m-1，引起节点分裂；以该节点中间元素为分界，取中间元素（偶数个数，中间两个随机选取）插入到父节点中；</font></li><li><font color="cyran">重复上面动作，直到所有节点符合B树的规则；最坏的情况一直分裂到根节点，生成新的根节点，高度增加1；</font></li></ul> 
+<p>上面三段话为插入动作的核心，接下来以5阶B树为例，详细讲解插入的动作；</p> 
+<p>5阶B树关键点:</p> 
+<ul><li><font color="cyran">2&lt;=根节点子节点个数&lt;=5</font></li><li><font color="cyran">3&lt;=内节点子节点个数&lt;=5</font></li><li><font color="cyran">1&lt;=根节点元素个数&lt;=4</font></li><li><font color="cyran">2&lt;=非根节点元素个数&lt;=4</font></li></ul> 
+<table><tbody><tr><td> 
+    <center> 
+     <img src="https://images2.imgbox.com/b9/5f/GSnLtEZi_o.png"> 
+     <center> 
+      <strong>原本的B树</strong> 
+     </center> 
+    </center></td><td> 
+    <center> 
+     <img src="https://images2.imgbox.com/e7/ad/VJ2O0xI8_o.png"> 
+     <center> 
+      <strong>插入8 </strong> 
+     </center> 
+    </center></td></tr></tbody></table> 图（1）插入元素【8】后变为图（2），此时根节点元素个数为5，不符合 1&lt;=根节点元素个数&lt;=4，进行分裂（ 
+<font color="cyran">真实情况是先分裂，然后插入元素，这里是为了直观而先插入元素，下面的操作都一样，不再赘述</font>），取节点中间元素【7】，加入到父节点，左右分裂为2个节点，如图（3）。 
+<br> 
+<table><tbody><tr><td> 
+    <center> 
+     <img src="https://images2.imgbox.com/88/22/nIFn6wLh_o.png"> 
+     <center> 
+      <strong>中间节点加入父节点，两边分裂为两个节点</strong> 
+     </center> 
+    </center></td><td> 
+    <center> 
+     <img src="https://images2.imgbox.com/2f/1b/19ZDtuPX_o.png"> 
+     <center> 
+      <strong>插入【5】,【11】,【17】 </strong> 
+     </center> 
+    </center></td></tr></tbody></table> 
+<table><tbody><tr><td> 
+    <center> 
+     <img src="https://images2.imgbox.com/51/96/MTXiQkwl_o.png"> 
+     <center> 
+      <strong>插入【13】</strong> 
+     </center> 
+    </center></td><td> 
+    <center> 
+     <img src="https://images2.imgbox.com/67/c4/Wn8H38b8_o.png"> 
+     <center> 
+      <strong>节点元素超出最大数量，进行分裂，提取中间元素【13】，插入到父节点当中，如图（6）</strong> 
+     </center> 
+    </center></td></tr></tbody></table> 
+<table><tbody><tr><td> 
+    <center> 
+     <img src="https://images2.imgbox.com/42/11/1tvW4lrT_o.png"> 
+     <center> 
+      <strong>接着插入元素【6】,【12】,【20】,【23】时,不需要任何分裂操作，如图（7）</strong> 
+     </center> 
+    </center></td><td> 
+    <center> 
+     <img src="https://images2.imgbox.com/01/ed/uoQutaj8_o.png"> 
+     <center> 
+      <strong>插入【26】时，最右的叶子结点空间满了，需要进行分裂操作，中间元素【20】上移到父节点中，注意通过上移中间元素，树最终还是保持平衡，分裂结果的结点存在2个关键字元素。</strong> 
+     </center> 
+    </center></td></tr></tbody></table> 
+<table><tbody><tr><td> 
+    <center> 
+     <img src="https://images2.imgbox.com/f4/20/GTQkI6qg_o.png"> 
+     <center> 
+      <strong>插入【4】时，导致最左边的叶子结点被分裂，【4】恰好也是中间元素，上移到父节点中，然后元素【16】,【18】,【24】,【25】陆续插入不需要任何分裂操作</strong> 
+     </center> 
+    </center></td><td> 
+    <center> 
+     <img src="https://images2.imgbox.com/c4/14/1fCskS6L_o.png"> 
+     <center> 
+      <strong>最后，当插入【19】时，含有【14】,【16】,【17】,【18】的结点需要分裂，把中间元素【17】上移到父节点中，但是情况来了，父节点中空间已经满了，所以也要进行分裂，将父节点中的中间元素【13】上移到新形成的根结点中，这样具体插入操作的完成。</strong> 
+     </center> 
+    </center></td></tr></tbody></table> 
+<hr> 
+<h4><a id="22_B_108"></a>2.2 B树的删除操作</h4> 
+<p>首先查找B树中需删除的元素,如果该元素在B树中存在，则将该元素在其结点中进行删除；删除该元素后，首先判断该元素是否有左右孩子结点，如果有，则上移孩子结点中的某相近元素(“左孩子最右边的节点”或“右孩子最左边的节点”)到父节点中，然后是移动之后的情况；如果没有，直接删除。</p> 
+<ul><li><font color="cyran">某结点中元素数目小于（m/2）-1,(m/2)向上取整，则需要看其某相邻兄弟结点是否丰满；</font></li><li><font color="cyran">如果丰满（结点中元素个数大于(m/2)-1），则向父节点借一个元素来满足条件；</font></li><li><font color="cyran">如果其相邻兄弟都不丰满，即其结点数目等于(m/2)-1，则该结点与其相邻的某一兄弟结点进行“合并”成一个结点；</font></li></ul> 
+<p>接下来还以5阶B树为例，详细讲解删除的动作；</p> 
+<ul><li><font color="cyran">关键要领，元素个数小于 2（m/2 -1）就合并，大于4（m-1）就分裂。</font></li></ul> 
+<p>如图依次删除依次删除【8】,【20】,【18】,【5】</p> 
+<table><tbody><tr><td> 
+    <center> 
+     <img src="https://images2.imgbox.com/fe/17/949iXhj0_o.png" width="95%"> 
+     <center> 
+      <strong>首先删除元素【8】，当然首先查找【8】，【8】在一个叶子结点中，删除后该叶子结点元素个数为2，符合B树规则，操作很简单，咱们只需要移动【11】至原来【8】的位置，移动【12】至【11】的位置（也就是结点中删除元素后面的元素向前移动）</strong> 
+     </center> 
+    </center></td><td> 
+    <center> 
+     <img src="https://images2.imgbox.com/5f/bb/4EycMMxJ_o.png"> 
+     <center> 
+      <strong>下一步，删除【20】,因为【20】没有在叶子结点中，而是在中间结点中找到，咱们发现他的继承者【23】(字母升序的下个元素)，将【23】上移到【20】的位置，然后将孩子结点中的【23】进行删除，这里恰好删除后，该孩子结点中元素个数大于2，无需进行合并操作。 </strong> 
+     </center> 
+    </center></td></tr></tbody></table> 
+<table><tbody><tr><td> 
+    <center> 
+     <img src="https://images2.imgbox.com/f1/8b/oxgFqTst_o.png" width="95%"> 
+     <center> 
+      <strong>下一步删除【18】，【18】在叶子结点中,但是该结点中元素数目为2，删除导致只有1个元素，已经小于最小元素数目2,而由前面我们已经知道：如果其某个相邻兄弟结点中比较丰满（元素个数大于ceil(5/2)-1=2），则可以向父结点借一个元素，然后将最丰满的相邻兄弟结点中上移最后或最前一个元素到父节点中，在这个实例中，右相邻兄弟结点中比较丰满（3个元素大于2），所以先向父节点借一个元素【23】下移到该叶子结点中，代替原来【19】的位置，【19】前移；然【24】在相邻右兄弟结点中上移到父结点中，最后在相邻右兄弟结点中删除【24】，后面元素前移。</strong> 
+     </center> 
+    </center></td><td> 
+    <center> 
+     <img src="https://images2.imgbox.com/be/1e/maLpMgAB_o.png"> 
+     <center> 
+      <strong>最后一步删除【5】， 删除后会导致很多问题，因为【5】所在的结点数目刚好达标，刚好满足最小元素个数（ceil(5/2)-1=2）,而相邻的兄弟结点也是同样的情况，删除一个元素都不能满足条件，所以需要该节点与某相邻兄弟结点进行合并操作；首先移动父结点中的元素（该元素在两个需要合并的两个结点元素之间）下移到其子结点中，然后将这两个结点进行合并成一个结点。所以在该实例中，咱们首先将父节点中的元素【4】下移到已经删除【5】而只有【6】的结点中，然后将含有【4】和【6】的结点和含有【1】,【3】的相邻兄弟结点进行合并成一个结点。 </strong> 
+     </center> 
+    </center></td></tr></tbody></table> 
+<img src="https://images2.imgbox.com/69/d9/3fNkT3LZ_o.png" width="65%"> 
+<p><strong>也许你认为这样删除操作已经结束了，其实不然，在看看上图，对于这种特殊情况，你立即会发现父节点只包含一个元素【7】，没达标（因为非根节点包括叶子结点的元素K必须满足于2=&lt;K&lt;=4，而此处的K=1），这是不能够接受的。如果这个问题结点的相邻兄弟比较丰满，则可以向父结点借一个元素。而此时兄弟节点元素刚好为2，刚刚满足，只能进行合并，而根结点中的唯一元素【13】下移到子结点，这样，树的高度减少一层。</strong></p> 
+<img src="https://images2.imgbox.com/99/22/I7PxMOzU_o.png" width="85%"> 
+<p><strong>看完插入，删除，想必也把B树的特征掌握了，下面普及下其他知识，换个脑子。</strong></p> 
+<hr> 
+<hr> 
+<h3><a id="3_IO_147"></a>3. 磁盘IO与预读</h3> 
+<p>计算机存储设备一般分为两种：内存储器(main memory)和外存储器(external memory)。 计算机的存储结构见：<a href="https://blog.csdn.net/yueguangmuyu/article/details/117387702">虚拟内存(Virtual Memory)——1.1 DRAM 缓存的组织结构，图</a>。</p> 
+<p>内存储器为内存，内存存取速度快，但容量小，价格昂贵，而且不能长期保存数据(在不通电情况下数据会消失)。</p> 
+<p>外存储器即为磁盘读取，磁盘读取数据靠的是机械运动，每次读取数据花费的时间可以分为寻道时间、旋转延迟、传输时间三个部分，寻道时间指的是磁臂移动到指定磁道所需要的时间，主流磁盘一般在5ms以下；旋转延迟就是我们经常听说的磁盘转速，比如一个磁盘7200转，表示每分钟能转7200次，也就是说1秒钟能转120次，旋转延迟就是1/120/2 = 4.17ms；传输时间指的是从磁盘读出或将数据写入磁盘的时间，一般在零点几毫秒，相对于前两个时间可以忽略不计。那么访问一次磁盘的时间，即一次磁盘IO的时间约等于5+4.17 = 9ms左右，听起来还挺不错的，但要知道一台500 -MIPS的机器每秒可以执行5亿条指令，因为指令依靠的是电的性质，换句话说执行一次IO的时间可以执行40万条指令，数据库动辄十万百万乃至千万级数据，每次9毫秒的时间，显然是个灾难。下图是计算机硬件延迟的对比图，供大家参考：</p> 
+<p><img src="https://images2.imgbox.com/31/30/giQMQGgj_o.png" alt="在这里插入图片描述"><br> 考虑到磁盘IO是非常高昂的操作，计算机操作系统做了一些优化，当一次IO时，不光把当前磁盘地址的数据，而是把相邻的数据也都读取到内存缓冲区内，因为局部预读性原理告诉我们，当计算机访问一个地址的数据的时候，与其相邻的数据也会很快被访问到。每一次IO读取的数据我们称之为一页(page)。具体一页有多大数据跟操作系统有关，一般为4k或8k，也就是我们读取一页内的数据时候，实际上才发生了一次IO，这个理论对于索引的数据结构设计非常有帮助。</p> 
+<p><strong>事实1 ： 不同容量的存储器，访问速度差异悬殊。</strong></p> 
+<ul><li>磁盘(ms级别) &lt;&lt; 内存(ns级别)， 100000倍</li><li>若内存访问需要1s，则一次外存访问需要一天</li><li>为了避免1次外存访问，宁愿访问内存100次…所以将最常用的数据存储在最快的存储器中</li></ul> 
+<p><strong>事实2 ： 从磁盘中读 1 B，与读写 1KB 的时间成本几乎一样</strong></p> 
+<ul><li><font color="cyran">从以上数据中可以总结出一个道理，<strong>索引查询的数据主要受限于硬盘的I/O速度</strong>，查询I/O次数越少，速度越快，所以B树的结构才应需求而生；B树的每个节点的元素可以视为一次I/O读取，树的高度表示最多的I/O次数，在相同数量的总元素个数下，每个节点的元素个数越多，高度越低，查询所需的I/O次数越少；假设，一次硬盘一次I/O数据为8K，索引用int(4字节)类型数据建立，理论上一个节点最多可以为2000个元素，2000<em>2000</em>2000=8000000000，80亿条的数据只需3次I/O（理论值），可想而知，B树做为索引的查询效率有多高；</font></li><li><font color="cyran">另外也可以看出同样的总元素个数，查询效率和树的高度密切相关</font></li></ul> 
+<hr> 
+<hr> 
+<h3><a id="4_B_170"></a>4. B树的高度</h3> 
+<p><font color="cyran"><strong>一棵含有N个总关键字数的m阶的B树的最大高度是<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+       
+        
+         
+         
+           l 
+          
+         
+           o 
+          
+          
+          
+            g 
+           
+           
+           
+             m 
+            
+           
+             2 
+            
+           
+          
+          
+           
+           
+             N 
+            
+           
+             + 
+            
+           
+             1 
+            
+           
+          
+            2 
+           
+          
+         
+           + 
+          
+         
+           1 
+          
+         
+        
+          log_{\frac{m}{2}}\frac{N+1}{2}+1 
+         
+        
+      </span><span class="katex-html"><span class="base"><span class="strut" style="height: 1.26313em; vertical-align: -0.3908em;"></span><span class="mord mathdefault" style="margin-right: 0.01968em;">l</span><span class="mord mathdefault">o</span><span class="mord"><span class="mord mathdefault" style="margin-right: 0.03588em;">g</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.33408em;"><span class="" style="top: -2.85em; margin-left: -0.03588em; margin-right: 0.05em;"><span class="pstrut" style="height: 3em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mtight"><span class="mopen nulldelimiter sizing reset-size3 size6"></span><span class="mfrac"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.691543em;"><span class="" style="top: -2.656em;"><span class="pstrut" style="height: 3em;"></span><span class="sizing reset-size3 size1 mtight"><span class="mord mtight"><span class="mord mtight">2</span></span></span></span><span class="" style="top: -3.2255em;"><span class="pstrut" style="height: 3em;"></span><span class="frac-line mtight" style="border-bottom-width: 0.049em;"></span></span><span class="" style="top: -3.384em;"><span class="pstrut" style="height: 3em;"></span><span class="sizing reset-size3 size1 mtight"><span class="mord mtight"><span class="mord mathdefault mtight">m</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.344em;"><span class=""></span></span></span></span></span><span class="mclose nulldelimiter sizing reset-size3 size6"></span></span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.3908em;"><span class=""></span></span></span></span></span></span><span class="mord"><span class="mopen nulldelimiter"></span><span class="mfrac"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.872331em;"><span class="" style="top: -2.655em;"><span class="pstrut" style="height: 3em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mtight">2</span></span></span></span><span class="" style="top: -3.23em;"><span class="pstrut" style="height: 3em;"></span><span class="frac-line" style="border-bottom-width: 0.04em;"></span></span><span class="" style="top: -3.394em;"><span class="pstrut" style="height: 3em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathdefault mtight" style="margin-right: 0.10903em;">N</span><span class="mbin mtight">+</span><span class="mord mtight">1</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.345em;"><span class=""></span></span></span></span></span><span class="mclose nulldelimiter"></span></span><span class="mspace" style="margin-right: 0.222222em;"></span><span class="mbin">+</span><span class="mspace" style="margin-right: 0.222222em;"></span></span><span class="base"><span class="strut" style="height: 0.64444em; vertical-align: 0em;"></span><span class="mord">1</span></span></span></span></span>。<br> <img src="https://images2.imgbox.com/b5/ba/XEBgvl6c_o.png" alt="在这里插入图片描述"></strong></font></p> 
+<hr> 
+<hr> 
+<h3><a id="5_B_176"></a>5. B+树</h3> 
+<p>B+树是应文件系统所需而产生的B树的变形树，那么可能一定会想到，既然有了B树，又出一个B+树，那B+树必然是有很多优点的。</p> 
+<p><strong>B+树的特征：</strong></p> 
+<ul><li>有m个子树的中间节点包含有m个元素（B树中是k-1个元素），每个元素不保存数据，只用来索引；</li><li>所有的叶子结点中包含了全部关键字的信息，及指向含有这些关键字记录的指针，且叶子结点本身依关键字的大小自小而大的顺序链接。 (而B 树的叶子节点并没有包括全部需要查找的信息)；</li><li>所有的非终端结点可以看成是索引部分，结点中仅含有其子树根结点中最大（或最小）关键字。 (而B 树的非终节点也包含需要查找的有效信息)；</li></ul> 
+<p><strong>为什么说B+树比B树更适合数据库索引？</strong></p> 
+<p><font color="cyran">1）B+树的磁盘读写代价更低</font></p> 
+<p>B+树的内部结点并没有指向关键字具体信息的指针。因此其内部结点相对B 树更小。如果把所有同一内部结点的关键字存放在同一盘块中，那么盘块所能容纳的关键字数量也越多。一次性读入内存中的需要查找的关键字也就越多。相对来说IO读写次数也就降低了；</p> 
+<p><font color="cyran">2）B+树查询效率更加稳定</font></p> 
+<p>由于非终结点并不是最终指向文件内容的结点，而只是叶子结点中关键字的索引。所以任何关键字的查找必须走一条从根结点到叶子结点的路。所有关键字查询的路径长度相同，导致每一个数据的查询效率相当；</p> 
+<p><font color="cyran">3）B+树便于<strong>范围查询</strong>（最重要的原因，范围查找是数据库的常态）</font></p> 
+<p>B树在提高了IO性能的同时并没有解决元素遍历的我效率低下的问题，正是为了解决这个问题，B+树应用而生。B+树只需要去遍历叶子节点就可以实现整棵树的遍历。而且在数据库中基于范围的查询是非常频繁的，而B树不支持这样的操作或者说效率太低；不懂可以看看这篇解读-》范围查找</p> 
+<p><strong>补充</strong>：B树的范围查找用的是中序遍历，而<font color="red"><strong>B+树用的是在链表上遍历，遍历时间是<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+       
+        
+         
+         
+           l 
+          
+         
+           o 
+          
+          
+          
+            g 
+           
+          
+            m 
+           
+          
+         
+           N 
+          
+         
+           + 
+          
+         
+           k 
+          
+         
+        
+          log_mN+k 
+         
+        
+      </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.88888em; vertical-align: -0.19444em;"></span><span class="mord mathdefault" style="margin-right: 0.01968em;">l</span><span class="mord mathdefault">o</span><span class="mord"><span class="mord mathdefault" style="margin-right: 0.03588em;">g</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.151392em;"><span class="" style="top: -2.55em; margin-left: -0.03588em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight">m</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mord mathdefault" style="margin-right: 0.10903em;">N</span><span class="mspace" style="margin-right: 0.222222em;"></span><span class="mbin">+</span><span class="mspace" style="margin-right: 0.222222em;"></span></span><span class="base"><span class="strut" style="height: 0.69444em; vertical-align: 0em;"></span><span class="mord mathdefault" style="margin-right: 0.03148em;">k</span></span></span></span></span></strong></font>，其中m是阶数，N是节点数，k是查找的范围，更确切点，<font color="red"><strong>B+树每次范围查找的时间复杂度均为稳定的<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+       
+        
+         
+         
+           O 
+          
+         
+           ( 
+          
+         
+           h 
+          
+         
+           + 
+          
+         
+           k 
+          
+         
+           ) 
+          
+         
+        
+          O(h+k) 
+         
+        
+      </span><span class="katex-html"><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mord mathdefault" style="margin-right: 0.02778em;">O</span><span class="mopen">(</span><span class="mord mathdefault">h</span><span class="mspace" style="margin-right: 0.222222em;"></span><span class="mbin">+</span><span class="mspace" style="margin-right: 0.222222em;"></span></span><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mord mathdefault" style="margin-right: 0.03148em;">k</span><span class="mclose">)</span></span></span></span></span>，h指的是B+树的高度。</strong></font></p> 
+<p>B+树如下：<br> <img src="https://images2.imgbox.com/1b/f9/7Ja5TPBV_o.png" alt="在这里插入图片描述"><br> <img src="https://images2.imgbox.com/b1/39/ZxZqKtom_o.png" alt="在这里插入图片描述"></p> 
+<hr> 
+<hr> 
+<h3><a id="6_BB_212"></a>6. B树和B+树比较</h3> 
+<table><thead><tr><th align="left"><strong>B树</strong></th><th align="left"><strong>B+树</strong></th></tr></thead><tbody><tr><td align="left">B树的每个节点，有m个key，m+1个指针，每个指针分别是区间，代表大于前面的key，小于后面的key</td><td align="left">B+树的每个节点，有m+1个key，m+1个指针，每个指针与一个key对应，代表子节点中的数全部大于当前key。同时，因此每个节点的key值更多，所以整个树的高度更低。</td></tr><tr><td align="left">B树中每个节点的每个key都有数据信息</td><td align="left">B+树中只有叶子节点有数据信息，非叶子节点没有。所以B+树的非叶子节点大小更小</td></tr><tr><td align="left">B树的所有数据是一个整体：非叶子节点也是数据的一部分，可能还没到叶子节点就已经找到，返回了。B树的所有节点都是数据</td><td align="left">B+树的非叶子节点就是单纯的索引，所有实际的数据都存储在叶子节点中，所以每次查询，都必须查询到叶子节点，所以每次查询的速度就十分的稳定</td></tr><tr><td align="left">B树不可以进行叶子节点间的顺序查找，同时若是可以也没意义，因为是中序遍历</td><td align="left">B+树的叶子节点有指针连着，可以范围查找，即循着范围起点的叶子节点进行顺序遍历</td></tr></tbody></table>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/6b62bf7c2558752afd8cf0fbf90e0259/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">计算机试题上网部分怎么做,考试经验之谈：计算机一级考试上网题怎么操作？...</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/0fcb33e0c687bb8123710a144928859e/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">odoo 前端css错误</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

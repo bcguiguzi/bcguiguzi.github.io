@@ -1,0 +1,641 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>基于CW32F030单片机的便携式多功能测试笔 - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="基于CW32F030单片机的便携式多功能测试笔" />
+<meta property="og:description" content="一、产品背景 在日常的硬件调试工作中，我们最常使用的仪器仪表可能就是万用表了，虽然万用表号称“万用”，但大部分时候，我们需要使用到的功能无非是电压测量和通断测量。
+作为调试的“得力干将”，万用表有时候也会存在一些缺点和局限性，比如：体积较大不便于携带、无法直接反应逻辑电平情况而需要自己判断、不同型号万用表的通断档位阈值电阻不同等等，而最令人头大的，莫过于万用表的COM表笔通常需要接地，而pcb上可能没有直插孔位可以方便的固定笔尖，因此不得不用手辅助“黑表笔“，影响操作灵活性。
+二、产品构思 对于这支测试笔，我对他的功能有以下期望：
+1、电压测量&#43;阈值判断，阈值电平可以根据需求自行设定满足不同逻辑电平的场景，并且保留“简易逻辑电平测试笔“好用的红绿灯提示功能；
+2、通断测量，且阈值电阻可以根据需求调整
+3、二极管测量，导通电压测量，并且点亮一颗二极管
+4、PWM输出，方便在一些场景下提供一个已知量对系统进行测试，也可以对无源蜂鸣器等进行测试
+5、PWM输入，可以对频率进行测量
+6、直流输出，模拟出一个需要的直流电平进行测试
+7、可以连接扩展板进行配合测量
+同时，我也计划将本项目开源使更多的人用上他，或根据自己的需求进行改版再设计，因此我还额外注意了以下几点：
+1、限制PCB长度在10cm以内，使大家可以在嘉立创“白嫖”PCB
+2、阻容元器件均使用0603封装，LED使用0805封装，便于自己制作时进行焊接
+3、项目会尽量控制成本
+三、电路模块设计 我把整体分为了五个部分：
+模拟前端
+电源与电池管理
+单片机及外设
+显示屏
+人机交互（不包括显示屏的其他交互）
+根据模块化的设计思路，我们可以在画电路图时更加有条理，也可以在进行PCBLayout时将布局按照模块进行大致区分，以便于进行走线等操作。
+本项目的电路模块设计是一种很常见的模数混合电路的设计，可以适用于许多类似的项目。
+在电池管理、电源、单片机等电路模块中，本项目会尽量采用标准化设计，提升项目电路图可阅读性与可继承（复制）性。
+四、具体模块设计 我们根据需求对每个部分进行细化设计，来实现既定目标。
+在下面，将会结合电路图和PCB对我的设计和设计思路进行详细的说明。
+1、电源与电池管理
+1.1 充放电管理
+在充电ic部分我选择了常用的TP4057作为主控，电源输入采用了最常见的Type-C接口，虽然在本项目中实用6P接口就已经足够，但考虑到项目扩展性，因此选择了16P接口，并借用了Type-C接口中的SBU1、SBU2引脚进行扩展板连接，之所以没有使用D&#43;D-作为扩展线路，是因为考虑到设备的输出信号可能使得充电器误判，从而发出错误电压造成危险，这在设计中是需要考虑到的。
+在电路图中，可以看见Type-C接口中的CC1、CC2接了5.1K的对地下拉电阻，这是为了在使用CC线时使充电器准确识别设备，如果使用AC线则可以不焊接R2、R3电阻。
+TP4057充放电芯片的主要参数可以参考下图，在我的设计中PROG可编程恒流充电电流设置端的设置电阻为2K，充电策略较为激进。
+1.2 系统上电与断电控制逻辑
+系统上电逻辑较为复杂，但可以根据时序帮助理解。
+在上图中，左侧是电源控制部分，中键是电量采集部分，右侧是五向摇杆开关，其中的中键是开机按键。
+注意事项：在早期的版本中我犯了一个错误，我将电量检测电路设计在了开机控制电路之前（Q1之前），因此会在待机情况下造成电池电量的浪费，一开始我觉得这个漏电流很小无伤大雅，因为锂电池满电4.2V时的理论计算值也只有210μA，但我发现因为该电路连接到了后级的单片机电路，因此会通过单片机漏电，从而造成后级系统一直带有一个0.7V的低压。
+下面我们结合电路图对开机时序进行分析：
+① 五向开关的中键被按下，并保持按下状态
+② 被BAT&#43;电池电压拉高的PW_ON网络通过D1对地放电
+③ MOS管AO3401（PMOS）栅极被拉低，Ug&lt;Us
+④ MOS管Q1导通，电池输出电压到LDO芯片XC6206
+⑤ XC6206输出3.3V电压，单片机得电，KEY1网络被拉高
+⑥ 由于按键保持按下，KEY1网络被拉低，单片机获得按键按下信号
+⑦ 单片机计算延时，到达阈值时间后，控制PW_CT（PF7）输出高电平
+（如果延时时间未到就松手，系统断电，就不会进入后面的时序）
+⑧ 三极管S8050导通，保持AO3401栅极拉低
+⑨ PW_CT持续输出高电平，三极管保持导通，系统保持得电，开机时序完成
+理解了上电时序和逻辑，那就会发现关机的断电逻辑很简单：符合关机条件（无论是按键操作还是软件控制），程序控制PW_CT引脚（PF7）转为输出低电平， Q1不再导通，AO3401栅极被R7拉高，MOS管也不再导通，系统完成断电。
+2、单片机及外设等
+2.1 CW32单片机核心系统
+标准的单片机核心系统配置，其中因为本项目不需要用到高精度时钟和低速晶振进行长时间计时，因此则省略这部分电路（这边画了，但是设置为不需要转入PCB、不导入BOM，主要是为了别的项目在使用时可以直接复制使用，主打一个CV工程师。
+本项目不使用bootloader烧录，因此BOOT引脚直接拉低（标准画法可以参考被注释的部分，本项目的PCB面积较为紧张，就直接接地了）。SWD接口为PA13、PA14，本项目中通过1.0间距的排针引出，不过在实际使用中不需要焊接排针，只需要使用探针（项目工程里有探针的转接板）顶住接口就可以进行下载。排针引出接口包括SWD、RST、MCUVCC等，方便进行调试（PCB上的复位按键不能SMT焊接，因为贴片焊盘和排针直插焊盘复用，回流焊会漏锡造成虚焊甚至短路！复位按键的设计是为了在烧录完成后，确定不会再烧录的情况下焊接，既可以挡住排针的孔（没错，我有强迫症），也可以当作复位按键使用（仿佛说了一句废话），即使不焊接也可以使用镊子等金属物品短接RST和GND孔洞进行复位操作。
+在io的配置方面，首先根据需求及单片机引脚功能进行io分配，优先分配需要使用到专用功能的引脚，比如ADC、SPI、TIMER、串口等，再根据布局布线进行优化调整。
+在原理图绘制时，我的习惯是把io使用到的功能直接标注在MCU引脚边上（放置需要连接的网络标识符），同时使用中文进行辅助说明，这样可以在分配时防止冲突并快速调整引脚分配，也可以编程时快速找到所用引脚。" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/c7f5c727baf39321c63ae095fb90de8b/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-11-27T19:59:12+08:00" />
+<meta property="article:modified_time" content="2023-11-27T19:59:12+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">基于CW32F030单片机的便携式多功能测试笔</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <h4>一、产品背景</h4> 
+<p>在日常的硬件调试工作中，我们最常使用的仪器仪表可能就是万用表了，虽然万用表号称“万用”，但大部分时候，我们需要使用到的功能无非是电压测量和通断测量。</p> 
+<p>作为调试的“得力干将”，万用表有时候也会存在一些缺点和局限性，比如：体积较大不便于携带、无法直接反应逻辑电平情况而需要自己判断、不同型号万用表的通断档位阈值电阻不同等等，而最令人头大的，莫过于万用表的COM表笔通常需要接地，而pcb上可能没有直插孔位可以方便的固定笔尖，因此不得不用手辅助“黑表笔“，影响操作灵活性。</p> 
+<h4>二、产品构思</h4> 
+<p>对于这支测试笔，我对他的功能有以下期望：</p> 
+<p>1、电压测量+阈值判断，阈值电平可以根据需求自行设定满足不同逻辑电平的场景，并且保留“简易逻辑电平测试笔“好用的红绿灯提示功能；</p> 
+<p>2、通断测量，且阈值电阻可以根据需求调整</p> 
+<p>3、二极管测量，导通电压测量，并且点亮一颗二极管</p> 
+<p>4、PWM输出，方便在一些场景下提供一个已知量对系统进行测试，也可以对无源蜂鸣器等进行测试</p> 
+<p>5、PWM输入，可以对频率进行测量</p> 
+<p>6、直流输出，模拟出一个需要的直流电平进行测试</p> 
+<p>7、可以连接扩展板进行配合测量</p> 
+<p>同时，我也计划将本项目开源使更多的人用上他，或根据自己的需求进行改版再设计，因此我还额外注意了以下几点：</p> 
+<p>1、限制PCB长度在10cm以内，使大家可以在嘉立创“白嫖”PCB</p> 
+<p>2、阻容元器件均使用0603封装，LED使用0805封装，便于自己制作时进行焊接</p> 
+<p>3、项目会尽量控制成本</p> 
+<h4>三、电路模块设计</h4> 
+<p>我把整体分为了五个部分：</p> 
+<p><strong>模拟前端</strong></p> 
+<p><strong>电源与电池管理</strong></p> 
+<p><strong>单片机及外设</strong></p> 
+<p><strong>显示屏</strong></p> 
+<p><strong>人机交互</strong>（不包括显示屏的其他交互）</p> 
+<p>根据模块化的设计思路，我们可以在画电路图时更加有条理，也可以在进行PCBLayout时将布局按照模块进行大致区分，以便于进行走线等操作。</p> 
+<p>本项目的电路模块设计是一种很常见的模数混合电路的设计，可以适用于许多类似的项目。</p> 
+<p>在电池管理、电源、单片机等电路模块中，本项目会尽量采用标准化设计，提升项目电路图可阅读性与可继承（复制）性。</p> 
+<h4>四、具体模块设计</h4> 
+<p>我们根据需求对每个部分进行细化设计，来实现既定目标。</p> 
+<p>在下面，将会结合电路图和PCB对我的设计和设计思路进行详细的说明。</p> 
+<p>1、电源与电池管理</p> 
+<p>1.1 充放电管理</p> 
+<p>在充电ic部分我选择了常用的TP4057作为主控，电源输入采用了最常见的Type-C接口，虽然在本项目中实用6P接口就已经足够，但考虑到项目扩展性，因此选择了16P接口，并借用了Type-C接口中的SBU1、SBU2引脚进行扩展板连接，之所以没有使用D+D-作为扩展线路，是因为考虑到设备的输出信号可能使得充电器误判，从而发出错误电压造成危险，这在设计中是需要考虑到的。</p> 
+<p></p> 
+<p class="img-center"><img alt="" height="361" src="https://images2.imgbox.com/bf/77/tEM1GJBp_o.png" width="1200"></p> 
+<p>在电路图中，可以看见Type-C接口中的CC1、CC2接了5.1K的对地下拉电阻，这是为了在使用CC线时使充电器准确识别设备，如果使用AC线则可以不焊接R2、R3电阻。</p> 
+<p>TP4057充放电芯片的主要参数可以参考下图，在我的设计中PROG可编程恒流充电电流设置端的设置电阻为2K，充电策略较为激进。</p> 
+<p></p> 
+<p></p> 
+<p class="img-center"><img alt="3pNZNiqubJO0YVTgvUaeRfsWixjOoYKNOGqwdWWG.png" height="653" src="https://images2.imgbox.com/2a/8e/Lv9M9kJL_o.png" width="1200"></p> 
+<p></p> 
+<p>1.2 系统上电与断电控制逻辑</p> 
+<p>系统上电逻辑较为复杂，但可以根据时序帮助理解。</p> 
+<p></p> 
+<p></p> 
+<p class="img-center"><img alt="4WadNfxZuqcrMGkjWp3ON2eLJQvlj4KOR1ByVVsn.png" height="353" src="https://images2.imgbox.com/1c/51/8YCibKDL_o.png" width="1200"></p> 
+<p></p> 
+<p>在上图中，左侧是电源控制部分，中键是电量采集部分，右侧是五向摇杆开关，其中的中键是开机按键。</p> 
+<p>注意事项：在早期的版本中我犯了一个错误，我将电量检测电路设计在了开机控制电路之前（Q1之前），因此会在待机情况下造成电池电量的浪费，一开始我觉得这个漏电流很小无伤大雅，因为锂电池满电4.2V时的理论计算值也只有210μA，但我发现因为该电路连接到了后级的单片机电路，因此会通过单片机漏电，从而造成后级系统一直带有一个0.7V的低压。</p> 
+<p>下面我们结合电路图对开机时序进行分析：</p> 
+<p></p> 
+<p></p> 
+<p class="img-center"><img alt="qC9hdloAxT1eyQU4yKGzVihIoquxoAQvsd4ELmlF.png" height="496" src="https://images2.imgbox.com/a0/46/Rsg5juGB_o.png" width="1200"></p> 
+<p></p> 
+<p>① 五向开关的中键被按下，并保持按下状态</p> 
+<p>② 被BAT+电池电压拉高的PW_ON网络通过D1对地放电</p> 
+<p>③ MOS管AO3401（PMOS）栅极被拉低，Ug&lt;Us</p> 
+<p>④ MOS管Q1导通，电池输出电压到LDO芯片XC6206</p> 
+<p>⑤ XC6206输出3.3V电压，单片机得电，KEY1网络被拉高</p> 
+<p>⑥ 由于按键保持按下，KEY1网络被拉低，单片机获得按键按下信号</p> 
+<p>⑦ 单片机计算延时，到达阈值时间后，控制PW_CT（PF7）输出高电平</p> 
+<p>（如果延时时间未到就松手，系统断电，就不会进入后面的时序）</p> 
+<p>⑧ 三极管S8050导通，保持AO3401栅极拉低</p> 
+<p>⑨ PW_CT持续输出高电平，三极管保持导通，系统保持得电，开机时序完成</p> 
+<p>理解了上电时序和逻辑，那就会发现关机的断电逻辑很简单：符合关机条件（无论是按键操作还是软件控制），程序控制PW_CT引脚（PF7）转为输出低电平， Q1不再导通，AO3401栅极被R7拉高，MOS管也不再导通，系统完成断电。</p> 
+<p>2、单片机及外设等</p> 
+<p>2.1 CW32单片机核心系统</p> 
+<p>标准的单片机核心系统配置，其中因为本项目不需要用到高精度时钟和低速晶振进行长时间计时，因此则省略这部分电路（这边画了，但是设置为不需要转入PCB、不导入BOM，主要是为了别的项目在使用时可以直接复制使用，主打一个CV工程师。</p> 
+<p>本项目不使用bootloader烧录，因此BOOT引脚直接拉低（标准画法可以参考被注释的部分，本项目的PCB面积较为紧张，就直接接地了）。SWD接口为PA13、PA14，本项目中通过1.0间距的排针引出，不过在实际使用中不需要焊接排针，只需要使用探针（项目工程里有探针的转接板）顶住接口就可以进行下载。排针引出接口包括SWD、RST、MCUVCC等，方便进行调试（PCB上的复位按键不能SMT焊接，因为贴片焊盘和排针直插焊盘复用，回流焊会漏锡造成虚焊甚至短路！复位按键的设计是为了在烧录完成后，确定不会再烧录的情况下焊接，既可以挡住排针的孔（没错，我有强迫症），也可以当作复位按键使用（仿佛说了一句废话），即使不焊接也可以使用镊子等金属物品短接RST和GND孔洞进行复位操作。</p> 
+<p></p> 
+<p></p> 
+<p class="img-center"><img alt="ZyBhWHdppVRHTQc49uZR99lsV9DYoPRCwP64h848.png" height="683" src="https://images2.imgbox.com/32/ab/Bb1mZyxf_o.png" width="880"></p> 
+<p></p> 
+<p>在io的配置方面，首先根据需求及单片机引脚功能进行io分配，优先分配需要使用到专用功能的引脚，比如ADC、SPI、TIMER、串口等，再根据布局布线进行优化调整。</p> 
+<p></p> 
+<p></p> 
+<p class="img-center"><img alt="ZjkMVi4u8bkoM4FQF86xy0XhvJsX1guTYkI3KHrB.png" height="743" src="https://images2.imgbox.com/99/af/By4amTSN_o.png" width="1200"></p> 
+<p></p> 
+<p>在原理图绘制时，我的习惯是把io使用到的功能直接标注在MCU引脚边上（放置需要连接的网络标识符），同时使用中文进行辅助说明，这样可以在分配时防止冲突并快速调整引脚分配，也可以编程时快速找到所用引脚。</p> 
+<p>当然也有人习惯把分配的引脚放置在对应图块边上，则单片机只引出io对应的网络，个人认为这种分配方法更适合在pin数较多的单片机上使用（比如需要使用RGB、EXMC的时候，他们的引脚位置往往不是连续的，在对应图块边上标注io可以更好的进行引脚管理。</p> 
+<p>两种标注方法各有利弊，自行选择即可。</p> 
+<p></p> 
+<p></p> 
+<p class="img-center"><img alt="" height="1200" src="https://images2.imgbox.com/13/de/DSCA3jM5_o.jpg" width="1200"></p> 
+<p></p> 
+<p>2.2 用户操作输入</p> 
+<p>本项目的用户操作部分使用了一颗五向摇杆开关，可以理解等效为五颗普通按键开关，编程起来也是作为普通按键即可。</p> 
+<p>不同方向的摇杆开关对应的功能会在程序部分进行说明，此处不做赘述。</p> 
+<p></p> 
+<p></p> 
+<p class="img-center"><img alt="hMhhxkWjwJKd4ZfSOwQeEzrEXl9fS0F1QIjwM32L.png" height="631" src="https://images2.imgbox.com/19/fe/S8zqyOgG_o.png" width="1200"></p> 
+<p></p> 
+<p>和传统按键一样采用了0.1μF消抖电容（图个心理安慰）</p> 
+<p>2.3 显示屏</p> 
+<p>本项目采用了一块0.96寸TFT显示屏，显示屏分辨率80*160，采用ST7735显示驱动芯片，通过FPC与PCB焊接进行连接，通过SPI接口进行通信。</p> 
+<p></p> 
+<p></p> 
+<p class="img-center"><img alt="mTnYuCAnvx0yVmWmjjaZNu94920zhC4kDEACmkuD.png" height="601" src="https://images2.imgbox.com/73/ea/3fJBNS1d_o.png" width="1200"></p> 
+<p></p> 
+<p>在上方电路图中，R18为背光限流电阻，可以通过单片机控制BLK网络对显示屏背光进行控制，也可以通过程序控制进行PWM调光。</p> 
+<p></p> 
+<p></p> 
+<p class="img-center"><img alt="" height="1200" src="https://images2.imgbox.com/46/23/aFkJY9Qb_o.jpg" width="1200"></p> 
+<p></p> 
+<p>显示屏的使用效果如上图所示。</p> 
+<p>2.4 其他人机交互</p> 
+<p></p> 
+<p></p> 
+<p class="img-center"><img alt="jjuXY7p5SLcgeMYdy1UFg5aQavHntzrksEALgFEY.png" height="491" src="https://images2.imgbox.com/01/82/O8wsHm0o_o.png" width="1200"></p> 
+<p></p> 
+<p>如上图所示，多功能测试笔有一红一绿两颗LED用于电平指示，其中绿色用来指示低电平、红色用来指示高电平（焊接时需要注意LED的颜色），两颗LED与MCU的连接均为灌电流模式（注：LED和显示屏同时起作用，其中LED作为快速指示灯，方便用户通过余光就能确定当前的状态）。</p> 
+<p>一颗无源蜂鸣器用于额外的指示（比如通断测试），增强用户感知。需要注意的是此处使用的是无源蜂鸣器，不能使用有源蜂鸣器（那么小体积也没有常规的有源蜂鸣器）。</p> 
+<p>需要注意的是，我 在蜂鸣器供电中串接了一颗200Ω的电阻来限制电流，如果在实际使用中你觉得蜂鸣器提示音太轻或者太响，可以更换此电阻，但不能将阻值设计的太小，否则会因为过大的电流拉低系统电压，从而引发异常！</p> 
+<p>还有一颗侧贴的LED作为笔尖照明灯，方便在机壳内部等较为昏暗的场景进行测试，可以根据需要更换限流电阻来设定自己需要的亮度。</p> 
+<p></p> 
+<p></p> 
+<p class="img-center"><img alt="" height="1200" src="https://images2.imgbox.com/e2/e1/d1aLQuoD_o.jpg" width="1200"></p> 
+<p></p> 
+<p>2.5 BLE蓝牙</p> 
+<p>为了方便测试笔与电脑或手机连接，我选择使用蓝牙BLE技术进行无线数据传输。</p> 
+<p>之所以不使用更加常用的CH340等串口转USB直接连接，主要有以下三点考虑：</p> 
+<p>① 数据线有一定的重量和硬度，需要拖着数据线操作会不如无线时灵活；</p> 
+<p>② 不建议一边插着数据线一边使用，会让表笔的浮地变成接地，进而可能在测试时造成短路（具体原因在模拟电路章节会分析）</p> 
+<p>③ 最重要的一点：安全因素！如果因为操作失误造成测试笔输入一个较高的电压，并且防护电路时效造成单片机烧毁，那这个高压极有可能沿着数据线直接输入手机或电脑，造成严重的损失！</p> 
+<p></p> 
+<p></p> 
+<p class="img-center"><img alt="egVRpnMtb6dXEH6B1xvXe75OtmQWCEvTzApqV75R.png" height="621" src="https://images2.imgbox.com/7b/38/zD7wvelv_o.png" width="1200"></p> 
+<p></p> 
+<p>在芯片选型时，选择了KT6368A这颗BLE、SPP双模芯片，基于杰理AC6368A,这颗芯片支持蓝牙5.1，当然更重要的是，这颗芯片使用晶振时不需要起振电容，其他的外围电路也极其简单，有助于在拥挤的PCB上节约宝贵的面积。</p> 
+<p>我的设计中为这颗芯片配备了指示灯和外接天线，这些都不是必须的，如果你想要减少物料成本，在不焊接天线的情况下，蓝牙依旧可以保证在2m左右范围内的稳定信号连接（因为每个人的环境与设备不同，因此该数据仅供参考）。</p> 
+<p>该蓝牙芯片可以与电脑进行连接，并生成一个蓝牙串口。根据测试笔的设计，在进入电平检测模式后，会使用串口通过蓝牙透传采集到的电平数据，其数据格式使用了VOFA+软件的FireWater数据格式，因此可以借助VOFA+串口监控软件进行曲线绘制。</p> 
+<p></p> 
+<p></p> 
+<p class="img-center"><img alt="sYiI2ERRO0RYII3KtyPxxZvV9KqwnjcUZGLjZdy5.png" height="1020" src="https://images2.imgbox.com/b5/1f/b0nvdg90_o.png" width="1200"></p> 
+<p></p> 
+<p>注：详细的数据格式说明请参考：<a href="https://www.vofa.plus/plugin_detail/?name=firewater" rel="nofollow" title="FireWater | VOFA-Plus上位机">FireWater | VOFA-Plus上位机</a></p> 
+<p></p> 
+<p></p> 
+<p class="img-center"><img alt="TZ52B30UXFkUvdsXSxlkUfy3hBeTlXmitXYvJj32.png" height="288" src="https://images2.imgbox.com/2f/ab/S6l8bgHt_o.png" width="611"></p> 
+<p></p> 
+<p>使用此功能可以对目标电压进行长时间的监视、采集，并借助上位机的曲线进行分析。用户也可以根据自己的需求编写软件，适用于更多的场景中，使测试笔拥有更多的功能。</p> 
+<p></p> 
+<p>3、模拟前端</p> 
+<p>众所周知，模拟前端就是在数字电路之前的模拟电路（仿佛有哪里不对但有好像有有点道理），好了不开玩笑，根据定义：AFE(Analog Front End)，模拟前端，处理信号源给出的模拟信号，对其进行数字化，其主要功能包括以下几个方面：信号放大、频率变换、调制、解调、邻频处理、电平调整与控制、混合。</p> 
+<p>既然你引脚知道了模拟前端是什么，那让我们来做一个10G的示波器吧（</p> 
+<p></p> 
+<p></p> 
+<p class="img-center"><img alt="" height="1200" src="https://images2.imgbox.com/ac/36/uvbFmSnL_o.jpg" width="1200"></p> 
+<p></p> 
+<p>3.1 模拟前端基本设计</p> 
+<p>虽然本项目不是要做一个10G的示波器（而且我目前也做不出来），但模拟前端的设计思路都是类似的，即：我会采集什么养的信号，和我的设备会采集什么样的信号，如果觉得这不好理解，那我打个比方，我会听到英语，但我只听得懂中文，所以：我需要一个翻译器，那么这个翻译器就是我们需要的“模拟前端”。</p> 
+<p>那我们回到测试笔这个项目，我对系统的设计目标是这样的：可以采集0~+15V的信号，能够输出0~+5V的信号，OK，这就是最基本的需要实现的目标，是不是非常简单呢。</p> 
+<p>但是本项目有一个特殊的情况：我想要完成在一根表笔上完成输入输出的全部功能（我这种人一看就是一个变态甲方），那就需要对输入、输出、或其他情况进行切换。这时候有聪明的小伙伴肯定马上想到了：继电器，是的，继电器确实在这样的场景下十分的好用，但是他又带来了另外一个问题：体积，而本项目作为一支便携式测试笔，我自然是不想把设备做的太大的（太大了用起来也不方便啊），那继电器在这样的情况下就不那么适用了，因此我们需要请出另外的切换器了，他就是模拟开关。</p> 
+<p></p> 
+<p></p> 
+<p class="img-center"><img alt="oas78qOKVaNqalZr2kSJjRoo1kHRPsNhu765BaiQ.png" height="410" src="https://images2.imgbox.com/76/cb/4HeisTEH_o.png" width="744"></p> 
+<p></p> 
+<p>模拟开关在早期的74电路中就已经存在，他们的内阻较大（这个描述可能不是很准确，严谨的来说是导通电阻），而如今的设备越来越精密，一些低阻的模拟开关也出现了，他们的内阻低至mΩ级别。在本项目中，因为输入电压较大，而低阻模拟开关的通过电压较低，因此选用了较为“古老”的4053芯片，他是一款SPDT、3 通道模拟开关，工作电压可以达到20V，完美的满足了本项目的需求。这时候可能有细心的同学发现了，他的内阻较大，达到了200-240Ω，这会不会对系统精度有影响呢，答案是肯定的，但是本项目作为一个简单的便携式测试工具，由于模拟开关内阻带来的影响可以忽略，而模拟开关本身带来的直流偏置也可以通过校准进行修正（本项目没有做多点校准等高级功能，但设计了短接校准，主打一个简单易用）。</p> 
+<p>3.2 模拟电路电源</p> 
+<p>根据我们选用的HT4053A，其最大工作电压为18V，为了留出一定的余量，我将系统电压设计在17.5V，由于前级电压为电池直接供电，电压约为4.2V~3.5V，因此我们需要一个升压电路为模拟前端进行供电。</p> 
+<p>在芯片选型时，我选择了常用的MT3608芯片，2A的输出电流足够使用，并且1.2MHz较高的开关频率也有助于后级进行滤波。升压电感为一颗4.7μH的电感，SMD252010P的迷你封装（2.5*2.0*1.0mm）有助于节约PCB面积（也比较的好看），但是其虽然体积娇小，也有着1.6A的额定电流和2A的饱和电流，足够系统使用。在分压电阻配置方面，虽然看似随意，但也有一定讲究，不合适的配置将影响电源输出电压的纹波和负载调整率等性能，但因为篇幅限制，在此不做赘述，感兴趣的同学可以自行查阅相关资料进行学习。</p> 
+<p>需要注意的是本项目未使用双电源供电，即只有正电源没有负电源，因此测试笔也只能输入/输出正电压信号，如果需要输入负信号，后级电路也会需要进行一定的修改，本项目出于对体积的考虑，最终决定采用单电源方案。</p> 
+<p></p> 
+<p></p> 
+<p class="img-center"><img alt="pTGSLQZaNZ8qPGm2lY2OlxfIuMzLwh0kVChWokIl.png" height="286" src="https://images2.imgbox.com/7b/48/r5uweu6i_o.png" width="1200"></p> 
+<p></p> 
+<p>由于开关电源工作时会带来干扰，模拟电路工作时也会有各种类型的干扰引入，因此在数字电源和模拟电源之间我采用了磁珠进行隔离，同时也可以借助磁珠方便的做到单点接地的效果。</p> 
+<p></p> 
+<p></p> 
+<p class="img-center"><img alt="Flh3yljHk4TonWNYhPTNlgoUEgEnmMkUhfjIhQlu.png" height="529" src="https://images2.imgbox.com/12/8d/5v4zzeiW_o.png" width="1110"></p> 
+<p></p> 
+<p>红框中的即为模拟前端电源电路，提供AVC测试点便于快速测量电压是否正常。上图的左侧为模拟前端，中键上方为电源电路，中键下方为按键消抖电容，右侧为数字电路部分，对地平面的铜箔进行了开槽隔离，并对电流回流路径进行了优化。</p> 
+<p></p> 
+<p></p> 
+<p class="img-center"><img alt="1hbHVKu67Q0hQoIhKQPS2GQYdx0ezXdU7v03Yu2b.png" height="494" src="https://images2.imgbox.com/e4/05/n1tynmTP_o.png" width="1082"></p> 
+<p></p> 
+<p>地平面和回流路径设计可以看上图（PCB正面）。</p> 
+<p>3.3 信号输入电路</p> 
+<p>是不是看了上面很多内容已经困了，别着急，正餐才刚刚开始：信号输入调理电路：</p> 
+<p></p> 
+<p></p> 
+<p class="img-center"><img alt="YlodTsciIQqjuTgNioE78MXGWHajYeLREyXsEzAS.png" height="469" src="https://images2.imgbox.com/a6/c8/Xj4XIffr_o.png" width="1200"></p> 
+<p></p> 
+<p>上图就是最基本的信号输入电路了，首先会有一颗双向TVS对后级电路进行保护，随后，信号通过模拟开关3（即COM3与NC3、NO3）可以选择是工作在信号输入还是输出状态（默认输出模式），通过模拟开关2可以选择输入信号是否进行衰减，模拟前端的设计参考了示波器的设计，输入内阻为1M，可以和示波器一样选择X1和X10的档位，默认选择X10档位，这样的设计最大程度上保证了后级电路的安全，就像在有独立开关机按键的万用表上，我们在收纳万用表时，应当把档位调整为“交流电压、最大量程”一样的道理。</p> 
+<p></p> 
+<p></p> 
+<p class="img-center"><img alt="mZTwi8P00WZ6iuJBEsvQczV5mwGOg7LY4h9UwPfc.png" height="335" src="https://images2.imgbox.com/42/a8/7p2IxjCk_o.png" width="1116"></p> 
+<p></p> 
+<p>在PCB布局时，需要将TVS管（上图红框中）放置在最靠近输入的位置（如果还有别的保护器件，则需要综合考虑PCB如何进行布局），从而更好的保护后级电路。</p> 
+<p></p> 
+<p></p> 
+<p class="img-center"><img alt="CSa4sdz6KyGkuSaJGzfyqjvCao6Iwb7eAFRoemsk.png" height="418" src="https://images2.imgbox.com/4f/ec/wNBrHJjI_o.png" width="856"></p> 
+<p></p> 
+<p>随后信号经过一个电压跟随器进行阻抗匹配，再经过一个低通滤波器对高频噪声进行滤波，最后还要经过一个钳位二极管（OUTA_0网络）进行限压保护，才会输入至单片机的片内ADC。</p> 
+<p>这里需要注意的是，运算放大器输出不建议直接连接电容，否则容易发生震荡等情况，因此需要加上一颗小电阻。虽然电阻+电容会变成一个RC低通滤波器，但是根据我的阻容选型，可计算出其单阶在下降率为6dB时的截止频率723.7985kHz，因此不会对表笔的正常测量造成影响。</p> 
+<p></p> 
+<p></p> 
+<p class="img-center"><img alt="Xr0muE4aGLyxL52b3kzWd5d83WPLDNEfy8kFhE8z.png" height="524" src="https://images2.imgbox.com/0d/61/oAHaMReX_o.png" width="924"></p> 
+<p></p> 
+<p>上图所示的为钳位保护电路，通过电源分压得到设计的钳位电压，再通过一个跟随器使其具有吸电压的能力。需要注意的是由于二极管有一个导通电压在（该保护二极管的典型值为0.35V），因此电压跟随器的电压应当适当低于保护的阈值电压，本设计中采用的电压为3V，加上二极管的0.35V，可以将保护阈值设置在单片机ADC的最大输入电压3.3V（事实上CW32单片机在3.3V工作电压下，ADC输入4V一般也不会损坏）。</p> 
+<p></p> 
+<p></p> 
+<p class="img-center"><img alt="geTdDgpZpa8wZSWY17A2gokZl9MkB8Dim9WUDAdC.png" height="441" src="https://images2.imgbox.com/86/72/GgeAGL5N_o.png" width="1075"></p> 
+<p></p> 
+<p>模拟输入的电压在衰减后还会被分一路输入至这个比较器，比较器的阈值电压由PWM转直流得到（具体电路分析请看“信号输出电路”部分），同时为了防止发生放置震荡，选择一颗大电阻来构建迟滞比较器也是必不可少的。通过这个电路，我们可以对输入信号进行简单的测频和数字分析。</p> 
+<p>以上就是信号输入处理链路的全部单元，剩下的就是把处理后的信号输入至单片机的ADC进行测量和处理了。</p> 
+<p>3.4 信号输出电路</p> 
+<p></p> 
+<p></p> 
+<p class="img-center"><img alt="t7rNmLz76oj4407OeLdCll7kZ4RC9F7y2I9bwyFN.png" height="438" src="https://images2.imgbox.com/61/e7/LtF5yvZk_o.png" width="1200"></p> 
+<p></p> 
+<p>信号输出电路可以用于输出直流信号或直接输出PWM信号（当然你如果愿意编程，也可以让他输出别的协议的信号，比如模拟串口输出A5、A0之类的测试信号，只需要自己编程就可以）。</p> 
+<p>其中直接输出没什么好说的，就是直接输出单片机的信号（听君一席话，胜听一席话），而输出直流电平则是通过PWM调整占空比（设定的信号频率是20kHz，如果是别的频率则需要自己修改直流校准值），然后经过两级的低通滤波转换出的“直流”信号。</p> 
+<p></p> 
+<p></p> 
+<p class="img-center"><img alt="hYsfShCjQIxzGjwn6YWszQvdrWBxniE0H6M3DHuW.png" height="373" src="https://images2.imgbox.com/6e/88/GelhlY4d_o.png" width="1200"></p> 
+<p></p> 
+<p>但是由于PWM转直流的输出电压比PWM的高电平是要低的，因此只能输出0~（+3.3V-X）的电压，并不能满足我在设计目标中提出的0~5V目标，因此增加了一个运放实现了两倍的电压输出，最终可以输出0~6V的电压，满足了目标需要（不明白这个设计逻辑的话可以再回顾一下“翻译器”的故事）。</p> 
+<p>放大后的输出电压再经过一个低通滤波，就可以得到较为理想的直流信号了。</p> 
+<p></p> 
+<p></p> 
+<p class="img-center"><img alt="cOV9QbRzfas74YG5c5TJUhdsXZMrJeYLYY6SDFeM.png" height="383" src="https://images2.imgbox.com/4d/f9/27JF9JTn_o.png" width="1160"></p> 
+<p></p> 
+<p>PWM转直流的低通滤波器在布局时也需要谨慎考虑，除了考虑信号流通路径通畅（上图中箭头标注的方向）和PWM信号避开易被干扰的敏感信号以外，还需要保证滤波器良好接地，在项目中，就近放置了过孔将GND引脚与PCB正面的地平面相连。</p> 
+<p>另外，PWM转直流信号（OUTC）还会输入至比较器（在模拟输入章节有提到），使用方式和直接输出没有区别，故此不再赘述。</p> 
+<p></p> 
+<p></p> 
+<p class="img-center"><img alt="cVIzbqyzzgj2IyFruryvXh4ny0UrANiBlTnujnHn.png" height="352" src="https://images2.imgbox.com/b2/cb/VFKZcG6j_o.png" width="836"></p> 
+<p></p> 
+<p>我们可以控制模拟开关1来切换是直接输出信号还是直流信号，最终信号还会通过一个Buffer进行单向隔离并提升驱动能力。</p> 
+<p>以上就是信号输出处理链路的全部单元，如果想要对输出电路进行优化，我们可以引入直流输出的负反馈回到单片机的一路ADC通道，从而实现更加精准的直流量输出。（目前没有负反馈，而是通过曲线拟合来修正PWM转直流带来的非线性问题，但在点-点之间就会存在误差）。</p> 
+<p>3.5 电流源电路</p> 
+<p>在本项目中，为了实现短路测量，由于只需要对“小电阻”进行测量（设计预期是200Ω以内），因此采用了定值电流源，我使用LDO搭建了一个简易的电流源，可以简化电路的复杂度（其实我也想放一个更好、更精密的电流源，奈何板子的空间不允许，如果之后做升级版本会进行优化）。</p> 
+<p></p> 
+<p></p> 
+<p class="img-center"><img alt="DRofmYqOZsRmJxlNpK9BtUv7ePxlggshGp3BCtQL.png" height="455" src="https://images2.imgbox.com/8c/2d/FQFkYsnu_o.png" width="1200"></p> 
+<p></p> 
+<p>上图是我对电路图进行重新布局后的样子（电气连接并没有调整），其中最左侧的线路连接着多功能测试笔的笔尖部分，根据上图，我们可以从右至左对电流源进行分析和理解。</p> 
+<p>其中最右侧的部分是一个简单的用低压（MCU的3.3VTTL电平）控制高压MOS（模拟电源17.5V）的电路，经过MOS后，我们通过一颗LDO把17.5V转为5V的电流源电源给到后级的电流源使用。</p> 
+<p>在这里有三个设计注意事项：</p> 
+<p>① 第一点是将LDO设计在了MOS开关的后级，这样可以避免在不使用电流源时LDO持续工作造成能耗的浪费，尤其是在本项目中需要在17.5V转5V这样的较大压差时，LDO的效率会比较低，因此可以通过这样的设计减少不必要的能耗</p> 
+<p>② 第二点便是这颗LDO，虽然再后一级的LM1117输入耐压有20V，但由于需要进行“通断检测”，在此时会有较大的瞬时电流变化，如果直接将电源接入电流源便会导致模拟前端的工作电压造成波动，这对测试精度是不利的，因此加上一级LDO来进行缓冲。</p> 
+<p>③ 电流源的输出电压过高时测量二极管的导通电压会不准确，为了保证测试精度需要适当降低电流源浮空输出电压。</p> 
+<p>下面我们来分析电流源部分，该电流源是利用LDO的负反馈搭建的一个简易电流源，或许有人看到这里会不理解：LDO不是一个降压芯片吗，怎么还能干恒流的活呢？那就让我们来看一下芯片的数据手册：（需要注意的是，不是所有LDO都可以作为电流源，需要根据LDO的工作原理来进行具体分析）</p> 
+<p></p> 
+<p></p> 
+<p class="img-center"><img alt="YjXLgTIeAE0MOUFTUDUK7eh2TttJn6JmCHw9d2Fi.png" height="623" src="https://images2.imgbox.com/cd/f9/F2dVxWPO_o.png" width="1200"></p> 
+<p></p> 
+<p>这是数据手册中“APPLICATION CIRCUIT”这一章节的截图，这一章节是厂家提供给工程师的设计参考，其中就有这张“300mA电流源”的设计参考图，我们只需要在芯片的OUT和ADJ引脚之间加上一颗限流电阻，就可以作为简易电流源进行使用，而电流源最大输出电流在不高于LDO最大输出电流时，便可以通过Vref/R1进行计算，在我的设计中，需要一个2mA的电流源，通过查看LDO的数据手册，可以查到Vref为1.25V，因此便可以计算出，我们需要的限流电阻为625Ω电阻。</p> 
+<p>注：由于625Ω电阻不属于标准阻值，阻值最靠近625Ω的电阻为E192系列中的626Ω，E192系列电阻不仅价格较贵而且生产数量少导致供货不稳定，考虑到本项目只作为一个简易测试工具不涉及高精度测试，因此选用了更为常用的E24系列电阻中的620Ω电阻，虽然此时的理论电流会变成2.016mA，但是该误差完全可以接受。如果对精度有着更高要求，可以将限流电阻换为两颗电阻串联，但由于没有负反馈的引入，Vref会存在一定波动，因此即使使用了更精确的限流电阻，精度提升也较为有限。综上所述，在电路的设计过程中，我们应当在指标参数和项目成本找到一个平衡值。</p> 
+<p></p> 
+<p></p> 
+<p class="img-center"><img alt="pawYk6kqKWhu1RnEsU1VpFo6Eie982oZql8funu2.png" height="410" src="https://images2.imgbox.com/6c/b3/xKOnOF8l_o.png" width="1200"></p> 
+<p></p> 
+<p>LDO的adj引脚电压也就是Vref电压，可以通过数据手册查到，请看上表（数据手册截图）。可以看到实际工作中这个电压会发生浮动，但该电压浮动带来的电流波动也在可以接受范围内。</p> 
+<p>在电流源至输出之间，还有一个光电固态继电器（下图中红色箭头指出的PM1），其使用方法基本上类似传统单刀单掷继电器，其驱动方法和普通LED一直，可以直接使用io口加上限流电阻进行驱动。相比传统的继电器，光电固态继电器具有响应时间快、体积小等诸多优点，非常适合本项目这种对体积要求较高的项目 。</p> 
+<p></p> 
+<p></p> 
+<p class="img-center"><img alt="7ZS1KCYX1lOlcXG1b7mSYVbftyKqnjHGmdksU6KB.png" height="670" src="https://images2.imgbox.com/d3/bc/scoljDoP_o.png" width="1200"></p> 
+<p></p> 
+<p>在上图中还有一颗高阻值电阻（蓝色箭头指出），原因是其边上有一颗10μF的大电容，如果光电固态继电器关闭，则电流源输出悬空，内部的电量无法释放，因此加上一颗电阻进行放电，另外该电阻选择了较大的阻值可以避免增加电路功耗。（该处选择900K并没有特别的讲究，只是因为本电路中在别处也使用了900K电阻，为了避免引入新的物料增加生产复杂度以及生产成本，因此优先选择已有物料型号，这也是一个常用的设计技巧）。</p> 
+<p>另外，在本项目的设计过程中，尽可能的使用了嘉立创的基础库物料：</p> 
+<p></p> 
+<p></p> 
+<p class="img-center"><img alt="" height="702" src="https://images2.imgbox.com/ea/df/J7ioW2f3_o.png" width="1200"></p> 
+<p></p> 
+<p>除了芯片等特殊元器件，本项目的阻容、二极管三极管等元器件中，25种元器件的21中选用了基础库物料，尽可能的降低样品SMT的成本。（如上图所示）</p> 
+<p>3.6 模拟开关控制电路</p> 
+<p>本项目使用了HT4053模拟开关，工作在17.5V的电压，在查看数据手册时会发现该芯片在不同工作电压时，逻辑高电平是不同的，比如在15V工作电压的情况下，11V才能被识别为逻辑高电平，而本设计中由于工作电压更高，则逻辑高电平也会更高，因此并不能直接使用单片机对4053模拟开关进行控制。</p> 
+<p></p> 
+<p></p> 
+<p class="img-center"><img alt="53gK9GzOK3SiGUGblvFkR6RLMNc9RcKAeNbaEERA.png" height="278" src="https://images2.imgbox.com/6d/b0/STRQxXWw_o.png" width="997"></p> 
+<p></p> 
+<p>因此我设计了一套逻辑电平转换电路，其原理十分简单，但需要注意的是，在单片机输出低电平时，模拟开关芯片的状态切换引脚则是默认的高电平，为了便于设计和后续编程，在模拟开关芯片的常开常闭引脚上，我使用的是与芯片默认状态下相反的网络，因为在本设计中，设备上电后模拟开关的常开常闭引脚就已经发生了转换。</p> 
+<p></p> 
+<p></p> 
+<p class="img-center"><img alt="Zer2uDmRm3UYTpaN4bF8mMaSW53sm7wESgUd250Z.png" height="502" src="https://images2.imgbox.com/34/65/cnBcdk3z_o.png" width="1200"></p> 
+<p></p> 
+<p>需要注意的是，由于设计和生产工艺的不同，如果需要更换不同型号的模拟开关，请先查看芯片对应的数据手册确定其逻辑电平阈值和io口耐压情况。</p> 
+<p>3.7 浮地与接地</p> 
+<p></p> 
+<p></p> 
+<p class="img-center"><img alt="9zeSfFs4Sh9sevw2RXfwIJfH5xdv3dgE2PUuBcEo.png" height="407" src="https://images2.imgbox.com/88/65/EfdLnKQS_o.png" width="1200"></p> 
+<p></p> 
+<p>图中左侧的半孔为尾插焊接位置，另外两个焊盘则为飞线点，尾插对应的是COM网络，和万用表的COM口是一样的是一个浮地。由于本设计中使用的是双层板造成PCB走线空间十分紧张，为了达到较好的性能，也避免在数字电路 部分引入干扰，最终选择了外部飞线的方案。因此在进行组装时，需要对箭头标注的两个焊盘进行飞线，具体操作会在组装说明部分详细说明。</p> 
+<p>需要注意的是，测试笔和万用表一样使用的是浮地，而不是真实的GND，因此尽量不要在接入充电线的情况下进行使用，因为此时测试笔的浮地和充电器的GND相连，变为真实的GND，很容易在操作中因为不小心等情况造成短路进而发生危险。</p> 
+<p></p> 
+<p></p> 
+<p class="img-center"><img alt="eH7aV0MiAEKJV7d8k1XwwRwTJJpjyeg2Ox4nUu8S.png" height="416" src="https://images2.imgbox.com/5a/21/1HijvDh0_o.png" width="1200"></p> 
+<p></p> 
+<p>我们可以在隐藏导线后直观的看到测试笔的地平面分隔</p> 
+<p>3.8 模拟前端总结</p> 
+<p>虽然本项目的模拟前端有较多功能，乍一看电路图也较为复杂，但只要将电路图根据功能拆解开，“逐个击破”来分析，还是很容易就能理解的。</p> 
+<p></p> 
+<p></p> 
+<p class="img-center"><img alt="HDO86UMqVSC2QeRcB8QCj70OTN9w4gfpNV7qqDIC.png" height="756" src="https://images2.imgbox.com/db/d6/bLVgYqnL_o.png" width="1200"></p> 
+<p></p> 
+<p>简单的总结一下就是，模拟前端可以分为信号输入、信号输出、和电流源输出这三个部分，而不同的工作模式，就是通过切换模拟开关来实现这三个部分的单独和同时工作。</p> 
+<h4>五、硬件焊接与组装</h4> 
+<p>硬件的组装有很多顺序，掌握良好的焊接与调试的习惯将有助于帮您节约时间并方便快速定位问题点，同时便于记录完整详实的测试报告，方便软件工程师进行自主测试和后期的软硬件联调工作（也可以防止软件工程师来找硬件问题背锅）。</p> 
+<h5>5.1 PCB焊接</h5> 
+<p>PCB的焊接也是有顺序之分的，并不是一股脑全部焊接好就不行，而是这样全部焊接后一旦出现了问题会比较难以定位问题点，并且如果是电源部分出现问题，很有可能还会损坏大片的电路。下面我来介绍一下该项目的推荐焊接和焊接过程中的测试顺序：</p> 
+<p>① 焊接Type-C接口、充放电管理，焊接电池测试充放电管理，完成后拆除电池</p> 
+<p>② 焊接开关机电路、五向开关，长按键开机测试电源是否正常输出</p> 
+<p>③ 焊接模拟电源，测试电源是否正常，有条件的情况下测试输出纹波</p> 
+<p>（★一定记住先焊接电源并完成测试后才能焊接后级的电路，防止电源出现问题一波带走）</p> 
+<p>④ 焊接模拟开关、模拟开关控制信号电平转换电路，手动给信号测试电平转换</p> 
+<p>⑤ 焊接全部模拟前端电路，给模拟信号测试AIN测试点电压</p> 
+<p>⑥ 焊接单片机、红绿色指示灯，随后便可烧录程序观察开机是否正常</p> 
+<p>⑦ 焊接其他外设、笔尖、尾插（焊接方法可以参考“硬件组装说明”部分内容）</p> 
+<p>⑧ 焊接显示屏</p> 
+<p>建议跟随我以上的顺序进行逐级焊接测试，即使遇到元器件失效等问题，也可以快定位。</p> 
+<p>当然如果你不想那么复杂，那我总结一下焊接的顺序：电源（AVC测试点），模拟前端（AIN测试点）、单片机与外设、如果像我一样习惯使用热风枪焊接的话需要最后使用烙铁焊接容易被热风枪吹坏的元器件：蜂鸣器、显示屏等</p> 
+<h5>5.2 硬件组装说明</h5> 
+<p>本项目中涉及了一些特殊结构的组装、焊接，因此通过这一章节进行详细说明：</p> 
+<p>① 测试探针</p> 
+<p></p> 
+<p></p> 
+<p class="img-center"><img alt="Iqd2mOI9Mjvrg0kxImla22AciafB04VDOLMQnZOY.png" height="633" src="https://images2.imgbox.com/4c/3b/CJX2Pdro_o.png" width="964"></p> 
+<p></p> 
+<p>将弹簧针插入套管，掰掉套管尾部较细的部分（很脆，手掰断就行），清理PCB上的半孔（如果你和我一样没有使用半孔工艺而是选择使用常规工艺加工PCB，则半孔中很有可能存在一片悬空的铜箔），将探针卡在PCB中，使用烙铁进行焊接，使得半孔充满焊锡。</p> 
+<p>在焊接好探针之后，可以为探针套上热缩套管，使其在引脚“错综林立”的PCB上不会发生短路等危险</p> 
+<p></p> 
+<p></p> 
+<p class="img-center"><img alt="UulnjMjsCviRERQX38UJazQ3CbAv4PqhcstrSqnR.jpeg" height="1200" src="https://images2.imgbox.com/68/5c/akeWenCf_o.jpg" width="1200"></p> 
+<p></p> 
+<p>这里之所以使用细探针+套管，而不是选择更粗的探针，一方面是粗探针太粗了，另一方面是细探针+套管的这种双层结构也有助于加强结构，不一定需要粗探针来达到更高强度。</p> 
+<p>使用套管的另一个好处则是如果弹簧针损坏，则可以直接通过插拔更换，非常方便！</p> 
+<p>② 尾插</p> 
+<p></p> 
+<p></p> 
+<p class="img-center"><img alt="jt7IbJzjz5CNVH5z2ynuqInFvWTTRfhUIdO0p016.jpeg" height="1200" src="https://images2.imgbox.com/29/7a/QxNbrd97_o.jpg" width="1200"></p> 
+<p></p> 
+<p>和刚才的探针焊接一样，先清理半孔，随后放置好尾插，在外侧上锡固定尾插，随后把PCB翻到背面，使用镊子夹住尾插与pcb（反面焊接时正面的焊锡也会融化使得尾插掉落），在焊盘中填入较多焊锡使得尾插焊接牢固，记得保持夹持姿势直至焊锡冷却凝固。</p> 
+<p>安全提示：由于尾插体积较大，因此热容也会较大，在焊接完成后一定要耐心等上几分钟直至尾插完全冷却才可以触摸，否则极易发生烫伤等危险！（别问为什么，问就是我被烫到过）</p> 
+<p></p> 
+<p></p> 
+<p class="img-center"><img alt="0qkLgjZEVZvo7YtltsnyRsDAkdNBI2s23U9oL1yC.jpeg" height="1200" src="https://images2.imgbox.com/f7/f5/B2twGKjj_o.jpg" width="964"></p> 
+<p></p> 
+<p>③ COM飞线</p> 
+<p>注意：使用前一定要焊接好COM——AGND飞线！</p> 
+<p></p> 
+<p></p> 
+<p class="img-center"><img alt="" height="1200" src="https://images2.imgbox.com/47/56/q0GfG4Dk_o.jpg" width="1200"></p> 
+<p></p> 
+<p>推荐使用30AWG硅胶线，或使用其他飞线，连接COM点和AGND点焊盘</p> 
+<p>④ 尾插连接线</p> 
+<p>推荐使用30AWG硅胶线，或使用其他飞线，焊接在2mm尾插上</p> 
+<p></p> 
+<p></p> 
+<p class="img-center"><img alt="" height="1200" src="https://images2.imgbox.com/27/bf/K44xzomj_o.jpg" width="1200"></p> 
+<p></p> 
+<p>如果您购买的是我给出的链接中的尾插，可以将硅胶线拨开后折弯180°，随后插入尾插孔内，再使用烙铁焊接</p> 
+<p>请确保延长线与尾插插头连接稳定，可以参考下图：</p> 
+<p></p> 
+<p></p> 
+<p class="img-center"><img alt="" height="1200" src="https://images2.imgbox.com/a5/8d/Q2iv40E5_o.jpg" width="1200"></p> 
+<p></p> 
+<p>⑤ 烧录探针</p> 
+<p>如果你有多余的弹簧针（一般买一小包是10根），可以配合“下载器转接板”的PCB进行下载烧录。</p> 
+<p>烧录器探针转接板尾部设计有一个卡槽，可以卡住5P的2.54排针，固定好后通过堆锡进行焊接即可。</p> 
+<p>需要将弹簧针插入套筒，随后将套筒尾部对准转接板最后一排圆形焊盘进行焊接，探针方向顺着指示线放置（注意此时只焊接尾部一个焊点），随后将烧录器探针顶住测试笔对应孔位微调探针位置保证接触良好，再焊接剩余的点位进行固定。</p> 
+<p>为了防止探针转接板以外短路，可以使用热缩管对转接板进行保护。</p> 
+<p></p> 
+<p></p> 
+<p class="img-center"><img alt="dXnTzEJS0C7fNgLc0HhdvCq46Kh5S6lyuT1ji1Rf.jpeg" height="715" src="https://images2.imgbox.com/4c/35/uoVtamDd_o.jpg" width="1200"></p> 
+<p></p> 
+<h5>5.3烧录方法说明</h5> 
+<p>如果你不愿意使用探针烧录，可以焊接细线进行烧录操作，只需要焊接SWD_CLK、SWD_DIO、GND三根线即可，如果你有多余的弹簧针，可以配合“下载器转接板”的PCB进行下载烧录。</p> 
+<p>需要注意的是，这里的VCC是MCU的工作电压，即3.3V，不能输入5V否则可能烧毁板子！</p> 
+<p></p> 
+<p></p> 
+<p class="img-center"><img alt="iMvA87JnuY6Ze84GB6KjdwErlNhQwinOXqGnPLqz.jpeg" height="1200" src="https://images2.imgbox.com/59/0e/Q5FPebpv_o.jpg" width="1200"></p> 
+<p></p> 
+<p>无论哪种烧录模式，在烧录前必须先按住五向摇杆的中键保持系统上电直至程序下载全部完成（可以像上图一样使用手指背面顶着开关），随后在下载器中确认可以识别出芯片ID，并勾选“Stop after Reset”复选框（尽量记得勾选，否则需要在下载后先保持手动上电再进行手动复位才能正常工作），随后就可以开始下载程序了。</p> 
+<p></p> 
+<p></p> 
+<p class="img-center"><img alt="ue8QN4hVzaroRyZ3Xi3twVgxEuihl5lHLpDcfdqg.png" height="611" src="https://images2.imgbox.com/32/20/ShOCmBBQ_o.png" width="1200"></p> 
+<p></p> 
+<p>下载完成后，松开按住开关的手，再次按下中键，此时就能开机了。</p> 
+<p>在开机时，绿色指示灯会点亮后关闭，在没有焊接显示屏时，可以使用这样的方法烧录是否成功。</p> 
+<h4>六、软硬件联调及测试</h4> 
+<p>在硬件完成单独的调试、测试工作后，就可以配合软件进行联调工作了，软硬件联调往往是一个项目中最耗时耗力的部分，需要在此过程中根据测试得到的数据和现象，对软硬件进行优化并再次测试。</p> 
+<p>由于本测试笔在软硬件联调和测试中会产生大量的数据，而本文只作为此项目的成果展示以及学习，因此本文只呈现测试笔完成全部软硬件联调后的最终测试数据，供性能指标参考使用。</p> 
+<p><strong>下载程序后第一次使用前一定要记得校准！</strong></p> 
+<p>以下数据均为完成校准后的测量值。</p> 
+<h5>1、电压输入测量模式</h5> 
+<p>通过数控电源模拟被测电压并通过笔尖输入，使用万用表测量AIN节点（模拟前端处理后输入单片机ADC的信号，后文中的AIN节点/网络均代表此位置，将不再进行单独说明），与测试笔测得数据进行对比。</p> 
+<p></p> 
+<p></p> 
+<p class="img-center"><img alt="I2hl8hcJG0xoWc4cx6azTs0rQyxXHJ25wDxbtjJd.png" height="415" src="https://images2.imgbox.com/0f/52/LPha9hg9_o.png" width="1200"></p> 
+<p></p> 
+<p>以下为测试数据：</p> 
+<p>注：使用硬木课堂设备及虚拟仪器软件进行测量</p> 
+<p></p> 
+<p></p> 
+<p class="img-center"><img alt="GM1h1yhP7ptdsHmmQPW6CoG3wmFTmYFHKa2eri2T.png" height="593" src="https://images2.imgbox.com/0d/b9/WR2XFrH6_o.png" width="1200"></p> 
+<p></p> 
+<p>实际输出电压：1.84V</p> 
+<p>AIN节点电压：1.860V</p> 
+<p>测试笔显示电压（该数据会经过软件处理消除系统恒定误差）：1.832V</p> 
+<p></p> 
+<p></p> 
+<p class="img-center"><img alt="bmpm5M0zY8aZK6G5eh2RJpoXgOD1y8GIHUuy3dLJ.png" height="600" src="https://images2.imgbox.com/b2/80/7wSM38PW_o.png" width="1200"></p> 
+<p></p> 
+<p>实际输出电压：15.07V</p> 
+<p>AIN节点电压：1.532V（由于电压大于2.5V，会进行X10衰减）</p> 
+<p>测试笔显示电压(消除系统恒定误差后):  15.110V</p> 
+<p>说明: 经产品实测，输入到 AIN的值，会有一个大约 0.2V 左右的正偏移，软件里面会把这个误差值给减去，然后再进行显示。</p> 
+<h4>补充测试：</h4> 
+<p>为了更好的展现测试笔模拟性能，将会使用信号源通过笔尖输入正弦波，使用示波器双踪显示输入信号及AIN节点信号。下面的测试中，会将信号源S1信号输入测试笔笔尖，并和示波器通道1进行对连，测试笔AIN节点信号连接示波器通道2。</p> 
+<p></p> 
+<p></p> 
+<p class="img-center"><img alt="s4yGrZU0eYQvOUxACHc9qVZOekTgOKpyeqSaHOSf.png" height="765" src="https://images2.imgbox.com/25/d0/iXe40EZd_o.png" width="1200"></p> 
+<p></p> 
+<p>峰值电压小于2.5V的情况：（工作在X1档位）</p> 
+<p>注：此时两个波形几乎完全相同，由于示波器两个通道的所有设置都相同，因此两个波形在界面上处于重叠状态。</p> 
+<p>波形数据可以根据示波器自动测量数据进行对比</p> 
+<p></p> 
+<p></p> 
+<p class="img-center"><img alt="oXeCOIct6j2ku3UIQ2B85tGhaWHdXQo7ey7l5fQh.png" height="761" src="https://images2.imgbox.com/5c/6b/Y2vmMeY3_o.png" width="1200"></p> 
+<p></p> 
+<p>谷值电压大于2.5V的情况：（工作在X10档位）</p> 
+<p>波形数据可以根据示波器自动测量数据进行对比</p> 
+<p>需要注意的是，测试笔在笔尖悬空时，依旧可能存在一个电压，这是由于探针浮空带来的（此时笔尖为高阻态），这并不是硬件问题，因为万用表表笔悬空时也同样会存在一样的情况。</p> 
+<h5>2、PWM输出模式</h5> 
+<p>该测试中，仅需要将测试笔笔尖与示波器相连，通过测试笔设置的输出参数与示波器实际测得参数进行对比即可。</p> 
+<p></p> 
+<p></p> 
+<p class="img-center"><img alt="BSlIESYTS4L7DePzrFiRQ8C9HDDv8hIBkB6Ofy4l.png" height="763" src="https://images2.imgbox.com/94/9d/TPNWIVX5_o.png" width="1200"></p> 
+<p></p> 
+<p>测试笔设定参数：频率20kHz，占空比90%</p> 
+<p>示波器测得参数：频率19.71kHz，占空比90.04%</p> 
+<p></p> 
+<p></p> 
+<p class="img-center"><img alt="25mOqFtOjUsLyXluW1DbemUauniS6Um5h2BTvfDQ.png" height="769" src="https://images2.imgbox.com/68/e4/5bZNGMkJ_o.png" width="1200"></p> 
+<p></p> 
+<p>测试笔设定参数：频率20kHz，占空比20%</p> 
+<p>示波器测得参数：频率19.71kHz，占空比20.39%</p> 
+<p>下面对多功能测试笔的最大输出频率进行测量：</p> 
+<p></p> 
+<p></p> 
+<p class="img-center"><img alt="udSAwnOSwbHGMw3vHbBZ7OsGFP4GvQZVtrUO8cHs.png" height="769" src="https://images2.imgbox.com/b7/9c/3sF1Be7r_o.png" width="1200"></p> 
+<p></p> 
+<p>测试笔设定参数：频率100kHz，占空比50%</p> 
+<p>示波器测得参数：频率99.55kHz，占空比49.97%</p> 
+<h5>3、DC输出模式</h5> 
+<p>该测试使用万用表对输出电压测量即可：</p> 
+<p>单位：V</p> 
+<p></p> 
+<p class="img-center"><img alt="" height="667" src="https://images2.imgbox.com/08/15/PrXIhfqj_o.png" width="481"></p> 
+<p>由于没有引入负反馈，因此会存在一定的误差（建议在1-5V范围使用）。</p> 
+<h5>4、通断检测模式</h5> 
+<p>该模式直接使用测试笔测量小电阻即可进行功能检测：</p> 
+<p>需要注意的是，该模式下的量程为0-200Ω（该量程为设计量程，实际可以测得更高的电阻）</p> 
+<p>单位：Ω</p> 
+<p></p> 
+<p class="img-center"><img alt="" height="1078" src="https://images2.imgbox.com/65/65/KUy83DFg_o.png" width="538"></p> 
+<p>测试笔上如果显示OL则代表超过200欧姆的设定量程，如果需要更大量程，请修改程序代码</p> 
+<p>下方的R代表设定的阈值电阻（可自定义设置）：如果低于阈值电阻则会通过蜂鸣器报警提醒</p> 
+<h5>5、二极管档位</h5> 
+<p>该模式直接使用测试笔测试二极管导通电压与万用表测试值进行对比：</p> 
+<p>单位：mV</p> 
+<p></p> 
+<p class="img-center"><img alt="" height="354" src="https://images2.imgbox.com/16/6a/kkBl08J4_o.png" width="637"></p> 
+<h5>6、校准模式</h5> 
+<p>需要将笔尖与COM端进行可靠短接，推荐使用插接件或面包板的方式进行连接（不要用手捏着，这样接触电阻可能不稳定），随后进入该模式（一定是先短接再进入校准模式，一进入校准模式马上就会开始自动校准程序了），进入模式后系统会自动在X1和X10档位进行测量，记录下零点误差并记入Flash。</p> 
+<p>通常情况下，由于数据会被计入Flash，可以保证在校准后很长一段时间内的测试值准确，但如果电路内部某个元器件发生参数漂移，还是会造成误差，因此在发现测试数据偏差较大时，可以再次进行校准。但如果多次校准后数据依旧不稳定，则应当怀疑是否出现了硬件故障。</p> 
+<h4>七、硬件设计总结</h4> 
+<p>硬件设计看起来非常复杂，但只要按照合适的步骤去进行，实际会是一个很享受的过程。在本项目的设计、测试、优化、联调的过程中，使我更加深入的学习到了不少的模数电混合电路的知识，并且最终的呈现效果也好于我的设计预期。</p> 
+<p>本项目虽然功能较为完备，能基本满足硬件检测的基本需求，但各方面的精度指标并不高，因此我计划在明年推出各方面参数更优秀的升级版，这个坑算是先挖好了。</p> 
+<p>最后我需要单独说明的是，虽然我已经对本项目的软硬件进行了较为完整的测试工作，但依旧不能保证完全没有任何问题，就像经典的“蛋炒饭酒吧”笑话一样，在实际使用中因为不同的操作依旧可能发生问题，也欢迎及时的进行反馈来让我把项目优化的更好。</p> 
+<h4>八、软件部分</h4> 
+<p>本项目使用了FreeRtos --- RTOS操作系统</p> 
+<p>关于代码的说明请参考项目文档：</p> 
+<p><a href="https://dwi41yhz703.feishu.cn/docx/HDypdqqapoMlVpxNuH0cdr08nEh" rel="nofollow" title="CW32多功能测试笔 - 飞书云文档 (feishu.cn)">CW32多功能测试笔 - 飞书云文档 (feishu.cn)</a></p> 
+<p>项目代码可能会在之后继续更新，请留意Gitee仓库：</p> 
+<p><a href="https://gitee.com/multifunction_test_pen/test_pen" rel="nofollow" title="test_pen: CW32多功能测试笔软件">test_pen: CW32多功能测试笔软件</a></p> 
+<p>不同模式下的模拟开关真值表如下所示：</p> 
+<p></p> 
+<p class="img-center"><img alt="" height="300" src="https://images2.imgbox.com/67/83/G6rnHzKD_o.png" width="804"></p> 
+<p>VOFA+串口监控助手</p> 
+<p>插件驱动的高自由度上位机</p> 
+<p>官网：<a href="https://www.vofa.plus/" rel="nofollow" title="VOFA-Plus上位机 | VOFA-Plus上位机">VOFA-Plus上位机 | VOFA-Plus上位机</a></p> 
+<p>原理图：</p> 
+<p></p> 
+<p class="img-center"><img alt="" height="1200" src="https://images2.imgbox.com/4c/ab/CyyGHGMr_o.png" width="1200"></p> 
+<p>PCB：</p> 
+<p></p> 
+<p class="img-center"><img alt="" height="1200" src="https://images2.imgbox.com/57/a8/0nnqqY7y_o.png" width="1200"></p> 
+<p></p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/70f16cd2935836be78361bd7a264f5bf/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">详解HTTP协议（介绍--版本--工作过程--Fiddler 抓包显示--请求响应讲解)</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/f1799a11005bd2bc6e043ae7c60f21be/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">＜HarmonyOS第一课＞ArkTS开发语言介绍--闯关习题答案</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

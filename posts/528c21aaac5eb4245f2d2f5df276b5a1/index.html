@@ -1,0 +1,341 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>目标检测算法YOLOv4详解 - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="目标检测算法YOLOv4详解" />
+<meta property="og:description" content="YOLOv4是精度速度最优平衡, 各种调优手段是真香，本文主要从以下几个方面进行阐述：
+YOLOv4介绍YOLOv4框架原理BackBone训练策略BackBone推理策略检测头训练策略检测头推理策略 1.YOLOv4介绍 YOLOV4其实是一个结合了大量前人研究技术，加以组合并进行适当创新的算法，实现了速度和精度的完美平衡。可以说有许多技巧可以提高卷积神经网络(CNN)的准确性，但是某些技巧仅适合在某些模型上运行，或者仅在某些问题上运行，或者仅在小型数据集上运行；我们来码一码这篇文章里作者都用了哪些调优手段：加权残差连接(WRC),跨阶段部分连接(CSP),跨小批量标准化(CmBN),自对抗训练(SAT),Mish激活,马赛克数据增强,CmBN,DropBlock正则化,CIoU Loss等等。经过一系列的堆料，终于实现了目前最优的实验结果：43.5％的AP(在Tesla V100上，MS COCO数据集的实时速度约为65FPS)。
+YOLOv4的贡献如下:
+开发了一个高效、强大的目标检测模型。它使每个人都可以使用1080 Ti或2080 TiGPU来训练一个超级快速和准确的目标探测器。验证了在检测器训练过程中，最先进的Bag-of-Freebies和Bag-of-Specials 的目标检测方法的影响。修改了最先进的方法，使其更有效，更适合于单GPU训练，包括CBN、PAN、SAM等。 总之一句话：速度差不多的精度碾压;精度差不多的速度碾压。
+YOLOV4论文： https://arxiv.org/pdf/2004.10934.pdf
+YOLOV4代码： https://github.com/AlexeyAB/darknet
+2.YOLOv4框架原理 我们主要从通用框架，CSPDarknet53，SPP结构，PAN结构和检测头YOLOv3出发，来一起学习了解下YOLOv4框架原理。
+2.1 目标检测器通用框架 目前检测器通常可以分为以下几个部分，不管是two-stage还是one-stage都可以划分为如下结构，只不过各类目标检测算法设计改进侧重在不同位置：
+如上图，除了输入，一般one-stage的目标检测算法通常由提取特征的backbone，传输到检测网络的Neck部分和负责检测的Head部分。而two-stage的算法通常还包括空间预测部分。网络中常用的模块为：
+Input: 图像，图像金字塔等Backbone: VGG16,Resnet-50,ResNeXt-101,Darknet53,……Neck: FPN,PANet,Bi-FPN,……Head: Dense Prediction:RPN,YOLO,SSD,RetinaNet,FCOS,……Head: Sparse Prediction:Faster RCNN,Fast RCNN,R-CNN,…… 而作为one-stage的YOLO网络主要由三个主要组件组成：
+Backbone -在不同图像细粒度上聚合并形成图像特征的卷积神经网络。Neck：一系列混合和组合图像特征的网络层，并将图像特征传递到预测层。Head：对图像特征进行预测，生成边界框和并预测类别。 这里先直接上YOLOv4的整体原理图(来源网络)如下：
+如上图，整体框架跟我们之前学的YOLOv3很是类似。这里先大致看下，接下来我们将逐步分析各个部分，首先，我们先看特征提取网络Backbone.
+2.2 CSPDarknet53 我们前面知道在YOLOv3中，特征提取网络使用的是Darknet53，而在YOLOv4中，对Darknet53做了一点改进，借鉴了CSPNet，CSPNet全称是Cross Stage Partial Networks，也就是跨阶段局部网络。CSPNet解决了其他大型卷积神经网络框架Backbone中网络优化的梯度信息重复问题，将梯度的变化从头到尾地集成到特征图中，因此减少了模型的参数量和FLOPS数值，既保证了推理速度和准确率，又减小了模型尺寸。如下图：
+CSPNet实际上是基于Densnet的思想，复制基础层的特征映射图，通过dense block发送副本到下一个阶段，从而将基础层的特征映射图分离出来。这样可以有效缓解梯度消失问题(通过非常深的网络很难去反推丢失信号) ，支持特征传播，鼓励网络重用特征，从而减少网络参数数量。CSPNet思想可以和ResNet、ResNeXt和DenseNet结合，目前主要有CSPResNext50 和CSPDarknet53两种改造Backbone网络。
+考虑到几方面的平衡：输入网络分辨率/卷积层数量/参数数量/输出维度。一个模型的分类效果好不见得其检测效果就好，想要检测效果好需要以下几点：
+更大的网络输入分辨率——用于检测小目标更深的网络层——能够覆盖更大面积的感受野更多的参数——更好的检测同一图像内不同size的目标 具体改进点：
+&gt; 用 Concat 代替 Add，提取更丰富的特征。
+之前介绍过 Concat 操作后，特征图的尺寸不变，深度会增加，而 Add 操作后尺寸和深度都不改变，从这个意义上说，用 Concat 代替 Add，就能够提取更丰富的特征。
+&gt; 引入 transition layer （1 * 1conv &#43; 2 * 2pooling），提取特征，降低计算量，提升速度。" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/528c21aaac5eb4245f2d2f5df276b5a1/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2022-03-08T15:04:29+08:00" />
+<meta property="article:modified_time" content="2022-03-08T15:04:29+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">目标检测算法YOLOv4详解</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p>YOLOv4是精度速度最优平衡, 各种调优手段是真香，本文主要从以下几个方面进行阐述：</p> 
+<ul><li>YOLOv4介绍</li><li>YOLOv4框架原理</li><li>BackBone训练策略</li><li>BackBone推理策略</li><li>检测头训练策略</li><li>检测头推理策略</li></ul> 
+<h3 id="1.YOLOv4%E4%BB%8B%E7%BB%8D"><strong>1.YOLOv4介绍</strong></h3> 
+<p><strong><code>YOLOV4</code>其实是一个结合了大量前人研究技术，加以组合并进行适当创新的算法，实现了速度和精度的完美平衡。</strong>可以说有许多技巧可以提高卷积神经网络(<code>CNN</code>)的准确性，但是某些技巧仅适合在某些模型上运行，或者仅在某些问题上运行，或者仅在小型数据集上运行；我们来码一码这篇文章里作者都用了哪些调优手段：<strong>加权残差连接(<code>WRC</code>)</strong>,<strong>跨阶段部分连接(<code>CSP</code>),跨小批量标准化(<code>CmBN</code>),自对抗训练(<code>SAT</code>),<code>Mish</code>激活,马赛克数据增强,<code>CmBN</code>,<code>DropBlock</code>正则化,<code>CIoU Loss</code>等等。</strong>经过一系列的堆料，终于实现了目前最优的实验结果：<code>43.5％</code>的<code>A</code>P(在<code>Tesla V100</code>上，<code>MS COCO</code>数据集的实时速度约为<code>65FPS</code>)。</p> 
+<p style="text-align:center;"><img alt="" src="https://images2.imgbox.com/30/e4/cI3Wb3cT_o.png"></p> 
+<p> </p> 
+<p></p> 
+<p><code>YOLOv4</code>的贡献如下:</p> 
+<ul><li><strong>开发了一个高效、强大的目标检测模型。它使每个人都可以使用<code>1080 Ti</code>或<code>2080 TiGPU</code>来训练一个超级快速和准确的目标探测器。</strong></li><li><strong>验证了在检测器训练过程中，最先进的<code>Bag-of-Freebies</code>和<code>Bag-of-Specials</code> 的目标检测方法的影响。</strong></li><li><strong>修改了最先进的方法，使其更有效，更适合于单<code>GPU</code>训练，包括<code>CBN</code>、<code>PAN</code>、<code>SAM</code>等。</strong></li></ul> 
+<p>总之一句话：速度差不多的精度碾压;精度差不多的速度碾压。</p> 
+<p><code>YOLOV4</code>论文： https://arxiv.org/pdf/2004.10934.pdf</p> 
+<p><code>YOLOV4</code>代码： https://github.com/AlexeyAB/darknet</p> 
+<h3 id="2.YOLOv4%E6%A1%86%E6%9E%B6%E5%8E%9F%E7%90%86"><strong>2.YOLOv4框架原理</strong></h3> 
+<p>我们主要从通用框架，<code>CSPDarknet53</code>，<code>SPP</code>结构，<code>PAN</code>结构和检测头<code>YOLOv3</code>出发，来一起学习了解下<code>YOLOv4</code>框架原理。</p> 
+<h4 id="2.1-%E7%9B%AE%E6%A0%87%E6%A3%80%E6%B5%8B%E5%99%A8%E9%80%9A%E7%94%A8%E6%A1%86%E6%9E%B6"><strong>2.1 目标检测器通用框架</strong></h4> 
+<p>目前检测器通常可以分为以下几个部分，不管是<code>two-stage</code>还是<code>one-stage</code>都可以划分为如下结构，只不过各类目标检测算法设计改进侧重在不同位置：</p> 
+<p style="text-align:center;"><img alt="" src="https://images2.imgbox.com/7d/da/W7yB2L85_o.png"></p> 
+<p></p> 
+<p>如上图，除了输入，一般<code>one-stage</code>的目标检测算法通常由提取特征的<code>backbone</code>，传输到检测网络的<code>Neck</code>部分和负责检测的<code>Head</code>部分。而<code>two-stage</code>的算法通常还包括空间预测部分。网络中常用的模块为：</p> 
+<ul><li>Input: 图像，图像金字塔等</li><li>Backbone: VGG16,Resnet-50,ResNeXt-101,Darknet53,……</li><li>Neck: FPN,PANet,Bi-FPN,……</li><li>Head: Dense Prediction:RPN,YOLO,SSD,RetinaNet,FCOS,……</li><li>Head: Sparse Prediction:Faster RCNN,Fast RCNN,R-CNN,……</li></ul> 
+<p>而作为<code>one-stage</code>的<code>YOLO</code>网络主要由三个主要组件组成：</p> 
+<ul><li>Backbone -<strong>在不同图像细粒度上聚合并形成图像特征的卷积神经网络</strong>。</li><li>Neck：<strong>一系列混合和组合图像特征的网络层，并将图像特征传递到预测层。</strong></li><li>Head：<strong>对图像特征进行预测，生成边界框和并预测类别。</strong></li></ul> 
+<p>这里先直接上<code>YOLOv4</code>的整体原理图(来源网络)如下：</p> 
+<p style="text-align:center;"><img alt="" src="https://images2.imgbox.com/25/86/AFvU8bzr_o.png"></p> 
+<p></p> 
+<p>如上图，整体框架跟我们之前学的<a href="https://mp.weixin.qq.com/s?__biz=MzIzNDM2OTMzOQ==&amp;mid=2247487297&amp;idx=1&amp;sn=bf4a29baa24ebfb429a6607564428ca2&amp;scene=21#wechat_redirect" rel="nofollow" title="YOLOv3">YOLOv3</a>很是类似。这里先大致看下，接下来我们将逐步分析各个部分，首先，我们先看特征提取网络<code>Backbone</code>.</p> 
+<h4 id="2.2-CSPDarknet53"><strong>2.2 CSPDarknet53</strong></h4> 
+<p>我们前面知道在<code>YOLOv3</code>中，特征提取网络使用的是<code>Darknet53</code>，而在<code>YOLOv4</code>中，对<code>Darknet53</code>做了一点改进，借鉴了<code>CSPNet</code>，<strong><span style="color:#fe2c24;"><code>CSPNet</code>全称是<code>Cross Stage Partial Networks</code>，也就是跨阶段局部网络。<code>CSPNet</code>解决了其他大型卷积神经网络框架<code>Backbone</code>中网络优化的梯度信息重复问题，将梯度的变化从头到尾地集成到特征图中，因此减少了模型的参数量和<code>FLOPS</code></span><span style="color:#fe2c24;">数值，既保证了推理速度和准确率，又减小了模型尺寸</span>。</strong>如下图：</p> 
+<p style="text-align:center;"><img alt="" src="https://images2.imgbox.com/cd/27/12bH0BAa_o.png"></p> 
+<p></p> 
+<p><strong><code>CSPNet</code>实际上是基于<code>Densnet</code>的思想，复制基础层的特征映射图，通过<code>dense block</code>发送副本到下一个阶段，从而将基础层的特征映射图分离出来。这样可以有效缓解梯度消失问题(通过非常深的网络很难去反推丢失信号) ，支持特征传播，鼓励网络重用特征，从而减少网络参数数量。<code>CSPNet</code>思想可以和<code>ResNet</code>、<code>ResNeXt</code>和<code>DenseNet</code>结合，目前主要有<code>CSPResNext50</code> 和<code>CSPDarknet53</code>两种改造<code>Backbone</code>网络。</strong></p> 
+<p>考虑到几方面的平衡：输入网络分辨率/卷积层数量/参数数量/输出维度。一个模型的分类效果好不见得其检测效果就好，想要检测效果好需要以下几点：</p> 
+<ul><li>更大的网络输入分辨率——用于检测小目标</li><li>更深的网络层——能够覆盖更大面积的感受野</li><li>更多的参数——更好的检测同一图像内不同size的目标</li></ul> 
+<p></p> 
+<p>具体改进点：</p> 
+<p>&gt; 用 Concat 代替 Add，提取更丰富的特征。</p> 
+<p>之前介绍过 Concat 操作后，特征图的尺寸不变，深度会增加，而 Add 操作后尺寸和深度都不改变，从这个意义上说，用 Concat 代替 Add，就能够提取更丰富的特征。</p> 
+<p>&gt; 引入 transition layer （1 * 1conv + 2 * 2pooling），提取特征，降低计算量，提升速度。</p> 
+<p>为什么引入 1 * 1conv，能够降低计算量，提升速度 ？</p> 
+<p><img alt="" src="https://images2.imgbox.com/e4/db/iv0RA5JC_o.png"></p> 
+<p>解答：这里我举一个实例来说明，输入图片大小是 56 * 56 * 256，要求得到输出大小是 28 * 28 * 512，这里就有两种实现方式：</p> 
+<p>一次卷积方式，它的卷积核参数个数是 117 万；另一种是二次卷积方式，引入了 1 * 1 卷积，它的卷积核参数个数是 62 万，</p> 
+<p>相比于一次卷积方式，它的卷积核参数个数降低了一倍。</p> 
+<p>&gt; 将 Base layer 分为两部分进行融合，提取更丰富的特征。</p> 
+<p>将 Base layer 一分为二，一部分通过类似残差网络得到的输出与另一部分进行 Concat 操作，将操作后的结果通过 Transition Layer。</p> 
+<p> </p> 
+<p>这样最终的<code>CSPDarknet53</code>结构就如下图：</p> 
+<p style="text-align:center;"><img alt="" src="https://images2.imgbox.com/90/d2/kOIJwinx_o.png"></p> 
+<p> </p> 
+<p></p> 
+<p><code>CSPNet</code>论文： https://arxiv.org/pdf/1911.11929v1.pdf</p> 
+<p>为了增大感受野，作者还使用了<code>SPP-block</code>，使用<code>PANet</code>代替<code>FPN</code>进行参数聚合以适用于不同<code>level</code>的目标检测。</p> 
+<h4 id="2.3-SPP%E7%BB%93%E6%9E%84"><strong>2.3 SPP结构</strong></h4> 
+<p><a href="https://mp.weixin.qq.com/s?__biz=MzIzNDM2OTMzOQ==&amp;mid=2247486628&amp;idx=1&amp;sn=8b4ed6007c4c9ab71318315966623d0d&amp;scene=21#wechat_redirect" rel="nofollow" title="SPP-Net结构">SPP-Net结构</a>我们之前也有学过，<span style="color:#fe2c24;"><strong><code>SPP-Net</code>全称<code>Spatial Pyramid Pooling Networks</code>，当时主要是用来解决不同尺寸的特征图如何进入全连接层的，</strong></span>直接看下图，下图中对任意尺寸的特征图直接进行固定尺寸的池化，来得到固定数量的特征。</p> 
+<p style="text-align:center;"><img alt="" src="https://images2.imgbox.com/e9/0e/bxAAlPqk_o.png"></p> 
+<p> </p> 
+<p></p> 
+<p>如上图，<span style="color:#fe2c24;"><strong>以<code>3</code>个尺寸的池化为例，对特征图进行一个最大值池化，即一张特征图得取其最大值，得到<code>1*d</code>(<code>d</code>是特征图的维度)个特征；对特征图进行网格划分为<code>2x2</code>的网格，然后对每个网格进行最大值池化，那么得到<code>4*d</code>个特征；同样，对特征图进行网格划分为<code>4x4</code>个网格，对每个网格进行最大值池化，得到<code>16*d</code>个特征。 接着将每个池化得到的特征合起来即得到固定长度的特征个数（特征图的维度是固定的），接着就可以输入到全连接层中进行训练网络了。用到这里是为了增加感受野。</strong></span></p> 
+<h4 id="2.4-PAN%E7%BB%93%E6%9E%84"><strong>2.4 PAN结构</strong></h4> 
+<p><code>YOLOv4</code>使用<code>PANet</code>(<code>Path Aggregation Network</code>)代替<code>FPN</code>进行参数聚合以适用于不同<code>level</code>的目标检测, <strong><code>PANet</code>论文中融合的时候使用的方法是<code>Addition</code>，<code>YOLOv4</code>算法将融合的方法由加法改为<code>Concatenation</code></strong>。如下图：</p> 
+<p style="text-align:center;"><img alt="" src="https://images2.imgbox.com/1d/c9/LEiMrxBN_o.png"></p> 
+<p> </p> 
+<p></p> 
+<p>是一种特征图融合方式。</p> 
+<h4 id="2.5-%E6%A3%80%E6%B5%8B%E5%A4%B4YOLOv3"><strong>2.5 检测头YOLOv3</strong></h4> 
+<p>对于检测头部分，<code>YOLOv4</code>继续采用<a href="https://mp.weixin.qq.com/s?__biz=MzIzNDM2OTMzOQ==&amp;mid=2247487297&amp;idx=1&amp;sn=bf4a29baa24ebfb429a6607564428ca2&amp;scene=21#wechat_redirect" rel="nofollow" title="YOLOv3算法">YOLOv3算法</a>的检测头，不再赘述。</p> 
+<h3 id="3.BackBone%E8%AE%AD%E7%BB%83%E7%AD%96%E7%95%A5"><strong>3.BackBone训练策略</strong></h3> 
+<p>这里我们主要从数据增强，<code>DropBlock</code>正则化，类标签平滑方面来学习下<code>BackBone</code>训练策略。</p> 
+<h4 id="3.1-%E6%95%B0%E6%8D%AE%E5%A2%9E%E5%BC%BA"><strong>3.1 数据增强</strong></h4> 
+<ul><li>CutMix</li></ul> 
+<p><code>YOLOv4</code>选择用<code>CutMix</code>的增强方式，<strong><code>CutMix</code>的处理方式也比较简单，同样也是对一对图片做操作，简单讲就是随机生成一个裁剪框<code>Box</code>,裁剪掉A图的相应位置，然后用<code>B</code>图片相应位置的<code>ROI</code>放到<code>A</code>图中被裁剪的区域形成新的样本，<code>ground truth</code>标签会根据<code>patch</code>的面积按比例进行调整，</strong>比如<code>0.6</code>像狗，<code>0.4</code>像猫，计算损失时同样采用加权求和的方式进行求解。这里借<code>CutMix</code>的地方顺带说下几种类似的增强方式：</p> 
+<p><img alt="" src="https://images2.imgbox.com/fb/79/ajlwCiRa_o.png"></p> 
+<p> </p> 
+<p></p> 
+<p>上图是<code>CutMix</code>论文中作者对几种增强方式做的对比，结果显而易见，<code>CutMix</code>的增强方式在三个数据集上的表现都是最优的。其中<code>Mixup</code>是直接求和两张图，如同附身，鬼影一样，模型很难学到准确的特征图响应分布。<code>Cutout</code>是直接去除图像的一个区域，这迫使模型在进行分类时不能对特定的特征过于自信。然而，图像的一部分充满了无用的信息，这是一种浪费。在<code>CutMix</code>中，将图像的一部分剪切并粘贴到另一个图像上,使得模型更容易区分异类。</p> 
+<p>CutMix论文： https://arxiv.org/pdf/1905.04899v2.pdf</p> 
+<ul><li>Mosaic</li></ul> 
+<p><code>Yolov4</code>的<code>Mosaic</code>数据增强是参考<code>CutMix</code>数据增强，理论上类似。<strong>区别在于<code>Mosaic</code>是一种将<code>4</code>张训练图像合并成一张进行训练的数据增强方法(而不是<code>CutMix</code>中的<code>2</code>张)。这增强了对正常背景(<code>context</code>)之外的对象的检测，丰富检测物体的背景。此外，每个小批包含一个大的变化图像(<code>4</code>倍)，因此，减少了估计均值和方差的时需要大<code>mini-batch</code>的要求，降低了训练成本。</strong>如下图：</p> 
+<p style="text-align:center;"><img alt="" src="https://images2.imgbox.com/d9/1c/h7KyIY4a_o.png"></p> 
+<p> </p> 
+<p></p> 
+<h4 id="3.2-DropBlock%E6%AD%A3%E5%88%99%E5%8C%96"><strong>3.2 DropBlock正则化</strong></h4> 
+<p>正则化技术有助于避免数据科学专业人员面临的最常见的问题，即过拟合。对于正则化，已经提出了几种方法，如<strong><code>L1</code>和<code>L2</code>正则化、<code>Dropout</code>、<code>Early Stopping</code>和数据增强</strong>。这里<code>YOLOv4</code>用了<code>DropBlock</code>正则化的方法。</p> 
+<p><span style="color:#fe2c24;"><strong><code>DropBlock</code>方法的引入是为了克服<code>Dropout</code>随机丢弃特征的主要缺点，<code>Dropout</code>被证明是全连接网络的有效策略，但在特征空间相关的卷积层中效果不佳。<code>DropBlock</code>技术在称为块的相邻相关区域中丢弃特征。这样既可以实现生成更简单模型的目的，又可以在每次训练迭代中引入学习部分网络权值的概念，对权值矩阵进行补偿，从而减少过拟合。</strong></span>如下图：</p> 
+<p><img alt="" src="https://images2.imgbox.com/f8/8d/B9WP43XU_o.png"></p> 
+<p> </p> 
+<p></p> 
+<p><code>DropBlock</code>论文中作者最终在<code>ImageNet</code>分类任务上，使用<code>Resnet-50</code>结构，将精度提升<code>1.6%</code>个点，在<code>COCO</code>检测任务上，精度提升<code>1.6%</code>个点。</p> 
+<p><code>DropBlock</code>论文： https://arxiv.org/pdf/1810.12890.pdf</p> 
+<p>dropout 作用：防止过拟合，</p> 
+<p>dropout 缺点：每次训练时随机去掉的神经元可以通过相邻的神经元来预测，因为随着网络层数的增加，神经元之间的相关性是越来越强。</p> 
+<p>dropblock：每次训练时随机去掉一整片区域，这样就能组合更多不一样的网络，从而表现出更好的泛化作用。</p> 
+<h4 id="3.3-%E7%B1%BB%E6%A0%87%E7%AD%BE%E5%B9%B3%E6%BB%91"><strong>3.3 类标签平滑</strong></h4> 
+<p>对于分类问题，特别是多分类问题，常常把向量转换成<code>one-hot-vector</code>，而<code>one-hot</code>带来的问题： 对于损失函数，我们需要用预测概率去拟合真实概率，而拟合<code>one-hot</code>的真实概率函数会带来两个问题：</p> 
+<ul><li>无法保证模型的泛化能力，容易造成过拟合；</li><li>全概率和<code>0</code>概率鼓励所属类别和其他类别之间的差距尽可能加大，而由梯度有界可知，这种情况很难适应。会造成模型过于相信预测的类别。</li></ul> 
+<p>对预测有<code>100%</code>的信心可能表明模型是在记忆数据，而不是在学习。标签平滑调整预测的目标上限为一个较低的值，比如<code>0.9</code>。它将使用这个值而不是<code>1.0</code>来计算损失。这个概念缓解了过度拟合。说白了，这个平滑就是一定程度缩小<code>label</code>中<code>min</code>和<code>max</code>的差距，<code>label</code>平滑可以减小过拟合。所以，适当调整<code>label</code>，让两端的极值往中间凑凑，可以增加泛化性能。</p> 
+<h3 id="4.BackBone%E6%8E%A8%E7%90%86%E7%AD%96%E7%95%A5"><strong>4.BackBone推理策略</strong></h3> 
+<p>这里主要从<code>Mish</code>激活函数，<code>MiWRC</code>策略方面进行阐述<code>BackBone</code>推理策略。</p> 
+<h4 id="4.1-Mish%E6%BF%80%E6%B4%BB%E5%87%BD%E6%95%B0"><strong>4.1 Mish激活函数</strong></h4> 
+<p>对激活函数的研究一直没有停止过，<code>ReLU</code>还是统治着深度学习的激活函数，不过，这种情况有可能会被<code>Mish</code>改变。<strong><code>Mish</code>是另一个与<code>ReLU</code>和<code>Swish</code>非常相似的激活函数。正如论文所宣称的那样，<code>Mish</code>可以在不同数据集的许多深度网络中胜过它们。</strong>公式如下：</p> 
+<p>y=x∗tanh(ln(1+ex))</p> 
+<p><strong><code>Mish</code>是一个平滑的曲线，平滑的激活函数允许更好的信息深入神经网络，从而得到更好的准确性和泛化；在负值的时候并不是完全截断，允许比较小的负梯度流入。</strong>实验中，随着层深的增加，<code>ReLU</code>激活函数精度迅速下降，而<code>Mish</code>激活函数在训练稳定性、平均准确率(<code>1%-2.8%</code>)、峰值准确率(<code>1.2% - 3.6%</code>)等方面都有全面的提高。如下图：</p> 
+<p style="text-align:center;"><img alt="" src="https://images2.imgbox.com/a1/ab/19yutLyr_o.png"></p> 
+<p></p> 
+<p><code>Mish</code>论文： https://arxiv.org/pdf/1908.08681.pdf</p> 
+<h4 id="4.2-MiWRC%E7%AD%96%E7%95%A5"><strong>4.2 MiWRC策略</strong></h4> 
+<p><code>MiWRC</code>是<code>Multi-input weighted residual connections</code>的简称， 在<code>BiFPN</code>中，提出了用<code>MiWRC</code>来执行标尺度级重加权，添加不同尺度的特征映射。我们已经讨论了<code>FPN</code>和<code>PAN</code>作为例子。下面的图(<code>d</code>)显示了另一种被称为<code>BiFPN</code>的<code>neck</code>设计，根据<code>BiFPN</code>的论文，该设计具有更好的准确性和效率权衡。</p> 
+<p style="text-align:center;"><img alt="" src="https://images2.imgbox.com/cc/26/POhkpS0B_o.png"></p> 
+<p> </p> 
+<p></p> 
+<p>上图中 (<code>a</code>)<code>FPN</code>引入自顶向下的路径，将多尺度特征从<code>3</code>级融合到<code>7</code>级(<code>P3-P7</code>)；(<code>b</code>)<code>PANET</code>在<code>FPN</code>之上增加一个额外的自下而上的路径；(<code>c</code>)<code>NAS-FPN</code>使用神经网络搜索找到一个不规则的特征拓扑网络，然后重复应用同一块拓扑结构；(<code>d</code>)是这里的<code>BiFPN</code>，具有更好的准确性和效率权衡。将该<code>neck</code>放到整个整个网络的连接中如下图：</p> 
+<p style="text-align:center;"><img alt="" src="https://images2.imgbox.com/69/50/m1xWuzL2_o.png"></p> 
+<p> </p> 
+<p></p> 
+<p>上图采用<code>EfficientNet</code>作为骨干网络，<code>BiFPN</code>作为特征网络，共享<code>class/box</code>预测网络。 基于不同的资源约束，<code>BiFPN</code>层和类/盒网层都被重复多次。</p> 
+<p><code>BiFPN</code>论文： https://arxiv.org/pdf/1911.09070.pdf</p> 
+<h3 id="5.%E6%A3%80%E6%B5%8B%E5%A4%B4%E8%AE%AD%E7%BB%83%E7%AD%96%E7%95%A5"><strong>5.检测头训练策略</strong></h3> 
+<p>前面介绍<code>BackBone</code>训练策略的时候，以及学习过<code>DropBlock</code>正则化，<code>Mosaic</code>数据增强的方法了，这两种方法在检测头训练的过程中也有用到这里不在赘述。我们一起看下检测头训练中采用的其他策略。</p> 
+<h4 id="5.1-CIoU-loss"><strong>5.1 CIoU-loss</strong></h4> 
+<p>损失函数给出了如何调整权重以降低<code>loss</code>。所以在我们做出错误预测的情况下，我们期望它能给我们指明前进的方向。但如果使用<code>IoU</code>，考虑两个预测都不与<code>ground truth</code>重叠，那么<code>IoU</code>损失函数不能告诉哪一个是更好的，或者哪个更接近<code>ground truth</code>。这里顺带看下常用的几种<code>loss</code>的形式，如下：</p> 
+<ul><li>经典IoU loss：</li></ul> 
+<p><code>IoU</code>算法是使用最广泛的算法，大部分的检测算法都是使用的这个算法。</p> 
+<p>LIoU=1−|B∩Bgt||B∪Bgt|</p> 
+<ul><li>GIoU：Generalized IoU</li></ul> 
+<p><code>GIoU</code>考虑到，当检测框和真实框没有出现重叠的时候<code>IoU</code>的<code>loss</code>都是一样的，因此<code>GIoU</code>就加入了<code>C</code>检测框（<code>C</code>检测框是包含了检测框和真实框的最小矩形框），这样就可以解决检测框和真实框没有重叠的问题。但是当检测框和真实框之间出现包含的现象的时候<code>GIoU</code>就和<code>IoU loss</code>是同样的效果了。</p> 
+<p>LGIoU=1−IoU+|C−B∪Bgt||C|</p> 
+<p>其中，<code>C</code>是指能包含<code>predict box</code>和<code>Ground Truth box</code>的最小<code>box</code>。</p> 
+<ul><li>DIoU：Distance IoU</li></ul> 
+<p><code>DIoU</code>考虑到<code>GIoU</code>的缺点，也是增加了<code>C</code>检测框，将真实框和预测框都包含了进来，但是<code>DIoU</code>计算的不是框之间的交并，而是计算的每个检测框之间的欧氏距离，这样就可以解决<code>GIoU</code>包含出现的问题。</p> 
+<p>LDIoU=1−IoU+ρ2(b,bgt)c2</p> 
+<p>其中</p> 
+<p>ρ2</p> 
+<p>是指<code>predict box</code>和<code>GT box</code>中心点的距离的平方，而</p> 
+<p>c2</p> 
+<p>是指刚好能包含<code>predict box</code>和<code>GT box</code>的最小<code>box</code>的对角线长度平方。</p> 
+<ul><li>CIoU：Complete IoU</li></ul> 
+<p><code>CIoU</code>就是在<code>DIoU</code>的基础上增加了检测框尺度的<code>loss</code>，增加了长和宽的<code>loss</code>，这样预测框就会更加的符合真实框。</p> 
+<p>LDIoU=1−IoU+ρ2(bb,bbgt)c2+αv</p> 
+<p>实际上，<code>CIOU</code>只是在<code>DIOU</code>基础上增加了一项</p> 
+<p>αv</p> 
+<p>。 其中：</p> 
+<p>α=v(1−IoU)+vv=4π2(arctanwgthgt−arctanwh)2</p> 
+<p></p> 
+<p>用 CIoU Loss 取代 Iou Loss</p> 
+<p><img alt="" src="https://images2.imgbox.com/08/cc/tvuUZzbu_o.png"></p> 
+<p></p> 
+<p>IoU loss 中 IoU 交并比，两个框的交集/并集，有两个缺点：</p> 
+<p>&gt; 无法反应两个的距离</p> 
+<p>例如 状态 1，两个框不相交，无论怎样移动两个框，IoU = 0。</p> 
+<p>&gt; 无法区分两者相交的情况</p> 
+<p>例如 状态 2 和 3，两个框相交的情况完全不一样，但是 IoU 相同。</p> 
+<p><img alt="" src="https://images2.imgbox.com/6d/65/H697nW0g_o.png"></p> 
+<p></p> 
+<p>CIoU Loss 的思想：第一步，在两个框最外层再画一个最小的矩形框，求出这个框的对角线的距离，这个距离就能衡量两个框的距离；</p> 
+<p>第二步，求出两个框中心点的欧式距离，这欧式距离就能衡量两者的相交情况。</p> 
+<p><img alt="" src="https://images2.imgbox.com/5f/23/yuwKl5PX_o.png"></p> 
+<p></p> 
+<p>CIoU Loss 数学表达式如上，它能有效的解决 IoU Loss 存在的问题。</p> 
+<h4 id="5.2-CmBN%E7%AD%96%E7%95%A5"><strong>5.2 CmBN策略</strong></h4> 
+<p><code>BN</code>就是仅仅利用当前迭代时刻信息进行<code>norm</code>，而<code>CBN</code>在计算当前时刻统计量时候会考虑前<code>k</code>个时刻统计量，从而实现扩大<code>batch size</code>操作。同时作者指出<code>CBN</code>操作不会引入比较大的内存开销，训练速度不会影响很多，但是训练时候会慢一些，比<code>GN</code>还慢。</p> 
+<p><code>CmBN</code>是<code>CBN</code>的改进版本，其把大<code>batch</code>内部的<code>4</code>个<code>mini batch</code>当做一个整体，对外隔离。<code>CBN</code>在第<code>t</code>时刻，也会考虑前<code>3</code>个时刻的统计量进行汇合，而<code>CmBN</code>操作不会，不再滑动<code>cross</code>,其仅仅在<code>mini batch</code>内部进行汇合操作，保持<code>BN</code>一个<code>batch</code>更新一次可训练参数。</p> 
+<p style="text-align:center;"><img alt="" src="https://images2.imgbox.com/88/eb/vWvnVwNZ_o.png"></p> 
+<p> </p> 
+<p></p> 
+<p><code>BN</code>：无论每个<code>batch</code>被分割为多少个<code>mini batch</code>，其算法就是在每个<code>mini batch</code>前向传播后统计当前的BN数据（即每个神经元的期望和方差）并进行<code>Nomalization</code>，<code>BN</code>数据与其他<code>mini batch</code>的数据无关。</p> 
+<p><code>CBN</code>：每次<code>iteration</code>中的<code>BN</code>数据是其之前<code>n</code>次数据和当前数据的和（对非当前<code>batch</code>统计的数据进行了补偿再参与计算），用该累加值对当前的<code>batch</code>进行<code>Nomalization</code>。好处在于每个<code>batch</code>可以设置较小的<code>size</code>。</p> 
+<p><code>CmBN</code>：只在每个<code>Batch</code>内部使用<code>CBN</code>的方法，个人理解如果每个<code>Batch</code>被分割为一个<code>mini batch</code>，则其效果与<code>BN</code>一致；若分割为多个<code>mini batch</code>，则与<code>CBN</code>类似，只是把<code>mini batch</code>当作<code>batch</code>进行计算，其区别在于权重更新时间点不同，同一个<code>batch</code>内权重参数一样，因此计算不需要进行补偿。</p> 
+<h4 id="5.3-%E8%87%AA%E5%AF%B9%E6%8A%97%E8%AE%AD%E7%BB%83(SAT)"><strong>5.3 自对抗训练(SAT)</strong></h4> 
+<p><code>SAT</code>为一种新型数据增强方式。在第一阶段，神经网络改变原始图像而不是网络权值。通过这种方式，神经网络对其自身进行一种对抗式的攻击，改变原始图像，制造图像上没有目标的假象。在第二阶段，训练神经网络对修改后的图像进行正常的目标检测。</p> 
+<p style="text-align:center;"><img alt="" src="https://images2.imgbox.com/ad/fe/nQvKySfp_o.jpg"></p> 
+<p> </p> 
+<p></p> 
+<p><code>Self-Adversarial Training</code>是在一定程度上抵抗对抗攻击的数据增强技术。<code>CNN</code>计算出<code>Loss</code>, 然后通过反向传播改变图片信息，形成图片上没有目标的假象，然后对修改后的图像进行正常的目标检测。需要注意的是在SAT的反向传播的过程中，是不需要改变网络权值的。 使用对抗生成可以改善学习的决策边界中的薄弱环节，提高模型的鲁棒性。因此这种数据增强方式被越来越多的对象检测框架运用。</p> 
+<h4 id="5.4-%E6%B6%88%E9%99%A4%E7%BD%91%E6%A0%BC%E6%95%8F%E6%84%9F%E5%BA%A6"><strong>5.4 消除网格敏感度</strong></h4> 
+<p>边界框<code>b</code>的计算方式为：</p> 
+<p style="text-align:center;"><img alt="" src="https://images2.imgbox.com/38/76/h7PkZJHw_o.jpg"></p> 
+<p> </p> 
+<p></p> 
+<p>对于</p> 
+<p>bx=cx</p> 
+<p>和</p> 
+<p>bx=cx+1</p> 
+<p>的情况，我们需要</p> 
+<p>tx</p> 
+<p>分别具有很大的负值和正值。但我们可以将</p> 
+<p>σ</p> 
+<p>与一个比例因子(<code>&gt;1.0</code>)相乘，从而更轻松地实现这一目标。</p> 
+<h4 id="5.5-%E5%8D%95%E7%9B%AE%E6%A0%87%E4%BD%BF%E7%94%A8%E5%A4%9AAnchor"><strong>5.5 单目标使用多Anchor</strong></h4> 
+<p>如果 IoU(ground truth, anchor) &gt; IoU threshold，则为单个基本真值使用多个锚点。（注：作者没有更多地说明该方法在 YOLOv4 中的作用。）</p> 
+<h4 id="5.6-%E4%BD%99%E5%BC%A6%E6%A8%A1%E6%8B%9F%E9%80%80%E7%81%AB"><strong>5.6 余弦模拟退火</strong></h4> 
+<p>余弦调度会根据一个余弦函数来调整学习率。首先，较大的学习率会以较慢的速度减小。然后在中途时，学习的减小速度会变快，最后学习率的减小速度又会变得很慢。</p> 
+<p></p> 
+<p>这张图展示了学习率衰减的方式（下图中还应用了学习率预热）及其对<code>mAP</code>的影响。可能看起来并不明显，这种新的调度方法的进展更为稳定，而不是在停滞一段时间后又取得进展。</p> 
+<p></p> 
+<p>余弦模拟退火论文： https://arxiv.org/pdf/1608.03983.pdf</p> 
+<h4 id="5.7-%E9%81%97%E4%BC%A0%E7%AE%97%E6%B3%95%E4%BC%98%E5%8C%96%E8%B6%85%E5%8F%82"><strong>5.7 遗传算法优化超参</strong></h4> 
+<p>关于遗传算法的文章，我们之前也有学过：<a href="https://mp.weixin.qq.com/s?__biz=MzIzNDM2OTMzOQ==&amp;mid=2247487871&amp;idx=2&amp;sn=cdf39e6487be44e2491a078c29fe4172&amp;scene=21#wechat_redirect" rel="nofollow" title="遗传算法如何模拟大自然的进化？">遗传算法如何模拟大自然的进化？</a></p> 
+<p>遗传算法论文： https://arxiv.org/pdf/2004.10934.pdf</p> 
+<h4 id="5.8-%E9%9A%8F%E6%9C%BA%E5%BD%A2%E7%8A%B6%E8%AE%AD%E7%BB%83"><strong>5.8 随机形状训练</strong></h4> 
+<p>许多单阶段目标检测器是在固定的输入图像形状下训练的。为了提高泛化效果，我们可以对不同图像大小的模型进行训练。(在<code>YOLO</code>中进行多尺度训练)。</p> 
+<h3 id="6.%E6%A3%80%E6%B5%8B%E5%A4%B4%E6%8E%A8%E7%90%86%E7%AD%96%E7%95%A5"><strong>6.检测头推理策略</strong></h3> 
+<p>在检测头推理中除了用了上面讲的<code>Mish</code>, <code>SPP</code>, <code>PAN</code>技术外，还用了<code>SAM</code>和<code>DIoU-NMS</code>,如下：</p> 
+<h4 id="6.1-SAM%E6%A8%A1%E5%9D%97"><strong>6.1 SAM模块</strong></h4> 
+<p>注意力机制在<code>DL</code>设计中被广泛采用。在<code>SAM</code>中，最大值池化和平均池化分别用于输入<code>feature map</code>，创建两组<code>feature map</code>。结果被输入到一个卷积层，接着是一个<code>Sigmoid</code>函数来创建空间注意力。</p> 
+<p style="text-align:center;"><img alt="" src="https://images2.imgbox.com/12/3d/Hls8pVzc_o.jpg"></p> 
+<p> </p> 
+<p></p> 
+<p>将空间注意掩模应用于输入特征，输出精细的特征图。</p> 
+<p style="text-align:center;"><img alt="" src="https://images2.imgbox.com/9b/06/SdbwfouO_o.jpg"></p> 
+<p> </p> 
+<p></p> 
+<p>在<code>YOLOv4</code>中，使用修改后的<code>SAM</code>而不应用最大值池化和平均池化。</p> 
+<p></p> 
+<p>在<code>YOLOv4</code>中，<code>FPN</code>概念逐渐被实现/替换为经过修改的<code>SPP</code>、<code>PAN</code>和<code>PAN</code>。</p> 
+<h4 id="6.2-DIoU-NMS"><strong>6.2 DIoU-NMS</strong></h4> 
+<p><code>NMS</code>过滤掉预测相同对象的其他边界框，并保留具有最高可信度的边界框。</p> 
+<p style="text-align:center;"><img alt="" src="https://images2.imgbox.com/fe/65/7WvF30ET_o.jpg"></p> 
+<p> </p> 
+<p></p> 
+<p><code>DIoU</code>(前面讨论过的) 被用作非最大值抑制(<code>NMS</code>)的一个因素。该方法在抑制冗余框的同时，采用<code>IoU</code>和两个边界盒中心点之间的距离。这使得它在有遮挡的情况下更加健壮。</p> 
+<h3 id="7.YOLOv4%E5%B0%8F%E7%BB%93"><strong>7.YOLOv4小结</strong></h3> 
+<p>为了提升准确度，可以针对训练过程进行一些优化，比如数据增强、类别不平衡、成本函数、软标注…… 这些改进不会影响推理速度，可被称为「<code>Bag of freebies</code>」。另外还有一些改进可称为「<code>bag of specials</code>」，仅需在推理时间方面做少许牺牲，就能获得优良的性能回报。这类改进包括增大感受野、使用注意力机制、集成跳过连接（<code>skip-connection</code>）或 <code>FPN</code>等特性、使用非极大值抑制等后处理方法。</p> 
+<p>本文从<code>YOLOv4</code>介绍，<code>YOLOv4</code>框架原理，<code>BackBone</code>训练策略，<code>BackBone</code>推理策略，检测头训练策略，检测头推理策略这几个大方面进行详细的阐述了<code>YOLOv4</code>中所用到的各种策略，希望对大家有所帮助。</p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/7cacdc9dd0f3b825e29b798989627e7b/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">FPGA学习-Verilog实现独立按键消抖</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/9cd57149530a77d407088b28432fef6d/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">pandas学习之一：excel转字典</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

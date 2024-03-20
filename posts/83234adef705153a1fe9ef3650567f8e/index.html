@@ -1,0 +1,356 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>KONG - API转发流程梳理 - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="KONG - API转发流程梳理" />
+<meta property="og:description" content="kong简介 Kong 是一个开源的API网关，集成了服务注册和发现、负载均衡、健康检查等功能，还可以通过插件来提供限流、熔断、监控、日志等能力，
+在kong的微服务架构中，kong担当了注册中心的角色，服务提供者(Provider)首先将服务信息注册到 kong，服务消费者(Consumer)调用服务的过程是调用端先将请求发到 kong，再通过 kong 把请求转发到服务提供者而实现间接调用。
+本文通过梳理kong数据库中的字段关联关系，从而了解请求的转发流程。
+kong服务定义 一个完整的kong服务由四部分实体构成：route，service，upstream和target。各自作用介绍如下：
+route：记录了请求规则和服务service的对应关系；services：服务实体，是上游服务upstream的抽象；upstream：一个或多个target的集合，负责流量的转发；target：提供服务的最小单位，也是负载均衡的终端。 kong转发请求的整体流程可以概述为：当客户端发起一个请求时，routes通过提前注册的信息匹配出对应的service服务，根据service对应的upstream信息就可以找到最终处理请求的目标tartget，从而完成请求的处理。调用流程图示如下：
+以下就客户端请求/api/tembin/atsani为例，结合kong数据库中的关联关系来具体说明请求的转发流程。
+转发流程梳理 从 Route 到 Service routes routes路由匹配客户端的请求规则，匹配成功后分配到service层，以请求的方法、host、路径等作为转发依据。route与service是多对一的关系，所以可根据请求的路径可匹配出对应的service。
+表结构
+以下字段需要特殊注意：
+字段值protocols允许访问该路由的协议（默认https\http都允许）paths匹配路由访问的路径service_id指向服务的id kong=# \d routes; Table &#34;public.routes&#34; Column | Type | Modifiers ----------------------------&#43;--------------------------&#43;-------------------- id | uuid | not null created_at | timestamp with time zone | updated_at | timestamp with time zone | name | text | service_id | uuid | protocols | text[] | methods | text[] | hosts | text[] | paths | text[] | snis | text[] | sources | jsonb[] | destinations | jsonb[] | regex_priority | bigint | strip_path | boolean | preserve_host | boolean | tags | text[] | https_redirect_status_code | integer | headers | jsonb | path_handling | text | default &#39;v0&#39;::text Indexes: &#34;" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/83234adef705153a1fe9ef3650567f8e/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2024-03-07T15:22:42+08:00" />
+<meta property="article:modified_time" content="2024-03-07T15:22:42+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">KONG - API转发流程梳理</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <h2><a id="kong_2"></a><code>kong</code>简介</h2> 
+<p><code>Kong</code> 是一个开源的<code>API</code>网关，集成了服务注册和发现、负载均衡、健康检查等功能，还可以通过插件来提供限流、熔断、监控、日志等能力，</p> 
+<p>在<code>kong</code>的微服务架构中，<code>kong</code>担当了注册中心的角色，服务提供者<code>(Provider)</code>首先将服务信息注册到 <code>kong</code>，服务消费者<code>(Consumer)</code>调用服务的过程是调用端先将请求发到 <code>kong</code>，再通过 <code>kong </code>把请求转发到服务提供者而实现间接调用。</p> 
+<p><img src="https://images2.imgbox.com/e8/fd/Yr4Ho9N9_o.png" alt="在这里插入图片描述"></p> 
+<p>本文通过梳理<code>kong</code>数据库中的字段关联关系，从而了解请求的转发流程。</p> 
+<hr> 
+<h2><a id="kong_15"></a><code>kong</code>服务定义</h2> 
+<p>一个完整的<code>kong</code>服务由四部分实体构成：<code>route</code>，<code>service</code>，<code>upstream</code>和<code>target</code>。各自作用介绍如下：</p> 
+<ol><li><code>route</code>：记录了请求规则和服务<code>service</code>的对应关系；</li><li><code>services</code>：服务实体，是上游服务<code>upstream</code>的抽象；</li><li><code>upstream</code>：一个或多个<code>target</code>的集合，负责流量的转发；</li><li><code>target</code>：提供服务的最小单位，也是负载均衡的终端。</li></ol> 
+<p><code>kong</code>转发请求的整体流程可以概述为：当客户端发起一个请求时，<code>routes</code>通过提前注册的信息匹配出对应的<code>service</code>服务，根据<code>service</code>对应的<code>upstream</code>信息就可以找到最终处理请求的目标<code>tartget</code>，从而完成请求的处理。调用流程图示如下：</p> 
+<p><img src="https://images2.imgbox.com/00/34/nY4GGiHm_o.png" alt="在这里插入图片描述"></p> 
+<p>以下就客户端请求<code>/api/tembin/atsani</code>为例，结合<code>kong</code>数据库中的关联关系来具体说明请求的转发流程。</p> 
+<hr> 
+<h2><a id="_33"></a>转发流程梳理</h2> 
+<h3><a id="_Route__Service_35"></a>从 Route 到 Service</h3> 
+<h4><a id="routes_37"></a>routes</h4> 
+<p><code>routes</code>路由匹配客户端的请求规则，匹配成功后分配到<code>service</code>层，以请求的方法、host、路径等作为转发依据。<code>route</code>与<code>service</code>是多对一的关系，所以可根据请求的路径可匹配出对应的<code>service</code>。</p> 
+<p><strong>表结构</strong></p> 
+<p>以下字段需要特殊注意：</p> 
+<table><thead><tr><th>字段</th><th>值</th></tr></thead><tbody><tr><td>protocols</td><td>允许访问该路由的协议（默认https\http都允许）</td></tr><tr><td>paths</td><td>匹配路由访问的路径</td></tr><tr><td>service_id</td><td>指向服务的id</td></tr></tbody></table> 
+<pre><code class="prism language-sql">kong<span class="token operator">=</span><span class="token comment"># \d routes;</span>
+                           <span class="token keyword">Table</span> <span class="token string">"public.routes"</span>
+           <span class="token keyword">Column</span>           <span class="token operator">|</span>           <span class="token keyword">Type</span>           <span class="token operator">|</span>     Modifiers
+<span class="token comment">----------------------------+--------------------------+--------------------</span>
+ id                         <span class="token operator">|</span> uuid                     <span class="token operator">|</span> <span class="token operator">not</span> <span class="token boolean">null</span>
+ created_at                 <span class="token operator">|</span> <span class="token keyword">timestamp</span> <span class="token keyword">with</span> <span class="token keyword">time</span> zone <span class="token operator">|</span>
+ updated_at                 <span class="token operator">|</span> <span class="token keyword">timestamp</span> <span class="token keyword">with</span> <span class="token keyword">time</span> zone <span class="token operator">|</span>
+ name                       <span class="token operator">|</span> <span class="token keyword">text</span>                     <span class="token operator">|</span>
+ service_id                 <span class="token operator">|</span> uuid                     <span class="token operator">|</span>
+ protocols                  <span class="token operator">|</span> <span class="token keyword">text</span><span class="token punctuation">[</span><span class="token punctuation">]</span>                   <span class="token operator">|</span>
+ methods                    <span class="token operator">|</span> <span class="token keyword">text</span><span class="token punctuation">[</span><span class="token punctuation">]</span>                   <span class="token operator">|</span>
+ hosts                      <span class="token operator">|</span> <span class="token keyword">text</span><span class="token punctuation">[</span><span class="token punctuation">]</span>                   <span class="token operator">|</span>
+ paths                      <span class="token operator">|</span> <span class="token keyword">text</span><span class="token punctuation">[</span><span class="token punctuation">]</span>                   <span class="token operator">|</span>
+ snis                       <span class="token operator">|</span> <span class="token keyword">text</span><span class="token punctuation">[</span><span class="token punctuation">]</span>                   <span class="token operator">|</span>
+ sources                    <span class="token operator">|</span> jsonb<span class="token punctuation">[</span><span class="token punctuation">]</span>                  <span class="token operator">|</span>
+ destinations               <span class="token operator">|</span> jsonb<span class="token punctuation">[</span><span class="token punctuation">]</span>                  <span class="token operator">|</span>
+ regex_priority             <span class="token operator">|</span> <span class="token keyword">bigint</span>                   <span class="token operator">|</span>
+ strip_path                 <span class="token operator">|</span> <span class="token keyword">boolean</span>                  <span class="token operator">|</span>
+ preserve_host              <span class="token operator">|</span> <span class="token keyword">boolean</span>                  <span class="token operator">|</span>
+ tags                       <span class="token operator">|</span> <span class="token keyword">text</span><span class="token punctuation">[</span><span class="token punctuation">]</span>                   <span class="token operator">|</span>
+ https_redirect_status_code <span class="token operator">|</span> <span class="token keyword">integer</span>                  <span class="token operator">|</span>
+ headers                    <span class="token operator">|</span> jsonb                    <span class="token operator">|</span>
+ path_handling              <span class="token operator">|</span> <span class="token keyword">text</span>                     <span class="token operator">|</span> <span class="token keyword">default</span> <span class="token string">'v0'</span>::<span class="token keyword">text</span>
+Indexes:
+    <span class="token string">"routes_pkey"</span> <span class="token keyword">PRIMARY</span> <span class="token keyword">KEY</span><span class="token punctuation">,</span> <span class="token keyword">btree</span> <span class="token punctuation">(</span>id<span class="token punctuation">)</span>
+    <span class="token string">"routes_name_key"</span> <span class="token keyword">UNIQUE</span> <span class="token keyword">CONSTRAINT</span><span class="token punctuation">,</span> <span class="token keyword">btree</span> <span class="token punctuation">(</span>name<span class="token punctuation">)</span>
+    <span class="token string">"routes_service_id_idx"</span> <span class="token keyword">btree</span> <span class="token punctuation">(</span>service_id<span class="token punctuation">)</span>
+    <span class="token string">"routes_tags_idx"</span> gin <span class="token punctuation">(</span>tags<span class="token punctuation">)</span>
+<span class="token keyword">Foreign</span><span class="token operator">-</span><span class="token keyword">key</span> constraints:
+    <span class="token string">"routes_service_id_fkey"</span> <span class="token keyword">FOREIGN</span> <span class="token keyword">KEY</span> <span class="token punctuation">(</span>service_id<span class="token punctuation">)</span> <span class="token keyword">REFERENCES</span> services<span class="token punctuation">(</span>id<span class="token punctuation">)</span>
+Referenced <span class="token keyword">by</span>:
+    <span class="token keyword">TABLE</span> <span class="token string">"plugins"</span> <span class="token keyword">CONSTRAINT</span> <span class="token string">"plugins_route_id_fkey"</span> <span class="token keyword">FOREIGN</span> <span class="token keyword">KEY</span> <span class="token punctuation">(</span>route_id<span class="token punctuation">)</span> <span class="token keyword">REFERENCES</span> routes<span class="token punctuation">(</span>id<span class="token punctuation">)</span> <span class="token keyword">ON</span> <span class="token keyword">DELETE</span> <span class="token keyword">CASCADE</span>
+Triggers:
+    routes_sync_tags_trigger <span class="token keyword">AFTER</span> <span class="token keyword">INSERT</span> <span class="token operator">OR</span> <span class="token keyword">DELETE</span> <span class="token operator">OR</span> <span class="token keyword">UPDATE</span> <span class="token keyword">OF</span> tags <span class="token keyword">ON</span> routes <span class="token keyword">FOR EACH ROW</span> <span class="token keyword">EXECUTE</span> <span class="token keyword">PROCEDURE</span> sync_tags<span class="token punctuation">(</span><span class="token punctuation">)</span>
+
+</code></pre> 
+<p>可看出<code>routes</code>和<code>service</code>表通过<code>service_id</code>进行关联</p> 
+<p><strong>示例</strong></p> 
+<p>在<code>routes</code>表中可根据指定路径筛选出对应的<code>service_id</code>为<code>27f7d1f2-67f3-430f-b5a1-417c6dcb1198</code></p> 
+<pre><code class="prism language-sql">kong<span class="token operator">=</span><span class="token comment"># select * from routes where paths='{/api/tembin/atsani}';</span>
+<span class="token operator">-</span><span class="token punctuation">[</span> RECORD <span class="token number">1</span> <span class="token punctuation">]</span><span class="token comment">--------------+-------------------------------------</span>
+id                         <span class="token operator">|</span> <span class="token number">00</span>dd061d<span class="token operator">-</span><span class="token number">438</span>c<span class="token operator">-</span><span class="token number">4</span>e76<span class="token operator">-</span><span class="token number">92</span>a2<span class="token operator">-</span><span class="token number">92984</span>c6c55dc
+created_at                 <span class="token operator">|</span> <span class="token number">2022</span><span class="token operator">-</span><span class="token number">10</span><span class="token operator">-</span><span class="token number">30</span> <span class="token number">11</span>:<span class="token number">53</span>:<span class="token number">15</span><span class="token operator">+</span><span class="token number">00</span>
+updated_at                 <span class="token operator">|</span> <span class="token number">2022</span><span class="token operator">-</span><span class="token number">10</span><span class="token operator">-</span><span class="token number">30</span> <span class="token number">11</span>:<span class="token number">53</span>:<span class="token number">15</span><span class="token operator">+</span><span class="token number">00</span>
+name                       <span class="token operator">|</span> nscloud<span class="token punctuation">.</span>kong<span class="token operator">-</span>tembin<span class="token punctuation">.</span><span class="token number">029</span>
+service_id                 <span class="token operator">|</span> <span class="token number">27</span>f7d1f2<span class="token operator">-</span><span class="token number">67</span>f3<span class="token operator">-</span><span class="token number">430</span>f<span class="token operator">-</span>b5a1<span class="token operator">-</span><span class="token number">417</span>c6dcb1198
+protocols                  <span class="token operator">|</span> {http<span class="token punctuation">,</span>https}
+methods                    <span class="token operator">|</span>
+hosts                      <span class="token operator">|</span>
+paths                      <span class="token operator">|</span> {<!-- --><span class="token operator">/</span>api<span class="token operator">/</span>tembin<span class="token operator">/</span>atsani}
+snis                       <span class="token operator">|</span>
+sources                    <span class="token operator">|</span>
+destinations               <span class="token operator">|</span>
+regex_priority             <span class="token operator">|</span> <span class="token number">0</span>
+strip_path                 <span class="token operator">|</span> f
+preserve_host              <span class="token operator">|</span> t
+tags                       <span class="token operator">|</span> {managed<span class="token operator">-</span><span class="token keyword">by</span><span class="token operator">-</span>ingress<span class="token operator">-</span>controller}
+https_redirect_status_code <span class="token operator">|</span> <span class="token number">426</span>
+headers                    <span class="token operator">|</span>
+path_handling              <span class="token operator">|</span> v0
+
+<span class="token identifier"><span class="token punctuation">`</span><span class="token punctuation">`</span></span><span class="token punctuation">`</span>
+</code></pre> 
+<h4><a id="services_123"></a><code>services</code></h4> 
+<p><code>service</code>服务是一个抽象服务层，可以用于指向具体物理服务<code>(target)</code>，也可以指向<code>upstream</code>用于实现物理服务的负载效果，其中<code>service</code>和<code>upstream</code>是一对一的关系。</p> 
+<p>注：<code>service</code>中的<code>host</code>可以是<code>upstream</code>的<code>name</code>，也可以配置为外部的域名，这样请求会直接转发给外部</p> 
+<p><strong>表结构</strong></p> 
+<p>以下字段需要特殊注意：</p> 
+<table><thead><tr><th>字段</th><th>值</th></tr></thead><tbody><tr><td>protocol</td><td>请求upstream的协议（http、https）默认http</td></tr><tr><td>host</td><td>upstream name（一定要和upstream名称保持一致）</td></tr><tr><td>port</td><td>请求upstream的端口（虚拟端口，可自定义）默认80</td></tr><tr><td>path</td><td>请求upstream的路径</td></tr></tbody></table> 
+<pre><code class="prism language-sql">kong<span class="token operator">=</span><span class="token comment"># \d services;</span>
+                   <span class="token keyword">Table</span> <span class="token string">"public.services"</span>
+        <span class="token keyword">Column</span>         <span class="token operator">|</span>           <span class="token keyword">Type</span>           <span class="token operator">|</span> Modifiers
+<span class="token comment">-----------------------+--------------------------+-----------</span>
+ id                    <span class="token operator">|</span> uuid                     <span class="token operator">|</span> <span class="token operator">not</span> <span class="token boolean">null</span>
+ created_at            <span class="token operator">|</span> <span class="token keyword">timestamp</span> <span class="token keyword">with</span> <span class="token keyword">time</span> zone <span class="token operator">|</span>
+ updated_at            <span class="token operator">|</span> <span class="token keyword">timestamp</span> <span class="token keyword">with</span> <span class="token keyword">time</span> zone <span class="token operator">|</span>
+ name                  <span class="token operator">|</span> <span class="token keyword">text</span>                     <span class="token operator">|</span>
+ retries               <span class="token operator">|</span> <span class="token keyword">bigint</span>                   <span class="token operator">|</span>
+ protocol              <span class="token operator">|</span> <span class="token keyword">text</span>                     <span class="token operator">|</span>
+ host                  <span class="token operator">|</span> <span class="token keyword">text</span>                     <span class="token operator">|</span>
+ port                  <span class="token operator">|</span> <span class="token keyword">bigint</span>                   <span class="token operator">|</span>
+ path                  <span class="token operator">|</span> <span class="token keyword">text</span>                     <span class="token operator">|</span>
+ connect_timeout       <span class="token operator">|</span> <span class="token keyword">bigint</span>                   <span class="token operator">|</span>
+ write_timeout         <span class="token operator">|</span> <span class="token keyword">bigint</span>                   <span class="token operator">|</span>
+ read_timeout          <span class="token operator">|</span> <span class="token keyword">bigint</span>                   <span class="token operator">|</span>
+ tags                  <span class="token operator">|</span> <span class="token keyword">text</span><span class="token punctuation">[</span><span class="token punctuation">]</span>                   <span class="token operator">|</span>
+ client_certificate_id <span class="token operator">|</span> uuid                     <span class="token operator">|</span>
+Indexes:
+    <span class="token string">"services_pkey"</span> <span class="token keyword">PRIMARY</span> <span class="token keyword">KEY</span><span class="token punctuation">,</span> <span class="token keyword">btree</span> <span class="token punctuation">(</span>id<span class="token punctuation">)</span>
+    <span class="token string">"services_name_key"</span> <span class="token keyword">UNIQUE</span> <span class="token keyword">CONSTRAINT</span><span class="token punctuation">,</span> <span class="token keyword">btree</span> <span class="token punctuation">(</span>name<span class="token punctuation">)</span>
+    <span class="token string">"services_fkey_client_certificate"</span> <span class="token keyword">btree</span> <span class="token punctuation">(</span>client_certificate_id<span class="token punctuation">)</span>
+    <span class="token string">"services_tags_idx"</span> gin <span class="token punctuation">(</span>tags<span class="token punctuation">)</span>
+<span class="token keyword">Foreign</span><span class="token operator">-</span><span class="token keyword">key</span> constraints:
+    <span class="token string">"services_client_certificate_id_fkey"</span> <span class="token keyword">FOREIGN</span> <span class="token keyword">KEY</span> <span class="token punctuation">(</span>client_certificate_id<span class="token punctuation">)</span> <span class="token keyword">REFERENCES</span> certificates<span class="token punctuation">(</span>id<span class="token punctuation">)</span>
+Referenced <span class="token keyword">by</span>:
+    <span class="token keyword">TABLE</span> <span class="token string">"oauth2_authorization_codes"</span> <span class="token keyword">CONSTRAINT</span> <span class="token string">"oauth2_authorization_codes_service_id_fkey"</span> <span class="token keyword">FOREIGN</span> <span class="token keyword">KEY</span> <span class="token punctuation">(</span>service_id<span class="token punctuation">)</span> <span class="token keyword">REFERENCES</span> services<span class="token punctuation">(</span>id<span class="token punctuation">)</span> <span class="token keyword">ON</span> <span class="token keyword">DELETE</span> <span class="token keyword">CASCADE</span>
+    <span class="token keyword">TABLE</span> <span class="token string">"oauth2_tokens"</span> <span class="token keyword">CONSTRAINT</span> <span class="token string">"oauth2_tokens_service_id_fkey"</span> <span class="token keyword">FOREIGN</span> <span class="token keyword">KEY</span> <span class="token punctuation">(</span>service_id<span class="token punctuation">)</span> <span class="token keyword">REFERENCES</span> services<span class="token punctuation">(</span>id<span class="token punctuation">)</span> <span class="token keyword">ON</span> <span class="token keyword">DELETE</span> <span class="token keyword">CASCADE</span>
+    <span class="token keyword">TABLE</span> <span class="token string">"plugins"</span> <span class="token keyword">CONSTRAINT</span> <span class="token string">"plugins_service_id_fkey"</span> <span class="token keyword">FOREIGN</span> <span class="token keyword">KEY</span> <span class="token punctuation">(</span>service_id<span class="token punctuation">)</span> <span class="token keyword">REFERENCES</span> services<span class="token punctuation">(</span>id<span class="token punctuation">)</span> <span class="token keyword">ON</span> <span class="token keyword">DELETE</span> <span class="token keyword">CASCADE</span>
+    <span class="token keyword">TABLE</span> <span class="token string">"routes"</span> <span class="token keyword">CONSTRAINT</span> <span class="token string">"routes_service_id_fkey"</span> <span class="token keyword">FOREIGN</span> <span class="token keyword">KEY</span> <span class="token punctuation">(</span>service_id<span class="token punctuation">)</span> <span class="token keyword">REFERENCES</span> services<span class="token punctuation">(</span>id<span class="token punctuation">)</span>
+Triggers:
+    services_sync_tags_trigger <span class="token keyword">AFTER</span> <span class="token keyword">INSERT</span> <span class="token operator">OR</span> <span class="token keyword">DELETE</span> <span class="token operator">OR</span> <span class="token keyword">UPDATE</span> <span class="token keyword">OF</span> tags <span class="token keyword">ON</span> services <span class="token keyword">FOR EACH ROW</span> <span class="token keyword">EXECUTE</span> <span class="token keyword">PROCEDURE</span> sync_tags<span class="token punctuation">(</span><span class="token punctuation">)</span>
+
+</code></pre> 
+<p><strong>示例</strong></p> 
+<p>通过上一步查找的<code>service_id</code>，可在<code>service</code>表中匹配出对应记录</p> 
+<pre><code class="prism language-sql">kong<span class="token operator">=</span><span class="token comment"># select * from services where id='27f7d1f2-67f3-430f-b5a1-417c6dcb1198';</span>
+<span class="token operator">-</span><span class="token punctuation">[</span> RECORD <span class="token number">1</span> <span class="token punctuation">]</span><span class="token comment">---------+-------------------------------------</span>
+id                    <span class="token operator">|</span> <span class="token number">27</span>f7d1f2<span class="token operator">-</span><span class="token number">67</span>f3<span class="token operator">-</span><span class="token number">430</span>f<span class="token operator">-</span>b5a1<span class="token operator">-</span><span class="token number">417</span>c6dcb1198
+created_at            <span class="token operator">|</span> <span class="token number">2022</span><span class="token operator">-</span><span class="token number">10</span><span class="token operator">-</span><span class="token number">30</span> <span class="token number">11</span>:<span class="token number">53</span>:<span class="token number">15</span><span class="token operator">+</span><span class="token number">00</span>
+updated_at            <span class="token operator">|</span> <span class="token number">2022</span><span class="token operator">-</span><span class="token number">10</span><span class="token operator">-</span><span class="token number">30</span> <span class="token number">11</span>:<span class="token number">53</span>:<span class="token number">15</span><span class="token operator">+</span><span class="token number">00</span>
+name                  <span class="token operator">|</span> nscloud<span class="token punctuation">.</span>atsani<span class="token punctuation">.</span><span class="token number">80</span>
+retries               <span class="token operator">|</span> <span class="token number">5</span>
+protocol              <span class="token operator">|</span> http
+host                  <span class="token operator">|</span> atsani<span class="token punctuation">.</span>nscloud<span class="token punctuation">.</span><span class="token number">80.</span>svc
+port                  <span class="token operator">|</span> <span class="token number">80</span>
+path                  <span class="token operator">|</span> <span class="token operator">/</span>
+connect_timeout       <span class="token operator">|</span> <span class="token number">60000</span>
+write_timeout         <span class="token operator">|</span> <span class="token number">60000</span>
+read_timeout          <span class="token operator">|</span> <span class="token number">60000</span>
+tags                  <span class="token operator">|</span> {managed<span class="token operator">-</span><span class="token keyword">by</span><span class="token operator">-</span>ingress<span class="token operator">-</span>controller}
+client_certificate_id <span class="token operator">|</span>
+</code></pre> 
+<hr> 
+<h3><a id="_ServiceUpstream_201"></a>从 <code>Service</code>到<code>Upstream</code></h3> 
+<h4><a id="upstreams_203"></a><code>upstreams</code></h4> 
+<p><code>upstream</code>主要用于实现<code>kong</code>的负载功能，一个<code>service</code>匹配到一个<code>upstream</code>后，<code>upstream</code>可以指向多个<code>target</code>服务以此来实现负载的效果。</p> 
+<p><strong>表结构</strong></p> 
+<p>以下字段需要特殊注意：</p> 
+<table><thead><tr><th>字段</th><th>值</th></tr></thead><tbody><tr><td>name</td><td>service指向时使用</td></tr><tr><td>algorithm</td><td>默认round-robin。目前支持round-robin, <code>consistent-hashing</code>, <code>least-connections</code></td></tr><tr><td>healthchecks.active.type</td><td>检查目标服务器target的健康方式。一共三类tcp、http、https</td></tr><tr><td>healthchecks.active.http_path</td><td>使用http协议检查target服务是否健康时绑定的路径</td></tr></tbody></table> 
+<pre><code class="prism language-sql">kong<span class="token operator">=</span><span class="token comment"># \d upstreams</span>
+                                                  <span class="token keyword">Table</span> <span class="token string">"public.upstreams"</span>
+        <span class="token keyword">Column</span>        <span class="token operator">|</span>           <span class="token keyword">Type</span>           <span class="token operator">|</span>                                 Modifiers
+<span class="token comment">----------------------+--------------------------+---------------------------------------------------------------------------</span>
+ id                   <span class="token operator">|</span> uuid                     <span class="token operator">|</span> <span class="token operator">not</span> <span class="token boolean">null</span>
+ created_at           <span class="token operator">|</span> <span class="token keyword">timestamp</span> <span class="token keyword">with</span> <span class="token keyword">time</span> zone <span class="token operator">|</span> <span class="token keyword">default</span> timezone<span class="token punctuation">(</span><span class="token string">'UTC'</span>::<span class="token keyword">text</span><span class="token punctuation">,</span> <span class="token punctuation">(</span><span class="token string">'now'</span>::<span class="token keyword">text</span><span class="token punctuation">)</span>::<span class="token keyword">timestamp</span><span class="token punctuation">(</span><span class="token number">3</span><span class="token punctuation">)</span> <span class="token keyword">with</span> <span class="token keyword">time</span> zone<span class="token punctuation">)</span>
+ name                 <span class="token operator">|</span> <span class="token keyword">text</span>                     <span class="token operator">|</span>
+ hash_on              <span class="token operator">|</span> <span class="token keyword">text</span>                     <span class="token operator">|</span>
+ hash_fallback        <span class="token operator">|</span> <span class="token keyword">text</span>                     <span class="token operator">|</span>
+ hash_on_header       <span class="token operator">|</span> <span class="token keyword">text</span>                     <span class="token operator">|</span>
+ hash_fallback_header <span class="token operator">|</span> <span class="token keyword">text</span>                     <span class="token operator">|</span>
+ hash_on_cookie       <span class="token operator">|</span> <span class="token keyword">text</span>                     <span class="token operator">|</span>
+ hash_on_cookie_path  <span class="token operator">|</span> <span class="token keyword">text</span>                     <span class="token operator">|</span>
+ slots                <span class="token operator">|</span> <span class="token keyword">integer</span>                  <span class="token operator">|</span> <span class="token operator">not</span> <span class="token boolean">null</span>
+ healthchecks         <span class="token operator">|</span> jsonb                    <span class="token operator">|</span>
+ tags                 <span class="token operator">|</span> <span class="token keyword">text</span><span class="token punctuation">[</span><span class="token punctuation">]</span>                   <span class="token operator">|</span>
+ <span class="token keyword">algorithm</span>            <span class="token operator">|</span> <span class="token keyword">text</span>                     <span class="token operator">|</span>
+ host_header          <span class="token operator">|</span> <span class="token keyword">text</span>                     <span class="token operator">|</span>
+Indexes:
+    <span class="token string">"upstreams_pkey"</span> <span class="token keyword">PRIMARY</span> <span class="token keyword">KEY</span><span class="token punctuation">,</span> <span class="token keyword">btree</span> <span class="token punctuation">(</span>id<span class="token punctuation">)</span>
+    <span class="token string">"upstreams_name_key"</span> <span class="token keyword">UNIQUE</span> <span class="token keyword">CONSTRAINT</span><span class="token punctuation">,</span> <span class="token keyword">btree</span> <span class="token punctuation">(</span>name<span class="token punctuation">)</span>
+    <span class="token string">"upstreams_tags_idx"</span> gin <span class="token punctuation">(</span>tags<span class="token punctuation">)</span>
+Referenced <span class="token keyword">by</span>:
+    <span class="token keyword">TABLE</span> <span class="token string">"targets"</span> <span class="token keyword">CONSTRAINT</span> <span class="token string">"targets_upstream_id_fkey"</span> <span class="token keyword">FOREIGN</span> <span class="token keyword">KEY</span> <span class="token punctuation">(</span>upstream_id<span class="token punctuation">)</span> <span class="token keyword">REFERENCES</span> upstreams<span class="token punctuation">(</span>id<span class="token punctuation">)</span> <span class="token keyword">ON</span> <span class="token keyword">DELETE</span> <span class="token keyword">CASCADE</span>
+Triggers:
+    upstreams_sync_tags_trigger <span class="token keyword">AFTER</span> <span class="token keyword">INSERT</span> <span class="token operator">OR</span> <span class="token keyword">DELETE</span> <span class="token operator">OR</span> <span class="token keyword">UPDATE</span> <span class="token keyword">OF</span> tags <span class="token keyword">ON</span> upstreams <span class="token keyword">FOR EACH ROW</span> <span class="token keyword">EXECUTE</span> <span class="token keyword">PROCEDURE</span> sync_tags<span class="token punctuation">(</span><span class="token punctuation">)</span>
+
+</code></pre> 
+<p>从表索引中可看出对于<code>target</code>表和<code>upstreams</code>表针对<code>upstreams.id</code>和<code>targets.upstream_id</code>做了外键约束</p> 
+<p><strong>示例</strong></p> 
+<p>通过上一步查找出的<code>host</code>字段匹配出对应的<code>upstream</code></p> 
+<pre><code class="prism language-sql">kong<span class="token operator">=</span><span class="token comment"># select * from upstreams where name='atsani.nscloud.80.svc';</span>
+<span class="token operator">-</span><span class="token punctuation">[</span> RECORD <span class="token number">1</span> <span class="token punctuation">]</span><span class="token comment">---------------------------------------------------</span>
+id                   <span class="token operator">|</span> b85dd291<span class="token operator">-</span>d561<span class="token operator">-</span><span class="token number">4605</span><span class="token operator">-</span><span class="token number">8771</span><span class="token operator">-</span><span class="token number">2895</span>c1decaa3
+created_at           <span class="token operator">|</span> <span class="token number">2022</span><span class="token operator">-</span><span class="token number">10</span><span class="token operator">-</span><span class="token number">31</span> <span class="token number">02</span>:<span class="token number">52</span>:<span class="token number">43</span><span class="token operator">+</span><span class="token number">00</span>
+name                 <span class="token operator">|</span> atsani<span class="token punctuation">.</span>nscloud<span class="token punctuation">.</span><span class="token number">80.</span>svc
+hash_on              <span class="token operator">|</span> none
+hash_fallback        <span class="token operator">|</span> none
+hash_on_header       <span class="token operator">|</span>
+hash_fallback_header <span class="token operator">|</span>
+hash_on_cookie       <span class="token operator">|</span>
+hash_on_cookie_path  <span class="token operator">|</span> <span class="token operator">/</span>
+slots                <span class="token operator">|</span> <span class="token number">10000</span>
+healthchecks         <span class="token operator">|</span> {<!-- --><span class="token string">"active"</span>: {<!-- --><span class="token string">"type"</span>: <span class="token string">"http"</span><span class="token punctuation">,</span> <span class="token string">"healthy"</span>: {<!-- --><span class="token string">"interval"</span>: <span class="token number">0</span><span class="token punctuation">,</span> <span class="token string">"successes"</span>: <span class="token number">0</span><span class="token punctuation">,</span> <span class="token string">"http_statuses"</span>: <span class="token punctuation">[</span><span class="token number">200</span><span class="token punctuation">,</span> <span class="token number">302</span><span class="token punctuation">]</span>}<span class="token punctuation">,</span> <span class="token string">"timeout"</span>: <span class="token number">1</span><span class="token punctuation">,</span> <span class="token string">"http_path"</span>: <span class="token string">"/"</span><span class="token punctuation">,</span> <span class="token string">"https_sni"</span>: <span class="token boolean">null</span><span class="token punctuation">,</span> <span class="token string">"unhealthy"</span>: {<!-- --><span class="token string">"interval"</span>: <span class="token number">0</span><span class="token punctuation">,</span> <span class="token string">"timeouts"</span>: <span class="token number">0</span><span class="token punctuation">,</span> <span class="token string">"tcp_failures"</span>: <span class="token number">0</span><span class="token punctuation">,</span> <span class="token string">"http_failures"</span>: <span class="token number">0</span><span class="token punctuation">,</span> <span class="token string">"http_statuses"</span>: <span class="token punctuation">[</span><span class="token number">429</span><span class="token punctuation">,</span> <span class="token number">404</span><span class="token punctuation">,</span> <span class="token number">500</span><span class="token punctuation">,</span> <span class="token number">501</span><span class="token punctuation">,</span> <span class="token number">502</span><span class="token punctuation">,</span> <span class="token number">503</span><span class="token punctuation">,</span> <span class="token number">504</span><span class="token punctuation">,</span> <span class="token number">505</span><span class="token punctuation">]</span>}<span class="token punctuation">,</span> <span class="token string">"concurrency"</span>: <span class="token number">10</span><span class="token punctuation">,</span> <span class="token string">"https_verify_certificate"</span>: <span class="token boolean">true</span>}<span class="token punctuation">,</span> <span class="token string">"passive"</span>: {<!-- --><span class="token string">"type"</span>: <span class="token string">"http"</span><span class="token punctuation">,</span> <span class="token string">"healthy"</span>: {<!-- --><span class="token string">"successes"</span>: <span class="token number">0</span><span class="token punctuation">,</span> <span class="token string">"http_statuses"</span>: <span class="token punctuation">[</span><span class="token number">200</span><span class="token punctuation">,</span> <span class="token number">201</span><span class="token punctuation">,</span> <span class="token number">202</span><span class="token punctuation">,</span> <span class="token number">203</span><span class="token punctuation">,</span> <span class="token number">204</span><span class="token punctuation">,</span> <span class="token number">205</span><span class="token punctuation">,</span> <span class="token number">206</span><span class="token punctuation">,</span> <span class="token number">207</span><span class="token punctuation">,</span> <span class="token number">208</span><span class="token punctuation">,</span> <span class="token number">226</span><span class="token punctuation">,</span> <span class="token number">300</span><span class="token punctuation">,</span> <span class="token number">301</span><span class="token punctuation">,</span> <span class="token number">302</span><span class="token punctuation">,</span> <span class="token number">303</span><span class="token punctuation">,</span> <span class="token number">304</span><span class="token punctuation">,</span> <span class="token number">305</span><span class="token punctuation">,</span> <span class="token number">306</span><span class="token punctuation">,</span> <span class="token number">307</span><span class="token punctuation">,</span> <span class="token number">308</span><span class="token punctuation">]</span>}<span class="token punctuation">,</span> <span class="token string">"unhealthy"</span>: {<!-- --><span class="token string">"timeouts"</span>: <span class="token number">0</span><span class="token punctuation">,</span> <span class="token string">"tcp_failures"</span>: <span class="token number">0</span><span class="token punctuation">,</span> <span class="token string">"http_failures"</span>: <span class="token number">0</span><span class="token punctuation">,</span> <span class="token string">"http_statuses"</span>: <span class="token punctuation">[</span><span class="token number">429</span><span class="token punctuation">,</span> <span class="token number">500</span><span class="token punctuation">,</span> <span class="token number">503</span><span class="token punctuation">]</span>}}<span class="token punctuation">,</span> <span class="token string">"threshold"</span>: <span class="token number">0</span>}
+tags                 <span class="token operator">|</span> {managed<span class="token operator">-</span><span class="token keyword">by</span><span class="token operator">-</span>ingress<span class="token operator">-</span>controller}
+<span class="token keyword">algorithm</span>            <span class="token operator">|</span> round<span class="token operator">-</span>robin
+host_header          <span class="token operator">|</span>
+</code></pre> 
+<hr> 
+<h3><a id="UpstreamTarget_277"></a>从<code>Upstream</code>到<code>Target</code></h3> 
+<p>对请求进行处理的时候，主要有两项处理，一是进行负载均衡，二是调用插件进行处理。</p> 
+<p>一个<code>Upstream</code>可以包含多个<code>Target</code>，负载均衡的过程，就是为当前的请求选择一个<code>Target</code>的过程</p> 
+<h4><a id="target_283"></a>target</h4> 
+<p><code>target</code>是<code>IP</code>或者<code>host</code>加<code>port</code>，是提供服务的最小单位。每个<code>tartget</code>还可设置不同的权重。</p> 
+<p><strong>表结构</strong></p> 
+<p>以下字段需要特殊注意：</p> 
+<table><thead><tr><th>字段</th><th>值</th></tr></thead><tbody><tr><td>upstream_id</td><td>tag对应的upstream表的主键</td></tr><tr><td>target</td><td>转发目的的ip和port</td></tr><tr><td>weight</td><td>该target在整个upstream中所占的权重</td></tr></tbody></table> 
+<pre><code class="prism language-sql">kong<span class="token operator">=</span><span class="token comment"># \d targets</span>
+                                               <span class="token keyword">Table</span> <span class="token string">"public.targets"</span>
+   <span class="token keyword">Column</span>    <span class="token operator">|</span>           <span class="token keyword">Type</span>           <span class="token operator">|</span>                                 Modifiers
+<span class="token comment">-------------+--------------------------+---------------------------------------------------------------------------</span>
+ id          <span class="token operator">|</span> uuid                     <span class="token operator">|</span> <span class="token operator">not</span> <span class="token boolean">null</span>
+ created_at  <span class="token operator">|</span> <span class="token keyword">timestamp</span> <span class="token keyword">with</span> <span class="token keyword">time</span> zone <span class="token operator">|</span> <span class="token keyword">default</span> timezone<span class="token punctuation">(</span><span class="token string">'UTC'</span>::<span class="token keyword">text</span><span class="token punctuation">,</span> <span class="token punctuation">(</span><span class="token string">'now'</span>::<span class="token keyword">text</span><span class="token punctuation">)</span>::<span class="token keyword">timestamp</span><span class="token punctuation">(</span><span class="token number">3</span><span class="token punctuation">)</span> <span class="token keyword">with</span> <span class="token keyword">time</span> zone<span class="token punctuation">)</span>
+ upstream_id <span class="token operator">|</span> uuid                     <span class="token operator">|</span>
+ target      <span class="token operator">|</span> <span class="token keyword">text</span>                     <span class="token operator">|</span> <span class="token operator">not</span> <span class="token boolean">null</span>
+ weight      <span class="token operator">|</span> <span class="token keyword">integer</span>                  <span class="token operator">|</span> <span class="token operator">not</span> <span class="token boolean">null</span>
+ tags        <span class="token operator">|</span> <span class="token keyword">text</span><span class="token punctuation">[</span><span class="token punctuation">]</span>                   <span class="token operator">|</span>
+Indexes:
+    <span class="token string">"targets_pkey"</span> <span class="token keyword">PRIMARY</span> <span class="token keyword">KEY</span><span class="token punctuation">,</span> <span class="token keyword">btree</span> <span class="token punctuation">(</span>id<span class="token punctuation">)</span>
+    <span class="token string">"targets_tags_idx"</span> gin <span class="token punctuation">(</span>tags<span class="token punctuation">)</span>
+    <span class="token string">"targets_target_idx"</span> <span class="token keyword">btree</span> <span class="token punctuation">(</span>target<span class="token punctuation">)</span>
+    <span class="token string">"targets_upstream_id_idx"</span> <span class="token keyword">btree</span> <span class="token punctuation">(</span>upstream_id<span class="token punctuation">)</span>
+<span class="token keyword">Foreign</span><span class="token operator">-</span><span class="token keyword">key</span> constraints:
+    <span class="token string">"targets_upstream_id_fkey"</span> <span class="token keyword">FOREIGN</span> <span class="token keyword">KEY</span> <span class="token punctuation">(</span>upstream_id<span class="token punctuation">)</span> <span class="token keyword">REFERENCES</span> upstreams<span class="token punctuation">(</span>id<span class="token punctuation">)</span> <span class="token keyword">ON</span> <span class="token keyword">DELETE</span> <span class="token keyword">CASCADE</span>
+Triggers:
+    targets_sync_tags_trigger <span class="token keyword">AFTER</span> <span class="token keyword">INSERT</span> <span class="token operator">OR</span> <span class="token keyword">DELETE</span> <span class="token operator">OR</span> <span class="token keyword">UPDATE</span> <span class="token keyword">OF</span> tags <span class="token keyword">ON</span> targets <span class="token keyword">FOR EACH ROW</span> <span class="token keyword">EXECUTE</span> <span class="token keyword">PROCEDURE</span> sync_tags<span class="token punctuation">(</span><span class="token punctuation">)</span>
+
+</code></pre> 
+<p>从表结构中可看出通过<code>upstream_id</code>和<code>upstreams</code>表进行关联。</p> 
+<p><strong>示例</strong></p> 
+<pre><code class="prism language-sql">kong<span class="token operator">=</span><span class="token comment"># select * from  targets where upstream_id='b85dd291-d561-4605-8771-2895c1decaa3';</span>
+<span class="token operator">-</span><span class="token punctuation">[</span> RECORD <span class="token number">1</span> <span class="token punctuation">]</span><span class="token comment">-------------------------------------</span>
+id          <span class="token operator">|</span> f88f7a83<span class="token operator">-</span>e973<span class="token operator">-</span><span class="token number">4414</span><span class="token operator">-</span>ae64<span class="token operator">-</span>fd1b34e96a2a
+created_at  <span class="token operator">|</span> <span class="token number">2022</span><span class="token operator">-</span><span class="token number">10</span><span class="token operator">-</span><span class="token number">30</span> <span class="token number">11</span>:<span class="token number">53</span>:<span class="token number">16.174</span><span class="token operator">+</span><span class="token number">00</span>
+upstream_id <span class="token operator">|</span> b85dd291<span class="token operator">-</span>d561<span class="token operator">-</span><span class="token number">4605</span><span class="token operator">-</span><span class="token number">8771</span><span class="token operator">-</span><span class="token number">2895</span>c1decaa3
+target      <span class="token operator">|</span> <span class="token number">10.244</span><span class="token number">.0</span><span class="token number">.215</span>:<span class="token number">80</span>
+weight      <span class="token operator">|</span> <span class="token number">100</span>
+tags        <span class="token operator">|</span> {managed<span class="token operator">-</span><span class="token keyword">by</span><span class="token operator">-</span>ingress<span class="token operator">-</span>controller}
+
+</code></pre> 
+<p>由于本地环境中将<code>kong</code>与<code>k8s</code>进行结合，所以最终在环境上可通过<code>target</code>获取出对应提供服务的<code>Pod</code></p> 
+<pre><code class="prism language-sql"><span class="token punctuation">[</span>root<span class="token variable">@master</span><span class="token operator">-</span><span class="token number">1</span> <span class="token operator">~</span><span class="token punctuation">]</span><span class="token comment"># kubectl get pods -A -o wide | grep 10.244.0.215</span>
+nscloud       <span class="token operator">/</span>api<span class="token operator">/</span>tembin<span class="token operator">/</span>atsani                        <span class="token number">1</span><span class="token operator">/</span><span class="token number">1</span>     Running     <span class="token number">1</span>          <span class="token number">23</span>h     <span class="token number">10.244</span><span class="token number">.0</span><span class="token number">.215</span>   master<span class="token operator">-</span><span class="token number">1</span>   <span class="token operator">&lt;</span>none<span class="token operator">&gt;</span>           <span class="token operator">&lt;</span>none<span class="token operator">&gt;</span>
+</code></pre> 
+<p>至此就可以将对于<code>/api/tembin/atsani</code>路径的请求转发至本机<code>10.244.0.215</code>所对应的pod，完成请求的处理了。</p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/2fde97fcc11537d59733ccfd3ec3343f/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">Linux 系统上卸载 Docker</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/3bccaff8deadf8121154c4b4a204e554/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">LM358ADR2G运算放大器芯片中文资料规格书产品文档PDF数据手册引图图片</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

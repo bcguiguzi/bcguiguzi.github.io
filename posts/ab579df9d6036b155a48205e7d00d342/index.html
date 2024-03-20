@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>K8S之Deployment的介绍和使用 - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="K8S之Deployment的介绍和使用" />
+<meta property="og:description" content="Deployment的理论和实操 Deployment控制器：概念、原理解读概述工作原理 编写Deployment资源清单文件使用案例：创建一个web站点Deployment管理pod：扩容、缩容通过deployment管理应用，实现扩容，把副本数变成3通过deployment管理应用，实现缩容，把副本数变成2 Deployment控制器：概念、原理解读 概述 Deployment是kubernetes中最常用的资源对象，为ReplicaSet和Pod的创建提供了一种声明式的定义方法，在Deployment对象中描述一个期望的状态，Deployment控制器就会按照一定的控制速率把实际状态改成期望状态，通过定义一个Deployment控制器会创建一个新的ReplicaSet控制器，通过ReplicaSet创建pod，删除Deployment控制器，也会删除Deployment控制器下对应的ReplicaSet控制器和pod资源。
+扩展：声明式定义是指直接修改资源清单yaml文件，然后通过kubectl apply -f 资源清单yaml文件，就可以更改资源
+Deployment控制器是建立在ReplicaSet 之上的一个控制器，可以管理多个ReplicaSet ，每次更新镜像版本，都会生成一个新的ReplicaSet ，把旧的ReplicaSet 替换掉，多个ReplicaSet 同时存在，但是只有一个ReplicaSet 运行。
+如上图：ReplicaSet v1控制三个pod，删除一个pod，在ReplicaSet v2上重新建立一个，依次类推，直到全部都是由ReplicaSet v2控制，如果ReplicaSet v2有问题，还可以回滚，Deployment是建构在ReplicaSet 之上的，多个ReplicaSet 组成一个Deployment，但是只有一个ReplicaSet 处于活跃状态。
+工作原理 Deployment可以使用声明式定义，直接在命令行通过纯命令的方式完成对应资源版本的内容的修改，也就是通过打补丁的方式进行修改；Deployment能提供滚动式自定义自控制的更新；对Deployment来讲，在实现更新时还可以实现控制更新节奏和更新逻辑。
+什么叫做更新节奏和更新逻辑呢？
+默认先创建再删除
+比如说Deployment控制5个pod副本，pod的期望值是5个，但是升级的时候需要额外多几个pod，那我们控制器可以控制在5个pod副本之外还能再增加几个pod副本；比方说能多一个，但是不能少，那么升级的时候就是先增加一个，再删除一个，始终保持pod副本数是5个；
+通过Deployment对象，可以做到以下事情：
+1、创建ReplicaSet和Pod
+2、滚动升级（不停止旧服务的状态下升级）和回滚应用（将应用回滚到之前的版本）
+3、平滑地扩容和缩容
+4、暂停和继续Deployment
+科普：金丝雀就是先放一个新的，保留几个老的。新的就是试水的金丝雀
+编写Deployment资源清单文件 查看Deployment资源对象由哪几部分组成
+kubectl explain deployment 查看Deployment下的spec字段
+kubectl explain deployment.spec 字段说明
+minReadySeconds：k8s在等待设置的时间后才进行升级（如果没有设置该值，k8s会容器启动起来后就提供服务了）paused：暂停，当我们更新的时候创建pod先暂停，不是立即更新progressDeadlineSeconds：k8s 在升级过程中有可能由于各种原因升级卡住（这个时候还没有明确的升级失败），比如在拉取被墙的镜像，权限不够等错误。那么这个时候就需要有个 deadline ，在 deadline 之内如果还卡着，那么就上报这个情况，这个时候这个 Deployment 状态就被标记为 False，并且注明原因。但是它并不会阻止 Deployment 继续进行卡住后面的操作。完全由用户进行控制。replicas：副本数revisionHistoryLimit：保留的历史版本，默认是10selector：标签选择器，选择它关联的pod（必须设置的参数）strategy：更新策略template：定义的pod模板（必须设置的参数） 查看Deployment下的spec.strategy字段
+kubectl explain deploy.spec.strategy 支持两种更新，Recreate 和 RollingUpdate
+Recreate：重建式更新，删除一个更新一个RollingUpdate：滚动更新，定义滚动更新方式，也就是pod能多几个，少几个（默认策略） 查看Deployment下的spec.strategy.rollingUpdate字段
+kubectl explain deploy.spec.strategy.rollingUpdate 字段说明" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/ab579df9d6036b155a48205e7d00d342/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2024-02-27T22:38:23+08:00" />
+<meta property="article:modified_time" content="2024-02-27T22:38:23+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">K8S之Deployment的介绍和使用</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p></p> 
+<div class="toc"> 
+ <h4>Deployment的理论和实操</h4> 
+ <ul><li><a href="#Deployment_1" rel="nofollow">Deployment控制器：概念、原理解读</a></li><li><ul><li><a href="#_2" rel="nofollow">概述</a></li><li><a href="#_11" rel="nofollow">工作原理</a></li></ul> 
+  </li><li><a href="#Deployment_29" rel="nofollow">编写Deployment资源清单文件</a></li><li><a href="#web_91" rel="nofollow">使用案例：创建一个web站点</a></li><li><a href="#Deploymentpod_172" rel="nofollow">Deployment管理pod：扩容、缩容</a></li><li><ul><li><a href="#deployment3_173" rel="nofollow">通过deployment管理应用，实现扩容，把副本数变成3</a></li><li><a href="#deployment2_207" rel="nofollow">通过deployment管理应用，实现缩容，把副本数变成2</a></li></ul> 
+ </li></ul> 
+</div> 
+<p></p> 
+<h2><a id="Deployment_1"></a>Deployment控制器：概念、原理解读</h2> 
+<h3><a id="_2"></a>概述</h3> 
+<p>Deployment是kubernetes中最常用的资源对象，为ReplicaSet和Pod的创建提供了一种声明式的定义方法，在Deployment对象中描述一个期望的状态，Deployment控制器就会按照一定的控制速率把实际状态改成期望状态，通过定义一个Deployment控制器会创建一个新的ReplicaSet控制器，通过ReplicaSet创建pod，删除Deployment控制器，也会删除Deployment控制器下对应的ReplicaSet控制器和pod资源。</p> 
+<blockquote> 
+ <p>扩展：声明式定义是指直接修改资源清单yaml文件，然后通过kubectl apply -f 资源清单yaml文件，就可以更改资源</p> 
+</blockquote> 
+<p>Deployment控制器是建立在ReplicaSet 之上的一个控制器，可以管理多个ReplicaSet ，每次更新镜像版本，都会生成一个新的ReplicaSet ，把旧的ReplicaSet 替换掉，多个ReplicaSet 同时存在，但是只有一个ReplicaSet 运行。<br> <img src="https://images2.imgbox.com/09/33/i7CTPUDU_o.jpg" alt="在这里插入图片描述"><br> 如上图：ReplicaSet v1控制三个pod，删除一个pod，在ReplicaSet v2上重新建立一个，依次类推，直到全部都是由ReplicaSet v2控制，如果ReplicaSet v2有问题，还可以回滚，Deployment是建构在ReplicaSet 之上的，多个ReplicaSet 组成一个Deployment，但是只有一个ReplicaSet 处于活跃状态。</p> 
+<h3><a id="_11"></a>工作原理</h3> 
+<p>Deployment可以使用声明式定义，直接在命令行通过纯命令的方式完成对应资源版本的内容的修改，也就是通过打补丁的方式进行修改；Deployment能提供滚动式自定义自控制的更新；对Deployment来讲，在实现更新时还可以实现控制更新节奏和更新逻辑。</p> 
+<p><strong>什么叫做更新节奏和更新逻辑呢？</strong></p> 
+<p>默认先创建再删除</p> 
+<p>比如说Deployment控制5个pod副本，pod的期望值是5个，但是升级的时候需要额外多几个pod，那我们控制器可以控制在5个pod副本之外还能再增加几个pod副本；比方说能多一个，但是不能少，那么升级的时候就是先增加一个，再删除一个，始终保持pod副本数是5个；</p> 
+<p>通过Deployment对象，可以做到以下事情：</p> 
+<p>1、创建ReplicaSet和Pod<br> 2、滚动升级（不停止旧服务的状态下升级）和回滚应用（将应用回滚到之前的版本）<br> 3、平滑地扩容和缩容<br> 4、暂停和继续Deployment</p> 
+<blockquote> 
+ <p>科普：金丝雀就是先放一个新的，保留几个老的。新的就是试水的金丝雀</p> 
+</blockquote> 
+<h2><a id="Deployment_29"></a>编写Deployment资源清单文件</h2> 
+<p>查看Deployment资源对象由哪几部分组成</p> 
+<pre><code class="prism language-bash"> kubectl explain deployment
+</code></pre> 
+<p><img src="https://images2.imgbox.com/d8/97/KDURzSRe_o.png" alt="在这里插入图片描述"><br> 查看Deployment下的spec字段</p> 
+<pre><code class="prism language-bash">kubectl explain deployment.spec
+</code></pre> 
+<p><img src="https://images2.imgbox.com/11/78/pIAHsdiy_o.png" alt="在这里插入图片描述"></p> 
+<p>字段说明</p> 
+<ul><li>minReadySeconds：k8s在等待设置的时间后才进行升级（如果没有设置该值，k8s会容器启动起来后就提供服务了）</li><li>paused：暂停，当我们更新的时候创建pod先暂停，不是立即更新</li><li>progressDeadlineSeconds：k8s 在升级过程中有可能由于各种原因升级卡住（这个时候还没有明确的升级失败），比如在拉取被墙的镜像，权限不够等错误。那么这个时候就需要有个 deadline ，在 deadline 之内如果还卡着，那么就上报这个情况，这个时候这个 Deployment 状态就被标记为 False，并且注明原因。但是它并不会阻止 Deployment 继续进行卡住后面的操作。完全由用户进行控制。</li><li>replicas：副本数</li><li>revisionHistoryLimit：保留的历史版本，默认是10</li><li>selector：标签选择器，选择它关联的pod（必须设置的参数）</li><li>strategy：更新策略</li><li>template：定义的pod模板（必须设置的参数）</li></ul> 
+<p>查看Deployment下的spec.strategy字段</p> 
+<pre><code class="prism language-bash">kubectl explain deploy.spec.strategy
+</code></pre> 
+<p><img src="https://images2.imgbox.com/a4/cf/18goCUDL_o.png" alt="在这里插入图片描述"></p> 
+<p>支持两种更新，<strong>Recreate</strong> 和 <strong>RollingUpdate</strong></p> 
+<ul><li>Recreate：重建式更新，删除一个更新一个</li><li>RollingUpdate：滚动更新，定义滚动更新方式，也就是pod能多几个，少几个（默认策略）</li></ul> 
+<p>查看Deployment下的spec.strategy.rollingUpdate字段</p> 
+<pre><code class="prism language-bash">kubectl explain deploy.spec.strategy.rollingUpdate
+</code></pre> 
+<p><img src="https://images2.imgbox.com/b2/1c/zMlLIw2j_o.png" alt="在这里插入图片描述"></p> 
+<p>字段说明</p> 
+<ul><li>maxSurge：更新的过程当中最多允许超出的指定的目标副本数有几个；<br> 它有两种取值方式，第一种直接给定数量，第二种根据百分比，百分比表示原本是5个，最多可以超出20%，那就允许多一个，最多可以超过40%，那就允许多两个<br> <em><strong>允许存在的pod: 目标副本数 + maxSurge</strong></em></li><li>maxUnavailable：最多允许几个不可用<br> 假设有5个副本，最多一个不可用，就表示最少有4个可用<br> <em><strong>允许存在的pod: 目标副本数 - maxUnavailable</strong></em></li></ul> 
+<p>例如：<br> <img src="https://images2.imgbox.com/87/c4/v8Br0NxT_o.png" alt="在这里插入图片描述"><br> 查看Deployment下的spec.template字段<br> template为定义Pod的模板，Deployment通过模板创建Pod</p> 
+<pre><code class="prism language-bash">kubectl explain deploy.spec.template
+</code></pre> 
+<p><img src="https://images2.imgbox.com/79/58/uNDU70uv_o.png" alt="在这里插入图片描述"></p> 
+<p>deployment.spec.template为Pod定义的模板，和Pod定义不太一样，template中不包含 apiVersion 和 Kind 属性，要求必须有metadata。deployment.spec.template.spec为容器的属性信息，其他定义内容和Pod一致。</p> 
+<h2><a id="web_91"></a>使用案例：创建一个web站点</h2> 
+<p>deployment是一个三级结构，deployment管理replicaset，replicaset管理pod，<br> 例子：用deployment创建一个pod</p> 
+<pre><code class="prism language-bash"><span class="token function">vim</span> deploy-demo.yaml 
+</code></pre> 
+<p>编写Deployment资源文件</p> 
+<pre><code class="prism language-yaml"><span class="token key atrule">apiVersion</span><span class="token punctuation">:</span> apps/v1  <span class="token comment"># deployment对应的api版本</span>
+<span class="token key atrule">kind</span><span class="token punctuation">:</span> Deployment     <span class="token comment"># 创建的资源是deployment</span>
+<span class="token key atrule">metadata</span><span class="token punctuation">:</span>
+  <span class="token key atrule">name</span><span class="token punctuation">:</span> web<span class="token punctuation">-</span>v1    <span class="token comment"># deployment的名字</span>
+<span class="token key atrule">spec</span><span class="token punctuation">:</span>
+  <span class="token key atrule">replicas</span><span class="token punctuation">:</span> <span class="token number">2</span>     <span class="token comment"># deployment管理的pod副本数</span>
+  <span class="token key atrule">selector</span><span class="token punctuation">:</span>       <span class="token comment"># 标签选择器</span>
+    <span class="token key atrule">matchLabels</span><span class="token punctuation">:</span>  <span class="token comment"># 筛选定义的标签需要跟template.metadata.labels定义的标签一致</span>
+      <span class="token key atrule">font</span><span class="token punctuation">:</span> web
+      <span class="token key atrule">version</span><span class="token punctuation">:</span> v1
+  <span class="token key atrule">template</span><span class="token punctuation">:</span>
+    <span class="token key atrule">metadata</span><span class="token punctuation">:</span>
+      <span class="token key atrule">labels</span><span class="token punctuation">:</span>    <span class="token comment"># Pod具有的标签</span>
+        <span class="token key atrule">font</span><span class="token punctuation">:</span> web
+        <span class="token key atrule">version</span><span class="token punctuation">:</span> v1
+    <span class="token key atrule">spec</span><span class="token punctuation">:</span>   <span class="token comment">#定义容器的属性</span>
+      <span class="token key atrule">containers</span><span class="token punctuation">:</span>  
+      <span class="token punctuation">-</span> <span class="token key atrule">name</span><span class="token punctuation">:</span> myweb
+        <span class="token key atrule">image</span><span class="token punctuation">:</span> janakiramm/myapp<span class="token punctuation">:</span>v1     <span class="token comment"># 容器使用的镜像</span>
+        <span class="token key atrule">imagePullPolicy</span><span class="token punctuation">:</span> IfNotPresent  <span class="token comment"># 镜像拉取策略</span>
+        <span class="token key atrule">ports</span><span class="token punctuation">:</span>
+        <span class="token punctuation">-</span> <span class="token key atrule">containerPort</span><span class="token punctuation">:</span> <span class="token number">80</span>     <span class="token comment"># 容器里的应用的端口</span>
+</code></pre> 
+<p>更新资源清单文件</p> 
+<pre><code class="prism language-bash">kubectl apply <span class="token parameter variable">-f</span> deploy-demo.yaml
+</code></pre> 
+<blockquote> 
+ <p>kubectl apply：表示声明式的定义，既可以创建资源，也可以动态更新资源</p> 
+</blockquote> 
+<p>查看deploy状态</p> 
+<pre><code class="prism language-bash">kubectl get deploy
+</code></pre> 
+<p><img src="https://images2.imgbox.com/95/5b/GnDtzvIj_o.png" alt="在这里插入图片描述"></p> 
+<p>1.NAME ：列出名称空间中deployment的名称。<br> 2.READY：显示deployment有多少副本数。它遵循ready/desired的模式。<br> 3.UP-TO-DATE： 显示已更新到所需状态的副本数。<br> 4.AVAILABLE： 显示你的可以使用多少个应用程序副本。<br> 5.AGE ：显示应用程序已运行的时间。</p> 
+<pre><code class="prism language-bash">kubectl get rs
+</code></pre> 
+<p><img src="https://images2.imgbox.com/e8/ae/e0D94gAs_o.png" alt="在这里插入图片描述"></p> 
+<blockquote> 
+ <p>注：创建deploy的时候也会创建一个rs（replicaset）<br> ReplicaSet的名称始终设置为[DEPLOYMENT-NAME]-[RANDOM-STRING]。<br> RANDOM-STRING是随机生成的（引用pod的模板template的名字的hash值 ）</p> 
+</blockquote> 
+<p>1.NAME： 列出名称空间中ReplicaSet资源<br> 2.DESIRED：显示应用程序的所需副本数，这些副本数是在创建时定义的。这是所需的状态。<br> 3.CURRENT： 显示当前正在运行多少个副本。<br> 4.READY： 显示你的用户可以使用多少个应用程序副本。<br> 5.AGE ：显示应用程序已运行的时间。</p> 
+<pre><code class="prism language-bash">kubectl get pods <span class="token parameter variable">-o</span> wide <span class="token operator">|</span> <span class="token function">grep</span> web
+</code></pre> 
+<p><img src="https://images2.imgbox.com/42/b8/GUR2oJhb_o.png" alt="在这里插入图片描述"><br> 请求刚才创建的pod资源</p> 
+<pre><code class="prism language-bash"><span class="token function">curl</span> <span class="token number">10.244</span>.36.82
+</code></pre> 
+<p><img src="https://images2.imgbox.com/c4/2e/gtLt6jc8_o.png" alt="在这里插入图片描述"></p> 
+<h2><a id="Deploymentpod_172"></a>Deployment管理pod：扩容、缩容</h2> 
+<h3><a id="deployment3_173"></a>通过deployment管理应用，实现扩容，把副本数变成3</h3> 
+<pre><code class="prism language-bash"><span class="token function">vim</span>  deploy-demo.yaml 
+</code></pre> 
+<p>直接修改replicas数量，如下，变成3</p> 
+<p>spec:<br> replicas: 3</p> 
+<p><img src="https://images2.imgbox.com/74/13/dr5zL1s4_o.png" alt="在这里插入图片描述"></p> 
+<p>修改之后保存退出，执行</p> 
+<pre><code class="prism language-bash">kubectl apply <span class="token parameter variable">-f</span> deploy-demo.yaml 
+</code></pre> 
+<blockquote> 
+ <p>注意：apply不同于create，apply可以执行多次；create执行一次，再执行就会报错复。</p> 
+</blockquote> 
+<pre><code class="prism language-bash">kubectl get pods 
+</code></pre> 
+<p><img src="https://images2.imgbox.com/e1/f1/VA76CaaT_o.png" alt="在这里插入图片描述"><br> 上面可以看到pod副本数变成了3个</p> 
+<p>查看web-v1这个控制器的详细信息</p> 
+<pre><code class="prism language-bash">kubectl describe deploy web-v1
+</code></pre> 
+<p><img src="https://images2.imgbox.com/24/e7/D9cKKYhn_o.png" alt="在这里插入图片描述"></p> 
+<h3><a id="deployment2_207"></a>通过deployment管理应用，实现缩容，把副本数变成2</h3> 
+<pre><code class="prism language-bash"><span class="token function">vim</span>  deploy-demo.yaml 
+</code></pre> 
+<p>直接修改replicas数量，如下，变成2</p> 
+<p>spec:<br> replicas: 2</p> 
+<p>修改之后保存退出，执行</p> 
+<pre><code class="prism language-bash"> kubectl apply <span class="token parameter variable">-f</span> deploy-demo.yaml
+</code></pre> 
+<pre><code class="prism language-bash">kubectl get pods
+</code></pre> 
+<p><img src="https://images2.imgbox.com/b5/08/bseFQlVF_o.png" alt="在这里插入图片描述"></p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/051e2ca73d5f239cdc7cb4f52d2226fb/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">105. replace( )函数</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/cf5d980bbbcd11221fff11f4e5ddd4a6/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">企业销售员考核及奖金核算小程序计算机毕业设计</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

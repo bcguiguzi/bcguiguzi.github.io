@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>分布式事务的实现方式 - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="分布式事务的实现方式" />
+<meta property="og:description" content="参考文献： 分布式事务|凤凰架构
+1 前言 相信各位接触过微服务开发的同学们对分布式事务的概念一点也不陌生。分布式事务（Distributed Transaction）指的是多个服务同时访问多个数据源的事务处理机制。与分布式事务有关的CAP（Consistency 一致性、Availability 可用性、Partition Tolerance 分区容忍性）理论、BASE（Basically Available 基本可用性、Soft State 柔性事务、Eventually Consistent 最终一致性）理论的介绍有很多文章，在这里就不赘述。本文主要结合业务场景来给大家介绍分布式事务的一般实现方式。
+2 分布式事务实现方式 2.1 可靠事件队列 场景：在电商系统中，购买一件价值100元的《凤凰架构》。在该场景下，可以拆分成三个步骤：买家账户扣款、仓库库存扣减、商家收款。如果其中任何一个步骤出现了异常，那么本次交易都应该是宣告失败的。接下来，我们就用可靠事件队列的方式，来保证这次交易的顺利进行。
+1.首先，需要明确这个场景下会有4个微服务，每个微服务有对应的数据库。账户服务、仓库服务、商家服务、消息服务。
+2.账户服务，先处理买家账户扣款业务，若扣款成功，则往消息表中写入一条记录：“事务ID-扣款100元(完成)-仓库出库《凤凰架构》(进行中)-商家收款(进行中)”。值得注意的是，扣款成功和写入消息表是本地事务。
+3.消息服务，会定时轮询消息表，将状态为“进行中”的消息：仓库出库和商家收款串行地发送到仓库服务和商家服务去。这时会出现以下情况：
+仓库服务和商家服务都完成了出库和收款工作，向账户服务返回执行结果，账户服务则将消息表的状态更新为“完成”。此时整个分布式事务顺利结束，达到最终一致性。仓库服务和商家服务至少有一个因网络原因，未能收到账户服务发送来的消息，此时由于消息表中一直有“进行中”的状态，故消息服务器会在每次轮询时重复向未处理的服务发送消息。当然，重复发送消息需要保证消费方的幂等性。仓库服务和商家服务有一个或全部无法工作，那显然也是会重复发送消息，直到全部成功。可以见得，只要第一个账户服务成功了，后面的业务流程只有成功而不能失败。仓库服务和商家服务都完成了工作，但回复的应答消息因为网络丢失，此时，消息表未更新成“完成”，消息服务还是会继续向其发送消息，同理，也需要保证幂等性，仓库不会重复出库，商家也不会重复收款。直至网络恢复正常。 我们可以发现，只要第一步业务成功了，后续的业务如果出现异常，则会不断进行重试。这种依靠持续重试来保证可靠性的解决方案称为“最大努力交付” 可靠事件队列还有一种更普通的形式，称为“最大努力一次提交”，指将最有可能出错的业务以本地事务的方式完成后，采用不断重试的方式来促试同一个分布式事务中的其他关联业务全部完成。
+2.2 TCC事务 TCC（Try-Confirm-Cancel）是另一种常见的分布式事务机制。上一节介绍的可靠消息队列虽然能保证最终的结果是相对可靠的，过程简单，但整个过程完全没有隔离性可言。例如上面的场景中，完全有可能两个客户在短时间内都成功购买了同一件商品，而且他们各自购买的数量都不超过目前的库存，但他们购买的数量之和却超过了库存。如果这件事情只采用本地事务，“可重复读”的隔离级别就能保证，后面提交的事务会因为无法获得锁而导致失败，但用可靠消息队列就无法保证。 TCC 方案，适合用于需要强隔离性的分布式事务中，它分为以下三个阶段：
+Try：尝试执行阶段，完成所有业务可执行性的检查（保障一致性），并且预留好全部需用到的业务资源（保障隔离性）。Confirm：确认执行阶段，不进行任何业务检查，直接使用 Try 阶段准备的资源来完成业务处理。Confirm 阶段可能会重复执行，因此本阶段所执行的操作需要具备幂等性。Cancel：取消执行阶段，释放 Try 阶段预留的业务资源。Cancel 阶段可能会重复执行，也需要满足幂等性。 现在用TCC事务来保障这次交易的进行：
+用户发送交易请求：购买一件价值100元的《凤凰架构》。创建事务，生成事务 ID，记录在活动日志中，进入 Try 阶段： 用户服务：检查业务可行性，可行的话，将该用户的 100 元设置为“冻结”状态，通知下一步进入 Confirm 阶段；不可行的话，通知下一步进入 Cancel 阶段。仓库服务：检查业务可行性，可行的话，将该仓库的 1 本《凤凰架构》设置为“冻结”状态，通知下一步进入 Confirm 阶段；不可行的话，通知下一步进入 Cancel 阶段。商家服务：检查业务可行性，不需要冻结资源。 如果第 2 步所有业务均反馈业务可行，将活动日志中的状态记录为 Confirm，进入 Confirm 阶段： 用户服务：完成业务操作（扣减那被冻结的 100 元）。仓库服务：完成业务操作（标记那 1 本冻结的书为出库状态，扣减相应库存）。商家服务：完成业务操作（收款 100 元）。 第 3 步如果全部完成，事务宣告正常结束，如果第 3 步中任何一方出现异常，不论是业务异常或者网络异常，都将根据活动日志中的记录，重复执行该服务的 Confirm 操作，即进行最大努力交付。如果第 2 步有任意一方反馈业务不可行，或任意一方超时，将活动日志的状态记录为 Cancel，进入 Cancel 阶段： 用户服务：取消业务操作（释放被冻结的 100 元）。仓库服务：取消业务操作（释放被冻结的 1 本书）。商家服务：取消业务操作（大哭一场后安慰商家谋生不易）。 第 5 步如果全部完成，事务宣告以失败回滚结束，如果第 5 步中任何一方出现异常，不论是业务异常或者网络异常，都将根据活动日志中的记录，重复执行该服务的 Cancel 操作，即进行最大努力交付。 由上述操作过程可见，TCC 其实有点类似 2PC 的准备阶段和提交阶段，但 TCC 是位于用户代码层面，而不是在基础设施层面，这为它的实现带来了较高的灵活性，可以根据需要设计资源锁定的粒度。TCC 在业务执行时只操作预留资源，几乎不会涉及锁和资源的争用，具有很高的性能潜力。但是 TCC 并非纯粹只有好处，它也带来了更高的开发成本和业务侵入性，意味着有更高的开发成本和更换事务实现方案的替换成本，所以，通常我们并不会完全靠裸编码来实现 TCC，而是基于某些分布式事务中间件（如阿里开源的Seata）去完成，尽量减轻一些编码工作量。" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/f4b60b4c7445982347b67a2183b586e5/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2022-07-02T15:28:06+08:00" />
+<meta property="article:modified_time" content="2022-07-02T15:28:06+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">分布式事务的实现方式</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <blockquote> 
+ <p>参考文献： <a href="https://icyfenix.cn/architect-perspective/general-architecture/transaction/distributed.html#tcc-%E4%BA%8B%E5%8A%A1" rel="nofollow">分布式事务|凤凰架构</a></p> 
+</blockquote> 
+<h2><a id="1__1"></a>1 前言</h2> 
+<p>相信各位接触过微服务开发的同学们对分布式事务的概念一点也不陌生。<strong>分布式事务（Distributed Transaction）指的是多个服务同时访问多个数据源的事务处理机制</strong>。与分布式事务有关的<strong>CAP（Consistency 一致性、Availability 可用性、Partition Tolerance 分区容忍性）理论、BASE（Basically Available 基本可用性、Soft State 柔性事务、Eventually Consistent 最终一致性）理论</strong>的介绍有很多文章，在这里就不赘述。本文主要结合业务场景来给大家介绍分布式事务的一般实现方式。</p> 
+<h2><a id="2__4"></a>2 分布式事务实现方式</h2> 
+<h3><a id="21__5"></a>2.1 可靠事件队列</h3> 
+<p>场景：在电商系统中，购买一件价值100元的《凤凰架构》。在该场景下，可以拆分成三个步骤：买家账户扣款、仓库库存扣减、商家收款。如果其中任何一个步骤出现了异常，那么本次交易都应该是宣告失败的。接下来，我们就用可靠事件队列的方式，来保证这次交易的顺利进行。</p> 
+<p>1.首先，需要明确这个场景下会有4个微服务，每个微服务有对应的数据库。账户服务、仓库服务、商家服务、消息服务。<br> 2.账户服务，先处理买家账户扣款业务，若扣款成功，则往消息表中写入一条记录：“事务ID-扣款100元(完成)-仓库出库《凤凰架构》(进行中)-商家收款(进行中)”。值得注意的是，扣款成功和写入消息表是本地事务。<br> 3.消息服务，会定时轮询消息表，将状态为“进行中”的消息：仓库出库和商家收款串行地发送到仓库服务和商家服务去。这时会出现以下情况：</p> 
+<ul><li>仓库服务和商家服务都完成了出库和收款工作，向账户服务返回执行结果，账户服务则将消息表的状态更新为“完成”。此时整个分布式事务顺利结束，达到最终一致性。</li><li>仓库服务和商家服务至少有一个因网络原因，未能收到账户服务发送来的消息，此时由于消息表中一直有“进行中”的状态，故消息服务器会在每次轮询时重复向未处理的服务发送消息。当然，重复发送消息需要保证消费方的幂等性。</li><li>仓库服务和商家服务有一个或全部无法工作，那显然也是会重复发送消息，直到全部成功。可以见得，只要第一个账户服务成功了，后面的业务流程只有成功而不能失败。</li><li>仓库服务和商家服务都完成了工作，但回复的应答消息因为网络丢失，此时，消息表未更新成“完成”，消息服务还是会继续向其发送消息，同理，也需要保证幂等性，仓库不会重复出库，商家也不会重复收款。直至网络恢复正常。</li></ul> 
+<p>我们可以发现，只要第一步业务成功了，后续的业务如果出现异常，则会不断进行重试。这种<strong>依靠持续重试来保证可靠性的解决方案称为“最大努力交付”</strong> 可靠事件队列还有一种更普通的形式，称为“<strong>最大努力一次提交”，指将最有可能出错的业务以本地事务的方式完成后，采用不断重试的方式来促试同一个分布式事务中的其他关联业务全部完成。</strong></p> 
+<h3><a id="22_TCC_18"></a>2.2 TCC事务</h3> 
+<p>TCC（Try-Confirm-Cancel）是另一种常见的分布式事务机制。上一节介绍的可靠消息队列虽然能保证最终的结果是相对可靠的，过程简单，但整个过程完全没有隔离性可言。例如上面的场景中，完全有可能两个客户在短时间内都成功购买了同一件商品，而且他们各自购买的数量都不超过目前的库存，但他们购买的数量之和却超过了库存。如果这件事情只采用本地事务，“可重复读”的隔离级别就能保证，后面提交的事务会因为无法获得锁而导致失败，但用可靠消息队列就无法保证。 TCC 方案，适合用于需要强隔离性的分布式事务中，它分为以下三个阶段：</p> 
+<ul><li>Try：尝试执行阶段，完成所有业务可执行性的检查（保障一致性），并且预留好全部需用到的业务资源（保障隔离性）。</li><li>Confirm：确认执行阶段，不进行任何业务检查，直接使用 Try 阶段准备的资源来完成业务处理。Confirm 阶段可能会重复执行，因此本阶段所执行的操作需要具备幂等性。</li><li>Cancel：取消执行阶段，释放 Try 阶段预留的业务资源。Cancel 阶段可能会重复执行，也需要满足幂等性。</li></ul> 
+<p>现在用TCC事务来保障这次交易的进行：</p> 
+<ol><li>用户发送交易请求：购买一件价值100元的《凤凰架构》。</li><li>创建事务，生成事务 ID，记录在活动日志中，进入 Try 阶段：</li></ol> 
+<ul><li>用户服务：检查业务可行性，可行的话，将该用户的 100 元设置为“冻结”状态，通知下一步进入 Confirm 阶段；不可行的话，通知下一步进入 Cancel 阶段。</li><li>仓库服务：检查业务可行性，可行的话，将该仓库的 1 本《凤凰架构》设置为“冻结”状态，通知下一步进入 Confirm 阶段；不可行的话，通知下一步进入 Cancel 阶段。</li><li>商家服务：检查业务可行性，不需要冻结资源。</li></ul> 
+<ol start="3"><li>如果第 2 步所有业务均反馈业务可行，将活动日志中的状态记录为 Confirm，进入 Confirm 阶段：</li></ol> 
+<ul><li>用户服务：完成业务操作（扣减那被冻结的 100 元）。</li><li>仓库服务：完成业务操作（标记那 1 本冻结的书为出库状态，扣减相应库存）。</li><li>商家服务：完成业务操作（收款 100 元）。</li></ul> 
+<ol start="4"><li>第 3 步如果全部完成，事务宣告正常结束，如果第 3 步中任何一方出现异常，不论是业务异常或者网络异常，都将根据活动日志中的记录，重复执行该服务的 Confirm 操作，即进行最大努力交付。</li><li>如果第 2 步有任意一方反馈业务不可行，或任意一方超时，将活动日志的状态记录为 Cancel，进入 Cancel 阶段：</li></ol> 
+<ul><li>用户服务：取消业务操作（释放被冻结的 100 元）。</li><li>仓库服务：取消业务操作（释放被冻结的 1 本书）。</li><li>商家服务：取消业务操作（大哭一场后安慰商家谋生不易）。</li></ul> 
+<ol start="6"><li>第 5 步如果全部完成，事务宣告以失败回滚结束，如果第 5 步中任何一方出现异常，不论是业务异常或者网络异常，都将根据活动日志中的记录，重复执行该服务的 Cancel 操作，即进行最大努力交付。</li></ol> 
+<p>由上述操作过程可见，TCC 其实有点类似 2PC 的准备阶段和提交阶段，但 TCC 是位于用户代码层面，而不是在基础设施层面，这为它的实现带来了较高的灵活性，可以根据需要设计资源锁定的粒度。TCC 在业务执行时只操作预留资源，几乎不会涉及锁和资源的争用，具有很高的性能潜力。但是 TCC 并非纯粹只有好处，它也带来了更高的开发成本和业务侵入性，意味着有更高的开发成本和更换事务实现方案的替换成本，所以，通常我们并不会完全靠裸编码来实现 TCC，而是基于某些分布式事务中间件（如阿里开源的Seata）去完成，尽量减轻一些编码工作量。</p> 
+<h3><a id="23_SAGA__44"></a>2.3 SAGA 事务</h3> 
+<p>SAGA事务由两部分操作组成。</p> 
+<ul><li>大事务拆分若干个小事务，将整个分布式事务 T 分解为 n 个子事务，命名为 T1，T2，…，Ti，…，Tn。每个子事务都应该是或者能被视为是原子行为。如果分布式事务能够正常提交，其对数据的影响（最终一致性）应与连续按顺序成功提交 Ti等价。</li><li>为每一个子事务设计对应的补偿动作，命名为 C1，C2，…，Ci，…，Cn。Ti与 Ci必须满足以下条件： 
+  <ul><li>Ti与 Ci都具备幂等性。</li><li>Ti与 Ci满足交换律（Commutative），即先执行 Ti还是先执行 Ci，其效果都是一样的。</li><li>Ci必须能成功提交，即不考虑 Ci本身提交失败被回滚的情形，如出现就必须持续重试直至成功，或者要人工介入。</li></ul> </li></ul> 
+<p>如果 T1到 Tn均成功提交，那事务顺利完成，否则，要采取以下两种恢复策略之一：</p> 
+<ul><li>正向恢复（Forward Recovery）：如果 Ti事务提交失败，则一直对 Ti进行重试，直至成功为止（最大努力交付）。这种恢复方式不需要补偿，适用于事务最终都要成功的场景，譬如在别人的银行账号中扣了款，就一定要给别人发货。正向恢复的执行模式为：T1，T2，…，Ti（失败），Ti（重试）…，Ti+1，…，Tn。</li><li>反向恢复（Backward Recovery）：如果 Ti事务提交失败，则一直执行 Ci对 Ti进行补偿，直至成功为止（最大努力交付）。这里要求 Ci必须（在持续重试后）执行成功。反向恢复的执行模式为：T1，T2，…，Ti（失败），Ci（补偿），…，C2，C1。</li></ul> 
+<p>SAGA 必须保证所有子事务都得以提交或者补偿，但 SAGA 系统本身也有可能会崩溃，所以它必须设计成与数据库类似的日志机制（被称为 SAGA Log）以保证系统恢复后可以追踪到子事务的执行情况，譬如执行至哪一步或者补偿至哪一步了。另外，保证正向、反向恢复过程的能严谨地进行也需要花费不少的工夫，譬如通过服务编排、可靠事件队列等方式完成，所以，SAGA 事务通常也不会直接靠裸编码来实现，一般也是在事务中间件的基础上完成，前面提到的 Seata 就同样支持 SAGA 事务模式。</p> 
+<h2><a id="3__59"></a>3 总结</h2> 
+<p>分布式事务中没有一揽子包治百病的解决办法，因地制宜地选用合适的事务处理方案才是唯一有效的做法。关注我，一同畅游后端知识的海洋。</p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/8462d89ad89ee3b3dfc050caddfae932/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">外包干了三年，废了...</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/3e2cfcba8b5b854ba72691511e732dc0/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">【Bug解决】RuntimeError:Given groups=1,weight of size...expected input...but got 3 channels instead.</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

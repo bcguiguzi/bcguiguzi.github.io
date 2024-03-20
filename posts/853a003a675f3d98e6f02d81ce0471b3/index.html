@@ -1,0 +1,592 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Golang基于Redis bitmap实现布隆过滤器（完结版） - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="Golang基于Redis bitmap实现布隆过滤器（完结版）" />
+<meta property="og:description" content="Golang基于Redis bitmap实现布隆过滤器（完结版） 为了防止黑客恶意刷接口（请求压根不存在的数据），目前通常有以下几种做法：
+限制IP（限流）Redis缓存不存在的key布隆过滤器挡在Redis前 完整代码地址：
+https://github.com/ziyifast/ziyifast-code_instruction/tree/main/blond_filter
+1 概念： 1.1 本质：超大bit数组 原理：由一个初始值都为0的bit数组和多个hash函数构成（相当于多把锁才能打开一把钥匙，才能确认某个元素是否真的存在，提高布隆过滤器的准确率），用于快速判断集合中是否存在某个元素使用3步骤：初始化bitmap -&gt; 添加元素到bitmap（占坑位） -&gt; 判断是否存在
+-Hash冲突： 为了避免hash冲突，我们可以通过多个hash函数进行映射，比如：将player:1982分别通过多个hash函数映射到多个offset。在查询时，就需要判断是否映射的所有的offset都存在。（一个hash函数冲突概率可能很高，但是通过不同多个hash进行映射，大幅降低冲突概率） 注意📢：
+是否存在： 有，可能有；因为存在hash冲突，比如我添加的是王五在1号来上班了，但是王五和李四hash值一样，结果我查询李四时，发现hash定为的offset为1了，我就误以为李四也来上班了无，是肯定无。100%不存在 使用时，bit数组尽量大些，防止扩容。当实际元素超过初始化数量时，应重建布隆过滤器，重新分配一个size更大的过滤器，再将所有历史元素批量add避免删除元素，防止误删（hash冲突：我原本想删李四的记录，结果把王五的也删除了，“连坐”） 1.2 应用场景：防止Redis缓存穿透（海量数据中判断某个元素是否存在） 应用场景：加在数据库、Redis之前。 在查询之前，先查布隆过滤器是否存在，如果不存在直接返回请求。如果存在，再查询Redis、数据库，看是否真的存在。防止因缓存穿透导致数据库被打挂掉。防止被人恶意刷接口 2 环境准备 2.1 安装docker yum install -y yum-utils yum-config-manager \ --add-repo \ https://download.docker.com/linux/centos/docker-ce.repo yum install docker systemctl start docker 2.2 搭建Postgres docker run -d \ -p 5432:5432 \ -e POSTGRES_USER=postgres \ -e POSTGRES_PASSWORD=postgres \ -v /Users/ziyi2/docker-home/pg:/var/lib/postgresql/data \ --name pg \ --restart always \ docker.io/postgres:9.6-alpine # -p port 映射端口，可以通过宿主机的端口访问到容器内的服务 # -d 是detach 保持程序后台运行的意思 # -e environment 设置环境变量 # -v volume 文件或者文件夹的挂载 2." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/853a003a675f3d98e6f02d81ce0471b3/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2024-03-08T22:03:59+08:00" />
+<meta property="article:modified_time" content="2024-03-08T22:03:59+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Golang基于Redis bitmap实现布隆过滤器（完结版）</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-light">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <h2><a id="GolangRedis_bitmap_0"></a>Golang基于Redis bitmap实现布隆过滤器（完结版）</h2> 
+<blockquote> 
+ <p>为了防止黑客恶意刷接口（请求压根不存在的数据），目前通常有以下几种做法：</p> 
+ <ol><li>限制IP（限流）</li><li>Redis缓存不存在的key</li><li>布隆过滤器挡在Redis前</li></ol> 
+</blockquote> 
+<p>完整代码地址：</p> 
+<blockquote> 
+ <p>https://github.com/ziyifast/ziyifast-code_instruction/tree/main/blond_filter</p> 
+</blockquote> 
+<h3><a id="1__8"></a>1 概念：</h3> 
+<h4><a id="11_bit_10"></a>1.1 本质：超大bit数组</h4> 
+<blockquote> 
+ <ul><li>原理：由一个初始值都为0的bit数组和多个hash函数构成（相当于多把锁才能打开一把钥匙，才能确认某个元素是否真的存在，提高布隆过滤器的准确率），用于快速判断集合中是否存在某个元素</li><li>使用3步骤：初始化bitmap -&gt; 添加元素到bitmap（占坑位） -&gt; 判断是否存在<br> -Hash冲突： 为了避免hash冲突，我们可以通过多个hash函数进行映射，比如：将player:1982分别通过多个hash函数映射到多个offset。在查询时，就需要判断是否映射的所有的offset都存在。（一个hash函数冲突概率可能很高，但是通过不同多个hash进行映射，大幅降低冲突概率）</li></ul> 
+</blockquote> 
+<p><img src="https://images2.imgbox.com/0f/42/ZO1PT3lz_o.png" alt="在这里插入图片描述"></p> 
+<p>注意📢：</p> 
+<ol><li>是否存在： 
+  <ul><li>有，<strong>可能有</strong>；因为<strong>存在hash冲突</strong>，比如我添加的是王五在1号来上班了，但是王五和李四hash值一样，结果我查询李四时，发现hash定为的offset为1了，我就误以为李四也来上班了</li><li>无，是肯定无。100%不存在</li></ul> </li><li>使用时，bit数组尽量大些，防止扩容。当实际元素超过初始化数量时，应重建布隆过滤器，重新分配一个size更大的过滤器，再将所有历史元素批量add</li><li>避免删除元素，防止误删（hash冲突：我原本想删李四的记录，结果把王五的也删除了，“连坐”）</li></ol> 
+<h4><a id="12_Redis_25"></a>1.2 应用场景：防止Redis缓存穿透（海量数据中判断某个元素是否存在）</h4> 
+<blockquote> 
+ <ul><li>应用场景：加在数据库、Redis之前。 
+   <ul><li>在查询之前，先查布隆过滤器是否存在，如果不存在直接返回请求。如果存在，再查询Redis、数据库，看是否真的存在。<code>防止因缓存穿透导致数据库被打挂掉。</code></li><li>防止被人恶意刷接口</li></ul> </li></ul> 
+</blockquote> 
+<h3><a id="2__33"></a>2 环境准备</h3> 
+<h4><a id="21_docker_34"></a>2.1 安装docker</h4> 
+<pre><code class="prism language-bash">yum <span class="token function">install</span> <span class="token parameter variable">-y</span> yum-utils
+yum-config-manager <span class="token punctuation">\</span>
+    --add-repo <span class="token punctuation">\</span>
+    https://download.docker.com/linux/centos/docker-ce.repo
+yum <span class="token function">install</span> <span class="token function">docker</span>
+systemctl start <span class="token function">docker</span>
+</code></pre> 
+<h4><a id="22_Postgres_45"></a>2.2 搭建Postgres</h4> 
+<pre><code class="prism language-bash"><span class="token function">docker</span> run <span class="token parameter variable">-d</span> <span class="token punctuation">\</span>
+<span class="token parameter variable">-p</span> <span class="token number">5432</span>:5432 <span class="token punctuation">\</span>
+<span class="token parameter variable">-e</span> <span class="token assign-left variable">POSTGRES_USER</span><span class="token operator">=</span>postgres <span class="token punctuation">\</span>
+<span class="token parameter variable">-e</span> <span class="token assign-left variable">POSTGRES_PASSWORD</span><span class="token operator">=</span>postgres <span class="token punctuation">\</span>
+<span class="token parameter variable">-v</span> /Users/ziyi2/docker-home/pg:/var/lib/postgresql/data <span class="token punctuation">\</span>
+<span class="token parameter variable">--name</span> pg <span class="token punctuation">\</span>
+<span class="token parameter variable">--restart</span> always <span class="token punctuation">\</span>
+docker.io/postgres:9.6-alpine
+
+
+<span class="token comment"># -p port 映射端口，可以通过宿主机的端口访问到容器内的服务</span>
+<span class="token comment"># -d 是detach 保持程序后台运行的意思</span>
+<span class="token comment"># -e environment 设置环境变量</span>
+<span class="token comment"># -v volume 文件或者文件夹的挂载</span>
+</code></pre> 
+<h4><a id="23_Redis_64"></a>2.3 搭建Redis</h4> 
+<pre><code class="prism language-bash"><span class="token function">docker</span> run <span class="token parameter variable">-d</span> <span class="token punctuation">\</span> 
+<span class="token parameter variable">--name</span> redis <span class="token punctuation">\</span>
+<span class="token parameter variable">-v</span> /Users/ziyi2/docker-home/redis:/data <span class="token punctuation">\</span>
+<span class="token parameter variable">-p</span> <span class="token number">6379</span>:6379 redis
+</code></pre> 
+<h3><a id="3__72"></a>3 代码实现</h3> 
+<p>完整代码地址：</p> 
+<blockquote> 
+ <p>https://github.com/ziyifast/ziyifast-code_instruction/tree/main/blond_filter</p> 
+</blockquote> 
+<h4><a id="31__75"></a>3.1 方案</h4> 
+<blockquote> 
+ <p>思路：</p> 
+ <ol><li>先搭建Iris+Postgres，然后再数据库前挡一层Redis</li><li>在Redis之前再加一层布隆过滤器。效果：<br> 请求 - 布隆过滤器 - Redis - Postgres</li></ol> 
+</blockquote> 
+<p>代码结构：<br> <img src="https://images2.imgbox.com/e9/1a/u1coyOH9_o.png" alt="在这里插入图片描述"></p> 
+<h4><a id="32_IrisRedisPostgres_85"></a>3.2 Iris+Redis+Postgres</h4> 
+<blockquote> 
+ <p><code>注意：案例中部分代码不规范，主要起演示作用</code></p> 
+</blockquote> 
+<h5><a id="blond_filterpgpggo_87"></a>①blond_filter/pg/pg.go</h5> 
+<pre><code class="prism language-go"><span class="token keyword">package</span> pg
+
+<span class="token keyword">import</span> <span class="token punctuation">(</span>
+	<span class="token string">"fmt"</span>
+	<span class="token boolean">_</span> <span class="token string">"github.com/lib/pq"</span>
+	<span class="token string">"github.com/ziyifast/log"</span>
+	<span class="token string">"time"</span>
+	<span class="token string">"xorm.io/xorm"</span>
+<span class="token punctuation">)</span>
+
+<span class="token keyword">var</span> Cli <span class="token operator">*</span>xorm<span class="token punctuation">.</span>Engine
+
+<span class="token keyword">const</span> <span class="token punctuation">(</span>
+	host     <span class="token operator">=</span> <span class="token string">"localhost"</span>
+	port     <span class="token operator">=</span> <span class="token number">5432</span>
+	user     <span class="token operator">=</span> <span class="token string">"postgres"</span>
+	password <span class="token operator">=</span> <span class="token string">"postgres"</span>
+	dbName   <span class="token operator">=</span> <span class="token string">"postgres"</span>
+<span class="token punctuation">)</span>
+
+<span class="token keyword">var</span> Engine <span class="token operator">*</span>xorm<span class="token punctuation">.</span>Engine
+
+<span class="token keyword">func</span> <span class="token function">init</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+	psqlInfo <span class="token operator">:=</span> fmt<span class="token punctuation">.</span><span class="token function">Sprintf</span><span class="token punctuation">(</span><span class="token string">"host=%s port=%d user=%s password=%s dbname=%s sslmode=disable"</span><span class="token punctuation">,</span> host<span class="token punctuation">,</span> port<span class="token punctuation">,</span> user<span class="token punctuation">,</span> password<span class="token punctuation">,</span> dbName<span class="token punctuation">)</span>
+	engine<span class="token punctuation">,</span> err <span class="token operator">:=</span> xorm<span class="token punctuation">.</span><span class="token function">NewEngine</span><span class="token punctuation">(</span><span class="token string">"postgres"</span><span class="token punctuation">,</span> psqlInfo<span class="token punctuation">)</span>
+	<span class="token keyword">if</span> err <span class="token operator">!=</span> <span class="token boolean">nil</span> <span class="token punctuation">{<!-- --></span>
+		log<span class="token punctuation">.</span><span class="token function">Fatal</span><span class="token punctuation">(</span>err<span class="token punctuation">)</span>
+	<span class="token punctuation">}</span>
+	engine<span class="token punctuation">.</span><span class="token function">ShowSQL</span><span class="token punctuation">(</span><span class="token boolean">true</span><span class="token punctuation">)</span>
+	engine<span class="token punctuation">.</span><span class="token function">SetMaxIdleConns</span><span class="token punctuation">(</span><span class="token number">10</span><span class="token punctuation">)</span>
+	engine<span class="token punctuation">.</span><span class="token function">SetMaxOpenConns</span><span class="token punctuation">(</span><span class="token number">20</span><span class="token punctuation">)</span>
+	engine<span class="token punctuation">.</span><span class="token function">SetConnMaxLifetime</span><span class="token punctuation">(</span>time<span class="token punctuation">.</span>Minute <span class="token operator">*</span> <span class="token number">10</span><span class="token punctuation">)</span>
+	engine<span class="token punctuation">.</span><span class="token function">Cascade</span><span class="token punctuation">(</span><span class="token boolean">true</span><span class="token punctuation">)</span>
+	<span class="token keyword">if</span> err <span class="token operator">=</span> engine<span class="token punctuation">.</span><span class="token function">Ping</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span> err <span class="token operator">!=</span> <span class="token boolean">nil</span> <span class="token punctuation">{<!-- --></span>
+		log<span class="token punctuation">.</span><span class="token function">Fatalf</span><span class="token punctuation">(</span><span class="token string">"%v"</span><span class="token punctuation">,</span> err<span class="token punctuation">)</span>
+	<span class="token punctuation">}</span>
+	Engine <span class="token operator">=</span> engine
+	log<span class="token punctuation">.</span><span class="token function">Infof</span><span class="token punctuation">(</span><span class="token string">"connect postgresql success"</span><span class="token punctuation">)</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<h5><a id="blond_filterredisredisgo_131"></a>②blond_filter/redis/redis.go</h5> 
+<pre><code class="prism language-go"><span class="token keyword">package</span> redis
+
+<span class="token keyword">import</span> <span class="token string">"github.com/go-redis/redis"</span>
+
+<span class="token keyword">var</span> <span class="token punctuation">(</span>
+	Client       <span class="token operator">*</span>redis<span class="token punctuation">.</span>Client
+	PlayerPrefix <span class="token operator">=</span> <span class="token string">"player:"</span>
+<span class="token punctuation">)</span>
+
+<span class="token keyword">func</span> <span class="token function">init</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+	Client <span class="token operator">=</span> redis<span class="token punctuation">.</span><span class="token function">NewClient</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>redis<span class="token punctuation">.</span>Options<span class="token punctuation">{<!-- --></span>
+		Addr<span class="token punctuation">:</span>     <span class="token string">"127.0.0.1:6379"</span><span class="token punctuation">,</span>
+		Password<span class="token punctuation">:</span> <span class="token string">""</span><span class="token punctuation">,</span> <span class="token comment">// no password set</span>
+		DB<span class="token punctuation">:</span>       <span class="token number">0</span><span class="token punctuation">,</span>  <span class="token comment">// use default DB</span>
+	<span class="token punctuation">}</span><span class="token punctuation">)</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<h5><a id="blond_filtermodelplayergo_151"></a>③blond_filter/model/player.go</h5> 
+<pre><code class="prism language-go"><span class="token keyword">package</span> model
+
+<span class="token keyword">type</span> Player <span class="token keyword">struct</span> <span class="token punctuation">{<!-- --></span>
+	Id   <span class="token builtin">int64</span>  <span class="token string">`xorm:"id" json:"id"`</span>
+	Name <span class="token builtin">string</span> <span class="token string">`xorm:"name" json:"name"`</span>
+	Age  <span class="token builtin">int</span>    <span class="token string">`xorm:"age" json:"age"`</span>
+<span class="token punctuation">}</span>
+
+<span class="token keyword">func</span> <span class="token punctuation">(</span>p <span class="token operator">*</span>Player<span class="token punctuation">)</span> <span class="token function">TableName</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token builtin">string</span> <span class="token punctuation">{<!-- --></span>
+	<span class="token keyword">return</span> <span class="token string">"player"</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<h5><a id="blond_filterdaoplayer_daogo_166"></a>④blond_filter/dao/player_dao.go</h5> 
+<pre><code class="prism language-go"><span class="token keyword">package</span> dao
+
+<span class="token keyword">import</span> <span class="token punctuation">(</span>
+	<span class="token string">"github.com/aobco/log"</span>
+	<span class="token string">"myTest/demo_home/blond_filter/model"</span>
+	<span class="token string">"myTest/demo_home/blond_filter/pg"</span>
+	<span class="token string">"time"</span>
+<span class="token punctuation">)</span>
+
+<span class="token keyword">type</span> playerDao <span class="token keyword">struct</span> <span class="token punctuation">{<!-- --></span>
+<span class="token punctuation">}</span>
+
+<span class="token keyword">var</span> PlayerDao <span class="token operator">=</span> <span class="token function">new</span><span class="token punctuation">(</span>playerDao<span class="token punctuation">)</span>
+
+<span class="token keyword">func</span> <span class="token punctuation">(</span>p <span class="token operator">*</span>playerDao<span class="token punctuation">)</span> <span class="token function">InsertOne</span><span class="token punctuation">(</span>player model<span class="token punctuation">.</span>Player<span class="token punctuation">)</span> <span class="token punctuation">(</span><span class="token builtin">int64</span><span class="token punctuation">,</span> <span class="token builtin">error</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+	<span class="token keyword">return</span> pg<span class="token punctuation">.</span>Engine<span class="token punctuation">.</span><span class="token function">InsertOne</span><span class="token punctuation">(</span>player<span class="token punctuation">)</span>
+<span class="token punctuation">}</span>
+
+<span class="token keyword">func</span> <span class="token punctuation">(</span>p <span class="token operator">*</span>playerDao<span class="token punctuation">)</span> <span class="token function">GetById</span><span class="token punctuation">(</span>id <span class="token builtin">int64</span><span class="token punctuation">)</span> <span class="token punctuation">(</span><span class="token operator">*</span>model<span class="token punctuation">.</span>Player<span class="token punctuation">,</span> <span class="token builtin">error</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+	log<span class="token punctuation">.</span><span class="token function">Infof</span><span class="token punctuation">(</span><span class="token string">"query postgres,time:%v"</span><span class="token punctuation">,</span> time<span class="token punctuation">.</span><span class="token function">Now</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">String</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span>
+	player <span class="token operator">:=</span> <span class="token function">new</span><span class="token punctuation">(</span>model<span class="token punctuation">.</span>Player<span class="token punctuation">)</span>
+	get<span class="token punctuation">,</span> err <span class="token operator">:=</span> pg<span class="token punctuation">.</span>Engine<span class="token punctuation">.</span><span class="token function">Where</span><span class="token punctuation">(</span><span class="token string">"id=?"</span><span class="token punctuation">,</span> id<span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">Get</span><span class="token punctuation">(</span>player<span class="token punctuation">)</span>
+	<span class="token keyword">if</span> err <span class="token operator">!=</span> <span class="token boolean">nil</span> <span class="token punctuation">{<!-- --></span>
+		log<span class="token punctuation">.</span><span class="token function">Errorf</span><span class="token punctuation">(</span><span class="token string">"%v"</span><span class="token punctuation">,</span> err<span class="token punctuation">)</span>
+	<span class="token punctuation">}</span>
+	<span class="token keyword">if</span> <span class="token operator">!</span>get <span class="token punctuation">{<!-- --></span>
+		<span class="token keyword">return</span> <span class="token boolean">nil</span><span class="token punctuation">,</span> <span class="token boolean">nil</span>
+	<span class="token punctuation">}</span>
+	<span class="token keyword">return</span> player<span class="token punctuation">,</span> <span class="token boolean">nil</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<h5><a id="blond_filterserviceplayer_servicego_201"></a>⑤blond_filter/service/player_service.go</h5> 
+<pre><code class="prism language-go"><span class="token keyword">package</span> service
+
+<span class="token keyword">import</span> <span class="token punctuation">(</span>
+	<span class="token string">"github.com/ziyifast/log"</span>
+	<span class="token string">"myTest/demo_home/blond_filter/dao"</span>
+	<span class="token string">"myTest/demo_home/blond_filter/model"</span>
+	<span class="token string">"myTest/demo_home/blond_filter/util"</span>
+<span class="token punctuation">)</span>
+
+<span class="token keyword">type</span> playerService <span class="token keyword">struct</span> <span class="token punctuation">{<!-- --></span>
+<span class="token punctuation">}</span>
+
+<span class="token keyword">var</span> PlayerService <span class="token operator">=</span> <span class="token function">new</span><span class="token punctuation">(</span>playerService<span class="token punctuation">)</span>
+
+<span class="token keyword">func</span> <span class="token punctuation">(</span>s <span class="token operator">*</span>playerService<span class="token punctuation">)</span> <span class="token function">FindById</span><span class="token punctuation">(</span>id <span class="token builtin">int64</span><span class="token punctuation">)</span> <span class="token punctuation">(</span><span class="token operator">*</span>model<span class="token punctuation">.</span>Player<span class="token punctuation">,</span> <span class="token builtin">error</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+	<span class="token comment"> query blond filter</span>
+	<span class="token comment">//if !util.CheckExist(id) {<!-- --></span>
+	<span class="token comment">//	return nil, nil</span>
+	<span class="token comment">//}</span>
+
+	<span class="token comment">//query redis</span>
+	player<span class="token punctuation">,</span> err <span class="token operator">:=</span> util<span class="token punctuation">.</span>PlayerCache<span class="token punctuation">.</span><span class="token function">GetById</span><span class="token punctuation">(</span>id<span class="token punctuation">)</span>
+	<span class="token keyword">if</span> err <span class="token operator">!=</span> <span class="token boolean">nil</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token keyword">return</span> <span class="token boolean">nil</span><span class="token punctuation">,</span> err
+	<span class="token punctuation">}</span>
+	<span class="token keyword">if</span> player <span class="token operator">!=</span> <span class="token boolean">nil</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token keyword">return</span> player<span class="token punctuation">,</span> <span class="token boolean">nil</span>
+	<span class="token punctuation">}</span>
+	<span class="token comment">//query db and cache result</span>
+	p<span class="token punctuation">,</span> err <span class="token operator">:=</span> dao<span class="token punctuation">.</span>PlayerDao<span class="token punctuation">.</span><span class="token function">GetById</span><span class="token punctuation">(</span>id<span class="token punctuation">)</span>
+	<span class="token keyword">if</span> err <span class="token operator">!=</span> <span class="token boolean">nil</span> <span class="token punctuation">{<!-- --></span>
+		log<span class="token punctuation">.</span><span class="token function">Errorf</span><span class="token punctuation">(</span><span class="token string">"%v"</span><span class="token punctuation">,</span> err<span class="token punctuation">)</span>
+		<span class="token keyword">return</span> <span class="token boolean">nil</span><span class="token punctuation">,</span> err
+	<span class="token punctuation">}</span>
+	<span class="token keyword">if</span> p <span class="token operator">!=</span> <span class="token boolean">nil</span> <span class="token punctuation">{<!-- --></span>
+		err <span class="token operator">=</span> util<span class="token punctuation">.</span>PlayerCache<span class="token punctuation">.</span><span class="token function">Put</span><span class="token punctuation">(</span>p<span class="token punctuation">)</span>
+		<span class="token keyword">if</span> err <span class="token operator">!=</span> <span class="token boolean">nil</span> <span class="token punctuation">{<!-- --></span>
+			log<span class="token punctuation">.</span><span class="token function">Errorf</span><span class="token punctuation">(</span><span class="token string">"%v"</span><span class="token punctuation">,</span> err<span class="token punctuation">)</span>
+		<span class="token punctuation">}</span>
+		<span class="token keyword">return</span> p<span class="token punctuation">,</span> <span class="token boolean">nil</span>
+	<span class="token punctuation">}</span>
+	<span class="token keyword">return</span> p<span class="token punctuation">,</span> <span class="token boolean">nil</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<h5><a id="blond_filtercontrollerplayer_controllergo_248"></a>⑥blond_filter/controller/player_controller.go</h5> 
+<pre><code class="prism language-go"><span class="token keyword">package</span> controller
+
+<span class="token keyword">import</span> <span class="token punctuation">(</span>
+	<span class="token string">"encoding/json"</span>
+	<span class="token string">"github.com/kataras/iris/v12"</span>
+	<span class="token string">"github.com/kataras/iris/v12/mvc"</span>
+	<span class="token string">"myTest/demo_home/blond_filter/service"</span>
+	<span class="token string">"net/http"</span>
+	<span class="token string">"strconv"</span>
+<span class="token punctuation">)</span>
+
+<span class="token keyword">type</span> PlayerController <span class="token keyword">struct</span> <span class="token punctuation">{<!-- --></span>
+	Ctx iris<span class="token punctuation">.</span>Context
+<span class="token punctuation">}</span>
+
+<span class="token keyword">func</span> <span class="token punctuation">(</span>p <span class="token operator">*</span>PlayerController<span class="token punctuation">)</span> <span class="token function">BeforeActivation</span><span class="token punctuation">(</span>b mvc<span class="token punctuation">.</span>BeforeActivation<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+	b<span class="token punctuation">.</span><span class="token function">Handle</span><span class="token punctuation">(</span><span class="token string">"GET"</span><span class="token punctuation">,</span> <span class="token string">"/find/{id}"</span><span class="token punctuation">,</span> <span class="token string">"FindById"</span><span class="token punctuation">)</span>
+<span class="token punctuation">}</span>
+
+<span class="token keyword">func</span> <span class="token punctuation">(</span>p <span class="token operator">*</span>PlayerController<span class="token punctuation">)</span> <span class="token function">FindById</span><span class="token punctuation">(</span><span class="token punctuation">)</span> mvc<span class="token punctuation">.</span>Result <span class="token punctuation">{<!-- --></span>
+	<span class="token keyword">defer</span> p<span class="token punctuation">.</span>Ctx<span class="token punctuation">.</span><span class="token function">Next</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+	pId <span class="token operator">:=</span> p<span class="token punctuation">.</span>Ctx<span class="token punctuation">.</span><span class="token function">Params</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">Get</span><span class="token punctuation">(</span><span class="token string">"id"</span><span class="token punctuation">)</span>
+	id<span class="token punctuation">,</span> err <span class="token operator">:=</span> strconv<span class="token punctuation">.</span><span class="token function">ParseInt</span><span class="token punctuation">(</span>pId<span class="token punctuation">,</span> <span class="token number">10</span><span class="token punctuation">,</span> <span class="token number">64</span><span class="token punctuation">)</span>
+	<span class="token keyword">if</span> err <span class="token operator">!=</span> <span class="token boolean">nil</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token keyword">return</span> mvc<span class="token punctuation">.</span>Response<span class="token punctuation">{<!-- --></span>
+			Code<span class="token punctuation">:</span>        http<span class="token punctuation">.</span>StatusBadRequest<span class="token punctuation">,</span>
+			Content<span class="token punctuation">:</span>     <span class="token punctuation">[</span><span class="token punctuation">]</span><span class="token function">byte</span><span class="token punctuation">(</span>err<span class="token punctuation">.</span><span class="token function">Error</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">,</span>
+			ContentType<span class="token punctuation">:</span> <span class="token string">"application/json"</span><span class="token punctuation">,</span>
+		<span class="token punctuation">}</span>
+	<span class="token punctuation">}</span>
+	player<span class="token punctuation">,</span> err <span class="token operator">:=</span> service<span class="token punctuation">.</span>PlayerService<span class="token punctuation">.</span><span class="token function">FindById</span><span class="token punctuation">(</span>id<span class="token punctuation">)</span>
+	<span class="token keyword">if</span> err <span class="token operator">!=</span> <span class="token boolean">nil</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token keyword">return</span> mvc<span class="token punctuation">.</span>Response<span class="token punctuation">{<!-- --></span>
+			Code<span class="token punctuation">:</span>        http<span class="token punctuation">.</span>StatusInternalServerError<span class="token punctuation">,</span>
+			Content<span class="token punctuation">:</span>     <span class="token punctuation">[</span><span class="token punctuation">]</span><span class="token function">byte</span><span class="token punctuation">(</span>err<span class="token punctuation">.</span><span class="token function">Error</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">,</span>
+			ContentType<span class="token punctuation">:</span> <span class="token string">"application/json"</span><span class="token punctuation">,</span>
+		<span class="token punctuation">}</span>
+	<span class="token punctuation">}</span>
+	marshal<span class="token punctuation">,</span> err <span class="token operator">:=</span> json<span class="token punctuation">.</span><span class="token function">Marshal</span><span class="token punctuation">(</span>player<span class="token punctuation">)</span>
+	<span class="token keyword">if</span> err <span class="token operator">!=</span> <span class="token boolean">nil</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token keyword">return</span> mvc<span class="token punctuation">.</span>Response<span class="token punctuation">{<!-- --></span>
+			Code<span class="token punctuation">:</span>        http<span class="token punctuation">.</span>StatusInternalServerError<span class="token punctuation">,</span>
+			Content<span class="token punctuation">:</span>     <span class="token punctuation">[</span><span class="token punctuation">]</span><span class="token function">byte</span><span class="token punctuation">(</span>err<span class="token punctuation">.</span><span class="token function">Error</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">,</span>
+			ContentType<span class="token punctuation">:</span> <span class="token string">"application/json"</span><span class="token punctuation">,</span>
+		<span class="token punctuation">}</span>
+	<span class="token punctuation">}</span>
+	<span class="token keyword">return</span> mvc<span class="token punctuation">.</span>Response<span class="token punctuation">{<!-- --></span>
+		Code<span class="token punctuation">:</span>        http<span class="token punctuation">.</span>StatusOK<span class="token punctuation">,</span>
+		Content<span class="token punctuation">:</span>     marshal<span class="token punctuation">,</span>
+		ContentType<span class="token punctuation">:</span> <span class="token string">"application/json"</span><span class="token punctuation">,</span>
+	<span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<h5><a id="blond_filterutilplayer_cachego_304"></a>⑦blond_filter/util/player_cache.go</h5> 
+<blockquote> 
+ <p>Redis缓存模块</p> 
+</blockquote> 
+<pre><code class="prism language-go"><span class="token keyword">package</span> util
+
+<span class="token keyword">import</span> <span class="token punctuation">(</span>
+	<span class="token string">"encoding/json"</span>
+	<span class="token string">"github.com/go-redis/redis"</span>
+	<span class="token string">"github.com/ziyifast/log"</span>
+	<span class="token string">"myTest/demo_home/blond_filter/model"</span>
+	redis2 <span class="token string">"myTest/demo_home/blond_filter/redis"</span>
+	<span class="token string">"strconv"</span>
+	<span class="token string">"time"</span>
+<span class="token punctuation">)</span>
+
+<span class="token keyword">type</span> playerCache <span class="token keyword">struct</span> <span class="token punctuation">{<!-- --></span>
+<span class="token punctuation">}</span>
+
+<span class="token keyword">var</span> <span class="token punctuation">(</span>
+	PlayerCache <span class="token operator">=</span> <span class="token function">new</span><span class="token punctuation">(</span>playerCache<span class="token punctuation">)</span>
+	PlayerKey   <span class="token operator">=</span> <span class="token string">"player"</span>
+<span class="token punctuation">)</span>
+
+<span class="token keyword">func</span> <span class="token punctuation">(</span>c <span class="token operator">*</span>playerCache<span class="token punctuation">)</span> <span class="token function">GetById</span><span class="token punctuation">(</span>id <span class="token builtin">int64</span><span class="token punctuation">)</span> <span class="token punctuation">(</span><span class="token operator">*</span>model<span class="token punctuation">.</span>Player<span class="token punctuation">,</span> <span class="token builtin">error</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+	log<span class="token punctuation">.</span><span class="token function">Infof</span><span class="token punctuation">(</span><span class="token string">"query redis,time:%v"</span><span class="token punctuation">,</span> time<span class="token punctuation">.</span><span class="token function">Now</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">String</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span>
+	result<span class="token punctuation">,</span> err <span class="token operator">:=</span> redis2<span class="token punctuation">.</span>Client<span class="token punctuation">.</span><span class="token function">HGet</span><span class="token punctuation">(</span>PlayerKey<span class="token punctuation">,</span> strconv<span class="token punctuation">.</span><span class="token function">FormatInt</span><span class="token punctuation">(</span>id<span class="token punctuation">,</span> <span class="token number">10</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">Result</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+	<span class="token keyword">if</span> err <span class="token operator">!=</span> <span class="token boolean">nil</span> <span class="token operator">&amp;&amp;</span> err <span class="token operator">!=</span> redis<span class="token punctuation">.</span>Nil <span class="token punctuation">{<!-- --></span>
+		log<span class="token punctuation">.</span><span class="token function">Errorf</span><span class="token punctuation">(</span><span class="token string">"%v"</span><span class="token punctuation">,</span> err<span class="token punctuation">)</span>
+		<span class="token keyword">return</span> <span class="token boolean">nil</span><span class="token punctuation">,</span> err
+	<span class="token punctuation">}</span>
+	<span class="token keyword">if</span> result <span class="token operator">==</span> <span class="token string">""</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token keyword">return</span> <span class="token boolean">nil</span><span class="token punctuation">,</span> <span class="token boolean">nil</span>
+	<span class="token punctuation">}</span>
+	p <span class="token operator">:=</span> <span class="token function">new</span><span class="token punctuation">(</span>model<span class="token punctuation">.</span>Player<span class="token punctuation">)</span>
+	err <span class="token operator">=</span> json<span class="token punctuation">.</span><span class="token function">Unmarshal</span><span class="token punctuation">(</span><span class="token punctuation">[</span><span class="token punctuation">]</span><span class="token function">byte</span><span class="token punctuation">(</span>result<span class="token punctuation">)</span><span class="token punctuation">,</span> p<span class="token punctuation">)</span>
+	<span class="token keyword">if</span> err <span class="token operator">!=</span> <span class="token boolean">nil</span> <span class="token punctuation">{<!-- --></span>
+		log<span class="token punctuation">.</span><span class="token function">Errorf</span><span class="token punctuation">(</span><span class="token string">"%v"</span><span class="token punctuation">,</span> err<span class="token punctuation">)</span>
+		<span class="token keyword">return</span> <span class="token boolean">nil</span><span class="token punctuation">,</span> err
+	<span class="token punctuation">}</span>
+	<span class="token keyword">return</span> p<span class="token punctuation">,</span> <span class="token boolean">nil</span>
+<span class="token punctuation">}</span>
+
+<span class="token keyword">func</span> <span class="token punctuation">(</span>c <span class="token operator">*</span>playerCache<span class="token punctuation">)</span> <span class="token function">Put</span><span class="token punctuation">(</span>player <span class="token operator">*</span>model<span class="token punctuation">.</span>Player<span class="token punctuation">)</span> <span class="token builtin">error</span> <span class="token punctuation">{<!-- --></span>
+	marshal<span class="token punctuation">,</span> err <span class="token operator">:=</span> json<span class="token punctuation">.</span><span class="token function">Marshal</span><span class="token punctuation">(</span>player<span class="token punctuation">)</span>
+	<span class="token keyword">if</span> err <span class="token operator">!=</span> <span class="token boolean">nil</span> <span class="token punctuation">{<!-- --></span>
+		log<span class="token punctuation">.</span><span class="token function">Errorf</span><span class="token punctuation">(</span><span class="token string">"%v"</span><span class="token punctuation">,</span> err<span class="token punctuation">)</span>
+		<span class="token keyword">return</span> err
+	<span class="token punctuation">}</span>
+	<span class="token boolean">_</span><span class="token punctuation">,</span> err <span class="token operator">=</span> redis2<span class="token punctuation">.</span>Client<span class="token punctuation">.</span><span class="token function">HSet</span><span class="token punctuation">(</span>PlayerKey<span class="token punctuation">,</span> strconv<span class="token punctuation">.</span><span class="token function">FormatInt</span><span class="token punctuation">(</span>player<span class="token punctuation">.</span>Id<span class="token punctuation">,</span> <span class="token number">10</span><span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token function">string</span><span class="token punctuation">(</span>marshal<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">Result</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+	<span class="token keyword">if</span> err <span class="token operator">!=</span> <span class="token boolean">nil</span> <span class="token punctuation">{<!-- --></span>
+		log<span class="token punctuation">.</span><span class="token function">Errorf</span><span class="token punctuation">(</span><span class="token string">"%v"</span><span class="token punctuation">,</span> err<span class="token punctuation">)</span>
+		<span class="token keyword">return</span> err
+	<span class="token punctuation">}</span>
+	<span class="token keyword">return</span> <span class="token boolean">nil</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<h5><a id="blond_filtermaingo_361"></a>⑧blond_filter/main.go</h5> 
+<pre><code class="prism language-go"><span class="token keyword">package</span> main
+
+<span class="token keyword">import</span> <span class="token punctuation">(</span>
+	<span class="token string">"github.com/kataras/iris/v12"</span>
+	<span class="token string">"github.com/kataras/iris/v12/mvc"</span>
+	<span class="token string">"myTest/demo_home/blond_filter/controller"</span>
+<span class="token punctuation">)</span>
+
+<span class="token keyword">func</span> <span class="token function">main</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+	<span class="token comment">//pg.Engine.Sync(new(model.Player))</span>
+	app <span class="token operator">:=</span> iris<span class="token punctuation">.</span><span class="token function">New</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+	pMvc <span class="token operator">:=</span> mvc<span class="token punctuation">.</span><span class="token function">New</span><span class="token punctuation">(</span>app<span class="token punctuation">.</span><span class="token function">Party</span><span class="token punctuation">(</span><span class="token string">"player"</span><span class="token punctuation">)</span><span class="token punctuation">)</span>
+	pMvc<span class="token punctuation">.</span><span class="token function">Handle</span><span class="token punctuation">(</span><span class="token function">new</span><span class="token punctuation">(</span>controller<span class="token punctuation">.</span>PlayerController<span class="token punctuation">)</span><span class="token punctuation">)</span>
+	<span class="token comment">//util.InitBlondFilter()</span>
+	app<span class="token punctuation">.</span><span class="token function">Listen</span><span class="token punctuation">(</span><span class="token string">":9999"</span><span class="token punctuation">,</span> <span class="token boolean">nil</span><span class="token punctuation">)</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<h5><a id="_382"></a>演示</h5> 
+<blockquote> 
+ <p>我们在请求到达之后，先去查询Redis，如果Redis没有则去查询Postgres，但如果此时有黑客恶意查询压根不合法的数据。就会导致在Redis一直查不到数据而不断请求Postgres。</p> 
+ <ul><li>导致Postgres负载过高</li></ul> 
+</blockquote> 
+<ol><li>请求不存在的用户<br> <img src="https://images2.imgbox.com/93/d2/Rzi300Vf_o.png" alt="在这里插入图片描述"></li><li>查看<br> <img src="https://images2.imgbox.com/19/12/bgaWz7NL_o.png" alt="在这里插入图片描述"></li></ol> 
+<h4><a id="33_Redis_bitmap_393"></a>3.3 添加布隆过滤器（通过Redis bitmap实现）</h4> 
+<blockquote> 
+ <p>新增布隆过滤器，加在Redis之前。</p> 
+ <ul><li>请求流程：请求 - 布隆过滤器 - Redis - 数据库</li></ul> 
+</blockquote> 
+<h5><a id="blond_filterutilcheck_blond_utilgo_397"></a>①blond_filter/util/check_blond_util.go</h5> 
+<blockquote> 
+ <p>实现简易版hashCode。</p> 
+ <ul><li>为了避免hash冲突，我们可以通过多个hash函数进行映射，比如：将player:1982分别通过多个hash函数映射到多个offset。在查询时，就需要判断是否映射的所有的offset都存在。（一个hash函数冲突概率可能很高，但是通过不同多个hash进行映射，大幅降低冲突概率）</li></ul> 
+</blockquote> 
+<pre><code class="prism language-go"><span class="token keyword">package</span> util
+
+<span class="token keyword">import</span> <span class="token punctuation">(</span>
+	<span class="token string">"fmt"</span>
+	<span class="token string">"github.com/ziyifast/log"</span>
+	<span class="token string">"math"</span>
+	<span class="token string">"myTest/demo_home/blond_filter/redis"</span>
+<span class="token punctuation">)</span>
+
+<span class="token keyword">var</span> base <span class="token operator">=</span> <span class="token number">1</span> <span class="token operator">&lt;&lt;</span> <span class="token number">32</span>
+
+<span class="token comment">// achieve blond filter</span>
+<span class="token comment">// 1. calculate the hash of key</span>
+<span class="token comment">// 2. preload the players data</span>
+<span class="token keyword">func</span> <span class="token function">InitBlondFilter</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+	<span class="token comment">//get hashCode</span>
+	key <span class="token operator">:=</span> fmt<span class="token punctuation">.</span><span class="token function">Sprintf</span><span class="token punctuation">(</span><span class="token string">"%s%d"</span><span class="token punctuation">,</span> redis<span class="token punctuation">.</span>PlayerPrefix<span class="token punctuation">,</span> <span class="token number">1</span><span class="token punctuation">)</span>
+	hashCode <span class="token operator">:=</span> <span class="token function">int</span><span class="token punctuation">(</span>math<span class="token punctuation">.</span><span class="token function">Abs</span><span class="token punctuation">(</span><span class="token function">float64</span><span class="token punctuation">(</span><span class="token function">getHashCode</span><span class="token punctuation">(</span>key<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">)</span>
+	<span class="token comment">//calculate the offset</span>
+	offset <span class="token operator">:=</span> hashCode <span class="token operator">%</span> base
+	<span class="token boolean">_</span><span class="token punctuation">,</span> err <span class="token operator">:=</span> redis<span class="token punctuation">.</span>Client<span class="token punctuation">.</span><span class="token function">SetBit</span><span class="token punctuation">(</span>key<span class="token punctuation">,</span> <span class="token function">int64</span><span class="token punctuation">(</span>offset<span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">Result</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+	<span class="token keyword">if</span> err <span class="token operator">!=</span> <span class="token boolean">nil</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token function">panic</span><span class="token punctuation">(</span>err<span class="token punctuation">)</span>
+	<span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+
+<span class="token keyword">func</span> <span class="token function">getHashCode</span><span class="token punctuation">(</span>str <span class="token builtin">string</span><span class="token punctuation">)</span> <span class="token builtin">int</span> <span class="token punctuation">{<!-- --></span>
+	<span class="token keyword">var</span> hash <span class="token builtin">int32</span> <span class="token operator">=</span> <span class="token number">17</span>
+	<span class="token keyword">for</span> i <span class="token operator">:=</span> <span class="token number">0</span><span class="token punctuation">;</span> i <span class="token operator">&lt;</span> <span class="token function">len</span><span class="token punctuation">(</span>str<span class="token punctuation">)</span><span class="token punctuation">;</span> i<span class="token operator">++</span> <span class="token punctuation">{<!-- --></span>
+		hash <span class="token operator">=</span> hash<span class="token operator">*</span><span class="token number">31</span> <span class="token operator">+</span> <span class="token function">int32</span><span class="token punctuation">(</span>str<span class="token punctuation">[</span>i<span class="token punctuation">]</span><span class="token punctuation">)</span>
+	<span class="token punctuation">}</span>
+	<span class="token keyword">return</span> <span class="token function">int</span><span class="token punctuation">(</span>hash<span class="token punctuation">)</span>
+<span class="token punctuation">}</span>
+
+<span class="token keyword">func</span> <span class="token function">CheckExist</span><span class="token punctuation">(</span>id <span class="token builtin">int64</span><span class="token punctuation">)</span> <span class="token builtin">bool</span> <span class="token punctuation">{<!-- --></span>
+	key <span class="token operator">:=</span> fmt<span class="token punctuation">.</span><span class="token function">Sprintf</span><span class="token punctuation">(</span><span class="token string">"%s%d"</span><span class="token punctuation">,</span> redis<span class="token punctuation">.</span>PlayerPrefix<span class="token punctuation">,</span> id<span class="token punctuation">)</span>
+	hashCode <span class="token operator">:=</span> <span class="token function">int</span><span class="token punctuation">(</span>math<span class="token punctuation">.</span><span class="token function">Abs</span><span class="token punctuation">(</span><span class="token function">float64</span><span class="token punctuation">(</span><span class="token function">getHashCode</span><span class="token punctuation">(</span>key<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">)</span>
+	offset <span class="token operator">:=</span> hashCode <span class="token operator">%</span> base
+	res<span class="token punctuation">,</span> err <span class="token operator">:=</span> redis<span class="token punctuation">.</span>Client<span class="token punctuation">.</span><span class="token function">GetBit</span><span class="token punctuation">(</span>key<span class="token punctuation">,</span> <span class="token function">int64</span><span class="token punctuation">(</span>offset<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">Result</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+	<span class="token keyword">if</span> err <span class="token operator">!=</span> <span class="token boolean">nil</span> <span class="token punctuation">{<!-- --></span>
+		log<span class="token punctuation">.</span><span class="token function">Errorf</span><span class="token punctuation">(</span><span class="token string">"%v"</span><span class="token punctuation">,</span> err<span class="token punctuation">)</span>
+		<span class="token keyword">return</span> <span class="token boolean">false</span>
+	<span class="token punctuation">}</span>
+	log<span class="token punctuation">.</span><span class="token function">Infof</span><span class="token punctuation">(</span><span class="token string">"%v"</span><span class="token punctuation">,</span> res<span class="token punctuation">)</span>
+	<span class="token keyword">return</span> res <span class="token operator">==</span> <span class="token number">1</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<h5><a id="blond_filterserviceplayer_servicego_448"></a>②blond_filter/service/player_service.go</h5> 
+<blockquote> 
+ <p>在查询Redis之前，先去查询布隆过滤器是否有数据</p> 
+</blockquote> 
+<pre><code class="prism language-go"><span class="token keyword">package</span> service
+
+<span class="token keyword">import</span> <span class="token punctuation">(</span>
+	<span class="token string">"github.com/ziyifast/log"</span>
+	<span class="token string">"myTest/demo_home/blond_filter/dao"</span>
+	<span class="token string">"myTest/demo_home/blond_filter/model"</span>
+	<span class="token string">"myTest/demo_home/blond_filter/util"</span>
+<span class="token punctuation">)</span>
+
+<span class="token keyword">type</span> playerService <span class="token keyword">struct</span> <span class="token punctuation">{<!-- --></span>
+<span class="token punctuation">}</span>
+
+<span class="token keyword">var</span> PlayerService <span class="token operator">=</span> <span class="token function">new</span><span class="token punctuation">(</span>playerService<span class="token punctuation">)</span>
+
+<span class="token keyword">func</span> <span class="token punctuation">(</span>s <span class="token operator">*</span>playerService<span class="token punctuation">)</span> <span class="token function">FindById</span><span class="token punctuation">(</span>id <span class="token builtin">int64</span><span class="token punctuation">)</span> <span class="token punctuation">(</span><span class="token operator">*</span>model<span class="token punctuation">.</span>Player<span class="token punctuation">,</span> <span class="token builtin">error</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+	<span class="token comment">// query blond filter</span>
+	<span class="token keyword">if</span> <span class="token operator">!</span>util<span class="token punctuation">.</span><span class="token function">CheckExist</span><span class="token punctuation">(</span>id<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+		log<span class="token punctuation">.</span><span class="token function">Infof</span><span class="token punctuation">(</span><span class="token string">"the player does not exist in the blond filter,return it!!! "</span><span class="token punctuation">)</span>
+		<span class="token keyword">return</span> <span class="token boolean">nil</span><span class="token punctuation">,</span> <span class="token boolean">nil</span>
+	<span class="token punctuation">}</span>
+
+	<span class="token comment">//query redis</span>
+	player<span class="token punctuation">,</span> err <span class="token operator">:=</span> util<span class="token punctuation">.</span>PlayerCache<span class="token punctuation">.</span><span class="token function">GetById</span><span class="token punctuation">(</span>id<span class="token punctuation">)</span>
+	<span class="token keyword">if</span> err <span class="token operator">!=</span> <span class="token boolean">nil</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token keyword">return</span> <span class="token boolean">nil</span><span class="token punctuation">,</span> err
+	<span class="token punctuation">}</span>
+	<span class="token keyword">if</span> player <span class="token operator">!=</span> <span class="token boolean">nil</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token keyword">return</span> player<span class="token punctuation">,</span> <span class="token boolean">nil</span>
+	<span class="token punctuation">}</span>
+	<span class="token comment">//query db and cache result</span>
+	p<span class="token punctuation">,</span> err <span class="token operator">:=</span> dao<span class="token punctuation">.</span>PlayerDao<span class="token punctuation">.</span><span class="token function">GetById</span><span class="token punctuation">(</span>id<span class="token punctuation">)</span>
+	<span class="token keyword">if</span> err <span class="token operator">!=</span> <span class="token boolean">nil</span> <span class="token punctuation">{<!-- --></span>
+		log<span class="token punctuation">.</span><span class="token function">Errorf</span><span class="token punctuation">(</span><span class="token string">"%v"</span><span class="token punctuation">,</span> err<span class="token punctuation">)</span>
+		<span class="token keyword">return</span> <span class="token boolean">nil</span><span class="token punctuation">,</span> err
+	<span class="token punctuation">}</span>
+	<span class="token keyword">if</span> p <span class="token operator">!=</span> <span class="token boolean">nil</span> <span class="token punctuation">{<!-- --></span>
+		err <span class="token operator">=</span> util<span class="token punctuation">.</span>PlayerCache<span class="token punctuation">.</span><span class="token function">Put</span><span class="token punctuation">(</span>p<span class="token punctuation">)</span>
+		<span class="token keyword">if</span> err <span class="token operator">!=</span> <span class="token boolean">nil</span> <span class="token punctuation">{<!-- --></span>
+			log<span class="token punctuation">.</span><span class="token function">Errorf</span><span class="token punctuation">(</span><span class="token string">"%v"</span><span class="token punctuation">,</span> err<span class="token punctuation">)</span>
+		<span class="token punctuation">}</span>
+		<span class="token keyword">return</span> p<span class="token punctuation">,</span> <span class="token boolean">nil</span>
+	<span class="token punctuation">}</span>
+	<span class="token keyword">return</span> p<span class="token punctuation">,</span> <span class="token boolean">nil</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<h5><a id="blond_filtermaingo_497"></a>③blond_filter/main.go</h5> 
+<pre><code class="prism language-go"><span class="token keyword">package</span> main
+
+<span class="token keyword">import</span> <span class="token punctuation">(</span>
+	<span class="token string">"github.com/kataras/iris/v12"</span>
+	<span class="token string">"github.com/kataras/iris/v12/mvc"</span>
+	<span class="token string">"myTest/demo_home/blond_filter/controller"</span>
+	<span class="token string">"myTest/demo_home/blond_filter/util"</span>
+<span class="token punctuation">)</span>
+
+<span class="token keyword">func</span> <span class="token function">main</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+	<span class="token comment">//pg.Engine.Sync(new(model.Player))</span>
+	app <span class="token operator">:=</span> iris<span class="token punctuation">.</span><span class="token function">New</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+	pMvc <span class="token operator">:=</span> mvc<span class="token punctuation">.</span><span class="token function">New</span><span class="token punctuation">(</span>app<span class="token punctuation">.</span><span class="token function">Party</span><span class="token punctuation">(</span><span class="token string">"player"</span><span class="token punctuation">)</span><span class="token punctuation">)</span>
+	pMvc<span class="token punctuation">.</span><span class="token function">Handle</span><span class="token punctuation">(</span><span class="token function">new</span><span class="token punctuation">(</span>controller<span class="token punctuation">.</span>PlayerController<span class="token punctuation">)</span><span class="token punctuation">)</span>
+	util<span class="token punctuation">.</span><span class="token function">InitBlondFilter</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+	app<span class="token punctuation">.</span><span class="token function">Listen</span><span class="token punctuation">(</span><span class="token string">":9999"</span><span class="token punctuation">,</span> <span class="token boolean">nil</span><span class="token punctuation">)</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<h5><a id="_518"></a>演示</h5> 
+<ol><li>请求不存在的用户<br> <img src="https://images2.imgbox.com/da/00/5rgO3fop_o.png" alt="在这里插入图片描述"></li><li>查看：已经被布隆过滤器拦截，恶意请求不会打到Redis和Postgres<br> <img src="https://images2.imgbox.com/30/de/VzYG7L8C_o.png" alt="在这里插入图片描述"></li></ol> 
+<blockquote> 
+ <p>如果查询存在的数据，当布隆过滤器中包含时，则会继续查询Redis和Postgres，查看数据是否真的存在。（因为存在Hash冲突，导致可能误判。)</p> 
+ <ul><li>比如id=1982与id=28算出来的hash值一致，但其实只有28存在Redis。这时我们通过hash值查询1982，bitmap对应offset返回值为表示存在值，但其实这时Redis中只有28的数据。因此我们要继续向下查询看Redis和Postgres是否真的存在1982的数据。</li></ul> 
+</blockquote>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/d4f9f32db003bd0b35fb21b8f5aa54f7/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">@RequestMapping与@GetMapping和@PostMapping等注解的区别</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/fade4d7f9400af1df005da773cc25bbb/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">代码审核的标准</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

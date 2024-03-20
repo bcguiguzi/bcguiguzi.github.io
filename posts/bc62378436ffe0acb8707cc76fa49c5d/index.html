@@ -1,0 +1,327 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>学习open62541 --- [76] 使用智能指针处理内存释放问题 - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="学习open62541 --- [76] 使用智能指针处理内存释放问题" />
+<meta property="og:description" content="在使用监测项时，一般都会加一个context，然后在回调函数里使用这个context，这就需要保证context的内存空间在执行回调函数时是有效的。往往有以下三种方法：
+使用静态内存空间：使用static创建静态变量，然后把变量地址当做context，缺点是一个静态变量只能用于一个监测项，函数无法重用（重用会造成多个监测项使用同一个静态变量）使用局部内存空间：保证局部变量一直有效就行，例如局部变量定义在main函数里，因为main函数一直在栈上，所以这个局部变量会一直有效。这个只能用于简单项目。使用动态内存：在创建监测项时直接动态分配内存，比较简单，就是释放内存比较费劲 一般来说，都是使用第三个方法。本文先举例讲解第三个方法，最后讲述如何使用智能指针去解决释放问题。
+一 例子 下面是个简单的监测项例子，server端添加一个变量，然后创建监测项去监测该变量，再添加一个定时任务去每隔2s把该变量的值加1，从而可以触发监测的回调函数，
+// server.cpp #include &lt;memory&gt; #include &lt;signal.h&gt; #include &lt;stdlib.h&gt; #include &lt;unistd.h&gt; #include &#34;open62541.h&#34; UA_Boolean running = true; void stopHandler(int sign) { UA_LOG_INFO(UA_Log_Stdout, UA_LOGCATEGORY_SERVER, &#34;received ctrl-c&#34;); running = false; } UA_UInt32 monid = 0; UA_NodeId addTheAnswerVariable(UA_Server *server) { /* Define the attribute of the myInteger variable node */ UA_VariableAttributes attr = UA_VariableAttributes_default; UA_Int32 myInteger = 1; UA_Variant_setScalar(&amp;attr.value, &amp;myInteger, &amp;UA_TYPES[UA_TYPES_INT32]); attr.description = UA_LOCALIZEDTEXT((char*)&#34;en-US&#34;, (char*)&#34;the answer&#34;); attr.displayName = UA_LOCALIZEDTEXT((char*)&#34;" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/bc62378436ffe0acb8707cc76fa49c5d/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-05-21T14:45:45+08:00" />
+<meta property="article:modified_time" content="2023-05-21T14:45:45+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">学习open62541 --- [76] 使用智能指针处理内存释放问题</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p>在使用监测项时，一般都会加一个context，然后在回调函数里使用这个context，这就需要保证context的内存空间在执行回调函数时是有效的。往往有以下三种方法：</p> 
+<ol><li>使用静态内存空间：使用static创建静态变量，然后把变量地址当做context，缺点是一个静态变量只能用于一个监测项，函数无法重用（重用会造成多个监测项使用同一个静态变量）</li><li>使用局部内存空间：保证局部变量一直有效就行，例如局部变量定义在main函数里，因为main函数一直在栈上，所以这个局部变量会一直有效。这个只能用于简单项目。</li><li>使用动态内存：在创建监测项时直接动态分配内存，比较简单，就是释放内存比较费劲</li></ol> 
+<p>一般来说，都是使用第三个方法。本文先举例讲解第三个方法，最后讲述如何使用智能指针去解决释放问题。</p> 
+<hr> 
+<h3><a id="__9"></a>一 例子</h3> 
+<p>下面是个简单的监测项例子，server端添加一个变量，然后创建监测项去监测该变量，再添加一个定时任务去每隔2s把该变量的值加1，从而可以触发监测的回调函数，</p> 
+<pre><code class="prism language-cpp"><span class="token comment">// server.cpp</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;memory&gt;</span></span>
+
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;signal.h&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;stdlib.h&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;unistd.h&gt;</span></span>
+
+
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">"open62541.h"</span></span>
+
+UA_Boolean running <span class="token operator">=</span> <span class="token boolean">true</span><span class="token punctuation">;</span>
+
+<span class="token keyword">void</span> <span class="token function">stopHandler</span><span class="token punctuation">(</span><span class="token keyword">int</span> sign<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token function">UA_LOG_INFO</span><span class="token punctuation">(</span>UA_Log_Stdout<span class="token punctuation">,</span> UA_LOGCATEGORY_SERVER<span class="token punctuation">,</span> <span class="token string">"received ctrl-c"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    running <span class="token operator">=</span> <span class="token boolean">false</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+UA_UInt32 monid <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+
+
+UA_NodeId <span class="token function">addTheAnswerVariable</span><span class="token punctuation">(</span>UA_Server <span class="token operator">*</span>server<span class="token punctuation">)</span> 
+<span class="token punctuation">{<!-- --></span>
+    <span class="token comment">/* Define the attribute of the myInteger variable node */</span>
+    UA_VariableAttributes attr <span class="token operator">=</span> UA_VariableAttributes_default<span class="token punctuation">;</span>
+    UA_Int32 myInteger <span class="token operator">=</span> <span class="token number">1</span><span class="token punctuation">;</span>
+    <span class="token function">UA_Variant_setScalar</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>attr<span class="token punctuation">.</span>value<span class="token punctuation">,</span> <span class="token operator">&amp;</span>myInteger<span class="token punctuation">,</span> <span class="token operator">&amp;</span>UA_TYPES<span class="token punctuation">[</span>UA_TYPES_INT32<span class="token punctuation">]</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    attr<span class="token punctuation">.</span>description <span class="token operator">=</span> <span class="token function">UA_LOCALIZEDTEXT</span><span class="token punctuation">(</span><span class="token punctuation">(</span><span class="token keyword">char</span><span class="token operator">*</span><span class="token punctuation">)</span><span class="token string">"en-US"</span><span class="token punctuation">,</span> <span class="token punctuation">(</span><span class="token keyword">char</span><span class="token operator">*</span><span class="token punctuation">)</span><span class="token string">"the answer"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    attr<span class="token punctuation">.</span>displayName <span class="token operator">=</span> <span class="token function">UA_LOCALIZEDTEXT</span><span class="token punctuation">(</span><span class="token punctuation">(</span><span class="token keyword">char</span><span class="token operator">*</span><span class="token punctuation">)</span><span class="token string">"en-US"</span><span class="token punctuation">,</span> <span class="token punctuation">(</span><span class="token keyword">char</span><span class="token operator">*</span><span class="token punctuation">)</span><span class="token string">"the answer"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    attr<span class="token punctuation">.</span>dataType <span class="token operator">=</span> UA_TYPES<span class="token punctuation">[</span>UA_TYPES_INT32<span class="token punctuation">]</span><span class="token punctuation">.</span>typeId<span class="token punctuation">;</span>
+    attr<span class="token punctuation">.</span>accessLevel <span class="token operator">=</span> UA_ACCESSLEVELMASK_READ <span class="token operator">|</span> UA_ACCESSLEVELMASK_WRITE<span class="token punctuation">;</span>
+
+    <span class="token comment">/* Add the variable node to the information model */</span>
+    UA_NodeId theAnswerNodeId <span class="token operator">=</span> <span class="token function">UA_NODEID_NUMERIC</span><span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">,</span> <span class="token number">62541</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    UA_QualifiedName myIntegerName <span class="token operator">=</span> <span class="token function">UA_QUALIFIEDNAME</span><span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">,</span> <span class="token punctuation">(</span><span class="token keyword">char</span><span class="token operator">*</span><span class="token punctuation">)</span><span class="token string">"the answer"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    UA_NodeId parentNodeId <span class="token operator">=</span> <span class="token function">UA_NODEID_NUMERIC</span><span class="token punctuation">(</span><span class="token number">0</span><span class="token punctuation">,</span> UA_NS0ID_OBJECTSFOLDER<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    UA_NodeId parentReferenceNodeId <span class="token operator">=</span> <span class="token function">UA_NODEID_NUMERIC</span><span class="token punctuation">(</span><span class="token number">0</span><span class="token punctuation">,</span> UA_NS0ID_ORGANIZES<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token function">UA_Server_addVariableNode</span><span class="token punctuation">(</span>server<span class="token punctuation">,</span> theAnswerNodeId<span class="token punctuation">,</span> parentNodeId<span class="token punctuation">,</span>
+                              parentReferenceNodeId<span class="token punctuation">,</span> myIntegerName<span class="token punctuation">,</span>
+                              <span class="token function">UA_NODEID_NUMERIC</span><span class="token punctuation">(</span><span class="token number">0</span><span class="token punctuation">,</span> UA_NS0ID_BASEDATAVARIABLETYPE<span class="token punctuation">)</span><span class="token punctuation">,</span> attr<span class="token punctuation">,</span> <span class="token constant">NULL</span><span class="token punctuation">,</span> <span class="token constant">NULL</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    
+    <span class="token keyword">return</span> theAnswerNodeId<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+
+<span class="token keyword">void</span> <span class="token function">dataChangeNotificationCallback</span><span class="token punctuation">(</span>UA_Server <span class="token operator">*</span>server<span class="token punctuation">,</span> UA_UInt32 monitoredItemId<span class="token punctuation">,</span>
+                               <span class="token keyword">void</span> <span class="token operator">*</span>monitoredItemContext<span class="token punctuation">,</span> <span class="token keyword">const</span> UA_NodeId <span class="token operator">*</span>nodeId<span class="token punctuation">,</span>
+                               <span class="token keyword">void</span> <span class="token operator">*</span>nodeContext<span class="token punctuation">,</span> UA_UInt32 attributeId<span class="token punctuation">,</span>
+                               <span class="token keyword">const</span> UA_DataValue <span class="token operator">*</span>value<span class="token punctuation">)</span> 
+<span class="token punctuation">{<!-- --></span>
+    <span class="token function">UA_LOG_INFO</span><span class="token punctuation">(</span>UA_Log_Stdout<span class="token punctuation">,</span> UA_LOGCATEGORY_SERVER<span class="token punctuation">,</span> <span class="token string">"Received Notification"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    
+    UA_NodeId <span class="token operator">*</span> targetNodeId <span class="token operator">=</span> <span class="token punctuation">(</span>UA_NodeId<span class="token operator">*</span><span class="token punctuation">)</span>monitoredItemContext<span class="token punctuation">;</span>
+
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>monitoredItemId <span class="token operator">==</span> monid <span class="token operator">&amp;&amp;</span> <span class="token function">UA_NodeId_equal</span><span class="token punctuation">(</span>nodeId<span class="token punctuation">,</span> targetNodeId<span class="token punctuation">)</span><span class="token punctuation">)</span>
+    <span class="token punctuation">{<!-- --></span>
+        UA_Int32 currentValue <span class="token operator">=</span> <span class="token operator">*</span><span class="token punctuation">(</span>UA_Int32<span class="token operator">*</span><span class="token punctuation">)</span><span class="token punctuation">(</span>value<span class="token operator">-&gt;</span>value<span class="token punctuation">.</span>data<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token function">UA_LOG_INFO</span><span class="token punctuation">(</span>UA_Log_Stdout<span class="token punctuation">,</span> UA_LOGCATEGORY_SERVER<span class="token punctuation">,</span> <span class="token string">"Current Value: %d\n"</span><span class="token punctuation">,</span> currentValue<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+
+
+UA_UInt32 <span class="token function">addMonitoredItemToVariable</span><span class="token punctuation">(</span>UA_Server <span class="token operator">*</span>server<span class="token punctuation">,</span> UA_NodeId TargetNodeId<span class="token punctuation">)</span> 
+<span class="token punctuation">{<!-- --></span>
+    UA_MonitoredItemCreateResult result<span class="token punctuation">;</span>
+    
+    UA_MonitoredItemCreateRequest monRequest <span class="token operator">=</span> <span class="token function">UA_MonitoredItemCreateRequest_default</span><span class="token punctuation">(</span>TargetNodeId<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    
+    monRequest<span class="token punctuation">.</span>requestedParameters<span class="token punctuation">.</span>samplingInterval <span class="token operator">=</span> <span class="token number">100.0</span><span class="token punctuation">;</span> <span class="token comment">// 100 ms interval</span>
+    
+    <span class="token comment">// 使用动态内存</span>
+    UA_NodeId <span class="token operator">*</span> pContext <span class="token operator">=</span> <span class="token punctuation">(</span>UA_NodeId <span class="token operator">*</span><span class="token punctuation">)</span><span class="token function">UA_malloc</span><span class="token punctuation">(</span><span class="token keyword">sizeof</span><span class="token punctuation">(</span>UA_NodeId<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token function">UA_NodeId_copy</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>TargetNodeId<span class="token punctuation">,</span> pContext<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    result <span class="token operator">=</span> <span class="token function">UA_Server_createDataChangeMonitoredItem</span><span class="token punctuation">(</span>server<span class="token punctuation">,</span> UA_TIMESTAMPSTORETURN_BOTH<span class="token punctuation">,</span>
+                                            monRequest<span class="token punctuation">,</span> <span class="token punctuation">(</span><span class="token keyword">void</span><span class="token operator">*</span><span class="token punctuation">)</span>pContext<span class="token punctuation">,</span> 
+                                            dataChangeNotificationCallback<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>result<span class="token punctuation">.</span>statusCode <span class="token operator">==</span> UA_STATUSCODE_GOOD<span class="token punctuation">)</span>
+    <span class="token punctuation">{<!-- --></span>
+        
+        <span class="token function">UA_LOG_INFO</span><span class="token punctuation">(</span>UA_Log_Stdout<span class="token punctuation">,</span> UA_LOGCATEGORY_SERVER<span class="token punctuation">,</span> <span class="token string">"Add monitored item for variable, OK."</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">return</span> result<span class="token punctuation">.</span>monitoredItemId<span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+    <span class="token keyword">else</span>
+    <span class="token punctuation">{<!-- --></span>
+        <span class="token function">UA_LOG_ERROR</span><span class="token punctuation">(</span>UA_Log_Stdout<span class="token punctuation">,</span> UA_LOGCATEGORY_SERVER<span class="token punctuation">,</span> <span class="token string">"Add monitored item for variable, Fail."</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">return</span> <span class="token number">0xFFFFFFFF</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+
+
+<span class="token keyword">void</span> <span class="token function">cycleCallback</span><span class="token punctuation">(</span>UA_Server <span class="token operator">*</span>server<span class="token punctuation">,</span> <span class="token keyword">void</span> <span class="token operator">*</span>data<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">static</span> UA_Int32 update <span class="token operator">=</span> <span class="token number">2</span><span class="token punctuation">;</span>
+
+    UA_NodeId <span class="token operator">*</span>targetNodeId <span class="token operator">=</span> <span class="token keyword">static_cast</span><span class="token operator">&lt;</span>UA_NodeId<span class="token operator">*</span><span class="token operator">&gt;</span><span class="token punctuation">(</span>data<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    UA_Variant myVar<span class="token punctuation">;</span>
+    <span class="token function">UA_Variant_init</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>myVar<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token function">UA_Variant_setScalar</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>myVar<span class="token punctuation">,</span> <span class="token operator">&amp;</span>update<span class="token punctuation">,</span> <span class="token operator">&amp;</span>UA_TYPES<span class="token punctuation">[</span>UA_TYPES_INT32<span class="token punctuation">]</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token function">UA_Server_writeValue</span><span class="token punctuation">(</span>server<span class="token punctuation">,</span> <span class="token operator">*</span>targetNodeId<span class="token punctuation">,</span> myVar<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>update<span class="token operator">++</span> <span class="token operator">==</span> <span class="token number">1000</span><span class="token punctuation">)</span>
+    <span class="token punctuation">{<!-- --></span>
+        update <span class="token operator">=</span> <span class="token number">1</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+
+
+<span class="token keyword">int</span> <span class="token function">main</span><span class="token punctuation">(</span><span class="token keyword">void</span><span class="token punctuation">)</span> 
+<span class="token punctuation">{<!-- --></span>    
+    <span class="token function">signal</span><span class="token punctuation">(</span>SIGINT<span class="token punctuation">,</span> stopHandler<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token function">signal</span><span class="token punctuation">(</span>SIGTERM<span class="token punctuation">,</span> stopHandler<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    UA_Server <span class="token operator">*</span>server <span class="token operator">=</span> <span class="token function">UA_Server_new</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token function">UA_ServerConfig_setDefault</span><span class="token punctuation">(</span><span class="token function">UA_Server_getConfig</span><span class="token punctuation">(</span>server<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    UA_NodeId targetNodeId <span class="token operator">=</span> <span class="token function">addTheAnswerVariable</span><span class="token punctuation">(</span>server<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+
+    monid <span class="token operator">=</span> <span class="token function">addMonitoredItemToVariable</span><span class="token punctuation">(</span>server<span class="token punctuation">,</span> targetNodeId<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token function">UA_LOG_INFO</span><span class="token punctuation">(</span>UA_Log_Stdout<span class="token punctuation">,</span> UA_LOGCATEGORY_SERVER<span class="token punctuation">,</span> <span class="token string">"Monitored item id: %d\n"</span><span class="token punctuation">,</span> monid<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+
+    UA_UInt64 callbackId <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+    <span class="token function">UA_Server_addRepeatedCallback</span><span class="token punctuation">(</span>server<span class="token punctuation">,</span> cycleCallback<span class="token punctuation">,</span> <span class="token operator">&amp;</span>targetNodeId<span class="token punctuation">,</span> <span class="token number">2000</span><span class="token punctuation">,</span> <span class="token operator">&amp;</span>callbackId<span class="token punctuation">)</span><span class="token punctuation">;</span> <span class="token comment">// call every 2s</span>
+
+
+
+    UA_StatusCode retval <span class="token operator">=</span> <span class="token function">UA_Server_run</span><span class="token punctuation">(</span>server<span class="token punctuation">,</span> <span class="token operator">&amp;</span>running<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token function">UA_Server_delete</span><span class="token punctuation">(</span>server<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token keyword">return</span> retval <span class="token operator">==</span> UA_STATUSCODE_GOOD <span class="token operator">?</span> EXIT_SUCCESS <span class="token operator">:</span> EXIT_FAILURE<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+</code></pre> 
+<p>PS: <strong>所添加的变量，其nodeid是数字形式的，不能是string类型的</strong></p> 
+<p>context的内存分配是在函数addMonitoredItemToVariable()里。</p> 
+<p>编译运行，一切OK，如下，回调函数也正常运行<br> <img src="https://images2.imgbox.com/4a/ae/OIyUMwME_o.png" alt="在这里插入图片描述"><br> 但是，如果使用Valgrind去检查，就会发现有内存泄露，命令如下，demo是本人的可执行文件名字，</p> 
+<pre><code class="prism language-bash">valgrind --tool<span class="token operator">=</span>memcheck --leak-check<span class="token operator">=</span>full ./demo
+</code></pre> 
+<p>启动后，等回调函数执行之后按Ctrl+c结束，然后会给出分析结果，<br> <img src="https://images2.imgbox.com/30/c5/IFk1op82_o.png" alt="在这里插入图片描述"><br> 可以看到有24个字节的内存泄露，UA_NodeId占用的大小就是24个字节。</p> 
+<p>根本原因是我们动态分配了内存之后，没有释放，虽然最终程序结束会释放内存，但如果在程序运行时，我们删除这个监测项而没有释放对应的内存，那么就会内存泄露。</p> 
+<hr> 
+<h3><a id="__169"></a>二 使用智能指针</h3> 
+<p>如果项目使用C++开发的，那么就可以使用shared_ptr来解决释放问题。重新编写addMonitoredItemToVariable()，如下，</p> 
+<pre><code class="prism language-cpp">std<span class="token operator">::</span>shared_ptr<span class="token operator">&lt;</span>UA_NodeId<span class="token operator">&gt;</span> <span class="token function">addMonitoredItemToVariable</span><span class="token punctuation">(</span>UA_Server <span class="token operator">*</span>server<span class="token punctuation">,</span> UA_NodeId TargetNodeId<span class="token punctuation">,</span> UA_UInt32<span class="token operator">&amp;</span> monitoredItemId<span class="token punctuation">)</span> 
+<span class="token punctuation">{<!-- --></span>
+    UA_MonitoredItemCreateResult result<span class="token punctuation">;</span>
+    
+    UA_MonitoredItemCreateRequest monRequest <span class="token operator">=</span> <span class="token function">UA_MonitoredItemCreateRequest_default</span><span class="token punctuation">(</span>TargetNodeId<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    
+    monRequest<span class="token punctuation">.</span>requestedParameters<span class="token punctuation">.</span>samplingInterval <span class="token operator">=</span> <span class="token number">100.0</span><span class="token punctuation">;</span> <span class="token comment">// 100 ms interval</span>
+
+    <span class="token comment">// UA_NodeId * pContext = (UA_NodeId *)UA_malloc(sizeof(UA_NodeId));</span>
+    <span class="token comment">// UA_NodeId_copy(&amp;TargetNodeId, pContext);</span>
+    std<span class="token operator">::</span>shared_ptr<span class="token operator">&lt;</span>UA_NodeId<span class="token operator">&gt;</span> spContext <span class="token operator">=</span> std<span class="token operator">::</span>make_shared<span class="token operator">&lt;</span>UA_NodeId<span class="token operator">&gt;</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token function">UA_NodeId_copy</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>TargetNodeId<span class="token punctuation">,</span> spContext<span class="token punctuation">.</span><span class="token function">get</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    result <span class="token operator">=</span> <span class="token function">UA_Server_createDataChangeMonitoredItem</span><span class="token punctuation">(</span>server<span class="token punctuation">,</span> UA_TIMESTAMPSTORETURN_BOTH<span class="token punctuation">,</span>
+                                            monRequest<span class="token punctuation">,</span> <span class="token punctuation">(</span><span class="token keyword">void</span><span class="token operator">*</span><span class="token punctuation">)</span>spContext<span class="token punctuation">.</span><span class="token function">get</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span> 
+                                            dataChangeNotificationCallback<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>result<span class="token punctuation">.</span>statusCode <span class="token operator">==</span> UA_STATUSCODE_GOOD<span class="token punctuation">)</span>
+    <span class="token punctuation">{<!-- --></span>
+        
+        <span class="token function">UA_LOG_INFO</span><span class="token punctuation">(</span>UA_Log_Stdout<span class="token punctuation">,</span> UA_LOGCATEGORY_SERVER<span class="token punctuation">,</span> <span class="token string">"Add monitored item for variable, OK."</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        monitoredItemId <span class="token operator">=</span> result<span class="token punctuation">.</span>monitoredItemId<span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+    <span class="token keyword">else</span>
+    <span class="token punctuation">{<!-- --></span>
+        <span class="token function">UA_LOG_ERROR</span><span class="token punctuation">(</span>UA_Log_Stdout<span class="token punctuation">,</span> UA_LOGCATEGORY_SERVER<span class="token punctuation">,</span> <span class="token string">"Add monitored item for variable, Fail."</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        monitoredItemId <span class="token operator">=</span> <span class="token number">0xFFFFFFFF</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token keyword">return</span> spContext<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>函数里使用spContext 来指向context内存，最后返回这个智能指针。</p> 
+<p>main函数如下，创建了一个holdSP来承接addMonitoredItemToVariable()的返回值，<strong>有了这个holdSP，那么智能指针指向的内存就不会被释放</strong>，</p> 
+<pre><code class="prism language-cpp"><span class="token keyword">int</span> <span class="token function">main</span><span class="token punctuation">(</span><span class="token keyword">void</span><span class="token punctuation">)</span> 
+<span class="token punctuation">{<!-- --></span>    
+    <span class="token function">signal</span><span class="token punctuation">(</span>SIGINT<span class="token punctuation">,</span> stopHandler<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token function">signal</span><span class="token punctuation">(</span>SIGTERM<span class="token punctuation">,</span> stopHandler<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    UA_Server <span class="token operator">*</span>server <span class="token operator">=</span> <span class="token function">UA_Server_new</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token function">UA_ServerConfig_setDefault</span><span class="token punctuation">(</span><span class="token function">UA_Server_getConfig</span><span class="token punctuation">(</span>server<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    UA_NodeId targetNodeId <span class="token operator">=</span> <span class="token function">addTheAnswerVariable</span><span class="token punctuation">(</span>server<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    
+    std<span class="token operator">::</span>shared_ptr<span class="token operator">&lt;</span>UA_NodeId<span class="token operator">&gt;</span> spContext<span class="token punctuation">;</span>
+    monid <span class="token operator">=</span> <span class="token function">addMonitoredItemToVariable</span><span class="token punctuation">(</span>server<span class="token punctuation">,</span> targetNodeId<span class="token punctuation">,</span> spContext<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token function">UA_LOG_INFO</span><span class="token punctuation">(</span>UA_Log_Stdout<span class="token punctuation">,</span> UA_LOGCATEGORY_SERVER<span class="token punctuation">,</span> <span class="token string">"Monitored item id: %d\n"</span><span class="token punctuation">,</span> monid<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    
+
+    UA_UInt64 callbackId <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+    <span class="token function">UA_Server_addRepeatedCallback</span><span class="token punctuation">(</span>server<span class="token punctuation">,</span> cycleCallback<span class="token punctuation">,</span> <span class="token operator">&amp;</span>targetNodeId<span class="token punctuation">,</span> <span class="token number">2000</span><span class="token punctuation">,</span> <span class="token operator">&amp;</span>callbackId<span class="token punctuation">)</span><span class="token punctuation">;</span> <span class="token comment">// call every 2s</span>
+
+
+
+    UA_StatusCode retval <span class="token operator">=</span> <span class="token function">UA_Server_run</span><span class="token punctuation">(</span>server<span class="token punctuation">,</span> <span class="token operator">&amp;</span>running<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token function">UA_Server_delete</span><span class="token punctuation">(</span>server<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token keyword">return</span> retval <span class="token operator">==</span> UA_STATUSCODE_GOOD <span class="token operator">?</span> EXIT_SUCCESS <span class="token operator">:</span> EXIT_FAILURE<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>然后重新编译运行，依然一切OK，最后使用Valgrind来分析内存，<br> <img src="https://images2.imgbox.com/6e/f1/LCvEQ7kH_o.png" alt="在这里插入图片描述"></p> 
+<p>可以看出没有内存泄漏了。</p> 
+<hr> 
+<h3><a id="__246"></a>三 总结</h3> 
+<p>本文讲述如何使用智能指针来存放context内存，使用完后只要再创建一个智能指针存放一下，这样当程序结束时就会自动释放，不用手动去释放，这样就不会担心忘记内存泄漏了。</p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/5a5ab131b769b6a6e65976007153e0ce/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">2023OD机试---特殊赛制投篮大赛</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/9453c2cfbd3fe5dbc19b7f8a42605bcc/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">开发ChatGPT插件-入门</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

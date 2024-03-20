@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>uboot启动流程分析 - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="uboot启动流程分析" />
+<meta property="og:description" content="目录
+1.uboot源码编译
+2.确定u-boot的入口函数和入口地址
+3. _start函数分析
+4.lowlevel_init函数分析
+5._main函数分析
+6.board_init_r函数分析
+7.run_main_loop函数分析
+8.cmd_process分析
+9.bootz 启动 Linux 内核过程
+10.总结
+1.uboot源码编译 首先是将uboot源码编译一次，分析需要结合编译后的文件
+.config 是由make xxx_defconfig之后产生的一个副本
+u-boot.lds是 arch/arm/cpu/u-boot.lds的副本
+u-boot.map是u-boot.bin的内存映射文件，详细记录了固件的内存分布情况
+2.确定u-boot的入口函数和入口地址 通过u-boot.lds链接文件可以知道uboot的入口点是_start
+通过u-boot.map可以知道u-boot的链接起始地址是0x87800000
+3. _start函数分析 _start函数在文件 arch/arm/lib/vectors.S 中有定义
+其实就是一个中断向量表，和单片机的套路是一样的，第一个执行的是reset复位函数，reset 函数在 arch/arm/cpu/armv7/start.S 文件中，源码中有众多的start.s文件，但imx6ull是ARMV7架构的，所以是armv7下的start.S
+reset的调用关系如下图
+4.lowlevel_init函数分析 函数 lowlevel_init 在文件 arch/arm/cpu/armv7/lowlevel_init.S 中定义
+规划内存，设置栈顶地址，预留出global data 的位置，最终的规划后的内存如下
+此时的uboot还是在内部的ocram内存中，还没搬迁到SDRAM中运行
+最后调用s_init函数，在arch/arm/cpu/armv7/mx6/soc.c中，但此函数对于imx6ull来说是一个空函数，啥事不做。
+5._main函数分析 _main 函数在文件 arch/arm/lib/crt0.S 中
+经过relocat_code和relocate_vetors函数此时的uboot已经是运行到外部的sdram中了
+最终的内存分配图如下
+初始化一系列外设，比如串口、定时器，或者打印一些消息等。
+初始化 gd 的各个成员变量，uboot 会将自己重定位到 DRAM 最后面的地址区域，也就
+是将自己拷贝到 DRAM 最后面的内存区域中。这么做的目的是给 Linux 腾出空间，防止 Linux
+kernel 覆盖掉 uboot，将 DRAM 前面的区域完整的空出来。" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/c4f1fc26ddf82abf430769b4989044f8/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2022-10-19T17:32:10+08:00" />
+<meta property="article:modified_time" content="2022-10-19T17:32:10+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">uboot启动流程分析</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p id="main-toc"><strong>目录</strong></p> 
+<p id="1.uboot%E6%BA%90%E7%A0%81%E7%BC%96%E8%AF%91-toc" style="margin-left:0px;"><a href="#1.uboot%E6%BA%90%E7%A0%81%E7%BC%96%E8%AF%91" rel="nofollow">1.uboot源码编译</a></p> 
+<p id="2.%E7%A1%AE%E5%AE%9Au-boot%E7%9A%84%E5%85%A5%E5%8F%A3%E5%87%BD%E6%95%B0%E5%92%8C%E5%85%A5%E5%8F%A3%E5%9C%B0%E5%9D%80-toc" style="margin-left:0px;"><a href="#2.%E7%A1%AE%E5%AE%9Au-boot%E7%9A%84%E5%85%A5%E5%8F%A3%E5%87%BD%E6%95%B0%E5%92%8C%E5%85%A5%E5%8F%A3%E5%9C%B0%E5%9D%80" rel="nofollow">2.确定u-boot的入口函数和入口地址</a></p> 
+<p id="%C2%A03.%20_start%E5%87%BD%E6%95%B0%E5%88%86%E6%9E%90-toc" style="margin-left:0px;"><a href="#%C2%A03.%20_start%E5%87%BD%E6%95%B0%E5%88%86%E6%9E%90" rel="nofollow">3. _start函数分析</a></p> 
+<p id="%C2%A04.lowlevel_init%E5%87%BD%E6%95%B0%E5%88%86%E6%9E%90-toc" style="margin-left:0px;"><a href="#%C2%A04.lowlevel_init%E5%87%BD%E6%95%B0%E5%88%86%E6%9E%90" rel="nofollow">4.lowlevel_init函数分析</a></p> 
+<p id="5._main%E5%87%BD%E6%95%B0%E5%88%86%E6%9E%90-toc" style="margin-left:0px;"><a href="#5._main%E5%87%BD%E6%95%B0%E5%88%86%E6%9E%90" rel="nofollow">5._main函数分析</a></p> 
+<p id="6.board_init_r%E5%87%BD%E6%95%B0%E5%88%86%E6%9E%90-toc" style="margin-left:0px;"><a href="#6.board_init_r%E5%87%BD%E6%95%B0%E5%88%86%E6%9E%90" rel="nofollow">6.board_init_r函数分析</a></p> 
+<p id="%C2%A07.run_main_loop%E5%87%BD%E6%95%B0%E5%88%86%E6%9E%90-toc" style="margin-left:0px;"><a href="#%C2%A07.run_main_loop%E5%87%BD%E6%95%B0%E5%88%86%E6%9E%90" rel="nofollow">7.run_main_loop函数分析</a></p> 
+<p id="%C2%A08.cmd_process%E5%88%86%E6%9E%90-toc" style="margin-left:0px;"><a href="#%C2%A08.cmd_process%E5%88%86%E6%9E%90" rel="nofollow">8.cmd_process分析</a></p> 
+<p id="9.bootz%20%C2%A0%E5%90%AF%E5%8A%A8%20Linux%20%E5%86%85%E6%A0%B8%E8%BF%87%E7%A8%8B-toc" style="margin-left:0px;"><a href="#9.bootz%20%C2%A0%E5%90%AF%E5%8A%A8%20Linux%20%E5%86%85%E6%A0%B8%E8%BF%87%E7%A8%8B" rel="nofollow">9.bootz  启动 Linux 内核过程</a></p> 
+<p id="10.%E6%80%BB%E7%BB%93-toc" style="margin-left:0px;"><a href="#10.%E6%80%BB%E7%BB%93" rel="nofollow">10.总结</a></p> 
+<hr id="hr-toc"> 
+<p></p> 
+<p></p> 
+<p></p> 
+<p></p> 
+<h2 id="1.uboot%E6%BA%90%E7%A0%81%E7%BC%96%E8%AF%91">1.uboot源码编译</h2> 
+<p>首先是将uboot源码编译一次，分析需要结合编译后的文件</p> 
+<p>.config 是由make xxx_defconfig之后产生的一个副本</p> 
+<p>u-boot.lds是 arch/arm/cpu/u-boot.lds的副本</p> 
+<p>u-boot.map是u-boot.bin的内存映射文件，详细记录了固件的内存分布情况</p> 
+<p></p> 
+<h2 id="2.%E7%A1%AE%E5%AE%9Au-boot%E7%9A%84%E5%85%A5%E5%8F%A3%E5%87%BD%E6%95%B0%E5%92%8C%E5%85%A5%E5%8F%A3%E5%9C%B0%E5%9D%80">2.确定u-boot的入口函数和入口地址</h2> 
+<p>通过u-boot.lds链接文件可以知道uboot的入口点是_start</p> 
+<p><img alt="" height="866" src="https://images2.imgbox.com/f3/6b/Jx8ZvsUQ_o.png" width="997"></p> 
+<p></p> 
+<p> 通过u-boot.map可以知道u-boot的链接起始地址是0x87800000</p> 
+<p><img alt="" height="909" src="https://images2.imgbox.com/80/21/jIgePHbm_o.png" width="1200"></p> 
+<h2 id="%C2%A03.%20_start%E5%87%BD%E6%95%B0%E5%88%86%E6%9E%90"> 3. _start函数分析</h2> 
+<p>_start函数在文件 arch/arm/lib/vectors.S 中有定义</p> 
+<p><img alt="" height="874" src="https://images2.imgbox.com/8f/c9/PL1JcT6N_o.png" width="866"></p> 
+<p> 其实就是一个中断向量表，和单片机的套路是一样的，第一个执行的是reset复位函数，reset 函数在 arch/arm/cpu/armv7/start.S 文件中，源码中有众多的start.s文件，但imx6ull是ARMV7架构的，所以是armv7下的start.S</p> 
+<p><img alt="" height="902" src="https://images2.imgbox.com/42/2c/f1wOTfev_o.png" width="908"></p> 
+<p> reset的调用关系如下图</p> 
+<p><img alt="" height="472" src="https://images2.imgbox.com/e5/b7/jw5jxSbq_o.png" width="1200"></p> 
+<h2 id="%C2%A04.lowlevel_init%E5%87%BD%E6%95%B0%E5%88%86%E6%9E%90">4.lowlevel_init函数分析</h2> 
+<p>函数 lowlevel_init 在文件 arch/arm/cpu/armv7/lowlevel_init.S 中定义</p> 
+<p><img alt="" height="867" src="https://images2.imgbox.com/39/fa/5SmSp1lw_o.png" width="995"></p> 
+<p>规划内存，设置栈顶地址，预留出global data 的位置，最终的规划后的内存如下</p> 
+<p><img alt="" height="330" src="https://images2.imgbox.com/c2/07/64q8qfGD_o.png" width="782"></p> 
+<p>此时的uboot还是在内部的ocram内存中，还没搬迁到SDRAM中运行</p> 
+<p></p> 
+<p>最后调用s_init函数，在arch/arm/cpu/armv7/mx6/soc.c中，但此函数对于imx6ull来说是一个空函数，啥事不做。</p> 
+<h2 id="5._main%E5%87%BD%E6%95%B0%E5%88%86%E6%9E%90">5._main函数分析</h2> 
+<p>_main 函数在文件 arch/arm/lib/crt0.S 中</p> 
+<p> </p> 
+<p><img alt="" height="930" src="https://images2.imgbox.com/69/4c/Obalk506_o.png" width="1082"></p> 
+<p style="text-align:center;"><img alt="" src="https://images2.imgbox.com/63/d4/86bUNJjK_o.png"></p> 
+<p> 经过relocat_code和relocate_vetors函数此时的uboot已经是运行到外部的sdram中了</p> 
+<p> 最终的内存分配图如下</p> 
+<p><img alt="" height="745" src="https://images2.imgbox.com/76/03/vHhrbdax_o.png" width="806"></p> 
+<p>初始化一系列外设，比如串口、定时器，或者打印一些消息等。</p> 
+<p>初始化 gd 的各个成员变量，uboot 会将自己重定位到 DRAM 最后面的地址区域，也就<br> 是将自己拷贝到 DRAM 最后面的内存区域中。这么做的目的是给 Linux 腾出空间，防止 Linux<br> kernel 覆盖掉 uboot，将 DRAM 前面的区域完整的空出来。</p> 
+<h2 id="6.board_init_r%E5%87%BD%E6%95%B0%E5%88%86%E6%9E%90">6.board_init_r函数分析</h2> 
+<p>定义在在文件 common/board_r.c中</p> 
+<p><img alt="" height="953" src="https://images2.imgbox.com/d9/7c/UKiWe3xJ_o.png" width="934"></p> 
+<p style="text-align:center;"> <img alt="" src="https://images2.imgbox.com/67/a1/8o5K6wg5_o.png"></p> 
+<p style="text-align:center;"></p> 
+<h2 id="%C2%A07.run_main_loop%E5%87%BD%E6%95%B0%E5%88%86%E6%9E%90">7.run_main_loop函数分析</h2> 
+<p>定义在在文件 common/board_r.c中</p> 
+<p style="text-align:center;"></p> 
+<p style="text-align:center;"></p> 
+<p><img alt="" src="https://images2.imgbox.com/0f/48/TdtOnZnc_o.png"></p> 
+<p></p> 
+<p> </p> 
+<h2 id="%C2%A08.cmd_process%E5%88%86%E6%9E%90">8.cmd_process分析</h2> 
+<p>cmd_process执中首先会判断当前命令是否存在，不存在则报错</p> 
+<p> uboot使用宏U_BOOT_CMD来定义命令，宏 U_BOOT_CMD 定义在文件 include/command.h 中，定义如下：</p> 
+<p><img alt="" height="879" src="https://images2.imgbox.com/e7/94/wg0NPEHX_o.png" width="1162"></p> 
+<p>U_BOOT_CMD的宏定义最终将内容封装成cmd_tbl_s结构体，cmd_tbl_s详情如下</p> 
+<p> </p> 
+<p><img alt="" height="856" src="https://images2.imgbox.com/47/69/m1kRqX7x_o.png" width="1143"></p> 
+<p> 所有的uboot命令都会通过指定域属性链接到.u_boot_list段，在链接脚本中有体现</p> 
+<p><img alt="" height="130" src="https://images2.imgbox.com/26/70/X5zFwiD6_o.png" width="656"></p> 
+<p> 每个命令都有一个对应的命令执行函数，比如dhcp命令，对应do_dhcp函数，具体的命令形式如下</p> 
+<p><img alt="" height="140" src="https://images2.imgbox.com/8a/63/L9fNQMLA_o.png" width="593"></p> 
+<p> </p> 
+<p>xxx命令，对应do_xxx函数</p> 
+<p>cmd_process最终会调用cmd_tbl_s结构体中的成员变量cmd函数指针，比如执行xxx命令，最终是会调用你do_xxx函数</p> 
+<p>uboot源码的cmd文件夹下xxx.c文件对应的是xxx命令</p> 
+<h2 id="9.bootz%20%C2%A0%E5%90%AF%E5%8A%A8%20Linux%20%E5%86%85%E6%A0%B8%E8%BF%87%E7%A8%8B">9.bootz  启动 Linux 内核过程</h2> 
+<p>在启动 Linux 内核的时候都会用到一个重要的全局变量：<br> images，images 在文件 cmd/bootm.c 中有如下定义：</p> 
+<p>bootm_headers_t images;        /* pointers to os/initrd/fdt images */</p> 
+<p>bootm_headers_t中有几个重要的成员变量如下：</p> 
+<p><img alt="" height="797" src="https://images2.imgbox.com/f1/b9/JBuWppCM_o.png" width="1045"></p> 
+<p> </p> 
+<p>由上一小结可以知道bootz命令源文件是cmd文件夹下的bootm.c文件，文件中对用bootz的命令回调函数是do_bootz，接下来重点分析这个函数</p> 
+<figure class="image"> 
+ <img alt="" src="https://images2.imgbox.com/9c/02/rKpD6vDx_o.png"> 
+ <figcaption>
+   标题 
+ </figcaption> 
+</figure> 
+<p> </p> 
+<p style="text-align:center;"></p> 
+<p>tftp 80800000 zImage<br> tftp 83000000 imx6ull-14x14-emmc.dtb<br> bootz 80800000 – 83000000</p> 
+<h2 id="10.%E6%80%BB%E7%BB%93">10.总结</h2> 
+<p>1、uboot开始运行在内部ram中，待初始化完sdram(imx6ull无法初始化)后搬家至sdram空间的后面位置，目的是腾出起前面的空间给linux kernel。</p> 
+<p>2、bootargs参数通过设备树传递给linux kernel。</p> 
+<p style="text-align:center;"></p> 
+<p style="text-align:center;"></p> 
+<p style="text-align:center;"></p> 
+<p> </p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/49c6865f08cc47ae8dbc6e4dc4bee789/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">ArcGIS校园3D展示图制作详细教程</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/7dffcd8d574269dfdf2d6a23bc67537c/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">【JavaWeb】JSP的概述</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

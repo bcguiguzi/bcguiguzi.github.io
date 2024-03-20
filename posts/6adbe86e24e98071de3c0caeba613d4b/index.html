@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>论文于祥读及复现——《VDO-SLAM: A Visual Dynamic Object-aware SLAM System》 - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="论文于祥读及复现——《VDO-SLAM: A Visual Dynamic Object-aware SLAM System》" />
+<meta property="og:description" content="论文详读之------《一个视觉动态对象感知SLAM系统》 0. 出发点（暨摘要）1.引言2. 相关工作2.1 探索针对动态环境的健壮SLAM2.2 分别执行SLAM和运动对象跟踪(MOT)，作为传统SLAM的扩展，用于动态场景理解。2.3 对象SLAM（通常包括静态和动态对象）2.4 最近工作 3. 主要内容概括3.1 预处理3.1.1 对象实例分割3.1.2 光流估计 3.2 追踪3.2.1 模块一3.2.2 模块二 3.3 建图3.3.1 局部批量处理3.3.2 全局批量处理3.3.3 从建图到跟踪 4. 实验4.1 深度模型设置4.2 Oxford Multimotion数据集实验1.3.png 4.3 KITTI数据集实验4.3.1 相机位姿和物体运动4.3.2对象跟踪和速度4.3.3定性结果4.3.4讨论 5. 本文总结6. 个人读后感 论文网址：https://arxiv.org/pdf/2005.11052.pdf
+源码网址：https://github.com/halajun/vdo_slam
+0. 出发点（暨摘要） 将实时定位和建图(SLAM)估计与动态场景建模相结合，可以极大地促进机器人在动态环境中的自主性。机器人的路径规划和避障任务依赖于对场景中动态物体运动的准确估计。本文介绍了VDO-SLAM，这是一个健壮的视觉动态对象感知SLAM系统，它利用语义信息来实现对场景中动态刚性对象的精确运动估计和跟踪，而无需事先了解对象的形状或几何模型。该方法识别和跟踪环境中的动态对象和静态结构，并将这些信息集成到一个统一的SLAM框架中。最终获得高度精确的估计机器人的轨迹和物体的完整SE(3)运动，以及环境的时空地图。该系统能够从物体的SE(3)运动中提取线速度估计，为复杂动态环境中的导航提供了重要功能。我们在许多真实的室内和室外数据集上展示了所提出的系统的性能，结果显示出与最先进的算法相比，一致性和实质性的改进。源代码的开放源代码版本是可用的。
+1.引言 下图1为视觉动态对象感知SLAM系统的框架。
+Input为输入模块，输入为单目或者是双目的RGB图和深度图。首先立体深度估计都方法提取深度信息。为了充分利用基于图像的语义信息，同时采用了基于学习的单目系统，获得单目相机的深度信息；Pre-processing为预处理模块，主要进行对象实例分割和光流估计；Tracking为追踪模块，主要工作为特征检测、相机位姿估计、动态目标追踪和目标运动估计；Mapping为建图模块，主要进行局部批量优化和全局批量优化Output为最终的输出。 本文的主要贡献为：
+在机器人位姿、静态和动态3D点以及物体运动的统一估计框架中对动态场景建模的新公式；准确估计SE(3)动态物体的运动，优于最先进的算法，以及一种提取物体在场景中的速度的方法;一种鲁棒的方法来跟踪运动对象利用语义信息与处理间接遮挡的能力，导致语义对象分割失败;在复杂和引人注目的现实世界场景中演示完整系统。 2. 相关工作 目前，在不同的研究目的下，对于动态场景下的SLAM的研究主要分为以下3类
+2.1 探索针对动态环境的健壮SLAM 时期方法结果早期检测和删除动态场景中提取到的信息降低SLAM性能发展移除动态前景&#43;修复获重建被遮挡的静态场景DynaSLAM经典几何&#43;深度学习——&gt;检测和移除动态对象多视角信息——&gt;修复被遮挡的背景Light Field SLAM通过合成孔径成像（SAI）重建被遮挡的静态场景对重建的静态背景上的特征也进行了跟踪与利用较好的SLAM性能 所有的方法几乎都是将动态信息丢弃，但是这些被丢弃的信息对SLAM也许会有潜在的好处；
+除了SLAM之外，理解动态信息对机器人的其他任务（如：规划、控制和避障）也至关重要
+2.2 分别执行SLAM和运动对象跟踪(MOT)，作为传统SLAM的扩展，用于动态场景理解。 时期方法结果最新将估计问题分解为两个独立的估计器以便实时更新两个滤波器并行解决运动中的结构和运动物体的跟踪问题系统输出统一包含静态结构和运行物体轨迹的的三维动态地图解决了动态物体的SLAM物体随后整合语义约束进一步赶紧3D重建最近基于立体的密集映射算法具有大规模动态环境中，准确高效地重建静态背景和运动物体的优势 证明了将多目标跟踪与SLAM相结合的可行性，适用于动态场景的探索。
+通过适当的开发和建立机器人与静态背景、静态和动态物体之间的时空关系。证明了SLAM和多目标跟踪问题是相互有益的。
+2.3 对象SLAM（通常包括静态和动态对象） 这种算法通常需要对三维物体进行特定的建模和表示，有三维形状、曲面或体积模型、几何模型等，提取高级原语并整合到SLAM框架中。
+类型方法效果SLAM&#43;&#43;该范式在物体表层表示杂乱的场景在相机和物体姿态之间构建显示图实现联合姿态图优化密集SLAM的同时重建、分割和识别提出一种新颖的3D物体识别算法保证系统的鲁棒性提高估计物体姿态的准确性MaskFusion采用表面表示对场景中的物体进行建模和重建无需预先了解对象模型MID-Fusion采用基于八叉树的体积模型构建多目标动态SLAM系统无需预先了解对象模型 2.4 最近工作 类型方法效果最近使用基本集合来表示对象复杂度低、易于集成到SLAM框架中Quadric-SLAM紧凑参数化物体的大小和三维姿态将检测到的物体表示为椭球体将二次参数直接约束为几何误差并与相机位姿一起在因子图SLAM中进行联合估计CubeSLAM将二维和三维目标检测与SLAM相结合多视图捆绑调整与点和相机一起优化 仍然存在的问题：
+以上方法都能证明被检测对象和SLAM之间的利用关系，但是主要关注的都是静态场景下的对象检测和SLAM，本文沿着这一方向，在SLAM框架内解决动态目标跟踪的挑战性问题，并利用动态目标与智能机器人、静态和动态结构之间的关系来获得潜在的优势。
+3. 主要内容概括 对于论文还没有进行公式推理，所以此处先进行的系统分析。" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/6adbe86e24e98071de3c0caeba613d4b/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-09-11T16:25:54+08:00" />
+<meta property="article:modified_time" content="2023-09-11T16:25:54+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">论文于祥读及复现——《VDO-SLAM: A Visual Dynamic Object-aware SLAM System》</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p></p> 
+<div class="toc"> 
+ <h4>论文详读之------《一个视觉动态对象感知SLAM系统》</h4> 
+ <ul><li><a href="#0__5" rel="nofollow">0. 出发点（暨摘要）</a></li><li><a href="#1_9" rel="nofollow">1.引言</a></li><li><a href="#2__25" rel="nofollow">2. 相关工作</a></li><li><ul><li><a href="#21_SLAM_27" rel="nofollow">2.1 探索针对动态环境的健壮SLAM</a></li><li><a href="#22_SLAMMOTSLAM_38" rel="nofollow">2.2 分别执行SLAM和运动对象跟踪(MOT)，作为传统SLAM的扩展，用于动态场景理解。</a></li><li><a href="#23_SLAM_47" rel="nofollow">2.3 对象SLAM（通常包括静态和动态对象）</a></li><li><a href="#24__58" rel="nofollow">2.4 最近工作</a></li></ul> 
+  </li><li><a href="#3__68" rel="nofollow">3. 主要内容概括</a></li><li><ul><li><a href="#31__72" rel="nofollow">3.1 预处理</a></li><li><ul><li><a href="#311__79" rel="nofollow">3.1.1 对象实例分割</a></li><li><a href="#312__85" rel="nofollow">3.1.2 光流估计</a></li></ul> 
+   </li><li><a href="#32__92" rel="nofollow">3.2 追踪</a></li><li><ul><li><a href="#321__96" rel="nofollow">3.2.1 模块一</a></li><li><a href="#322__112" rel="nofollow">3.2.2 模块二</a></li></ul> 
+   </li><li><a href="#33__143" rel="nofollow">3.3 建图</a></li><li><ul><li><a href="#331__145" rel="nofollow">3.3.1 局部批量处理</a></li><li><a href="#332__154" rel="nofollow">3.3.2 全局批量处理</a></li><li><a href="#333__160" rel="nofollow">3.3.3 从建图到跟踪</a></li></ul> 
+  </li></ul> 
+  </li><li><a href="#4__165" rel="nofollow">4. 实验</a></li><li><ul><li><a href="#41__168" rel="nofollow">4.1 深度模型设置</a></li><li><a href="#42_Oxford_Multimotion_174" rel="nofollow">4.2 Oxford Multimotion数据集实验</a></li><li><ul><li><a href="#13pnghttpsimgblogcsdnimgcnimg_convert873ddc69a0651916119776ad49d70fe1png_181" rel="nofollow">1.3.png</a></li></ul> 
+   </li><li><a href="#43_KITTI_182" rel="nofollow">4.3 KITTI数据集实验</a></li><li><ul><li><a href="#431__183" rel="nofollow">4.3.1 相机位姿和物体运动</a></li><li><a href="#432_193" rel="nofollow">4.3.2对象跟踪和速度</a></li><li><a href="#433_197" rel="nofollow">4.3.3定性结果</a></li><li><a href="#434_201" rel="nofollow">4.3.4讨论</a></li></ul> 
+  </li></ul> 
+  </li><li><a href="#5__214" rel="nofollow">5. 本文总结</a></li><li><a href="#6__217" rel="nofollow">6. 个人读后感</a></li></ul> 
+</div> 
+<p></p> 
+<p>论文网址：<a href="https://arxiv.org/pdf/2005.11052.pdf" rel="nofollow">https://arxiv.org/pdf/2005.11052.pdf</a><br> 源码网址：<a href="https://github.com/halajun/vdo_slam">https://github.com/halajun/vdo_slam</a></p> 
+<h2><a id="0__5"></a>0. 出发点（暨摘要）</h2> 
+<blockquote> 
+ <p>将实时定位和建图(SLAM)估计与动态场景建模相结合，可以极大地促进机器人在动态环境中的自主性。机器人的路径规划和避障任务依赖于对场景中动态物体运动的准确估计。本文介绍了VDO-SLAM，这是一个健壮的视觉动态对象感知SLAM系统，它利用语义信息来实现对场景中动态刚性对象的精确运动估计和跟踪，而无需事先了解对象的形状或几何模型。该方法识别和跟踪环境中的动态对象和静态结构，并将这些信息集成到一个统一的SLAM框架中。最终获得高度精确的估计机器人的轨迹和物体的完整SE(3)运动，以及环境的时空地图。该系统能够从物体的SE(3)运动中提取线速度估计，为复杂动态环境中的导航提供了重要功能。我们在许多真实的室内和室外数据集上展示了所提出的系统的性能，结果显示出与最先进的算法相比，一致性和实质性的改进。源代码的开放源代码版本是可用的。</p> 
+</blockquote> 
+<h2><a id="1_9"></a>1.引言</h2> 
+<p>下图1为视觉动态对象感知SLAM系统的框架。</p> 
+<ul><li>Input为输入模块，输入为单目或者是双目的RGB图和深度图。首先立体深度估计都方法提取深度信息。为了充分利用基于图像的语义信息，同时采用了基于学习的单目系统，获得单目相机的深度信息；</li><li>Pre-processing为预处理模块，主要进行对象实例分割和光流估计；</li><li>Tracking为追踪模块，主要工作为特征检测、相机位姿估计、动态目标追踪和目标运动估计；</li><li>Mapping为建图模块，主要进行局部批量优化和全局批量优化</li><li>Output为最终的输出。</li></ul> 
+<p><img src="https://images2.imgbox.com/a4/3d/Vemo7TdG_o.png" alt="1.1.png"><br> <strong>本文的主要贡献为：</strong></p> 
+<ol><li>在机器人位姿、静态和动态3D点以及物体运动的统一估计框架中对动态场景建模的新公式；</li><li>准确估计SE(3)动态物体的运动，优于最先进的算法，以及一种提取物体在场景中的速度的方法;</li><li>一种鲁棒的方法来跟踪运动对象利用语义信息与处理间接遮挡的能力，导致语义对象分割失败;</li><li>在复杂和引人注目的现实世界场景中演示完整系统。</li></ol> 
+<h2><a id="2__25"></a>2. 相关工作</h2> 
+<p>目前，在不同的研究目的下，对于动态场景下的SLAM的研究主要分为以下3类</p> 
+<h3><a id="21_SLAM_27"></a>2.1 探索针对动态环境的健壮SLAM</h3> 
+<table><thead><tr><th>时期</th><th>方法</th><th>结果</th></tr></thead><tbody><tr><td>早期</td><td>检测和删除动态场景中提取到的信息</td><td>降低SLAM性能</td></tr><tr><td>发展</td><td>移除动态前景+修复获重建被遮挡的静态场景</td><td></td></tr><tr><td>DynaSLAM</td><td>经典几何+深度学习——&gt;检测和移除动态对象多视角信息——&gt;修复被遮挡的背景</td><td></td></tr><tr><td>Light Field SLAM</td><td>通过合成孔径成像（SAI）重建被遮挡的静态场景对重建的静态背景上的特征也进行了跟踪与利用</td><td>较好的SLAM性能</td></tr></tbody></table> 
+<p>所有的方法几乎都是将动态信息丢弃，但是这些被丢弃的信息对SLAM也许会有潜在的好处；<br> 除了SLAM之外，理解动态信息对机器人的其他任务（如：规划、控制和避障）也至关重要</p> 
+<h3><a id="22_SLAMMOTSLAM_38"></a>2.2 分别执行SLAM和运动对象跟踪(MOT)，作为传统SLAM的扩展，用于动态场景理解。</h3> 
+<table><thead><tr><th>时期</th><th>方法</th><th>结果</th></tr></thead><tbody><tr><td>最新</td><td>将估计问题分解为两个独立的估计器以便实时更新两个滤波器并行解决运动中的结构和运动物体的跟踪问题系统输出统一包含静态结构和运行物体轨迹的的三维动态地图</td><td>解决了动态物体的SLAM物体</td></tr><tr><td>随后</td><td>整合语义约束进一步赶紧3D重建</td><td></td></tr><tr><td>最近</td><td>基于立体的密集映射算法</td><td>具有大规模动态环境中，准确高效地重建静态背景和运动物体的优势</td></tr></tbody></table> 
+<p>证明了将多目标跟踪与SLAM相结合的可行性，适用于动态场景的探索。<br> 通过适当的开发和建立机器人与静态背景、静态和动态物体之间的时空关系。证明了SLAM和多目标跟踪问题是相互有益的。</p> 
+<h3><a id="23_SLAM_47"></a>2.3 对象SLAM（通常包括静态和动态对象）</h3> 
+<p>这种算法通常需要对三维物体进行特定的建模和表示，有三维形状、曲面或体积模型、几何模型等，提取高级原语并整合到SLAM框架中。</p> 
+<table><thead><tr><th>类型</th><th>方法</th><th>效果</th></tr></thead><tbody><tr><td>SLAM++</td><td>该范式在物体表层表示杂乱的场景在相机和物体姿态之间构建显示图实现联合姿态图优化</td><td></td></tr><tr><td>密集SLAM的同时重建、分割和识别</td><td>提出一种新颖的3D物体识别算法</td><td>保证系统的鲁棒性提高估计物体姿态的准确性</td></tr><tr><td>MaskFusion</td><td>采用表面表示对场景中的物体进行建模和重建</td><td>无需预先了解对象模型</td></tr><tr><td>MID-Fusion</td><td>采用基于八叉树的体积模型</td><td></td></tr><tr><td>构建多目标动态SLAM系统</td><td>无需预先了解对象模型</td><td></td></tr></tbody></table> 
+<h3><a id="24__58"></a>2.4 最近工作</h3> 
+<table><thead><tr><th>类型</th><th>方法</th><th>效果</th></tr></thead><tbody><tr><td>最近</td><td>使用基本集合来表示对象</td><td>复杂度低、易于集成到SLAM框架中</td></tr><tr><td>Quadric-SLAM</td><td>紧凑参数化物体的大小和三维姿态将检测到的物体表示为椭球体将二次参数直接约束为几何误差并与相机位姿一起在因子图SLAM中进行联合估计</td><td></td></tr><tr><td>CubeSLAM</td><td>将二维和三维目标检测与SLAM相结合多视图捆绑调整与点和相机一起优化</td><td></td></tr></tbody></table> 
+<p><strong>仍然存在的问题：</strong><br> 以上方法都能证明被检测对象和SLAM之间的利用关系，但是主要关注的都是静态场景下的对象检测和SLAM，本文沿着这一方向，在SLAM框架内解决动态目标跟踪的挑战性问题，并利用动态目标与智能机器人、静态和动态结构之间的关系来获得潜在的优势。</p> 
+<h2><a id="3__68"></a>3. 主要内容概括</h2> 
+<p>对于论文还没有进行公式推理，所以此处先进行的系统分析。<br> 这篇论文建立的SLAM系统可以稳健的估计相机和物体的运动以及环境的静态和动态结构。主要由预处理、跟踪、建图三部分组成。<br> 为了充分利用基于图像的语义信息，采用了基于学习的单目系统。将单目或者双目的RGB图像和深度图像。</p> 
+<h3><a id="31__72"></a>3.1 预处理</h3> 
+<p>此模块的主要分为两部分：</p> 
+<ol><li>鲁棒的分离静态背景和目标</li><li>保证对动态目标的长期追踪</li></ol> 
+<p>方法：<code>实例语义分割</code>+<code>光流估计</code></p> 
+<h4><a id="311__79"></a>3.1.1 对象实例分割</h4> 
+<ul><li>用于分割潜在的可移动对象；</li><li>利用语义信息进行先验；</li><li>有助于进一步将语义前景划分为不用的实例掩码，使得跟踪单独的对象变得更加容易；</li><li>掩码提供了精确的对象体边界，确保了对对象上的点进行鲁棒跟踪。</li></ul> 
+<h4><a id="312__85"></a>3.1.2 光流估计</h4> 
+<p>使用的是稠密光流</p> 
+<ul><li>用于最大化运动物体上被跟踪点的数量；</li><li>通过语义掩码内的所有点进行采样，大大增加了目标点的数量；</li><li>通过产生分配给对象掩模上的每个点的唯一对象标识符来一致地跟踪多个对象；</li><li>如果语义分割失败，它允许恢复对象掩码;这是一项使用稀疏特征匹配极其困难的任务。</li></ul> 
+<h3><a id="32__92"></a>3.2 追踪</h3> 
+<p>包含两个模块：<br> 模块一：特征检测+相机位姿估计<br> 模块二：动态目标追踪+目标运动估计</p> 
+<h4><a id="321__96"></a>3.2.1 模块一</h4> 
+<ol><li><strong>特征检测</strong></li></ol> 
+<blockquote> 
+ <ol><li>检测一组稀疏的焦点特征，利用光流跟踪它们。</li><li>每一帧中，只有与估计的相机运动相匹配的内层特征点被保存到地图中，并用于跟踪下一帧中的对应点。</li><li>如果内部轨迹的数量低于一定水平(默认为1200)，则检测和添加新的特征。</li><li>这些稀疏特征是在静态背景上检测的，即不包括被分割对象的图像区域。</li></ol> 
+</blockquote> 
+<ol start="2"><li><strong>相机位姿估计</strong></li></ol> 
+<blockquote> 
+ <ol><li>计算所有检测到的3D-2D静态点对应的相机位姿。</li><li>生成两个模型，并基于重投影误差比较内点数 通过相机之前的运动产生</li><li>通过使用RANSAC和P3P算法进行新的运动变换生成</li><li>选择生成的大多数内点的运动模型进行初始化</li></ol> 
+</blockquote> 
+<h4><a id="322__112"></a>3.2.2 模块二</h4> 
+<ol><li><strong>动态目标跟踪</strong></li></ol> 
+<p><strong>第一步，从背景中分离对象</strong><br> （虽然该算法可以估计所有分割对象的运动，但动态对象识别有助于减少所提出的系统的计算成本）<br> 获取相机位姿–&gt;描述场景流（理想情况下应该为0）</p> 
+<ol><li>计算每个物体上所有采样点的场景流大小</li><li>当某点场景流&gt;阈值时，则认为该点事动态的</li><li>当动态点的比例&gt;总点的30%时，则认为该对象为动态物体，否则静态</li></ol> 
+<p><strong>第二步，只提供单个图像对象标签的实例级对象分割</strong></p> 
+<blockquote> 
+ <p>运动模型随着时间推移而逐渐推进，所以需要跨帧进行对象追踪。<br> 这里采用光流来关联跨帧的点标签。<br> 点标签与点被采样的唯一对象标识符相同。<br> 理想情况下，对于第k帧中检测到的每个物体与k-1帧中它们对应的标签唯一对齐。<br> 实际实践中，受到噪声、图像边界和遮挡的影响。<br> <strong>解决：给所有的点分配标签 前一帧出现最多的标签是0，意味着该对象即将移动。 在边界处出现、从这当中重新出现，会被重新分配一个新的跟踪标签。</strong></p> 
+</blockquote> 
+<ol start="2"><li><strong>目标运动估计</strong></li></ol> 
+<p>目标通常以小块的形式出现在场景中，使得很难获得足够的稀疏特征来鲁棒的跟踪和估计其运动。<br> 方法：</p> 
+<ul><li>在一个对象掩码内，每隔三个点进行采样，并跨帧跟踪</li><li>内点被保存到地图，用于下一帧的跟踪</li><li>当跟踪到的目标点数量下降到一定水平时，会采样并添加新的目标点。</li></ul> 
+<h3><a id="33__143"></a>3.3 建图</h3> 
+<p>构建并维护一个全局地图，同事从全局地图提取一个局部地图。</p> 
+<h4><a id="331__145"></a>3.3.1 局部批量处理</h4> 
+<ul><li>维护和更新局部地图 局部批量优化目标是确保精确地相机位姿估计提供全局批量优化。</li><li>相机位姿估计对物体运动的准确性和算法的整体性有很大影响。</li><li>局部地图使用包含最后n帧信息的固定大小的滑动窗口来构建。</li><li>仅在窗口大小内局部优化相机位姿和静态结构。</li><li>执行因子优化图来细化局部地图内所有变量</li><li>最后，更新到全局地图</li></ul> 
+<h4><a id="332__154"></a>3.3.2 全局批量处理</h4> 
+<ul><li>由跟踪和局部批量优化的输出（相机位姿、物体运动和内部结构）组成。</li><li>随着每一帧的更新不断更新</li><li>所有输入真被处理后，给予全局地图构建因子图。</li><li>有效地探索时间约束，只将被跟踪超过3个实例的点添加到因子图中</li><li>优化结果为整个系统的输出</li></ul> 
+<h4><a id="333__160"></a>3.3.3 从建图到跟踪</h4> 
+<ul><li>利用上一帧的内点来跟踪当前帧的对应关系，并估计相机位姿和物体运动。</li><li>最后的相机位姿和物体运动也可以作为初始化当前估计的可能的先验模型</li><li>语义对象分割失败导致“间接遮挡”的情况下，目标点通过其先前分割的掩码，帮助跨帧关联语义掩码，以确保对目标的鲁棒跟踪。</li></ul> 
+<h2><a id="4__165"></a>4. 实验</h2> 
+<p>从相机运动、物体运动和速度以及物体跟踪性能等方面对VDO-SLAM进行了评估。对室内场景的Oxford Multimotion数据集和室外场景的KITTI Tracking数据集进行了评估，并与其他最先进的方法(包括MVO、ClusterVO、DynaSLAM II和CubeSLAM)进行了比较。由于系统运行的不确定性，例如RANSAC处理，将每个序列运行5次，并将中值作为演示结果。所有结果都是通过在默认参数设置下运行所提出的系统得到的。开放源代码实现包括演示YAML文件和在两个数据集中运行系统的指令。</p> 
+<h3><a id="41__168"></a>4.1 深度模型设置</h3> 
+<ul><li>对于实例分割，使用Mask-RCNN生成对象的分割掩码。实在COCO数据集上训练得到，没有进行任何微调。</li><li>对于稠密光流，使用PWC-Net，在FlyingChairs数据集上训练，在Sintel和KITTI数据集上微调。</li><li>特征检测，使用FAST完成</li><li>单目深度估计，MonoDepth实在深度特征分裂上进行训练的</li></ul> 
+<h3><a id="42_Oxford_Multimotion_174"></a>4.2 Oxford Multimotion数据集实验</h3> 
+<p>与MVO相比，本文提出的方法在相机位姿估计和摆动box和左下方面效果比较好。<br> 与ClusterVO相比，本文在相机位姿估计和右下旋转框的平移方面的性能略差。<br> 本文在估计物体方面比ClusterVO实现了两倍以上的改进。<br> <img src="https://images2.imgbox.com/3a/a6/Nr8w9IHS_o.png" alt="1.2.png"><br> 下图是本文算法在Oxford Multimotion数据集上的轨迹输出结果。摆动盒子上的动态特征轨迹在视觉上与盒子的实际运动相对应。<br> (左) 相机的3D轨迹(红色)和四个方框的中心。(右)静态背景和物体体上的检测点。黑色对应于静态点，每个物体上的特征以不同的颜色显示。</p> 
+<h4><a id="13pnghttpsimgblogcsdnimgcnimg_convert873ddc69a0651916119776ad49d70fe1png_181"></a><img src="https://images2.imgbox.com/72/e9/zdlDwlKd_o.png" alt="1.3.png"></h4> 
+<h3><a id="43_KITTI_182"></a>4.3 KITTI数据集实验</h3> 
+<h4><a id="431__183"></a>4.3.1 相机位姿和物体运动</h4> 
+<p>下表中展示了9个序列的相机位姿和运动结果的估计。与DynaSLAM II和CubeSLAM在KITTI数据集中提取的九个运动物体序列上的相机姿态和物体运动估计精度的比较。加粗的数字表示更好的结果。<br> 与DynaSLAM II相比，本文在相机位姿估计方面具有竞争力和较高的精确度，旋转误差略低，平移误差较高<br> 与CubeSLAM相比，本文的RGB-D在相机位姿上的误差更低一些，单目的略高，此处认为是因为单目输入无法准确捕捉深度尺度。<br> 单目和RGB-D在目标运动估计中都有持续较低的误差。<br> <img src="https://images2.imgbox.com/4e/51/624DNhxI_o.png" alt="1.4.png"><br> CubeSLAM的平移和旋转误差都在3米和3度以上，极端情况下误差分别达到32米和5度。然而，在RGB-D情下，我们的平移误差在0.1-0. 3米之间，旋转误差在0.2-1.5度之间，在基于学习的单目情况下，我们的平移误差在0.1-0.3米之间，旋转误差在0.4-3. 1度之间，这表明我们的目标运动估计在大多数情况下都实现了数量级的提高。<br> 色条表示在对数尺度上对应于左y轴的平移误差。圆圈表示旋转误差，对应于线性尺度的右y轴。<br> <img src="https://images2.imgbox.com/f5/ed/vQjfYpnl_o.png" alt="1.5.png"><br> 结果表明，基于点的物体运动/位姿估计方法比使用高级几何模型的方法更鲁棒和准确，这可能是因为几何模型提取可能导致信息丢失并引入更多的不确定性。</p> 
+<h4><a id="432_193"></a>4.3.2对象跟踪和速度</h4> 
+<p>下图展示了所有测试序列中一些选定对象(跟踪超过 20帧)的对象跟踪长度和对象速度的结果。本文的系统能够跟踪序列中80%以上出现的大多数物体。此外，本文估计的物体速度总是始终接近于地面真实值。<br> 由于空间有限，部分选定目标(跟踪了 20帧以上)的目标跟踪长度和目标速度的结果。颜色条表示对象轨迹的长度，对应于左y轴。圆圈表示物体的速度，对应于右y轴。GT表示真值，EST.表示估计值。<br> <img src="https://images2.imgbox.com/f7/75/NzWO1Jz6_o.png" alt="1.6.png"></p> 
+<h4><a id="433_197"></a>4.3.3定性结果</h4> 
+<p>下图显示了本文系统对三个KITTI序列的输出。所提出的系统能够在时空地图表示中输出相机姿态，以及场景中每个检测到的移动对象的静态结构和动态轨迹。<br> 带有相机姿态、静态背景结构和动态物体轨迹的动态地图。KITTI序列的VDO-SLAM样本结果。黑色代表静态背景，每个检测到的物体都以不同的颜色显示。左上图代表Seq.01和序列末尾交叉口的放大图，右上图代表Seq.06，右下图代表Seq.03。<br> <img src="https://images2.imgbox.com/6e/d8/WkL8JUUo_o.png" alt="1.7.png"></p> 
+<h4><a id="434_201"></a>4.3.4讨论</h4> 
+<p>定义了旋转，平移的误差项，还有速度的计算方法，这里主要是讨论了作者这么设计这个系统的一些好处：</p> 
+<p>联合光流的优化使得更多的点能被连续追踪，这就使得通过这些点求出来值的精度能有小幅提升(15%~20%)。<br> 增强了对非直接遮挡情况的鲁棒性：对于语义分割，他可能会在发生直接遮挡以及非直接遮挡(光照变化)时失效, 在非直接遮挡的情况下，把之前的语义mask传播到当前帧可以解决这个问题。下面用图来举一个具体例子：<br> 序列一共有88帧，要追踪其中的白色车子，从第33帧开始，语义分割失效，但是追踪仍然可以进行。可以看到序列的后半段平均误差较大，这是因为此时有局部的直接遮挡（有车子局部是看不到的），以及物体离相机太远。<br> <img src="https://images2.imgbox.com/c9/26/mfU33Em7_o.png" alt="image.png"><br> 右下角白车上的点是把之前追踪的特征点传播到了当前帧<br> 对物体运动的全局精确化：从下面的图可以看出来，速度估计是不平滑的，而且在后半段有很大的误差，这主要是因为物体距离相机越来越远，只在整个场景中占据了一小部分。这时，如果只靠传感器的测量值来做运动估计是很困难的，所以就使用了前面的因子图优化，可以看到结果更加平滑且提升明显。<br> <img src="https://images2.imgbox.com/ae/b1/Lj8qrohd_o.png" alt="image.png"></p> 
+<p>实时性：帧率在5-8帧，会受到场景中移动物体的数目的影响。全局优化的耗时受相机帧总数，每帧移动物体数目的影响<br> <img src="https://images2.imgbox.com/3a/b4/TDSl9j0g_o.png" alt="image.png"></p> 
+<h2><a id="5__214"></a>5. 本文总结</h2> 
+<p>在本文中，提出了VDO-SLAM，这是一种新的基于动态特征的SLAM系统，它利用场景中基于图像的语义信息，而不需要额外的物体姿态或几何知识，来实现动态物体的同步定位、建图和跟踪。该系统在室内和具有挑战性的室外数据集上始终显示出鲁棒和准确的结果， 并在对象运动估计方面取得了最先进的性能。在对象运动估计中实现的高性能精度是由于系统是一个基于特征的系统。在SLAM系统中，特征点仍然是最容易检测、跟踪和集成的，并且不需要前端对对象模型有额外的了解，也不需要明确地提供有关其姿态的任何信息。<br> 一个重要问题是具有动态对象的SLAM的计算复杂度需要减少。在长期应用中，可以应用不同的技术来限制图的增长。</p> 
+<h2><a id="6__217"></a>6. 个人读后感</h2> 
+<p>本文的系统分别在室内和室外进行了实验，并进行了评估讨论。在需要深度信息时，RGB-D相机要比单目效果好一些。针对动态场景中特征点的检测和追踪的处理相较之前的方法是一个较新的点；并针对观测到的动态物体有一个速度上的估计。总体来说收获颇多。</p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/8365b2afdd62541ca659386f550dd167/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">java中的BigDecimal详解及使用</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/d1832a7762e10850317dcf2aa428d346/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">Rokid Jungle--Station pro</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

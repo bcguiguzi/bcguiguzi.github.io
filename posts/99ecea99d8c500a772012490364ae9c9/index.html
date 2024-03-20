@@ -1,0 +1,1008 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>TLS1.3中文版上（RFC8446）（注：本文有错误但无法修改，正确的见后来文章） - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="TLS1.3中文版上（RFC8446）（注：本文有错误但无法修改，正确的见后来文章）" />
+<meta property="og:description" content="摘要 本文规定了TLS协议的1.3版本。TLS为CS模式应用提供了一种设计为防止监听、篡改和伪造的Internet通信方式。
+本文为RFC5705和RFC6066的更新版，淘汰了RFC5077、RFC5246和RFC6961。本文也规定了实现TLS1.2的新要求。
+1. 介绍 TLS 的主要目标是为通信双方提供一个安全的通道；对下层传输的唯一要求是提供可靠保序的数据流。安全通道尤其应该提供如下属性：
+ 认证（Authentication）：server端应该总是需要认证的；client端可以选择性的认证。认证可以通过非对称算法完成（如RSA、椭圆曲线数字签名算法(ECDSA)、或Edwards曲线数字签名算法(EdDSA)）完成，或通过对称预共享密钥（PSK）。
+ 保密（Confidentiality）：在建立好的通道上发送的数据只能终端可见。TLS不隐藏传输数据的长度，但终端可以填充TLS记录（pad）来隐藏真实长度，从而提升安全性。
+ 完整性（Integrity）：在建立好的通道上发送的数据不能被攻击者修改（如果修改了一定会被发现）。
+即使出现像RFC3552那样已经完全控制网络的攻击者，这些属性也应该保证。更完整的相关安全属性清单详见附录E。
+TLS由两个主要部分构成：
+ 握手协议（第4节），认证通信双方，协商加密模式和参数，并确定共享密钥。握手协议可以防止篡改，如果连接没有受到攻击，攻击者就不能强制两端协商不同的参数。
+ 记录协议（第5节），使用由握手协议协商出的参数来保护通信双方的流量。记录协议将流量分为一系列记录，每个记录独立地使用流量密钥保护。
+TLS是一个独立的应用协议；上层协议可以透明地运行于TLS之上。然而，TLS标准并未指定怎样使用TLS保证安全、怎样发起TLS握手以及怎样理解认证证书交换，这些留给运行在TLS之上的协议的设计者和实现者来判断。
+本文定义了TLS 1.3. 虽然TLS 1.3与以前的版本不直接兼容，但所有TLS版本都包含一个版本控制机制，可以在客户端和服务器都支持的情况下协商出一个公共版本。
+本文取代和废除了以前版本的TLS，包括1.2版本[RFC5246]。也废除了在[RFC5077]里面定义的TLS ticket机制，并用定义在第2.2节中的机制取代它。由于TLS 1.3改变了密钥的产生方式，它更新了[RFC5705]。正如7.5节描述的那样。它也改变了在线证书状态协议（OCSP）消息的传输方式，因此更新了[RFC6066]，废除了[RFC6961]，如第4.4.2.1节所述。
+1.1. 约定和术语 使用了以下术语:
+客户端（client）: 发起TLS连接的端点。
+连接（connection）: 两端之间的传输层连接。
+端点（endpoint）: 连接的客户端或者服务器。
+握手（handshake）: 客户端和服务器之间协商TLS交互的后续参数的出示协商。
+对端（peer）: 一个端点，当说到一个特定端点，对端指的是非当前讨论的端点。
+接收端（receiver）: 接收记录的端点。
+发送者（sender）: 发送记录的端点。
+服务器（server）: 没有发起TLS连接的端点。
+1.2. 跟TLS 1.2的主要区别 以下是TLS 1.2和TLS 1.3的主要差异。这并不是全部差异，还有很多次要的差别。
+ 支持的对称算法列表已经删除了所有被认为是遗留问题的算法。列表保留了所有使用“关联数据的认证加密”（AEAD）算法。密码套件的概念已经改变，将认证和密钥交换机制与记录保护算法（包括密钥长度）和Hash（用于秘钥导出函数和握手消息认证码MAC）分离。
+ 增加0-RTT模式，为一些应用数据在连接建立阶段节省了一次往返，这是以牺牲一定的安全特性为代价的。
+ 静态RSA和Diffie-Hellman密码套件已经被删除；所有基于公钥的密钥交换算法现在都能提供前向安全。
+ 所有ServerHello之后的握手消息现在都已经加密。扩展之前在ServerHello中以明文发送，新引入的EncryptedExtension消息可以保证扩展以加密方式传输。
+ 密钥导出函数被重新设计。新的设计使得密码学家能够通过改进的密钥分离特性进行更容易的分析。基于HMAC的提取-扩展密钥导出函数（HKDF）被用作一个基础的原始组件。
+ Handshake状态机进行了重大重构，以便更具一致性和删除多余的消息如ChangeCipherSpec(除了中间件兼容性需要)。
+ 椭圆曲线算法已经属于基本的规范，且包含了新的签名算法，如EdDSA。TLS 1.3删除了点格式协商以便于每个曲线使用单点格式。
+ 其它的密码学改进包括改变RSA填充以使用RSA概率签名方案（RSASSA-PSS），删除压缩，数字签名算法DSA，和定制DHE组（Ephemeral Diffie-Hellman）。" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/99ecea99d8c500a772012490364ae9c9/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2022-11-09T14:57:31+08:00" />
+<meta property="article:modified_time" content="2022-11-09T14:57:31+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">TLS1.3中文版上（RFC8446）（注：本文有错误但无法修改，正确的见后来文章）</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <h2><a id="_0"></a>摘要</h2> 
+<p>本文规定了TLS协议的1.3版本。TLS为CS模式应用提供了一种设计为防止监听、篡改和伪造的Internet通信方式。</p> 
+<p>本文为RFC5705和RFC6066的更新版，淘汰了RFC5077、RFC5246和RFC6961。本文也规定了实现TLS1.2的新要求。</p> 
+<h2><a id="1___6"></a>1. 介绍</h2> 
+<p>TLS 的主要目标是为通信双方提供一个安全的通道；对下层传输的唯一要求是提供可靠保序的数据流。安全通道尤其应该提供如下属性：<br>  认证（Authentication）：server端应该总是需要认证的；client端可以选择性的认证。认证可以通过非对称算法完成（如RSA、椭圆曲线数字签名算法(ECDSA)、或Edwards曲线数字签名算法(EdDSA)）完成，或通过对称预共享密钥（PSK）。<br>  保密（Confidentiality）：在建立好的通道上发送的数据只能终端可见。TLS不隐藏传输数据的长度，但终端可以填充TLS记录（pad）来隐藏真实长度，从而提升安全性。<br>  完整性（Integrity）：在建立好的通道上发送的数据不能被攻击者修改（如果修改了一定会被发现）。</p> 
+<p>即使出现像RFC3552那样已经完全控制网络的攻击者，这些属性也应该保证。更完整的相关安全属性清单详见附录E。<br> TLS由两个主要部分构成：<br>  握手协议（第4节），认证通信双方，协商加密模式和参数，并确定共享密钥。握手协议可以防止篡改，如果连接没有受到攻击，攻击者就不能强制两端协商不同的参数。<br>  记录协议（第5节），使用由握手协议协商出的参数来保护通信双方的流量。记录协议将流量分为一系列记录，每个记录独立地使用流量密钥保护。<br> TLS是一个独立的应用协议；上层协议可以透明地运行于TLS之上。然而，TLS标准并未指定怎样使用TLS保证安全、怎样发起TLS握手以及怎样理解认证证书交换，这些留给运行在TLS之上的协议的设计者和实现者来判断。<br> 本文定义了TLS 1.3. 虽然TLS 1.3与以前的版本不直接兼容，但所有TLS版本都包含一个版本控制机制，可以在客户端和服务器都支持的情况下协商出一个公共版本。</p> 
+<p>本文取代和废除了以前版本的TLS，包括1.2版本[RFC5246]。也废除了在[RFC5077]里面定义的TLS ticket机制，并用定义在第2.2节中的机制取代它。由于TLS 1.3改变了密钥的产生方式，它更新了[RFC5705]。正如7.5节描述的那样。它也改变了在线证书状态协议（OCSP）消息的传输方式，因此更新了[RFC6066]，废除了[RFC6961]，如第4.4.2.1节所述。</p> 
+<h3><a id="11___21"></a>1.1. 约定和术语</h3> 
+<p>使用了以下术语:<br> 客户端（client）: 发起TLS连接的端点。<br> 连接（connection）: 两端之间的传输层连接。<br> 端点（endpoint）: 连接的客户端或者服务器。<br> 握手（handshake）: 客户端和服务器之间协商TLS交互的后续参数的出示协商。<br> 对端（peer）: 一个端点，当说到一个特定端点，对端指的是非当前讨论的端点。<br> 接收端（receiver）: 接收记录的端点。<br> 发送者（sender）: 发送记录的端点。<br> 服务器（server）: 没有发起TLS连接的端点。</p> 
+<h3><a id="12__TLS_12_32"></a>1.2. 跟TLS 1.2的主要区别</h3> 
+<p>以下是TLS 1.2和TLS 1.3的主要差异。这并不是全部差异，还有很多次要的差别。<br>  支持的对称算法列表已经删除了所有被认为是遗留问题的算法。列表保留了所有使用“关联数据的认证加密”（AEAD）算法。密码套件的概念已经改变，将认证和密钥交换机制与记录保护算法（包括密钥长度）和Hash（用于秘钥导出函数和握手消息认证码MAC）分离。<br>  增加0-RTT模式，为一些应用数据在连接建立阶段节省了一次往返，这是以牺牲一定的安全特性为代价的。<br>  静态RSA和Diffie-Hellman密码套件已经被删除；所有基于公钥的密钥交换算法现在都能提供前向安全。<br>  所有ServerHello之后的握手消息现在都已经加密。扩展之前在ServerHello中以明文发送，新引入的EncryptedExtension消息可以保证扩展以加密方式传输。<br>  密钥导出函数被重新设计。新的设计使得密码学家能够通过改进的密钥分离特性进行更容易的分析。基于HMAC的提取-扩展密钥导出函数（HKDF）被用作一个基础的原始组件。<br>  Handshake状态机进行了重大重构，以便更具一致性和删除多余的消息如ChangeCipherSpec(除了中间件兼容性需要)。<br>  椭圆曲线算法已经属于基本的规范，且包含了新的签名算法，如EdDSA。TLS 1.3删除了点格式协商以便于每个曲线使用单点格式。<br>  其它的密码学改进包括改变RSA填充以使用RSA概率签名方案（RSASSA-PSS），删除压缩，数字签名算法DSA，和定制DHE组（Ephemeral Diffie-Hellman）。<br>  废弃了TLS1.2的版本协商机制，以便在扩展中添加版本列表。这增加了不支持版本协商的server的兼容性。<br>  之前版本中会话恢复（根据或不根据server端状态）和基于PSK的密码族已经被一个单独的新PSK交换所取代。<br>  引用已更新至最新版本的RFC（例如，RFC 5280而不是RFC 3280）。</p> 
+<h3><a id="13__TLS12_45"></a>1.3. 更新影响TLS1.2</h3> 
+<p>本文提出了几个可能影响TLS 1.2实现的变化，包括那些不支持TLS 1.3的实现：<br>  4.1.3节中的版本降级保护机制。<br>  4.2.3节中的RSASSA-PSS签名方案。<br>  ClientHello中“supported_versions”扩展可以用于协商TLS使用的版本，优先于ClientHello中的legacy_version字段。<br>  "signature_algorithms_cert"扩展允许一个client声明它使用哪种签名算法验证X.509证书。<br> 此外，本文提出了支持TLS的早期版本需要实现的部分；见9.3节。</p> 
+<h2><a id="2___54"></a>2. 协议概览</h2> 
+<p>安全通道使用的密码参数由TLS握手协议生成。这个TLS的子协议在client和server第一次通信时使用。握手协议使两端协商协议版本、选择密码算法、选择性互相认证，并得到共享的密钥数据。一旦握手完成，双方就会使用得出的密钥保护应用层流量。<br> 握手失败或其它协议错误会触发连接中止，在这之前可以有选择地发送一个警报消息（第6章）。<br> TLS支持3种基本的密钥交换模式：<br>  (EC)DHE (基于有限域或椭圆曲线的Diffie-Hellman)<br>  PSK-only<br>  PSK结合(EC)DHE</p> 
+<p>图1显示了基本TLS握手全过程：</p> 
+<pre><code class="prism language-clike"><span class="token operator">&gt;</span>   Client                                     Server
+<span class="token operator">&gt;</span> 
+<span class="token operator">&gt;</span> Key  <span class="token operator">^</span> ClientHello Exch <span class="token operator">|</span> <span class="token operator">+</span> key_share<span class="token operator">*</span>
+<span class="token operator">&gt;</span>      <span class="token operator">|</span> <span class="token operator">+</span> signature_algorithms<span class="token operator">*</span>
+<span class="token operator">&gt;</span>      <span class="token operator">|</span> <span class="token operator">+</span> psk_key_exchange_modes<span class="token operator">*</span>
+<span class="token operator">&gt;</span>      v <span class="token operator">+</span> pre_shared_key<span class="token operator">*</span>       <span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">&gt;</span>
+<span class="token operator">&gt;</span>                                            ServerHello  <span class="token operator">^</span> Key
+<span class="token operator">&gt;</span>                                           <span class="token operator">+</span> key_share<span class="token operator">*</span>  <span class="token operator">|</span> Exch
+<span class="token operator">&gt;</span>                                      <span class="token operator">+</span> pre_shared_key<span class="token operator">*</span>  v
+<span class="token operator">&gt;</span>                                           <span class="token punctuation">{<!-- --></span>EncryptedExtensions<span class="token punctuation">}</span>  <span class="token operator">^</span>  Server
+<span class="token operator">&gt;</span>                                           <span class="token punctuation">{<!-- --></span>CertificateRequest<span class="token operator">*</span><span class="token punctuation">}</span>  v  Params
+<span class="token operator">&gt;</span>                                                <span class="token punctuation">{<!-- --></span>Certificate<span class="token operator">*</span><span class="token punctuation">}</span>  <span class="token operator">^</span>
+<span class="token operator">&gt;</span>                                          <span class="token punctuation">{<!-- --></span>CertificateVerify<span class="token operator">*</span><span class="token punctuation">}</span>  <span class="token operator">|</span> Auth
+<span class="token operator">&gt;</span>                                                    <span class="token punctuation">{<!-- --></span>Finished<span class="token punctuation">}</span>  v
+<span class="token operator">&gt;</span>                                          <span class="token operator">&lt;</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span>  <span class="token punctuation">[</span>Application Data<span class="token operator">*</span><span class="token punctuation">]</span>
+<span class="token operator">&gt;</span>      <span class="token operator">^</span> <span class="token punctuation">{<!-- --></span>Certificate<span class="token operator">*</span><span class="token punctuation">}</span> Auth 
+<span class="token operator">&gt;</span>      <span class="token operator">|</span> <span class="token punctuation">{<!-- --></span>CertificateVerify<span class="token operator">*</span><span class="token punctuation">}</span>
+<span class="token operator">&gt;</span>      v <span class="token punctuation">{<!-- --></span>Finished<span class="token punctuation">}</span>              <span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">&gt;</span>
+<span class="token operator">&gt;</span>        <span class="token punctuation">[</span>Application Data<span class="token punctuation">]</span>      <span class="token operator">&lt;</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">-</span><span class="token operator">&gt;</span>  <span class="token punctuation">[</span>Application Data<span class="token punctuation">]</span>
+</code></pre> 
+<blockquote> 
+ <ul><li>表示之前提到消息中发送的扩展。</li></ul> 
+ <ul><li>表示不经常发送的可选或者特定情况下的消息或扩展。 {} 表示由[sender]_handshake_traffic_secret 导出的秘钥加密的消息。 [] 表示由[sender]_application_traffic_secret_N 导出的秘钥加密的消息。</li></ul> 
+ <p>图1: TLS握手的消息流</p> 
+</blockquote> 
+<p>握手可以分为三个阶段（上图中已表明）：<br>  密钥交换：确定共享密钥材料并选择加密参数，在这个阶段之后所有的数据都会被加密。<br>  Server参数：确定其它的握手参数（client是否被认证，应用层协议支持等）。<br>  认证：认证server（并且选择性认证client），提供密钥确认和握手完整性。</p> 
+<p>在密钥交换阶段，client会发送ClientHello(4.1.1节)消息，其中包含了一个随机nonce(ClientHello.random)、协议版本、对称密码或HKDF hash对的列表、Diffie-Hellman共享密钥列表（在4.2.8中的"key_share"扩展中）或预共享密钥标签列表（4.2.11中的" pre_shared_key "扩展中），或二者都有、和其它额外扩展。还可能存在其他字段或消息，以实现中间件的兼容性。<br> Server处理ClientHello并为连接确定合适的加密参数，然后以ServerHello（4.1.3节）响应（其中携带了协商好的连接参数）。ClientHello和ServerHello一起确定共享密钥。如果使用的是(EC)DHE密钥，则ServerHello中会包含一个携带临时Diffie-Hellman共享参数的”key_share”扩展，这个共享参数必须与client的在相同的组里。如果使用的是PSK密钥，则ServerHello中会包含一个"pre_shared_key"扩展以表明client提供的哪一个PSK被选中。需要注意的是实现上可以将(EC)DHE和PSK一起使用，这种情况下两种扩展都需要提供。<br> 随后Server会发送两个消息来确定Server参数：<br>  EncryptedExtensions：用来响应不用于确定密码参数的ClientHello扩展，除了针对用户证书的扩展。[4.3.1]<br>  CertificateRequest: 如果需要基于证书的client认证，则包含与证书相关的参数。如果不需要client认证则此消息会被省略。[4.3.2]</p> 
+<p>最后，client和server交换认证消息。TLS在每次认证时使用相同的消息集，（基于PSK的认证随密钥交换进行）特别是：<br>  Certificate: 终端和任何每证书扩展的证书。如果不带证书认证则此消息会被server忽略；如果server没有发送CertificateRequest（这表明client不使用证书认证），此消息会被client忽略。需要注意的是如果原始公钥[RFC 7250]或缓存信息扩展[RFC 7924]正在被使用，则此消息不会包含证书而是包含一些与server的长期密钥相关的其它值。[4.4.2]<br>  CertificateVerify: 使用与证书消息中的公钥配对的私钥对整个握手消息进行签名。如果终端没有使用证书进行验证则此消息会被忽略。<br>  Finished: 对整个握手消息的MAC(消息认证码)。这个消息提供了密钥确认，将终端身份与交换的密钥绑定在一起，这样在PSK模式下也能认证握手。[4.4.4节]</p> 
+<p>接收到server的消息之后，client会响应认证消息，即Certificate，CertificateVerify (如果需要), 和Finished。<br> 这时握手已经完成，client和server会提取出密钥材料用于记录层交换应用层数据，这些数据需要通过认证的加密来保护。应用层数据一定不能在Finished消息之前发送，必须等到记录层开始使用加密密钥之后才可以发送。需要注意的是server可以在收到client的认证消息之前发送应用数据，任何在这个时间点发送的数据，当然都是在发送给一个未被认证的对端。</p> 
+<h3><a id="21__DHE_113"></a>2.1. 不正确的DHE共享</h3> 
+<p>如果client没有提供足够的”key_share”扩展（例如，只包含server不接受或不支持的DHE或ECDHE组），server会使用HelloRetryRequest来纠正这个不匹配问题，client需要使用一个合适的”key_share”扩展来重启握手，如图2所示。如果没有通用的密码参数能够协商，server必须使用一个适当的警报来中止握手。</p> 
+<pre><code class="prism language-clike"><span class="token operator">&gt;</span>     Client                                               Server
+<span class="token operator">&gt;</span> 
+<span class="token operator">&gt;</span>     ClientHello
+<span class="token operator">&gt;</span>     <span class="token operator">+</span> key_share             <span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">&gt;</span>
+<span class="token operator">&gt;</span>                                               HelloRetryRequest
+<span class="token operator">&gt;</span>                             <span class="token operator">&lt;</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span>               <span class="token operator">+</span> key_share
+<span class="token operator">&gt;</span>     ClientHello
+<span class="token operator">&gt;</span>     <span class="token operator">+</span> key_share             <span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">&gt;</span>
+<span class="token operator">&gt;</span>                                                     ServerHello
+<span class="token operator">&gt;</span>                                                     <span class="token operator">+</span> key_share
+<span class="token operator">&gt;</span>                                           <span class="token punctuation">{<!-- --></span>EncryptedExtensions<span class="token punctuation">}</span>
+<span class="token operator">&gt;</span>                                           <span class="token punctuation">{<!-- --></span>CertificateRequest<span class="token operator">*</span><span class="token punctuation">}</span>
+<span class="token operator">&gt;</span>                                                  <span class="token punctuation">{<!-- --></span>Certificate<span class="token operator">*</span><span class="token punctuation">}</span>
+<span class="token operator">&gt;</span>                                            <span class="token punctuation">{<!-- --></span>CertificateVerify<span class="token operator">*</span><span class="token punctuation">}</span>
+<span class="token operator">&gt;</span>                                                      <span class="token punctuation">{<!-- --></span>Finished<span class="token punctuation">}</span>
+<span class="token operator">&gt;</span>                             <span class="token operator">&lt;</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span>       <span class="token punctuation">[</span>Application Data<span class="token operator">*</span><span class="token punctuation">]</span>
+<span class="token operator">&gt;</span>     <span class="token punctuation">{<!-- --></span>Certificate<span class="token operator">*</span><span class="token punctuation">}</span>
+<span class="token operator">&gt;</span>     <span class="token punctuation">{<!-- --></span>CertificateVerify<span class="token operator">*</span><span class="token punctuation">}</span>
+<span class="token operator">&gt;</span>     <span class="token punctuation">{<!-- --></span>Finished<span class="token punctuation">}</span>              <span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">&gt;</span>
+<span class="token operator">&gt;</span>     <span class="token punctuation">[</span>Application Data<span class="token punctuation">]</span>      <span class="token operator">&lt;</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">-</span><span class="token operator">&gt;</span>        <span class="token punctuation">[</span>Application Data<span class="token punctuation">]</span>
+</code></pre> 
+<blockquote> 
+ <pre><code>     图 2：带有不匹配参数的完整握手过程的消息流程
+</code></pre> 
+</blockquote> 
+<p>注：这个握手过程包含初始的ClientHello/HelloRetryRequest交换，不能被新的ClientHello重置。<br> TLS也支持几个基本握手中的优化变体，下面的章节将描述。</p> 
+<h3><a id="22__Resumption_and_PreShared_Key_PSK_144"></a>2.2. Resumption and Pre-Shared Key (PSK)</h3> 
+<p>虽然TLS预共享密钥（PSK）能够在带外建立，PSK也能在之前的连接中确定然后用来建立新连接（会话恢复或使用PSK恢复）。一旦握手完成，server就能给client发送一个与来自初次握手的唯一密钥对应的PSK身份（见4.6.1）。然后client能够使用这个PSK身份在将来的握手中协商相关PSK的使用。如果server接受PSK，新连接的安全上下文在密码学上就与初始连接关联在一起，从初次握手中得到的密钥就会用于装载密码状态来替代完整的握手。在TLS 1.2以及更低的版本中，这个功能由"session IDs"和"session tickets" RFC5077]来提供。这两个机制在TLS 1.3中都被废除。</p> 
+<p>PSK可以与(EC)DHE密钥交换算法一同使用以便使共享密钥具备前向安全，PSK也可以单独使用，这样以丢失了应用数据的前向安全为代价。<br> 图3显示了两次握手，第一次建立了一个PSK，第二次时使用它：</p> 
+<pre><code class="prism language-clike"><span class="token operator">&gt;</span>    Client                                               Server
+<span class="token operator">&gt;</span> 
+<span class="token operator">&gt;</span>    初次握手<span class="token punctuation">:</span>
+<span class="token operator">&gt;</span>           ClientHello
+<span class="token operator">&gt;</span>           <span class="token operator">+</span> key_share               <span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">&gt;</span>
+<span class="token operator">&gt;</span>                                                           ServerHello
+<span class="token operator">&gt;</span>                                                           <span class="token operator">+</span> key_share
+<span class="token operator">&gt;</span>                                                 <span class="token punctuation">{<!-- --></span>EncryptedExtensions<span class="token punctuation">}</span>
+<span class="token operator">&gt;</span>                                                 <span class="token punctuation">{<!-- --></span>CertificateRequest<span class="token operator">*</span><span class="token punctuation">}</span>
+<span class="token operator">&gt;</span>                                                        <span class="token punctuation">{<!-- --></span>Certificate<span class="token operator">*</span><span class="token punctuation">}</span>
+<span class="token operator">&gt;</span>                                                  <span class="token punctuation">{<!-- --></span>CertificateVerify<span class="token operator">*</span><span class="token punctuation">}</span>
+<span class="token operator">&gt;</span>                                                            <span class="token punctuation">{<!-- --></span>Finished<span class="token punctuation">}</span>
+<span class="token operator">&gt;</span>                                     <span class="token operator">&lt;</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span>     <span class="token punctuation">[</span>Application Data<span class="token operator">*</span><span class="token punctuation">]</span>
+<span class="token operator">&gt;</span>           <span class="token punctuation">{<!-- --></span>Certificate<span class="token operator">*</span><span class="token punctuation">}</span>
+<span class="token operator">&gt;</span>           <span class="token punctuation">{<!-- --></span>CertificateVerify<span class="token operator">*</span><span class="token punctuation">}</span>
+<span class="token operator">&gt;</span>           <span class="token punctuation">{<!-- --></span>Finished<span class="token punctuation">}</span>                <span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">&gt;</span>
+<span class="token operator">&gt;</span>                                     <span class="token operator">&lt;</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span>      <span class="token punctuation">[</span>NewSessionTicket<span class="token punctuation">]</span>
+<span class="token operator">&gt;</span>           <span class="token punctuation">[</span>Application Data<span class="token punctuation">]</span>        <span class="token operator">&lt;</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">-</span><span class="token operator">&gt;</span>      <span class="token punctuation">[</span>Application Data<span class="token punctuation">]</span>
+<span class="token operator">&gt;</span> 
+<span class="token operator">&gt;</span>    随后握手<span class="token punctuation">:</span>
+<span class="token operator">&gt;</span>           ClientHello
+<span class="token operator">&gt;</span>           <span class="token operator">+</span> key_share<span class="token operator">*</span>
+<span class="token operator">&gt;</span>           <span class="token operator">+</span> pre_shared_key          <span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">&gt;</span>
+<span class="token operator">&gt;</span>                                                           ServerHello
+<span class="token operator">&gt;</span>                                                      <span class="token operator">+</span> pre_shared_key
+<span class="token operator">&gt;</span>                                                          <span class="token operator">+</span> key_share<span class="token operator">*</span>
+<span class="token operator">&gt;</span>                                                 <span class="token punctuation">{<!-- --></span>EncryptedExtensions<span class="token punctuation">}</span>
+<span class="token operator">&gt;</span>                                                            <span class="token punctuation">{<!-- --></span>Finished<span class="token punctuation">}</span>
+<span class="token operator">&gt;</span>                                     <span class="token operator">&lt;</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span>     <span class="token punctuation">[</span>Application Data<span class="token operator">*</span><span class="token punctuation">]</span>
+<span class="token operator">&gt;</span>           <span class="token punctuation">{<!-- --></span>Finished<span class="token punctuation">}</span>                <span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">&gt;</span>
+<span class="token operator">&gt;</span>           <span class="token punctuation">[</span>Application Data<span class="token punctuation">]</span>        <span class="token operator">&lt;</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">-</span><span class="token operator">&gt;</span>      <span class="token punctuation">[</span>Application Data<span class="token punctuation">]</span>
+</code></pre> 
+<blockquote> 
+ <pre><code>           图 3: PSK和恢复消息流
+</code></pre> 
+</blockquote> 
+<pre><code> 当server通过PSK进行认证时，它不会发送Certificate或CertificateVerify消息。当client通过PSK恢复时，它也应当提供一个"key_share"给server，以允许server在需要的情况下拒绝恢复并回退到完整的握手。Server响应一个"pre_shared_key"扩展来协商确定PSK密钥的使用方法，并响应一个"key_share"扩展（如图所示）来进行(EC)DHE密钥确定，由此提供前向安全。
+ 当PKS在带外提供时，必须一起提供PSK身份和与PSK一起使用的KDF hash算法。
+</code></pre> 
+<p>注：当使用带外提供的预共享密钥时，一个关键的考虑是在密钥生成时使用足够的熵，就像[RFC4086]中讨论的那样。从口令或其它低熵源导出的共享密钥并不安全。一个低熵密码或口令，容易受到基于PSK绑定器的字典攻击。就算使用了Diffie-Hellman密钥建立方法，这种PSK认证也不是强口令认证的密钥交换。它不能防止可以观察到握手的攻击者对密码/PSK执行暴力攻击。</p> 
+<h3><a id="23__0RTT_194"></a>2.3. 0-RTT数据</h3> 
+<p>当client和server共享一个PSK（从外部获得或通过以前的握手获得）时，TLS 1.3允许client在第一个发送出去的消息（“early data”）中携带数据。Client使用这个PSK来认证server并加密early data。<br> 如图4所示，0-RTT数据在第一个发送的消息中被加入到1-RTT握手里。握手的其余消息与带PSK恢复的1-RTT握手消息相同。</p> 
+<pre><code class="prism language-clike"><span class="token operator">&gt;</span>   Client                                               Server
+<span class="token operator">&gt;</span> 
+<span class="token operator">&gt;</span>          ClientHello
+<span class="token operator">&gt;</span>          <span class="token operator">+</span> early_data
+<span class="token operator">&gt;</span>          <span class="token operator">+</span> key_share<span class="token operator">*</span>
+<span class="token operator">&gt;</span>          <span class="token operator">+</span> psk_key_exchange_modes
+<span class="token operator">&gt;</span>          <span class="token operator">+</span> pre_shared_key
+<span class="token operator">&gt;</span>          <span class="token punctuation">(</span>Application Data<span class="token operator">*</span><span class="token punctuation">)</span>     <span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">&gt;</span>
+<span class="token operator">&gt;</span>                                                          ServerHello
+<span class="token operator">&gt;</span>                                                     <span class="token operator">+</span> pre_shared_key
+<span class="token operator">&gt;</span>                                                         <span class="token operator">+</span> key_share<span class="token operator">*</span>
+<span class="token operator">&gt;</span>                                                <span class="token punctuation">{<!-- --></span>EncryptedExtensions<span class="token punctuation">}</span>
+<span class="token operator">&gt;</span>                                                        <span class="token operator">+</span> early_data<span class="token operator">*</span>
+<span class="token operator">&gt;</span>                                                           <span class="token punctuation">{<!-- --></span>Finished<span class="token punctuation">}</span>
+<span class="token operator">&gt;</span>                                  <span class="token operator">&lt;</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span>       <span class="token punctuation">[</span>Application Data<span class="token operator">*</span><span class="token punctuation">]</span>
+<span class="token operator">&gt;</span>          <span class="token punctuation">(</span>EndOfEarlyData<span class="token punctuation">)</span>
+<span class="token operator">&gt;</span>          <span class="token punctuation">{<!-- --></span>Finished<span class="token punctuation">}</span>              <span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">&gt;</span>
+<span class="token operator">&gt;</span>          <span class="token punctuation">[</span>Application Data<span class="token punctuation">]</span>      <span class="token operator">&lt;</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">-</span><span class="token operator">&gt;</span>        <span class="token punctuation">[</span>Application Data<span class="token punctuation">]</span>
+<span class="token operator">&gt;</span> 
+<span class="token operator">&gt;</span> <span class="token operator">+</span>  表明是在之前提到的消息中发送的重要扩展
+<span class="token operator">&gt;</span> <span class="token operator">*</span>  表明可选的或者特定条件下发送的消息或扩展 <span class="token punctuation">(</span><span class="token punctuation">)</span> 表示消息由client_early_traffic_secret导出的密钥保护 <span class="token punctuation">{<!-- --></span><span class="token punctuation">}</span> 表示消息由 <span class="token punctuation">[</span>sender<span class="token punctuation">]</span>_handshake_traffic_secret导出的密钥保护 <span class="token punctuation">[</span><span class="token punctuation">]</span>
+<span class="token operator">&gt;</span> 表示消息由<span class="token punctuation">[</span>sender<span class="token punctuation">]</span>_application_traffic_secret_N导出的密钥保护
+</code></pre> 
+<blockquote> 
+ <pre><code>                      图4: 0-RTT握手的消息流
+</code></pre> 
+</blockquote> 
+<p>注意：0-RTT数据的安全属性比其它类型的TLS数据弱，特别是：<br> 1. 这类数据没有前向安全，它只使用了从提供的PSK中导出的密钥进行加密。<br> 2. 不能保证在多条连接之间不会重放。为普通的TLS 1.3 1-RTT数据提供抗重放的保护方法是使用server的随机数据，但0-RTT不依赖于ServerHello，因此只能得到更弱的保护。如果数据使用TLS client认证或在应用协议认证，这一点尤其重要。这个警告适用于任何使用early_exporter_master_secret的情况。</p> 
+<p>0-RTT数据不能在一个连接内复制（如server不会处理同一连接内相同数据两次），攻击者不能使0-RTT数据看起来像1-RTT数据（因为它们是用不同秘钥保护的）。附录E.5包含了潜在攻击的描述，第8章描述了server可以用来限制重放影响的机制。</p> 
+<h2><a id="3___233"></a>3. 表示语言</h2> 
+<p>本文使用另外的表示方法处理数据格式。下面会用到非常基础甚至是有些随便定义的表示语法。</p> 
+<h3><a id="31___235"></a>3.1. 基本块大小</h3> 
+<p>所有数据条目的描述都是被显示指定的。基本数据块大小是1字节（即8位）。多字节数据条目是字节的串联，从左到右，从上到下。从字节流的角度看，一个多字节条目（在例子中是一个数值）的组织方式（使用C记法）如下：</p> 
+<pre><code>  value = (byte[0] &lt;&lt; 8*(n-1)) | (byte[1] &lt;&lt; 8*(n-2)) |
+          ... | byte[n-1];
+</code></pre> 
+<p>多字节数值字节序是普通的网络字节序或大端格式。</p> 
+<h3><a id="32___242"></a>3.2. 其他</h3> 
+<p>注释以/<em>" and end with "</em>/开始。</p> 
+<p>可选组件使用 [[ ]]括起来(两个中括号).</p> 
+<p>包含未解释数据的单字节实体属于opaque类型。</p> 
+<pre><code> 可以为一个现有类型T定义一个别名T':
+  T T';
+</code></pre> 
+<h3><a id="33__Numbers_252"></a>3.3. Numbers</h3> 
+<p>基本数字数据类型是一个无符号字节（uint8）.所有更大的数据类型都是由固定长度的字节序列构成的，如第3.1节所述，这些字节串接在一起，并且也是无符号的。以下数字类型是预定义的：</p> 
+<p>uint8 uint16[2];<br> uint8 uint24[3];<br> uint8 uint32[4];<br> uint8 uint64[8];</p> 
+<p>规范中的所有值都以网络字节（大端序）顺序传输，由十六进制字节01 02 03 04表示的uint32相当于十进制值16909060</p> 
+<h3><a id="34___262"></a>3.4. 向量</h3> 
+<p>一个向量（一维数组）是同类数据元素的流。向量的大小可能在编写文档时指定或留待运行时确定。在任何情况下，向量的长度都是指字节数而非元素数。定义一个新类型T’(是一个固定长度的类型T的向量)的语法是：</p> 
+<pre><code class="prism language-bash">  T T'<span class="token punctuation">[</span>n<span class="token punctuation">]</span><span class="token punctuation">;</span>
+</code></pre> 
+<p>这里T’在数据流中占据了n个字节，而n是多个T的大小。向量的长度并不包含在编码流中。<br> 在下面的例子中，Datum被定义为协议不能理解的3个连续字节， 而Data是三个连续的Datum，共占据9个字节。</p> 
+<pre><code class="prism language-bash">  opaque Datum<span class="token punctuation">[</span><span class="token number">3</span><span class="token punctuation">]</span><span class="token punctuation">;</span>      /* three uninterpreted bytes */
+  Datum Data<span class="token punctuation">[</span><span class="token number">9</span><span class="token punctuation">]</span><span class="token punctuation">;</span>        /* three consecutive <span class="token number">3</span>-byte vectors */
+</code></pre> 
+<p>变长向量的定义是通过指定一个合法长度的子范围来实现（使用符号&lt;floor…ceiling&gt;）。当这些被编码时，在字节流中实际长度是在向量的内容之前。这个长度会以一个数字的形式出现，并使用足够多的字节以便表示向量的最大长度（ceiling）。一个实际长度是0的变长向量会被当做一个空向量。</p> 
+<pre><code class="prism language-bash">  T T'<span class="token operator">&lt;</span>floor<span class="token punctuation">..</span>ceiling<span class="token operator">&gt;</span><span class="token punctuation">;</span>
+</code></pre> 
+<p>在下面的例子中会强制要求一个向量必须包含300-400个字节的opaque类型数据，不能为空。实际长度字段占用两个字节，为一个uint16，这足以代表数值400（见3.4节）。相似地，"longer"可以描述多达800字节的数据，或400个uint16类型的元素，可以为空。它的编码会在向量前包含一个两字节的实际长度字段。一个编码向量的长度必须是单个元素长度的偶数倍（例如，一个17字节长的uint16类型的向量是非法的）。</p> 
+<pre><code class="prism language-bash">  opaque mandatory<span class="token operator">&lt;</span><span class="token number">300</span><span class="token punctuation">..</span><span class="token number">40</span><span class="token operator"><span class="token file-descriptor important">0</span>&gt;</span><span class="token punctuation">;</span> /* length field is two bytes, cannot be empty */
+  uint16 longer<span class="token operator">&lt;</span><span class="token number">0</span><span class="token punctuation">..</span><span class="token number">80</span><span class="token operator"><span class="token file-descriptor important">0</span>&gt;</span><span class="token punctuation">;</span> /* zero to <span class="token number">400</span> <span class="token number">16</span>-bit unsigned integers */
+</code></pre> 
+<h3><a id="35___290"></a>3.5. 枚举</h3> 
+<p>另外一种不常见（sparse稀疏？）的数据类型是枚举。每个定义都是一个不同的类型。只有相同类型的枚举能被赋值或比较。枚举的每个元素都必须指定一个值，如下所示。因为枚举类型的元素并不是有序的，所以它们能够以任意顺序指定任意唯一值。</p> 
+<pre><code class="prism language-bash">  enum <span class="token punctuation">{<!-- --></span> e1<span class="token punctuation">(</span>v1<span class="token punctuation">)</span>, e2<span class="token punctuation">(</span>v2<span class="token punctuation">)</span>, <span class="token punctuation">..</span>. , en<span class="token punctuation">(</span>vn<span class="token punctuation">)</span> <span class="token punctuation">[</span><span class="token punctuation">[</span>, <span class="token punctuation">(</span>n<span class="token punctuation">)</span><span class="token punctuation">]</span><span class="token punctuation">]</span> <span class="token punctuation">}</span> Te<span class="token punctuation">;</span>
+</code></pre> 
+<p>将来对协议的扩展或添加会定义新的值。实现需要能够解析或者忽略未知的值，除非字段的定义另有说明。<br> 一个枚举在字节流中占据的空间需要足够存储其定义的最大有序数值。下面的定义会使用1个字节来表示Color类型的字段。</p> 
+<pre><code class="prism language-bash">  enum <span class="token punctuation">{<!-- --></span> red<span class="token punctuation">(</span><span class="token number">3</span><span class="token punctuation">)</span>, blue<span class="token punctuation">(</span><span class="token number">5</span><span class="token punctuation">)</span>, white<span class="token punctuation">(</span><span class="token number">7</span><span class="token punctuation">)</span> <span class="token punctuation">}</span> Color<span class="token punctuation">;</span>
+</code></pre> 
+<p>一个选择是指定一个值但不关联标记以强制定义枚举的大小，这样无需定义一个多余的元素。<br> 在下面这个例子中，Taste在字节流中会消耗2个字节， 但在当前的协议版本中只能表示数值1,2,或4。</p> 
+<pre><code class="prism language-bash">   enum <span class="token punctuation">{<!-- --></span> sweet<span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">)</span>, sour<span class="token punctuation">(</span><span class="token number">2</span><span class="token punctuation">)</span>, bitter<span class="token punctuation">(</span><span class="token number">4</span><span class="token punctuation">)</span>, <span class="token punctuation">(</span><span class="token number">32000</span><span class="token punctuation">)</span> <span class="token punctuation">}</span> Taste<span class="token punctuation">;</span>
+</code></pre> 
+<p>一个枚举类型的元素名称被局限于定义的类型。在第一个例子中，对枚举的第二个元素的完全合格的引用是Color.blue，如果能很好的定义赋值目标，就不需要这样的格式。</p> 
+<pre><code class="prism language-bash">  Color color <span class="token operator">=</span> Color.blue<span class="token punctuation">;</span>     /* overspecified, legal */
+  Color color <span class="token operator">=</span> blue<span class="token punctuation">;</span>           /* correct, <span class="token builtin class-name">type</span> implicit */
+</code></pre> 
+<p>指定给枚举的名字不需要是唯一的。数字可以描述使用相同名字的一个范围。这个值包括取值范围中最小和最大值，由两个点分隔开。主要用于保留空间区域。</p> 
+<p>enum { sad(0), meh(1…254), happy(255) } Mood;</p> 
+<h3><a id="36___322"></a>3.6. 结构体类型</h3> 
+<p>为了方便，结构体类型可以由原始类型组成。每个规范声明了一个新的、唯一的类型。定义的语法很像C语言：</p> 
+<p>struct {<!-- --><br> T1 f1;<br> T2 f2;<br> …<br> Tn fn;<br> } T;</p> 
+<p>定长和变长向量字段可以使用标准的向量语法。下文中变量示例（3.8）中的结构体V1和V2表明了这一点。<br> 结构体内的字段可以用类型的名字来描述，用类似于枚举的语法。例如，T.f2引用了前面定义的结构的第二个字段。</p> 
+<h3><a id="37___334"></a>3.7. 常量</h3> 
+<p>字段和常量可以使用"="来赋一个固定的值，像下面那样：</p> 
+<pre><code class="prism language-bash">  struct <span class="token punctuation">{<!-- --></span>
+      T1 f1 <span class="token operator">=</span> <span class="token number">8</span><span class="token punctuation">;</span>  /* T.f1 must always be <span class="token number">8</span> */
+      T2 f2<span class="token punctuation">;</span>
+  <span class="token punctuation">}</span> T<span class="token punctuation">;</span>
+</code></pre> 
+<h3><a id="38___344"></a>3.8. 变量</h3> 
+<p>考虑到从环境中得到的一些信息是变化的，定义的结构体可以有一些变量。选择符必须是一个定义了结构体中变量取值的枚举类型。Select语句的每个分支指定了变量字段的类型和一个可选的字段标签。通过这个机制变量可以在运行时被选择，而不是被表示语言描述。</p> 
+<pre><code class="prism language-c">  <span class="token keyword">struct</span> <span class="token punctuation">{<!-- --></span>
+      T1 f1<span class="token punctuation">;</span>
+      T2 f2<span class="token punctuation">;</span>
+      <span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+      Tn fn<span class="token punctuation">;</span>
+      <span class="token function">select</span> <span class="token punctuation">(</span>E<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+          <span class="token keyword">case</span> e1<span class="token operator">:</span> Te1 <span class="token punctuation">[</span><span class="token punctuation">[</span>fe1<span class="token punctuation">]</span><span class="token punctuation">]</span><span class="token punctuation">;</span>
+          <span class="token keyword">case</span> e2<span class="token operator">:</span> Te2 <span class="token punctuation">[</span><span class="token punctuation">[</span>fe2<span class="token punctuation">]</span><span class="token punctuation">]</span><span class="token punctuation">;</span>
+          <span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+          <span class="token keyword">case</span> en<span class="token operator">:</span> Ten <span class="token punctuation">[</span><span class="token punctuation">[</span>fen<span class="token punctuation">]</span><span class="token punctuation">]</span><span class="token punctuation">;</span>
+      <span class="token punctuation">}</span><span class="token punctuation">;</span>
+  <span class="token punctuation">}</span> Tv<span class="token punctuation">;</span>
+</code></pre> 
+<p>例如:</p> 
+<pre><code class="prism language-c"><span class="token keyword">enum</span> <span class="token punctuation">{<!-- --></span> <span class="token function">apple</span><span class="token punctuation">(</span><span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token function">orange</span><span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">)</span> <span class="token punctuation">}</span> VariantTag<span class="token punctuation">;</span>
+
+  <span class="token keyword">struct</span> <span class="token punctuation">{<!-- --></span>
+      uint16 number<span class="token punctuation">;</span>
+      opaque string<span class="token operator">&lt;</span><span class="token number">0.</span><span class="token number">.10</span><span class="token operator">&gt;</span><span class="token punctuation">;</span> <span class="token comment">/* variable length */</span>
+  <span class="token punctuation">}</span> V1<span class="token punctuation">;</span>
+
+  <span class="token keyword">struct</span> <span class="token punctuation">{<!-- --></span>
+      uint32 number<span class="token punctuation">;</span>
+      opaque string<span class="token punctuation">[</span><span class="token number">10</span><span class="token punctuation">]</span><span class="token punctuation">;</span>    <span class="token comment">/* fixed length */</span>
+  <span class="token punctuation">}</span> V2<span class="token punctuation">;</span>
+
+  <span class="token keyword">struct</span> <span class="token punctuation">{<!-- --></span>
+      VariantTag type<span class="token punctuation">;</span>
+      <span class="token function">select</span> <span class="token punctuation">(</span>VariantRecord<span class="token punctuation">.</span>type<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+          <span class="token keyword">case</span> apple<span class="token operator">:</span>  V1<span class="token punctuation">;</span>
+          <span class="token keyword">case</span> orange<span class="token operator">:</span> V2<span class="token punctuation">;</span>
+      <span class="token punctuation">}</span><span class="token punctuation">;</span>
+  <span class="token punctuation">}</span> VariantRecord<span class="token punctuation">;</span>
+</code></pre> 
+<h2><a id="4___387"></a>4. 握手协议</h2> 
+<p>握手协议用于协商连接的安全参数。把握手消息传递给TLS记录层，TLS记录层把它们封装到一个或多个TLSPlaintext或TLSCiphertext中，然后按照当前活动连接状态的规定进行处理和传输。</p> 
+<pre><code class="prism language-c">   <span class="token keyword">enum</span> <span class="token punctuation">{<!-- --></span>
+          <span class="token function">client_hello</span><span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">,</span>
+          <span class="token function">server_hello</span><span class="token punctuation">(</span><span class="token number">2</span><span class="token punctuation">)</span><span class="token punctuation">,</span>
+          <span class="token function">new_session_ticket</span><span class="token punctuation">(</span><span class="token number">4</span><span class="token punctuation">)</span><span class="token punctuation">,</span>
+          <span class="token function">end_of_early_data</span><span class="token punctuation">(</span><span class="token number">5</span><span class="token punctuation">)</span><span class="token punctuation">,</span>
+          <span class="token function">encrypted_extensions</span><span class="token punctuation">(</span><span class="token number">8</span><span class="token punctuation">)</span><span class="token punctuation">,</span>
+          <span class="token function">certificate</span><span class="token punctuation">(</span><span class="token number">11</span><span class="token punctuation">)</span><span class="token punctuation">,</span>
+          <span class="token function">certificate_request</span><span class="token punctuation">(</span><span class="token number">13</span><span class="token punctuation">)</span><span class="token punctuation">,</span>
+          <span class="token function">certificate_verify</span><span class="token punctuation">(</span><span class="token number">15</span><span class="token punctuation">)</span><span class="token punctuation">,</span>
+          <span class="token function">finished</span><span class="token punctuation">(</span><span class="token number">20</span><span class="token punctuation">)</span><span class="token punctuation">,</span>
+          <span class="token function">key_update</span><span class="token punctuation">(</span><span class="token number">24</span><span class="token punctuation">)</span><span class="token punctuation">,</span>
+          <span class="token function">message_hash</span><span class="token punctuation">(</span><span class="token number">254</span><span class="token punctuation">)</span><span class="token punctuation">,</span>
+          <span class="token punctuation">(</span><span class="token number">255</span><span class="token punctuation">)</span>
+      <span class="token punctuation">}</span> HandshakeType<span class="token punctuation">;</span>
+
+      <span class="token keyword">struct</span> <span class="token punctuation">{<!-- --></span>
+          HandshakeType msg_type<span class="token punctuation">;</span>    <span class="token comment">/* handshake type */</span>
+          uint24 length<span class="token punctuation">;</span>             <span class="token comment">/* remaining bytes in message */</span>
+          <span class="token function">select</span> <span class="token punctuation">(</span>Handshake<span class="token punctuation">.</span>msg_type<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+              <span class="token keyword">case</span> client_hello<span class="token operator">:</span>          ClientHello<span class="token punctuation">;</span>
+              <span class="token keyword">case</span> server_hello<span class="token operator">:</span>          ServerHello<span class="token punctuation">;</span>
+              <span class="token keyword">case</span> end_of_early_data<span class="token operator">:</span>     EndOfEarlyData<span class="token punctuation">;</span>
+              <span class="token keyword">case</span> encrypted_extensions<span class="token operator">:</span>  EncryptedExtensions<span class="token punctuation">;</span>
+              <span class="token keyword">case</span> certificate_request<span class="token operator">:</span>   CertificateRequest<span class="token punctuation">;</span>
+              <span class="token keyword">case</span> certificate<span class="token operator">:</span>           Certificate<span class="token punctuation">;</span>
+              <span class="token keyword">case</span> certificate_verify<span class="token operator">:</span>    CertificateVerify<span class="token punctuation">;</span>
+              <span class="token keyword">case</span> finished<span class="token operator">:</span>              Finished<span class="token punctuation">;</span>
+              <span class="token keyword">case</span> new_session_ticket<span class="token operator">:</span>    NewSessionTicket<span class="token punctuation">;</span>
+              <span class="token keyword">case</span> key_update<span class="token operator">:</span>            KeyUpdate<span class="token punctuation">;</span>
+          <span class="token punctuation">}</span><span class="token punctuation">;</span>
+      <span class="token punctuation">}</span> Handshake<span class="token punctuation">;</span>
+</code></pre> 
+<p>协议消息必须以4.4.1中定义的顺序发送，这也已经在第2章的图中展示了。对端如果收到了不按顺序发送的握手消息必须使用一个"unexpected_message"警报来中止握手。<br> 新的握手消息类型已经由IANA指定并在第11章中描述。</p> 
+<h3><a id="41___427"></a>4.1. 密钥交换消息</h3> 
+<p>密钥交换消息用于确定client和server之间的安全能力，并确定包括流量密钥在内的共享密钥来保护其余的握手消息和数据。</p> 
+<h4><a id="411___429"></a>4.1.1. 密码协商</h4> 
+<p>在TLS中，密码协商通过client在ClientHello中提供下面4个选项集合来实现：<br>  一个密码族列表，指的是client所支持的AEAD算法或HKDF hash对。<br>  一个” supported_groups”(4.2.7)扩展，指的是client支持的(EC)DHE组；一个”key_share”(4.2.8)扩展，包含了一些或全部组所共享的(EC)DHE秘钥。<br>  一个"signature_algorithms"(4.2.3)扩展，指的是client能接受的签名算法；可能会添加一个"signature_algorithms_cert"扩展（4.2.3）来指明证书指定的签名算法。<br>  一个"pre_shared_key" (4.2.11)扩展，包含了一个client知晓的对称密钥；一个"psk_key_exchange_modes" (4.2.9) 扩展，表明与PSK一起使用的密钥交换模式。<br> 如果server没有选择PSK，则这些选项的前3个是完全正交的：server独立地选择一个密码族，一个(EC)DHE组和用于确定密钥的密钥共享，一个签名算法或证书对用于认证自己和client。如果接收到的"supported_groups"和server所支持的组之间没有重叠，则server必须用一个"handshake_failure" 或一个"insufficient_security"警报中止握手。<br> 如果server选择了一个PSK，则必须从client的"psk_key_exchange_modes"扩展（目前是仅PSK或带(EC)DHE）所携带的集合中选择一个密钥建立模式。需要注意的是如果可以不带(EC)DHE就使用PSK，则"supported_groups"参数不重叠不一定是致命的，就像之前讨论过的非PSK场景一样。<br> 如果server选择了一个(EC)DHE组并且client没有在初始ClientHello中提供兼容的"key_share"扩展，server必须响应HelloRetryRequest(4.1.4)消息。</p> 
+<p>如果server成功地选择了参数且没有发送HelloRetryRequest，表明ServerHello中所选的参数如下：<br> 如果使用PSK，则server会发送一个”pre_shared_key”扩展表明所选的密钥。<br> 使用 (EC)DHE时，server也会提供"key_share"扩展。如果没有使用PSK，则一直使用(EC)DHE和基于证书的认证。<br> 当通过证书进行验证时，server将会发送Certificate(4.4.2)和CertificateVerify(4.4.3)消息。在本文定义的TLS1.3中，会一直使用一个PSK或一个证书，但两者不会同时使用。将来的文档可能会定义怎样同时使用它们。<br> 如果server不能协商出支持的参数集合（例如，client和server的参数集合没有重叠），它必须用一个"handshake_failure" 或一个"insufficient_security"警报（见第6章）中止握手。</p> 
+<h4><a id="412__Client_Hello_444"></a>4.1.2. Client Hello</h4> 
+<p>当client第一次连接一个server时，它需要发送ClientHello作为第一个消息。当server用HelloRetryRequest来响应client的ClientHello时，client也应当发送ClientHello。这种条件下，client必须发送相同的ClientHello（无修改），除非：<br>  如果HelloRetryRequest带有一个”key_share”扩展，则将共享列表用包含指定组中的一个KeyShareEntry的列表取代。<br>  如果存在”early_data”扩展则将其移除。Early data不允许在HelloRetryRequest之后出现。<br>  如果HelloRetryRequest中提供了一个”cookie”扩展，则需要也包含一个”cookie”扩展。<br>  如果需要重新计算"obfuscated_ticket_age" 和绑定值、(可选地)删除与server指定的密码族不兼容的任何PSK，则更新"pre_shared_key"扩展。<br>  选择性增加、删除或更改”padding”扩展[RFC 7685]的长度。<br>  将来定义的其他HelloRetryRequest中扩展允许的修改。</p> 
+<p>由于TLS 1.3禁止重协商，如果server已经协商完成了TLS 1.3，在任何其它时间收到了ClientHello，必须用"unexpected_message"警报中止连接。<br> 如果server用以前版本的TLS建立了连接并在重协商时接收了一个TLS1.3的ClientHello，它必须保持以前的协议版本，不能协商TLS 1.3。<br> 这个消息的结构：</p> 
+<pre><code class="prism language-c">   uint16 ProtocolVersion<span class="token punctuation">;</span>
+      opaque Random<span class="token punctuation">[</span><span class="token number">32</span><span class="token punctuation">]</span><span class="token punctuation">;</span>
+      uint8 CipherSuite<span class="token punctuation">[</span><span class="token number">2</span><span class="token punctuation">]</span><span class="token punctuation">;</span>    <span class="token comment">/* Cryptographic suite selector */</span>
+
+      <span class="token keyword">struct</span> <span class="token punctuation">{<!-- --></span>
+          ProtocolVersion legacy_version <span class="token operator">=</span> <span class="token number">0x0303</span><span class="token punctuation">;</span>    <span class="token comment">/* TLS v1.2 */</span>
+          Random random<span class="token punctuation">;</span>
+          opaque legacy_session_id<span class="token operator">&lt;</span><span class="token number">0.</span><span class="token number">.32</span><span class="token operator">&gt;</span><span class="token punctuation">;</span>
+          CipherSuite cipher_suites<span class="token operator">&lt;</span><span class="token number">2.</span><span class="token number">.2</span><span class="token operator">^</span><span class="token number">16</span><span class="token operator">-</span><span class="token number">2</span><span class="token operator">&gt;</span><span class="token punctuation">;</span>
+          opaque legacy_compression_methods<span class="token operator">&lt;</span><span class="token number">1.</span><span class="token number">.2</span><span class="token operator">^</span><span class="token number">8</span><span class="token operator">-</span><span class="token number">1</span><span class="token operator">&gt;</span><span class="token punctuation">;</span>
+          Extension extensions<span class="token operator">&lt;</span><span class="token number">8.</span><span class="token number">.2</span><span class="token operator">^</span><span class="token number">16</span><span class="token operator">-</span><span class="token number">1</span><span class="token operator">&gt;</span><span class="token punctuation">;</span>
+      <span class="token punctuation">}</span> ClientHello<span class="token punctuation">;</span>
+</code></pre> 
+<p>legacy_version：在以前版本的TLS里，这个字段用于版本协商和表示client支持的最高版本号。经验表明很多server没有适当地实现版本协商，导致“版本容忍”，会使server拒绝本来可接受的版本号高于支持的ClientHello。在TLS 1.3中，client在"supported_versions" 扩展(4.2.1节)中表明版本偏好，且legacy_version字段必须设置为TLS1.2的版本号0x0303。TLS 1.3 ClientHello的legacy_version为0x0303，supported_versions扩展值为最好版本0x0304（关于后向兼容的细节见附录D）</p> 
+<p>random： 由一个安全随机数生成器产生的32字节随机数，更多信息见附录C。</p> 
+<p>legacy_session_id： 之前的TLS版本支持"会话恢复"特性，在TLS 1.3中此特性与预共享密钥合并了(见2.2节)。client需要将此字段设置为TLS 1.3之前版本的server缓存的 session ID。在兼容模式下(见附录D.4)此字段必须非空，所以一个不能提供TLS 1.3之前版本会话的client必须产生一个32字节的新值。这个值不必是随机的但应该是不可预测的以避免实现上固定为一个具体的值(也被称为僵化)。否则，它必须被设置为一个0长度向量(例如，一个0字节长度字段)。</p> 
+<p>cipher_suites： client支持的对称密码族选项列表，具体有记录保护算法（包括密钥长度）和与HKDF一起使用的hash算法，这些算法以client偏好降序排列。值定义在附录B.4。如果列表中包含server不认识，不支持，或不想使用的密码族，server必须忽略这些密码族并且正常处理其余的密码族。如果client试图确定一个PSK，应该通告至少一个密码族以表明PSK关联hash算法。</p> 
+<p>legacy_compression_methods：TLS 1.3以前的版本支持压缩，并提供一个支持的压缩方法列表。对于TLS 1.3的每个ClientHello，这个向量必须只包含1字节并设置为0，对应以前TLS版本的"null"压缩方法。如果收到的TLS 1.3 ClientHello这个字段是其它的值，server必须以一个"illegal_parameter" alert来中止握手。请注意，TLS 1.3 server可能会接收TLS 1.2或之前的ClientHello包含其它压缩方法，（如果与这样一个先前版本协商）必须遵循适当的TLS先前版本的流程。</p> 
+<p>extension： Client通过在extension字段发送数据来向server请求扩展的功能。实际的"Extension"格式定义在4.2节中。TLS 1.3强制使用特定的extension，因为一些功能被转移到了extension里以保留ClientHello与先前TLS版本的兼容性。Server必须忽略无法识别的extension。</p> 
+<p>所有版本的TLS都允许compression_method字段后跟着extension字段。TLS 1.3 ClientHello消息始终包含extension（至少包含"supported_versions"，否则将被当做TLS 1.2 ClientHello消息）。但是，TLS1.3 server可能会从以前版本的TLS接收不带extension字段的ClientHello消息。可以通过ClientHello末尾compression_methods字段后面是否有字节来检测扩展的存在。注意，这种检测可选数据的方法不同于检测可变长度字段的常规TLS方法，但是可用于与extension定义之前的TLS版本兼容。TLS 1.3 server需要首先执行此检查，并且只有存在supported_versions"扩展时才尝试协商TLS 1.3。如果协商TLS 1.3之前的版本，server必须检查消息是否在legacy_compression_methods之后不包含任何数据，或者是否包含一个后面没有数据的有效扩展块。如果不是，则必须以“decode_error”alert中止握手。</p> 
+<p>如果client使用extension请求附加功能，而server不提供此功能，则client可能会中止握手。<br> client发送ClientHello消息后，等待ServerHello或HelloRetryRequest消息。如果正在使用早期数据，则client可以在等待下一个握手消息时传输早期应用数据（2.3节）。</p> 
+<h4><a id="413__Server_Hello_490"></a>4.1.3. Server Hello</h4> 
+<p>当可以根据ClientHello协商出一组可接受的握手参数时，server将发送此消息响应ClientHello消息以继续握手流程。</p> 
+<p>此消息的结构：</p> 
+<pre><code class="prism language-c"> <span class="token keyword">struct</span> <span class="token punctuation">{<!-- --></span>
+      ProtocolVersion legacy_version <span class="token operator">=</span> <span class="token number">0x0303</span><span class="token punctuation">;</span>    <span class="token comment">/* TLS v1.2 */</span>
+      Random random<span class="token punctuation">;</span>
+      opaque legacy_session_id_echo<span class="token operator">&lt;</span><span class="token number">0.</span><span class="token number">.32</span><span class="token operator">&gt;</span><span class="token punctuation">;</span>
+      CipherSuite cipher_suite<span class="token punctuation">;</span>
+      uint8 legacy_compression_method <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+      Extension extensions<span class="token operator">&lt;</span><span class="token number">6.</span><span class="token number">.2</span><span class="token operator">^</span><span class="token number">16</span><span class="token operator">-</span><span class="token number">1</span><span class="token operator">&gt;</span><span class="token punctuation">;</span>
+  <span class="token punctuation">}</span> ServerHello<span class="token punctuation">;</span>
+</code></pre> 
+<p>legacy_version：在此前的TLS版本中，此字段用来版本协商和承载连接的选定版本号。不幸的是，当存在新值时，一些中间件会处理失败。在TLS1.3中，TLS sever使用"supported_versions"扩展来表明它的版本（4.2.1节），legacy_version字段必须设置为TLS1.2的版本号0x0303。（前向兼容具体见附录D）</p> 
+<p>random：由安全随机数生成器生成的32字节，其他信息见附录C。如果协商TLS 1.2或TLS 1.1，最后8个字节必须被重写，如下所述。该结构由server生成，必须与ClientHello.random分别生成。</p> 
+<p>legacy_session_id_echo：client的legacy_session_id字段内容。请注意，即使客户端的值与服务器选择不恢复的缓存的TLS 1.3之前会话相对应，也会回复此字段。如果客户端接收到与发送内容不匹配的legacy_session_id_echo字段，则必须使用“illegal_parameter”alert中止握手。</p> 
+<p>cipher_suite：服务器从ClientHello.cipher_suites列表中选择的单个密码套件。 客户端接收到自己没有提供的密码套件必须中止握手。</p> 
+<p>legacy_compression_method: 一个字节，值必须是0。</p> 
+<p>extensions：扩展列表。 ServerHello必须只包含确定加密上下文和协商版本号所需的扩展。所有当前的TLS 1.3 ServerHello消息必须包含"supported_versions"扩展。目前ServerHello消息额外包含"pre_shared_key"扩展和"key_share"扩展之一，或者两者都包含（当使用PSK和(EC)DHE秘钥建立）。其他扩展（见4.2节）单独在EncryptedExtensions消息里发送。<br> 由于中间件的后向兼容性原因（见附录D.4），HelloRetryRequest消息与ServerHello使用相同的结构体，但带有设置为特殊值（"HelloRetryRequest"的SHA-256）的随机值：<br> CF 21 AD 74 E5 9A 61 11 BE 1D 8C 02 1E 65 B8 91<br> C2 A2 11 16 7A BB 8C 5E 07 9E 09 E2 C8 A8 33 9C</p> 
+<p>在接收到类型为server_hello的消息时，必须首先检查随机值，如果该值与此匹配，则按照4.1.4节所述进行处理。<br> TLS 1.3使用服务器的随机值实现降级保护机制。 TLS 1.3服务器以TLS 1.2或更低版本响应ClientHello必须专门设置随机值的最后8个字节。<br> 如果协商TLS 1.2，TLS 1.3服务器必须将随机值的最后8个字节设置为：<br> 44 4F 57 4E 47 52 44 01</p> 
+<p>如果协商 TLS 1.1或更低版本，TLS 1.3服务器和TLS 1.2服务器应该将随机值的 最后8个字节设置为：</p> 
+<pre><code class="prism language-bash"> <span class="token number">44</span> 4F <span class="token number">57</span> 4E <span class="token number">47</span> <span class="token number">52</span> <span class="token number">44</span> 00
+</code></pre> 
+<p>TLS 1.3客户端接收到TLS 1.2或更低版本的ServerHello必须检查最后八个字节不等于这些值。如果ServerHello指示TLS 1.1或更低版本，TLS 1.2客户端还应该检查最低八字节不等于第二个值。 客户端如果找到匹配值则必须用“illegal_parameter”alert中止握手。这种机制提供了有限的保护，以防止降级攻击超出Finished交换提供内容：因为TLS1.2及以下版本的ServerKeyExchange消息包含两个随机值的签名，只要使用临时密码，攻击者就不可能探测修改随机值。当使用静态RSA时就不提供降级保护。</p> 
+<p>注意：这是从[RFC5246]开始修改的，所以实际上许多TLS 1.2客户端和服务器可能不会像上面说的那样。</p> 
+<p>旧的TLS客户端使用TLS 1.2或之前的版本执行重协商，重协商期间如果接收到TLS 1.3的ServerHello，必须使用"protocol_version" alert终止握手。需要注意的是，如果TLS 1.3已经协商好了就不会重协商了。</p> 
+<h4><a id="414__Hello_Retry_Request_539"></a>4.1.4. Hello Retry Request</h4> 
+<p>如果可以找到可接受的一组参数，但ClientHello中没有足够的信息继续处理握手流程，服务器就将这个消息作为ClientHello的回应。如4.1.3节所说，HelloRetryRequest跟ServerHello格式一样，并且legacy_version、legacy_session_id_echo、cipher_suite和legacy_compression_method字段的含义也一样。然而，为方便起见，本文中把"HelloRetryRequest"当做不同的消息讨论。<br> 服务器扩展必须包含"supported_versions"。另外，应该包含客户端产生正确ClientHello对的必须扩展最小集。像ServerHello一样，HelloRetryRequest一定不能包含客户端ClientHello中未提供的扩展，可选"cookie"扩展除外（4.2.2节）。<br> Client接收到HelloRetryRequest必须如4.1.3所说的检查egacy_version,、legacy_session_id_echo、 cipher_suite和legacy_compression_method，然后处理扩展，先用"supported_versions"确定版本号。如果HelloRetryRequest不会对ClientHello造成任何改变， Client必须以"illegal_parameter" alert终止握手。如果client在同一个链接中收到第二个HelloRetryRequest（如即以ClientHello本身响应HelloRetryRequest），必须以"unexpected_message" alert终止连接。<br> 否则， 客户端必须处理HelloRetryRequest中的所有扩展，并发送第二个更新的ClientHello。本规范中定义的HelloRetryRequest扩展包括：</p> 
+<ul><li>supported_versions (见4.2.1节)</li><li>cookie (见4.2.2节)</li><li>key_share (见4.2.8节)</li></ul> 
+<p>Client接收到一个没有提供过的密码套件必须终止握手。Server接收到合法更新的ClientHello时，必须确保协商相同密码套件（如果server选择了协商过程中第一步的密码套件，这就会自动发生）。client接收到ServerHello后，必须检查其中的密码套件是否与HelloRetryRequest中的相同，否则以"illegal_parameter" alert终止握手。<br> 此外，在更新的ClientHello中，客户端不应提供与所选密码套件以外的哈希相关联的任何预共享密钥。 这允许客户端避免在第二个ClientHello中计算多个哈希的部分哈希转录。<br> 接收未提供的密码套件的客户端必须中止握手。 服务器必须确保在接收到一致的更新ClientHello时协商相同的密码套件（如果服务器选择密码套件作为协商的第一步，则会自动发生）。 客户端收到ServerHello后必须检查ServerHello中提供的密码套件是否与HelloRetryRequest中的密码套件相同，否则将以“illegal_parameter”警报中止握手。<br> HelloRetryRequest 中的pported_versions"扩展的selected_version值必须在ServerHello中保留，如果值变化了，client必须以"illegal_parameter" alert终止握手</p> 
+<h3><a id="42__Extensions_552"></a>4.2. Extensions</h3> 
+<p>许多TLS消息包含tag-length-value编码的扩展结构：</p> 
+<pre><code class="prism language-c">  <span class="token keyword">struct</span> <span class="token punctuation">{<!-- --></span>
+        ExtensionType extension_type<span class="token punctuation">;</span>
+        opaque extension_data<span class="token operator">&lt;</span><span class="token number">0.</span><span class="token number">.2</span><span class="token operator">^</span><span class="token number">16</span><span class="token operator">-</span><span class="token number">1</span><span class="token operator">&gt;</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span> Extension<span class="token punctuation">;</span>
+
+    <span class="token keyword">enum</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token function">server_name</span><span class="token punctuation">(</span><span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">,</span>                             <span class="token comment">/* RFC 6066 */</span>
+        <span class="token function">max_fragment_length</span><span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">,</span>                     <span class="token comment">/* RFC 6066 */</span>
+        <span class="token function">status_request</span><span class="token punctuation">(</span><span class="token number">5</span><span class="token punctuation">)</span><span class="token punctuation">,</span>                          <span class="token comment">/* RFC 6066 */</span>
+        <span class="token function">supported_groups</span><span class="token punctuation">(</span><span class="token number">10</span><span class="token punctuation">)</span><span class="token punctuation">,</span>                       <span class="token comment">/* RFC 8422, 7919 */</span>
+        <span class="token function">signature_algorithms</span><span class="token punctuation">(</span><span class="token number">13</span><span class="token punctuation">)</span><span class="token punctuation">,</span>                   <span class="token comment">/* RFC 8446 */</span>
+        <span class="token function">use_srtp</span><span class="token punctuation">(</span><span class="token number">14</span><span class="token punctuation">)</span><span class="token punctuation">,</span>                               <span class="token comment">/* RFC 5764 */</span>
+        <span class="token function">heartbeat</span><span class="token punctuation">(</span><span class="token number">15</span><span class="token punctuation">)</span><span class="token punctuation">,</span>                              <span class="token comment">/* RFC 6520 */</span>
+        <span class="token function">application_layer_protocol_negotiation</span><span class="token punctuation">(</span><span class="token number">16</span><span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token comment">/* RFC 7301 */</span>
+        <span class="token function">signed_certificate_timestamp</span><span class="token punctuation">(</span><span class="token number">18</span><span class="token punctuation">)</span><span class="token punctuation">,</span>           <span class="token comment">/* RFC 6962 */</span>
+        <span class="token function">client_certificate_type</span><span class="token punctuation">(</span><span class="token number">19</span><span class="token punctuation">)</span><span class="token punctuation">,</span>                <span class="token comment">/* RFC 7250 */</span>
+        <span class="token function">server_certificate_type</span><span class="token punctuation">(</span><span class="token number">20</span><span class="token punctuation">)</span><span class="token punctuation">,</span>                <span class="token comment">/* RFC 7250 */</span>
+        <span class="token function">padding</span><span class="token punctuation">(</span><span class="token number">21</span><span class="token punctuation">)</span><span class="token punctuation">,</span>                                <span class="token comment">/* RFC 7685 */</span>
+        <span class="token function">pre_shared_key</span><span class="token punctuation">(</span><span class="token number">41</span><span class="token punctuation">)</span><span class="token punctuation">,</span>                         <span class="token comment">/* RFC 8446 */</span>
+        <span class="token function">early_data</span><span class="token punctuation">(</span><span class="token number">42</span><span class="token punctuation">)</span><span class="token punctuation">,</span>                             <span class="token comment">/* RFC 8446 */</span>
+        <span class="token function">supported_versions</span><span class="token punctuation">(</span><span class="token number">43</span><span class="token punctuation">)</span><span class="token punctuation">,</span>                     <span class="token comment">/* RFC 8446 */</span>
+        <span class="token function">cookie</span><span class="token punctuation">(</span><span class="token number">44</span><span class="token punctuation">)</span><span class="token punctuation">,</span>                                 <span class="token comment">/* RFC 8446 */</span>
+        <span class="token function">psk_key_exchange_modes</span><span class="token punctuation">(</span><span class="token number">45</span><span class="token punctuation">)</span><span class="token punctuation">,</span>                 <span class="token comment">/* RFC 8446 */</span>
+        <span class="token function">certificate_authorities</span><span class="token punctuation">(</span><span class="token number">47</span><span class="token punctuation">)</span><span class="token punctuation">,</span>                <span class="token comment">/* RFC 8446 */</span>
+        <span class="token function">oid_filters</span><span class="token punctuation">(</span><span class="token number">48</span><span class="token punctuation">)</span><span class="token punctuation">,</span>                            <span class="token comment">/* RFC 8446 */</span>
+        <span class="token function">post_handshake_auth</span><span class="token punctuation">(</span><span class="token number">49</span><span class="token punctuation">)</span><span class="token punctuation">,</span>                    <span class="token comment">/* RFC 8446 */</span>
+        <span class="token function">signature_algorithms_cert</span><span class="token punctuation">(</span><span class="token number">50</span><span class="token punctuation">)</span><span class="token punctuation">,</span>              <span class="token comment">/* RFC 8446 */</span>
+        <span class="token function">key_share</span><span class="token punctuation">(</span><span class="token number">51</span><span class="token punctuation">)</span><span class="token punctuation">,</span>                              <span class="token comment">/* RFC 8446 */</span>
+        <span class="token punctuation">(</span><span class="token number">65535</span><span class="token punctuation">)</span>
+    <span class="token punctuation">}</span> ExtensionType<span class="token punctuation">;</span>
+</code></pre> 
+<p>这里:</p> 
+<ul><li>"extension_type"表示特定扩展类型。 identifies the particular extension type.</li><li>"extension_data"包含特定扩展类型指定的信息。</li></ul> 
+<p>扩展类型表由IANA维护，见11章。</p> 
+<p>扩展通常以请求/响应方式构造，尽管一些扩展仅仅是没有相应响应的指示。客户端在ClientHello消息中发送其扩展请求，服务器在ServerHello、EncryptedExtensions和HelloRetryRequest消息中发送其扩展响应。服务器在CertificateRequest消息中发送扩展请求，客户端可能以Certificate消息进行响应。服务器也可以在NewSessionTicket中发送未经请求的扩展，但客户端不直接响应这些。<br> 如果对端没有发送相应的扩展请求（除HelloRetryRequest中的“cookie”扩展外），严禁发送扩展响应。在接收到这样的扩展时，端点 必须用“unsupported_extension”警报中止握手。<br> 下表列出了给定扩展可能出现的消息：CH（ClientHello），SH（ServerHello），EE（EncryptedExtensions），CT（Certificate），CR（CertificateRequest），NST（NewSessionTicket）和HRR ( HelloRetryRequest）。如果接收到可识别的扩展，并且对应消息未指定它，必须用“illegal_parameter”警报来中止握手。</p> 
+<pre><code class="prism language-c">   <span class="token operator">+</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">+</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">-</span><span class="token operator">+</span>
+   <span class="token operator">|</span> Extension                                        <span class="token operator">|</span>     TLS <span class="token number">1.3</span> <span class="token operator">|</span>
+   <span class="token operator">+</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">+</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">-</span><span class="token operator">+</span>
+   <span class="token operator">|</span> server_name <span class="token punctuation">[</span>RFC6066<span class="token punctuation">]</span>                            <span class="token operator">|</span>      CH<span class="token punctuation">,</span> EE <span class="token operator">|</span>
+   <span class="token operator">|</span>                                                  <span class="token operator">|</span>             <span class="token operator">|</span>
+   <span class="token operator">|</span> max_fragment_length <span class="token punctuation">[</span>RFC6066<span class="token punctuation">]</span>                    <span class="token operator">|</span>      CH<span class="token punctuation">,</span> EE <span class="token operator">|</span>
+   <span class="token operator">|</span>                                                  <span class="token operator">|</span>             <span class="token operator">|</span>
+   <span class="token operator">|</span> status_request <span class="token punctuation">[</span>RFC6066<span class="token punctuation">]</span>                         <span class="token operator">|</span>  CH<span class="token punctuation">,</span> CR<span class="token punctuation">,</span> CT <span class="token operator">|</span>
+   <span class="token operator">|</span>                                                  <span class="token operator">|</span>             <span class="token operator">|</span>
+   <span class="token operator">|</span> supported_groups <span class="token punctuation">[</span>RFC7919<span class="token punctuation">]</span>                       <span class="token operator">|</span>      CH<span class="token punctuation">,</span> EE <span class="token operator">|</span>
+   <span class="token operator">|</span>                                                  <span class="token operator">|</span>             <span class="token operator">|</span>
+   <span class="token operator">|</span> <span class="token function">signature_algorithms</span> <span class="token punctuation">(</span>RFC <span class="token number">8446</span><span class="token punctuation">)</span>                  <span class="token operator">|</span>      CH<span class="token punctuation">,</span> CR <span class="token operator">|</span>
+   <span class="token operator">|</span>                                                  <span class="token operator">|</span>             <span class="token operator">|</span>
+   <span class="token operator">|</span> use_srtp <span class="token punctuation">[</span>RFC5764<span class="token punctuation">]</span>                               <span class="token operator">|</span>      CH<span class="token punctuation">,</span> EE <span class="token operator">|</span>
+   <span class="token operator">|</span>                                                  <span class="token operator">|</span>             <span class="token operator">|</span>
+   <span class="token operator">|</span> heartbeat <span class="token punctuation">[</span>RFC6520<span class="token punctuation">]</span>                              <span class="token operator">|</span>      CH<span class="token punctuation">,</span> EE <span class="token operator">|</span>
+   <span class="token operator">|</span>                                                  <span class="token operator">|</span>             <span class="token operator">|</span>
+   <span class="token operator">|</span> application_layer_protocol_negotiation <span class="token punctuation">[</span>RFC7301<span class="token punctuation">]</span> <span class="token operator">|</span>      CH<span class="token punctuation">,</span> EE <span class="token operator">|</span>
+   <span class="token operator">|</span>                                                  <span class="token operator">|</span>             <span class="token operator">|</span>
+   <span class="token operator">|</span> signed_certificate_timestamp <span class="token punctuation">[</span>RFC6962<span class="token punctuation">]</span>           <span class="token operator">|</span>  CH<span class="token punctuation">,</span> CR<span class="token punctuation">,</span> CT <span class="token operator">|</span>
+   <span class="token operator">|</span>                                                  <span class="token operator">|</span>             <span class="token operator">|</span>
+   <span class="token operator">|</span> client_certificate_type <span class="token punctuation">[</span>RFC7250<span class="token punctuation">]</span>                <span class="token operator">|</span>      CH<span class="token punctuation">,</span> EE <span class="token operator">|</span>
+   <span class="token operator">|</span>                                                  <span class="token operator">|</span>             <span class="token operator">|</span>
+   <span class="token operator">|</span> server_certificate_type <span class="token punctuation">[</span>RFC7250<span class="token punctuation">]</span>                <span class="token operator">|</span>      CH<span class="token punctuation">,</span> EE <span class="token operator">|</span>
+   <span class="token operator">|</span>                                                  <span class="token operator">|</span>             <span class="token operator">|</span>
+   <span class="token operator">|</span> padding <span class="token punctuation">[</span>RFC7685<span class="token punctuation">]</span>                                <span class="token operator">|</span>          CH <span class="token operator">|</span>
+   <span class="token operator">|</span>                                                  <span class="token operator">|</span>             <span class="token operator">|</span>
+   <span class="token operator">|</span> <span class="token function">key_share</span> <span class="token punctuation">(</span>RFC <span class="token number">8446</span><span class="token punctuation">)</span>                             <span class="token operator">|</span> CH<span class="token punctuation">,</span> SH<span class="token punctuation">,</span> HRR <span class="token operator">|</span>
+   <span class="token operator">|</span>                                                  <span class="token operator">|</span>             <span class="token operator">|</span>
+   <span class="token operator">|</span> <span class="token function">pre_shared_key</span> <span class="token punctuation">(</span>RFC <span class="token number">8446</span><span class="token punctuation">)</span>                        <span class="token operator">|</span>      CH<span class="token punctuation">,</span> SH <span class="token operator">|</span>
+   <span class="token operator">|</span>                                                  <span class="token operator">|</span>             <span class="token operator">|</span>
+   <span class="token operator">|</span> <span class="token function">psk_key_exchange_modes</span> <span class="token punctuation">(</span>RFC <span class="token number">8446</span><span class="token punctuation">)</span>                <span class="token operator">|</span>          CH <span class="token operator">|</span>
+   <span class="token operator">|</span>                                                  <span class="token operator">|</span>             <span class="token operator">|</span>
+   <span class="token operator">|</span> <span class="token function">early_data</span> <span class="token punctuation">(</span>RFC <span class="token number">8446</span><span class="token punctuation">)</span>                            <span class="token operator">|</span> CH<span class="token punctuation">,</span> EE<span class="token punctuation">,</span> NST <span class="token operator">|</span>
+   <span class="token operator">|</span>                                                  <span class="token operator">|</span>             <span class="token operator">|</span>
+   <span class="token operator">|</span> <span class="token function">cookie</span> <span class="token punctuation">(</span>RFC <span class="token number">8446</span><span class="token punctuation">)</span>                                <span class="token operator">|</span>     CH<span class="token punctuation">,</span> HRR <span class="token operator">|</span>
+   <span class="token operator">|</span>                                                  <span class="token operator">|</span>             <span class="token operator">|</span>
+   <span class="token operator">|</span> <span class="token function">supported_versions</span> <span class="token punctuation">(</span>RFC <span class="token number">8446</span><span class="token punctuation">)</span>                    <span class="token operator">|</span> CH<span class="token punctuation">,</span> SH<span class="token punctuation">,</span> HRR <span class="token operator">|</span>
+   <span class="token operator">|</span>                                                  <span class="token operator">|</span>             <span class="token operator">|</span>
+   <span class="token operator">|</span> <span class="token function">certificate_authorities</span> <span class="token punctuation">(</span>RFC <span class="token number">8446</span><span class="token punctuation">)</span>               <span class="token operator">|</span>      CH<span class="token punctuation">,</span> CR <span class="token operator">|</span>
+   <span class="token operator">|</span>                                                  <span class="token operator">|</span>             <span class="token operator">|</span>
+   <span class="token operator">|</span> <span class="token function">oid_filters</span> <span class="token punctuation">(</span>RFC <span class="token number">8446</span><span class="token punctuation">)</span>                           <span class="token operator">|</span>          CR <span class="token operator">|</span>
+   <span class="token operator">|</span>                                                  <span class="token operator">|</span>             <span class="token operator">|</span>
+   <span class="token operator">|</span> <span class="token function">post_handshake_auth</span> <span class="token punctuation">(</span>RFC <span class="token number">8446</span><span class="token punctuation">)</span>                   <span class="token operator">|</span>          CH <span class="token operator">|</span>
+   <span class="token operator">|</span>                                                  <span class="token operator">|</span>             <span class="token operator">|</span>
+   <span class="token operator">|</span> <span class="token function">signature_algorithms_cert</span> <span class="token punctuation">(</span>RFC <span class="token number">8446</span><span class="token punctuation">)</span>             <span class="token operator">|</span>      CH<span class="token punctuation">,</span> CR <span class="token operator">|</span>
+   <span class="token operator">+</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">+</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">-</span><span class="token operator">+</span>
+</code></pre> 
+<p>当存在不同类型的多个扩展时，扩展可以以任何顺序出现，但“pre_shared_key”（4.2.11节）必须是ClientHello中的最后一个扩展（但在ServerHello扩展块中可以出现在任何位置）。给定扩展块中同一类型的扩展只能出现一次。<br> 与TLS 1.2不同的是，TLS 1.3即使在resumption-PSK模式下，每次握手都重新协商扩展。然而，0-RTT参数是在先前握手中协商的，不匹配可能需要拒绝0-RTT（见4.2.7节）。<br> 在新协议中可能会出现的新特性与现有功能之间存在微妙（但也不是那么微妙）交互，这可能会导致整体安全性的显著降低。设计新扩展时，应考虑以下注意事项：<br>  服务器不同意扩展的一些情况是错误条件（如握手无法继续），有些则简单地拒绝支持特定功能。一般来说，前者应该使用错误警报，后者的服务器扩展响应中会有一个字段。<br>  扩展应尽可能设计为防止任何通过操纵握手信息强制使用（或不使用）特定功能的攻击。无论该功能是否会引起安全问题，都应遵循这一原则。通常，扩展字段被包含在Finished消息散列的输入中是足够的，但是当扩展改变在握手阶段中发送消息的含义时，需要特别小心。设计者和实现者应该意识到，在握手被验证之前，主动攻击者可以修改消息并插入，删除或替换扩展。</p> 
+<h4><a id="421___657"></a>4.2.1. 支持版本号</h4> 
+<pre><code class="prism language-c">  <span class="token keyword">struct</span> <span class="token punctuation">{<!-- --></span>
+      <span class="token function">select</span> <span class="token punctuation">(</span>Handshake<span class="token punctuation">.</span>msg_type<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+          <span class="token keyword">case</span> client_hello<span class="token operator">:</span>
+               ProtocolVersion versions<span class="token operator">&lt;</span><span class="token number">2.</span><span class="token number">.254</span><span class="token operator">&gt;</span><span class="token punctuation">;</span>
+          <span class="token keyword">case</span> server_hello<span class="token operator">:</span> <span class="token comment">/* and HelloRetryRequest */</span>
+               ProtocolVersion selected_version<span class="token punctuation">;</span>
+      <span class="token punctuation">}</span><span class="token punctuation">;</span>
+  <span class="token punctuation">}</span> SupportedVersions<span class="token punctuation">;</span>
+</code></pre> 
+<p>客户端使用“supported_versions”扩展来表明自己支持哪些版本的TLS。该扩展包含的版本列表以偏好顺序排列， 第一个是最优先的版本。这个规范的实现必须在扩展中发送包含准备协商的TLS所有版本（对于这个规范，这意味着最低 0x0304，但是如果支持TLS以前的版本，也必须包含进去）。<br> 如果ClientHello中没有此扩展，那么符合本规范的服务器必须按照[RFC5246]中的规定协商TLS 1.2或先前版本，就算ClientHello.legacy_version为0x0304或更高版本也是如此。Server接收到legacy_version为0x0304的 ClientHello可以终止握手。<br> 如果ClientHello中有此扩展，服务器禁止使用ClientHello.legacy_version值来进行版本协商，并且必须只使用“supported_versions”扩展来确定客户端偏好。服务器必须只选择该扩展中存在的TLS版本，并且必须忽略任何未知版本。注意，如果一方支持稀疏范围，这种机制可以协商出TLS 1.2之前的版本。选择支持TLS以前版本的TLS 1.3的实现应支持TLS 1.2。服务器应必须准备好接收包含此扩展的ClientHello，但不要在版本列表中包含0x0304。<br> 协商TLS 1.3之前版本TLS的服务端必须设置ServerHello.version，且不能发送“supported_versions”扩展。 协商TLS 1.3的服务器必须以包含选定版本值（0x0304）的"supported_versions"扩展回应。必须将ServerHello.legacy_version字段设置为0x0303 (TLS 1.2)。客户端必须在处理其余ServerHello之前检查此扩展（虽然必须解析ServerHello来读取扩展）。如果此扩展出现，客户端必须忽略ServerHello.legacy_version值，且必须只使用"supported_versions"扩展来确定选定版本。如果ServerHello 中的"supported_versions"扩展包含客户端没提供的版本或者包含TLS 1.3之前的版本，客户端必须以"illegal_parameter" alert终止握手。</p> 
+<h4><a id="422__Cookie_674"></a>4.2.2. Cookie</h4> 
+<pre><code class="prism language-c">  <span class="token keyword">struct</span> <span class="token punctuation">{<!-- --></span>
+      opaque cookie<span class="token operator">&lt;</span><span class="token number">1.</span><span class="token number">.2</span><span class="token operator">^</span><span class="token number">16</span><span class="token operator">-</span><span class="token number">1</span><span class="token operator">&gt;</span><span class="token punctuation">;</span>
+  <span class="token punctuation">}</span> Cookie<span class="token punctuation">;</span>
+</code></pre> 
+<p>Cookie有两个主要目的：<br>  允许服务器强制客户端展示其网络地址可达性（从而提供DoS保护）。 这主要用于非面向连接的传输（见[RFC6347]）。<br>  允许服务器向客户端卸载状态，从而可以发送HelloRetryRequest而不存储任何状态。 服务器通过将ClientHello的哈希存储在HelloRetryRequest cookie中（用一些合适的完整性算法保护）来实现。</p> 
+<p>当发送HelloRetryRequest时，服务器可以向客户端提供“cookie”扩展（这是通常规则的一个例外，即只能发送出现在ClientHello中的扩展）。 当发送新的ClientHello时，客户端必须将HelloRetryRequest中收到的cookie复制到新ClientHello中的“cookie”扩展中。 客户端不得在后续连接initial ClientHello中使用Cookie。<br> 无状态服务器可能在第一个和第二个ClientHello之间接收到一个change_cipher_spec类型的未加密数据（见第5章）。因为服务器不存储任何状态，看起来就像接收到的第一个消息。无状态服务器必须忽略这些数据。</p> 
+<h4><a id="423___689"></a>4.2.3. 签名算法</h4> 
+<p>TLS 1.3提供了两个扩展来表示数字签名里会用哪种签名算法。"signature_algorithms_cert"扩展提供证书中的签名，"signature_algorithms"扩展是从TLS 1.2出现的，提供CertificateVerify消息中的签名。证书中的秘钥也必须是所使用的签名算法的适当类型。这是RSA密钥和PSS签名的一个特殊问题，如下所述。如果没有"signature_algorithms_cert"扩展，“signature_algorithms"扩展也提供证书中的出现的签名。客户端如果期望服务器通过证书证明其身份，必须发送"signature_algorithms"扩展。如果服务器通过证书证明了其身份，且客户端没有发送"signature_algorithms"扩展，那么服务器必须以"missing_extension” alert终止握手（见9.2）.<br> "signature_algorithms_cert"扩展允许支持证书的不同算法集的实现明确表达自己的能力。TLS 1.2实现应该也处理这些扩展。两种情况里具有相同策略的实现都可以使用signature_algorithms_cert"扩展。<br> ClientHello扩展中的“extension_data”字段包含SignatureSchemeList值：</p> 
+<pre><code class="prism language-c"> <span class="token keyword">enum</span> <span class="token punctuation">{<!-- --></span>
+      <span class="token comment">/* RSASSA-PKCS1-v1_5 algorithms */</span>
+      <span class="token function">rsa_pkcs1_sha256</span><span class="token punctuation">(</span><span class="token number">0x0401</span><span class="token punctuation">)</span><span class="token punctuation">,</span>
+      <span class="token function">rsa_pkcs1_sha384</span><span class="token punctuation">(</span><span class="token number">0x0501</span><span class="token punctuation">)</span><span class="token punctuation">,</span>
+      <span class="token function">rsa_pkcs1_sha512</span><span class="token punctuation">(</span><span class="token number">0x0601</span><span class="token punctuation">)</span><span class="token punctuation">,</span>
+
+      <span class="token comment">/* ECDSA algorithms */</span>
+      <span class="token function">ecdsa_secp256r1_sha256</span><span class="token punctuation">(</span><span class="token number">0x0403</span><span class="token punctuation">)</span><span class="token punctuation">,</span>
+      <span class="token function">ecdsa_secp384r1_sha384</span><span class="token punctuation">(</span><span class="token number">0x0503</span><span class="token punctuation">)</span><span class="token punctuation">,</span>
+      <span class="token function">ecdsa_secp521r1_sha512</span><span class="token punctuation">(</span><span class="token number">0x0603</span><span class="token punctuation">)</span><span class="token punctuation">,</span>
+
+      <span class="token comment">/* RSASSA-PSS algorithms with public key OID rsaEncryption */</span>
+      <span class="token function">rsa_pss_rsae_sha256</span><span class="token punctuation">(</span><span class="token number">0x0804</span><span class="token punctuation">)</span><span class="token punctuation">,</span>
+      <span class="token function">rsa_pss_rsae_sha384</span><span class="token punctuation">(</span><span class="token number">0x0805</span><span class="token punctuation">)</span><span class="token punctuation">,</span>
+      <span class="token function">rsa_pss_rsae_sha512</span><span class="token punctuation">(</span><span class="token number">0x0806</span><span class="token punctuation">)</span><span class="token punctuation">,</span>
+
+      <span class="token comment">/* EdDSA algorithms */</span>
+      <span class="token function">ed25519</span><span class="token punctuation">(</span><span class="token number">0x0807</span><span class="token punctuation">)</span><span class="token punctuation">,</span>
+      <span class="token function">ed448</span><span class="token punctuation">(</span><span class="token number">0x0808</span><span class="token punctuation">)</span><span class="token punctuation">,</span>
+
+      <span class="token comment">/* RSASSA-PSS algorithms with public key OID RSASSA-PSS */</span>
+      <span class="token function">rsa_pss_pss_sha256</span><span class="token punctuation">(</span><span class="token number">0x0809</span><span class="token punctuation">)</span><span class="token punctuation">,</span>
+      <span class="token function">rsa_pss_pss_sha384</span><span class="token punctuation">(</span><span class="token number">0x080a</span><span class="token punctuation">)</span><span class="token punctuation">,</span>
+      <span class="token function">rsa_pss_pss_sha512</span><span class="token punctuation">(</span><span class="token number">0x080b</span><span class="token punctuation">)</span><span class="token punctuation">,</span>
+
+      <span class="token comment">/* Legacy algorithms */</span>
+      <span class="token function">rsa_pkcs1_sha1</span><span class="token punctuation">(</span><span class="token number">0x0201</span><span class="token punctuation">)</span><span class="token punctuation">,</span>
+      <span class="token function">ecdsa_sha1</span><span class="token punctuation">(</span><span class="token number">0x0203</span><span class="token punctuation">)</span><span class="token punctuation">,</span>
+
+      <span class="token comment">/* Reserved Code Points */</span>
+      <span class="token function">private_use</span><span class="token punctuation">(</span><span class="token number">0xFE00.</span><span class="token number">.0</span>xFFFF<span class="token punctuation">)</span><span class="token punctuation">,</span>
+      <span class="token punctuation">(</span><span class="token number">0xFFFF</span><span class="token punctuation">)</span>
+  <span class="token punctuation">}</span> SignatureScheme<span class="token punctuation">;</span>
+
+  <span class="token keyword">struct</span> <span class="token punctuation">{<!-- --></span>
+      SignatureScheme supported_signature_algorithms<span class="token operator">&lt;</span><span class="token number">2.</span><span class="token number">.2</span><span class="token operator">^</span><span class="token number">16</span><span class="token operator">-</span><span class="token number">2</span><span class="token operator">&gt;</span><span class="token punctuation">;</span>
+  <span class="token punctuation">}</span> SignatureSchemeList<span class="token punctuation">;</span>
+</code></pre> 
+<p>注意： 此枚举名为“SignatureScheme”，因为TLS 1.2中已经有一个“SignatureAlgorithm”类型，将被此替换。 我们在全文中使用术语“Signature Algorithms”。</p> 
+<p>每个SignatureScheme值列出客户端愿意验证的单一签名算法。 这些值以优先级的降序排列。 注意， 签名算法输入任意长度的消息， 而不是摘要。 传统上作用于摘要的算法应在TLS中定义，首先使用指定的哈希算法对输入进行哈希，然后照常处理。 上面列出的码点组具有以下含义：<br> RSASSA-PKCS1-v1_5 算法：表示使用RSASSA-PKCS1-v1_5 [RFC3447]签名算法和[SHS]中定义的相应哈希算法。这些值仅涉及出现在证书中的签名（见4.4.1.2），并且未定义用于签名TLS握手消息。但它们可能出现在"signature_algorithms" 和"signature_algorithms_cert"以对TLS 1.2做前向兼容。<br> ECDSA 算法：表示使用ECDSA [ECDSA]签名算法，ANSI X9.62 [X962]和FIPS 186-4 [DSS]中定义了相应曲线，[SHS]中定义了相应哈希算法。签名表示为DER-encoded[X690] 的ECDSA-Sig-Value结构。<br> RSASSA-PSS RSAE 算法：表示使用具有掩码生成功能1的RSASSA-PSS [RFC8017]签名算法。掩码生成函数中使用的摘要和签名的摘要都是在[SHS]中定义的相应哈希算法。盐的长度必须等于摘要输出的长度。如果在X.509证书中携带公钥，必须使用rsaEncryption OID [RFC5280]。<br> EdDSA 算法：表示使用[RFC8032] 中定义的EdDSA签名算法或其后续算法。注意，这些对应于“PureEdDSA”算法，而不是“prehash”变体。<br> RSASSA-PSS PSS 算法：表示使用掩码生成函数1的RSASSA-PSS [RFC8017]签名算法 。掩码生成函数中使用的摘要和签名的摘要都是[SHS]中定义的相应哈希算法。如果X.509证书中携带了公钥，必须使用RSASSA-PSS OID [RFC5756]。当在证书签名中使用时，算法参数必须是DER编码的。如果对应的公钥参数存在，算法中的参数必须与公钥参数相同。<br> 遗留算法：表示由于具有已知缺点被弃用的算法，特别是在本文中使用的用RASSA-PKCS1-v1_5的RSA或ECDSA。 这些值仅指出现在证书中的签名（见4.4.2.2），并且未被定义用于签名TLS握手消息，虽然它们可以出现在"signature_algorithms"和"signature_algorithms_cert"中以前向兼容TLS 1.2。端点不应该协商这些算法，但允许这样做仅仅是为了前向兼容。 提供这些值的客户端必须将其列为最低优先级（在SignatureSchemeList中的所有其他算法之后列出）。 TLS 1.3服务器不得提供SHA-1签名证书，除非没有此证书就不能生成有效的证书链（见4.4.2.2）。</p> 
+<p>自签名证书或作为信任锚的证书上的签名不会生效，因为它们开始了认证路径（见[RFC5280] 3.2节）。 开始认证路径的证书可以使用未在“signature_algorithms”扩展中通告的签名算法。<br> 注意，TLS 1.2定义了不同扩展。愿意协商TLS 1.2的TLS 1.3实现在协商该版本时必须按照[RFC5246]的要求进行操作。 尤其是：<br>  TLS 1.2 ClientHello可以删除此扩展。<br>  在TLS 1.2中，扩展包含hash/signature对。 这些对被编码为两个八位数，因此已分配SignatureScheme值已与TLS 1.2的编码对齐。 一些遗留对保留未分配。 这些算法自TLS 1.3起已弃用，不得提供或协商。 特别是，不得使用MD5 [SLOTH]、SHA-224和DSA。<br>  ECDSA签名方案与TLS 1.2的ECDSA哈希/签名对一致。 然而，旧语义没有约束签名曲线。 如果协商TLS 1.2，则必须准备接受使用“supported_groups”扩展中通告的任何曲线的签名。<br>  支持RSASSA-PSS（在TLS 1.3中是强制的）的实现必须准备接受使用该方案的签名，即使协商的是TLS 1.2。 在TLS 1.2中，RSASSA-PSS与RSA密码套件一起使用。</p> 
+<h4><a id="424__Certificate_Authorities_751"></a>4.2.4. 证书颁发机构（Certificate Authorities）</h4> 
+<p>“certificate_authorities”扩展用于 指示端点支持的证书授权机构（CA），并且接收端点应该使用它来指导证书选择。<br> “certificate_authorities”扩展的内容由CertificateAuthoritiesExtension结构组成。</p> 
+<pre><code class="prism language-bash">  opaque DistinguishedName<span class="token operator">&lt;</span><span class="token number">1</span><span class="token punctuation">..</span><span class="token number">2</span>^16-<span class="token operator"><span class="token file-descriptor important">1</span>&gt;</span><span class="token punctuation">;</span>
+  struct <span class="token punctuation">{<!-- --></span>
+      DistinguishedName authorities<span class="token operator">&lt;</span><span class="token number">3</span><span class="token punctuation">..</span><span class="token number">2</span>^16-<span class="token operator"><span class="token file-descriptor important">1</span>&gt;</span><span class="token punctuation">;</span>
+  <span class="token punctuation">}</span> CertificateAuthoritiesExtension<span class="token punctuation">;</span>
+</code></pre> 
+<p>authorities: 可接受证书颁发机构的名称[X501]列表，以 DER编码[X690]格式表示。 这些名称为信任锚或从属CA指定所需名称，因此，该消息可以用于描述已知的信任锚以及期望的授权空间。</p> 
+<p>客户端可以在ClientHello消息中发送“certificate_authorities”扩展。 服务器可以在CertificateRequest消息中发送。<br> “trusted_ca_keys”扩展[RFC6066]目的类似，但更为复杂，TLS 1.3中不使用，但可能出现在先前TLS版本客户端的ClientHello消息中。</p> 
+<h4><a id="425__OID_Filters_767"></a>4.2.5. OID Filters</h4> 
+<p>"oid_filters"扩展允许服务器提供一组希望客户端的证书匹配的OID/value对。如果是服务器提供的扩展，必须只能在CertificateRequest消息中发送。</p> 
+<pre><code class="prism language-c"> <span class="token keyword">struct</span> <span class="token punctuation">{<!-- --></span>
+          opaque certificate_extension_oid<span class="token operator">&lt;</span><span class="token number">1.</span><span class="token number">.2</span><span class="token operator">^</span><span class="token number">8</span><span class="token operator">-</span><span class="token number">1</span><span class="token operator">&gt;</span><span class="token punctuation">;</span>
+          opaque certificate_extension_values<span class="token operator">&lt;</span><span class="token number">0.</span><span class="token number">.2</span><span class="token operator">^</span><span class="token number">16</span><span class="token operator">-</span><span class="token number">1</span><span class="token operator">&gt;</span><span class="token punctuation">;</span>
+      <span class="token punctuation">}</span> OIDFilter<span class="token punctuation">;</span>
+
+      <span class="token keyword">struct</span> <span class="token punctuation">{<!-- --></span>
+          OIDFilter filters<span class="token operator">&lt;</span><span class="token number">0.</span><span class="token number">.2</span><span class="token operator">^</span><span class="token number">16</span><span class="token operator">-</span><span class="token number">1</span><span class="token operator">&gt;</span><span class="token punctuation">;</span>
+      <span class="token punctuation">}</span> OIDFilterExtension<span class="token punctuation">;</span>
+</code></pre> 
+<p>filters: 证书扩展OID列表[RFC5280]和允许值，以DER-encoded [X690]格式呈现。一些证书扩展OID允许多个值（如Extended Key Usage）。如果服务器包含了一个非空filters列表，回应的客户端证书必须包含所有客户端认识的指定扩展OID。对于每个客户端认识的扩展OID，所有指定值都必须出现在客户端证书中（但证书也可以有其他值）。然而，客户端必需忽略并跳过任何不认识的扩展OID。如果客户端忽略一些要求的证书扩展OID，并提供一个不满足请求的证书，服务器可以自行决定是在没有客户端认证的情况下继续连接，还是以"unsupported_certificate" alert放弃握手。任何给定的OID禁止在filters列表中出现多次。<br> PKIX RFCs定义了各种各样的证书扩展OID和对应值。匹配证书扩展值不一定位相等，取决于类型。TLS实现最好由它们的PKI库使用证书扩展OID执行证书选择。</p> 
+<p>本文为[RFC5280]中的两个标准证书扩展定义了匹配规则：<br>  当请求中assert的所有key usage位也在Key Usage证书扩展中assert，则证书中的Key Usage扩展与请求匹配。<br>  当请求中所有秘钥用途OID也在Extended Key Usage证书扩展中找到，则证书中的Extended Key Usage扩展与请求匹配。</p> 
+<p>不同规范可以为其他证书扩展定义匹配规则。</p> 
+<h4><a id="426__PostHandshake_Client_Authentication_791"></a>4.2.6. Post-Handshake Client Authentication</h4> 
+<p>“post_handshake_auth”扩展用于表示客户端愿意执行post-handshake authentication（4.6.2节）。 服务器禁止向不提供此扩展的客户端发送post-handshake CertificateRequest。 服务器不得发送此扩展。</p> 
+<pre><code class="prism language-c">  <span class="token keyword">struct</span> <span class="token punctuation">{<!-- --></span><span class="token punctuation">}</span> PostHandshakeAuth<span class="token punctuation">;</span>
+</code></pre> 
+<p>“post_handshake_auth”扩展的“extension_data”字段为零长度。</p> 
+<h4><a id="427___800"></a>4.2.7. 支持组</h4> 
+<p>当客户端发送“supported_groups”扩展时，表示客户端支持的用于密钥交换的命名组（named groups），顺序从最优选到最不优选。<br> 注意： 在TLS 1.3之前的TLS版本中，此扩展名称为“elliptic_curves”，并且只包含椭圆曲线组（见[RFC4492]和[RFC7919]）。 此扩展也用于协商ECDSA曲线。签名算法现在独立协商（见4.2.3节）。<br> 此扩展的“extension_data”字段包含“NamedGroupList”值：</p> 
+<pre><code class="prism language-c"><span class="token keyword">enum</span> <span class="token punctuation">{<!-- --></span>
+      <span class="token comment">/* Elliptic Curve Groups (ECDHE) */</span>
+      <span class="token function">secp256r1</span><span class="token punctuation">(</span><span class="token number">0x0017</span><span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token function">secp384r1</span><span class="token punctuation">(</span><span class="token number">0x0018</span><span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token function">secp521r1</span><span class="token punctuation">(</span><span class="token number">0x0019</span><span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token function">x25519</span><span class="token punctuation">(</span><span class="token number">0x001D</span><span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token function">x448</span><span class="token punctuation">(</span><span class="token number">0x001E</span><span class="token punctuation">)</span><span class="token punctuation">,</span>
+
+      <span class="token comment">/* Finite Field Groups (DHE) */</span>
+      <span class="token function">ffdhe2048</span><span class="token punctuation">(</span><span class="token number">0x0100</span><span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token function">ffdhe3072</span><span class="token punctuation">(</span><span class="token number">0x0101</span><span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token function">ffdhe4096</span><span class="token punctuation">(</span><span class="token number">0x0102</span><span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token function">ffdhe6144</span><span class="token punctuation">(</span><span class="token number">0x0103</span><span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token function">ffdhe8192</span><span class="token punctuation">(</span><span class="token number">0x0104</span><span class="token punctuation">)</span><span class="token punctuation">,</span>
+
+      <span class="token comment">/* Reserved Code Points */</span>
+      <span class="token function">ffdhe_private_use</span><span class="token punctuation">(</span><span class="token number">0x01FC.</span><span class="token number">.0</span>x01FF<span class="token punctuation">)</span><span class="token punctuation">,</span>
+      <span class="token function">ecdhe_private_use</span><span class="token punctuation">(</span><span class="token number">0xFE00.</span><span class="token number">.0</span>xFEFF<span class="token punctuation">)</span><span class="token punctuation">,</span>
+      <span class="token punctuation">(</span><span class="token number">0xFFFF</span><span class="token punctuation">)</span>
+  <span class="token punctuation">}</span> NamedGroup<span class="token punctuation">;</span>
+
+  <span class="token keyword">struct</span> <span class="token punctuation">{<!-- --></span>
+      NamedGroup named_group_list<span class="token operator">&lt;</span><span class="token number">2.</span><span class="token number">.2</span><span class="token operator">^</span><span class="token number">16</span><span class="token operator">-</span><span class="token number">1</span><span class="token operator">&gt;</span><span class="token punctuation">;</span>
+  <span class="token punctuation">}</span> NamedGroupList<span class="token punctuation">;</span>
+</code></pre> 
+<p>Elliptic Curve Groups（ECDHE）： 表示支持对应的命名曲线，在FIPS 186-4 [DSS]或[RFC7748]中定义。值0xFE00到0xFEFF保留供私用。<br> Finite Field Groups（DHE）：表示支持相应的有限域组，在[RFC7919]中定义。值0x01FC至0x01FF保留供私用。<br> named_group_list中的条目根据发送者的偏好排序（最前面是最偏好的选择）。<br> 从TLS 1.3开始，服务器可以向客户端发送“supported_groups”扩展。客户端不能在成功完成握手之前对“supported_groups”中的任何信息采取行动，但可以使用从成功完成的握手中获得的信息来更改后续连接中“key_share”扩展中使用的组。如果服务器有一个更偏向于用“key_share”扩展中信息的一个组，但仍然愿意接受ClientHello，它应该发送“supported_groups”来更新客户端的偏好视图。此扩展应包含服务器支持的所有组，无论当前客户端是否支持。</p> 
+<h4><a id="428__Key_Share_830"></a>4.2.8. Key Share</h4> 
+<p>“key_share”扩展包含 端点的加密参数。<br> 客户端可以发送 空的 client_shares向量，以一个额外的往返代价从服务器请求组选择（见4.1.4）。</p> 
+<pre><code class="prism language-c">  <span class="token keyword">struct</span> <span class="token punctuation">{<!-- --></span>
+      NamedGroup group<span class="token punctuation">;</span>
+      opaque key_exchange<span class="token operator">&lt;</span><span class="token number">1.</span><span class="token number">.2</span><span class="token operator">^</span><span class="token number">16</span><span class="token operator">-</span><span class="token number">1</span><span class="token operator">&gt;</span><span class="token punctuation">;</span>
+  <span class="token punctuation">}</span> KeyShareEntry<span class="token punctuation">;</span>
+</code></pre> 
+<p>group：要交换的密钥的命名组。<br> key_exchange: 密钥交换信息。 此字段的内容由指定组及其相应的定义确定。有限域Diffie-Hellman [DH76]参数在4.2.8.1中描述。椭圆曲线Diffie-Hellman参数在4.2.8.2中描述。</p> 
+<p>在ClientHello消息中，这个扩展的"extension_data"字段包含一个"KeyShareClientHello"值：</p> 
+<pre><code class="prism language-c">  <span class="token keyword">struct</span> <span class="token punctuation">{<!-- --></span>
+      KeyShareEntry client_shares<span class="token operator">&lt;</span><span class="token number">0.</span><span class="token number">.2</span><span class="token operator">^</span><span class="token number">16</span><span class="token operator">-</span><span class="token number">1</span><span class="token operator">&gt;</span><span class="token punctuation">;</span>
+  <span class="token punctuation">}</span> KeyShareClientHello<span class="token punctuation">;</span>
+</code></pre> 
+<p>client_shares：一组提供的KeyShareEntry值，以客户端偏好降序排列。</p> 
+<p>如果客户端请求HelloRetryRequest，则此向量可以为空。 每个KeyShareEntry值必须对应于在“supported_groups”扩展中提供的组，并且必须以相同的顺序排列。 然而，值可以是“supported_groups”扩展的非连续子集，并且可以省略最优选的组。如果最优选的组是新的，并且没有足够的空间更高效地预生成共享秘钥，则可能出现这种情况。<br> 客户端可以提供很多KeyShareEntry值，数量跟提供的支持的组一样，每个值表示一组密钥交换参数。例如，客户端可能为几个椭圆曲线或多个FFDHE组提供共享秘钥。每个KeyShareEntry的key_exchange值必须独立生成。 客户不得为同一组提供多个KeyShareEntry值。 客户端不得为“supported_groups”扩展中未列出的组提供KeyShareEntry值。 服务器可能会检查违反了这些规则的行为，如果违反了则使用“illegal_parameter”警报来中止握手。<br> 在HelloRetryRequest消息中，此扩展的"extension_data"字段包含一个KeyShareHelloRetryRequest值：</p> 
+<pre><code class="prism language-c">  <span class="token keyword">struct</span> <span class="token punctuation">{<!-- --></span>
+      NamedGroup selected_group<span class="token punctuation">;</span>
+  <span class="token punctuation">}</span> KeyShareHelloRetryRequest<span class="token punctuation">;</span>
+</code></pre> 
+<p>selected_group：服务器打算协商的都支持的组，准备为期请求重试ClientHello/KeyShare。</p> 
+<p>在HelloRetryRequest中接收到此扩展时，客户端必须验证：<br> 1、selected_group字段对应于在原始ClientHello“supported_groups”扩展中提供的组；<br> 2、selected_group字段与原始ClientHello中的“key_share”扩展中提供的组不对应。</p> 
+<p>如果这些检查中的任一个失败，则客户端必须用“illegal_parameter”警报来中止握手。 否则，当发送新的ClientHello时，客户端必须用仅包含新KeyShareEntry的扩展替换原来的“key_share”扩展，新的扩展对应于触发HelloRetryRequest的selected_group字段中指示的组。<br> 在ServerHello中，此扩展的"extension_data"字段包含一个KeyShareServerHello值：</p> 
+<pre><code class="prism language-bash">   struct <span class="token punctuation">{<!-- --></span>
+      KeyShareEntry server_share<span class="token punctuation">;</span>
+  <span class="token punctuation">}</span> KeyShareServerHello<span class="token punctuation">;</span>
+</code></pre> 
+<p>server_share：一个跟客户端共享的在同一个组中的KeyShareEntry值。</p> 
+<p>如果使用（EC）DHE密钥协商，服务器在ServerHello中只提供一个KeyShareEntry。 该值必须与服务器为协商密钥交换选择的客户端提供的KeyShareEntry值在同一组。服务器不得为“supported_groups”扩展中指定的任何组发送KeyShareEntry，并且在使用“psk_ke”PskKeyExchangeMode时不得发送KeyShareEntry。如果使用(EC)DHE密钥协商，并且客户端收到包含"key_share" 扩展的HelloRetryRequest，客户端必须验证ServerHello中选择的NamedGroup与HelloRetryRequest中的相同，否则必须以“ illegal_parameter”警报中止握手。</p> 
+<h5><a id="4281__DiffieHellman_883"></a>4.2.8.1. Diffie-Hellman参数</h5> 
+<p>客户端和服务器的Diffie-Hellman [DH76]参数都编码在KeyShare结构中的KeyShareEntry的opaque key_exchange字段中。opaque值包含指定组（参见[RFC7919]的组定义）的Diffie-Hellman公共值（Y = g ^ X mod p），编码为大端字节序整数，并用填充 0到左侧至p字节。<br> 注意：对于给定的Diffie-Hellman组，填充使所有公钥长度相同。<br> 对端应该通过确保1&lt;Y&lt;p-1来验证对方的公钥Y。此检查确保对端在行为正常，并且不强制本地系统进入小型组。</p> 
+<h5><a id="4282__ECDHE_888"></a>4.2.8.2. ECDHE参数</h5> 
+<p>客户端和服务器的ECDHE参数都编码在KeyShare结构中KeyShareEntry的opaque key_exchange字段中。<br> 对于secp256r1，secp384r1和secp521r1，是以下结构体的序列化值：</p> 
+<pre><code class="prism language-c">   <span class="token keyword">struct</span> <span class="token punctuation">{<!-- --></span>
+      uint8 legacy_form <span class="token operator">=</span> <span class="token number">4</span><span class="token punctuation">;</span>
+      opaque X<span class="token punctuation">[</span>coordinate_length<span class="token punctuation">]</span><span class="token punctuation">;</span>
+      opaque Y<span class="token punctuation">[</span>coordinate_length<span class="token punctuation">]</span><span class="token punctuation">;</span>
+  <span class="token punctuation">}</span> UncompressedPointRepresentation<span class="token punctuation">;</span>
+</code></pre> 
+<p>X和Y分别是X和Y值的网络序二进制表示。由于没有内部长度标记，因此每个数字占用曲线参数隐含的字节数。 对于P-256，这意味着X和Y分别使用32个八字节，如果需要，则在左侧填充零。对于P-384，分别占用48个八字节，对于P-521，各占用66个八字节。<br> 对于曲线secp256r1，secp384r1和secp521r1，对端必须通过确保该点是椭圆曲线上的有效点来验证彼此的公共值Y。相应的验证程序在[X962]的4.3.7节中定义，或者在[KEYAGREEMENT]的5.6.2.6节中定义。 该过程由三个步骤组成：<br> （1）验证Q不是无穷大点（O），<br> （2）验证Q =（x，y）中x和y两个整数都在正确的间隔，<br> （3）确保（x，y）是椭圆曲线方程的正确解。对于这些曲线，实现者不需要验证正确子组中的成员。</p> 
+<p>对于X25519和X448，公共值的内容是[RFC7748]中定义的相应功能的字节串输入和输出：X25519是32字节，X448是56字节。<br> 注意： 1.3之前版本的TLS允许 point format 协商；TLS 1.3删除了此功能，从而使每个曲线有一个point format。</p> 
+<h4><a id="429__PreShared_Key_907"></a>4.2.9. Pre-Shared Key交换模式</h4> 
+<p>为了使用PSK，客户端还必须发送一个“psk_key_exchange_modes”扩展。 此扩展的意思是客户端仅支持使用这些模式的PSK，这限制了在这个ClientHello中提供的PSK的使用以及服务器通过NewSessionTicket提供的PSK的使用。<br> 如果客户端提供了一个“pre_shared_key”扩展，也必须提供一个“psk_key_exchange_modes”扩展。 如果客户端提供了“pre_shared_key”，但没提供 “psk_key_exchange_modes”，服务器必须中止握手。服务器不得选择客户端未给出的密钥交换模式。此扩展还限制PSK恢复使用的模式。服务器不应发送与通告模式不兼容的NewSessionTicket，但是如果服务器这样做，影响将只是客户端尝试恢复会失败。<br> 服务器不得发送“psk_key_exchange_modes”扩展。</p> 
+<pre><code class="prism language-c">  <span class="token keyword">enum</span> <span class="token punctuation">{<!-- --></span> <span class="token function">psk_ke</span><span class="token punctuation">(</span><span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token function">psk_dhe_ke</span><span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token punctuation">(</span><span class="token number">255</span><span class="token punctuation">)</span> <span class="token punctuation">}</span> PskKeyExchangeMode<span class="token punctuation">;</span>
+  <span class="token keyword">struct</span> <span class="token punctuation">{<!-- --></span>
+      PskKeyExchangeMode ke_modes<span class="token operator">&lt;</span><span class="token number">1.</span><span class="token number">.255</span><span class="token operator">&gt;</span><span class="token punctuation">;</span>
+  <span class="token punctuation">}</span> PskKeyExchangeModes<span class="token punctuation">;</span>
+</code></pre> 
+<p>psk_ke: PSK-only密钥建立。 在这种模式下，服务器不得提供“key_share”值。<br> psk_dhe_ke: 使用（EC）DHE密钥建立的PSK。 在这种模式下，客户端和服务器必须提供“key_share”值见4.2.8节）。</p> 
+<p>任何将来分配的值必须确保传输协议消息明确识别服务器选择的模式。目前这由ServerHello中的"key_share"表示。</p> 
+<h4><a id="4210__Early_Data_Indication_924"></a>4.2.10. Early Data Indication</h4> 
+<p>当使用PSK时，客户端可以在第一个消息中发送应用数据。 如果客户端选择这样做，就必须提供“early_data”扩展和“pre_shared_key”扩展。<br> 此扩展的“extension_data”字段包含“EarlyDataIndication”值。</p> 
+<pre><code class="prism language-c">  <span class="token keyword">struct</span> <span class="token punctuation">{<!-- --></span><span class="token punctuation">}</span> Empty<span class="token punctuation">;</span>
+  <span class="token keyword">struct</span> <span class="token punctuation">{<!-- --></span>
+      <span class="token function">select</span> <span class="token punctuation">(</span>Handshake<span class="token punctuation">.</span>msg_type<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+          <span class="token keyword">case</span> new_session_ticket<span class="token operator">:</span>   uint32 max_early_data_size<span class="token punctuation">;</span>
+          <span class="token keyword">case</span> client_hello<span class="token operator">:</span>         Empty<span class="token punctuation">;</span>
+          <span class="token keyword">case</span> encrypted_extensions<span class="token operator">:</span> Empty<span class="token punctuation">;</span>
+      <span class="token punctuation">}</span><span class="token punctuation">;</span>
+  <span class="token punctuation">}</span> EarlyDataIndication<span class="token punctuation">;</span>
+</code></pre> 
+<p>max_early_data_size字段的使用见4.6.1节。<br> 0-RTT参数（版本号、对称密码套件、ALPN协议[RFC7301]等）是使用PSK的关联值。对于外部配置的PSK，关联值与秘钥一起配置。对于通过NewSessionTicket消息确定的PSK，关联值是在确定PSK的连接里协商的。用于加密早期数据的PSK必须是客户端“pre_shared_key”扩展中列出的第一个PSK。<br> 对于通过NewSessionTicket提供的PSK，服务器必须验证所选PSK身份的 ticket 生存期（PskIdentity.obfuscated_ticket_age 模 2 ^ 32中减去ticket_age_add）在从ticket开始使用的小时间范围内（见第8章）。如果不是，服务器应该继续握手，但拒绝0-RTT，并且不应该采取任何假定该ClientHello是全新的其他操作。<br> 在第一个消息中发送的0-RTT消息与其他消息（握手和应用程序数据）中发送的相应消息具有相同（加密）的内容类型，但受到不同密钥的保护。在收到服务器的Finished消息后，如果服务器已接收到早期数据，则会发送EndOfEarlyData消息以指示密钥更改。该消息使用0-RTT流量密钥加密。<br> 接收“early_data”扩展的服务器必须以三种方式之一进行操作：<br>  忽略扩展并返回常规的1-RTT响应。然后，服务器忽略早期数据并尝试使用握手流量秘钥解密收到的数据，忽略解密失败的数据（直到配置的max_early_data_size）。一旦数据成功解密，则被当做客户端第二个消息的开始，服务端当做普通1-RTT握手继续处理。<br>  通过响应HelloRetryRequest请求客户端发送另一个ClientHello。 客户端不得在其后续ClientHello中包含“early_data”扩展。 然后，服务器跳过外部内容类型“application_data”的所有记录（表示被加密）来忽略早期数据，直到配置的max_early_data_size长度。<br>  在EncryptedExtensions中返回自己的"early_data"扩展，表示它打算处理早期的数据。 服务器不可能只接受早期数据消息的一部分。 即使服务器发送接收早期数据的消息，但是实际的早期数据本身可能已经在服务器生成此消息时发送了。</p> 
+<p>为了接受早期数据，服务器必须先接受了PSK密码套件并且选择了客户端的“pre_shared_key”扩展中提供的第一个密钥。此外，必须验证以下值与选择的PSK相关联：<br> • TLS版本号和加密套件。<br> • 选择的密码套件<br> • 选择的ALPN协议 [RFC7301]（如果有）。</p> 
+<p>这些要求是使用相关PSK执行1-RTT握手的要求的超集。对于外部配置的PSK，关联值与秘钥一起提供。对于通过NewSessionTicket消息确定的PSK，关联值是通过连接协商的。<br> 未来的扩展必须定义它们与0-RTT的交互。<br> 如果任一上述检查失败，服务器不得使用扩展进行响应，并且必须使用上面前两种机制之一丢弃所有第一个报文中的数据（回退到1-RTT或2-RTT）。 如果客户端尝试进行0-RTT握手，但是服务器拒绝，则服务器通常没有0-RTT保护密钥，必须使用试用解密（使用1-RTT握手密钥或在HelloRetryRequest的情况下通过查找明文ClientHello）找到第一个非0-RTT消息。<br> 如果服务器选择接受“early_data”扩展，那么在处理早期数据时，它必须遵守与所有记录相同的错误处理要求。 具体来说，如果服务器在接受的“early_data”扩展后无法解密任何0-RTT记录，则必须根据5.2节使用“bad_record_mac”警报终止连接。<br> 如果服务器拒绝“early_data”扩展，则客户端应用程序可以在握手完成后重新发送早期数据。 请注意，早期数据的自动重新传输可能导致关于连接状态不正确的假设。 例如，当协商的连接选择与早期数据不同的ALPN协议时，应用程序可能需要构建不同的消息。 类似地，如果早期数据假定任何连接状态，则握手完成后可能发送错误。<br> TLS实现不应自动重新发送早期数据；应用程序能够更好地决定重新传输是否合适。 除非协商的连接选择相同的ALPN协议，否则TLS实现不得自动重新发送早期数据。</p> 
+<h4><a id="4211__PreShared_Key_Extension_959"></a>4.2.11. Pre-Shared Key Extension</h4> 
+<p>“pre_shared_key”扩展用于协商PSK密钥建立相关联握手使用的预共享密钥身份。<br> 此扩展的“extension_data”字段包含“PreSharedKeyExtension”值：</p> 
+<pre><code class="prism language-bash">  struct <span class="token punctuation">{<!-- --></span>
+      opaque identity<span class="token operator">&lt;</span><span class="token number">1</span><span class="token punctuation">..</span><span class="token number">2</span>^16-<span class="token operator"><span class="token file-descriptor important">1</span>&gt;</span><span class="token punctuation">;</span>
+      uint32 obfuscated_ticket_age<span class="token punctuation">;</span>
+  <span class="token punctuation">}</span> PskIdentity<span class="token punctuation">;</span>
+
+  opaque PskBinderEntry<span class="token operator">&lt;</span><span class="token number">32</span><span class="token punctuation">..</span><span class="token number">25</span><span class="token operator"><span class="token file-descriptor important">5</span>&gt;</span><span class="token punctuation">;</span>
+
+  struct <span class="token punctuation">{<!-- --></span>
+      PskIdentity identities<span class="token operator">&lt;</span><span class="token number">7</span><span class="token punctuation">..</span><span class="token number">2</span>^16-<span class="token operator"><span class="token file-descriptor important">1</span>&gt;</span><span class="token punctuation">;</span>
+      PskBinderEntry binders<span class="token operator">&lt;</span><span class="token number">33</span><span class="token punctuation">..</span><span class="token number">2</span>^16-<span class="token operator"><span class="token file-descriptor important">1</span>&gt;</span><span class="token punctuation">;</span>
+  <span class="token punctuation">}</span> OfferedPsks<span class="token punctuation">;</span>
+
+  struct <span class="token punctuation">{<!-- --></span>
+      <span class="token keyword">select</span> <span class="token punctuation">(</span>Handshake.msg_type<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+          <span class="token keyword">case</span> client_hello: OfferedPsks<span class="token punctuation">;</span>
+          <span class="token keyword">case</span> server_hello: uint16 selected_identity<span class="token punctuation">;</span>
+      <span class="token punctuation">}</span><span class="token punctuation">;</span>
+  <span class="token punctuation">}</span> PreSharedKeyExtension<span class="token punctuation">;</span>
+</code></pre> 
+<p>Identity：秘钥标签。例如，附录B.3.4中定义的ticket，或外部配置的预共享密钥标签。<br> obfuscated_ticket_age：密钥生存时间的混淆版本。4.2.11.1节描述了怎样通过NewSessionTicket消息建立的标识生成此值。对于外部配置的标识，应该使用0的obfuscated_ticket_age，服务器必须忽略该值。<br> Identities：客户端想要与服务器协商的标识列表。如果与“early_data”扩展一起发送（见4.2.10节），第一个标识是用于0-RTT数据。<br> Binders：一系列HMAC值，每个标识值一个，并且以相同顺序排列，计算过程如下所述。<br> selected_identity：服务器选择的标识，以客户端列表中的标识表示为（0-based）的索引。</p> 
+<p>每个PSK与一个哈希算法相对应。对于通过 ticket机制建立的PSK（4.6.1节），是建立ticket的连接上的 KDF Hash算法。对于外部配置的PSK，当PSK建立时，必须设置哈希算法，或者没指定算法时默认为SHA-256。 服务器必须确保选择兼容的PSK（如果有的话）和密码套件。<br> TLS .3之前的版本中，服务器名字标识（Server Name Identification，SNI）值需要与session相对应（[RFC6066])中第3章），服务器需要强制SNI值与握手恢复中指定的匹配session相对应。然而，现实中使用提供的SNI值中的哪一个，实现并不一致，这导致客户端事实上强制执行一致性要求。在TLS 1.3中，SNI值总是在恢复握手中指定，服务器没必要将SNI值与ticket关联。但客户端应该与PSK一起存储SNI来满足4.6.1中的要求。<br> 实现需注意：当会话恢复是PSK主要应用场景时，实现PSK/密码套件匹配要求的最直接方法是先协商密码套件，然后排除任何不兼容的PSK。任何未知的PSK（如不在PSK数据库中或者以未知秘钥加密）应该忽略。如果没有可接受的PSK，服务器可能的话应该执行non-PSK握手。如果前向兼容很重要，客户端的外部配置PSK应该决定密码套件选择<br> 在接受PSK密钥建立之前，服务器务必验证相应的binder值（见下面的4.2.11.2节）。如果此值不存在或未验证，则服务器必须中止握手。服务器不应该尝试验证多个binder，而是应该选择单个PSK并且仅验证对应于该PSK的binder。该要求的安全原理见8.2节和附录E.6。为了接受PSK密钥建立，服务器发送“pre_shared_key”扩展来指示选择的标识。<br> 客户端必须验证服务器的selected_identity是否在客户端提供的范围内，服务器选择了包含与PSK关联哈希的加密套件，并且如果ClientHello“psk_key_exchange_modes”扩展需要，服务器应该发送“key_share”扩展。 如果这些值不一致，客户端必须使用“illegal_parameter”警报中止握手。<br> 如果服务器提供了“early_data”扩展， 客户端必须验证服务器的selected_identity是否为0。如果返回任何其他值，客户端必须使用“illegal_parameter”警报中止握手。<br> "pre_shared_key"扩展必须是ClientHello中的最后一个扩展（这有助于如下所述的实现）。 服务器必须检查它是最后一个扩展，否则以“illegal_parameter”警报握手失败。</p> 
+<h5><a id="42111__Ticket_Age_997"></a>4.2.11.1. Ticket Age</h5> 
+<p>客户端对ticket生存时间的看法是收到NewSessionTicket消息后的时间。 客户端不得尝试使用ticket生存时间大于"ticket_lifetime"值的ticket。每个PskIdentity 的 "obfuscated_ticket_age "字段包含了ticket生存时间的混淆版本，以毫秒为单位，加上票据中包含的 "ticket_age_add "值（见4.6.1节），模2^32。这个添加可以防止被动观察者关联连接，除非票据被重复使用。请注意，NewSessionTicket消息中的"ticket_lifetime "字段的单位是秒，但"obfuscated_ticket_age "的单位是毫秒。因为票据生存期被限制在一周之内，32位足以代表任何可信的生存期，即使是以毫秒为单位。<br> 4.2.11.2. PSK Binder<br> PSK binder值绑定了PSK和当前握手，并且绑定生成PSK的握手（如果通过ewSessionTicket消息）和当前握手。binder列表中的每个条目被计算为直到（并包括）PreSharedKeyExtension.identities字段的ClientHello部分（包括握手报头）上的HMAC（transcript hash，见4.4.1）。也就是说，它包括所有ClientHello，但不包括bingder列表本身。消息的长度字段（包括总长度，扩展块长度和“pre_shared_key”扩展长度）都是按照正确长度的binder来设置的。<br> PskBinderEntry以Finished消息（4.4.4节）相同方式计算，但是BaseKey是提供相应PSK的密钥计划表派生的binder_key（见第7.1节）。<br> 如果握手包括HelloRetryRequest，则初始ClientHello和HelloRetryRequest与新的ClientHello一起被包括在副本中。例如，如果客户端发送ClientHello1，则其binder将如下计算：</p> 
+<pre><code class="prism language-c">Transcript<span class="token operator">-</span><span class="token function">Hash</span><span class="token punctuation">(</span><span class="token function">Truncate</span><span class="token punctuation">(</span>ClientHello1<span class="token punctuation">)</span><span class="token punctuation">)</span>
+</code></pre> 
+<p>其中Truncate()从ClientHello中移除binder列表。</p> 
+<p>如果服务器响应HelloRetryRequest，然后客户端然后发送ClientHello2，其binder将通过计算：</p> 
+<pre><code class="prism language-c">  Transcript<span class="token operator">-</span><span class="token function">Hash</span><span class="token punctuation">(</span>ClientHello1<span class="token punctuation">,</span>
+                  HelloRetryRequest<span class="token punctuation">,</span>
+                  <span class="token function">Truncate</span><span class="token punctuation">(</span>ClientHello2<span class="token punctuation">)</span><span class="token punctuation">)</span>
+</code></pre> 
+<p>完整的ClientHello1/ClientHello2包括在所有其他握手哈希计算中。注意在第一次发送中，Truncate(ClientHello1)是直接哈希的，但在第二次发送中ClientHello1先哈希，然后作以"message_hash"消息注入，如4.4.1所述。</p> 
+<h5><a id="42113__Processing_Order_1018"></a>4.2.11.3. Processing Order</h5> 
+<p>客户端接收服务器的 Finished之前都可以“stream”0-RTT数据，然后发送EndOfEarlyData消息，接着是剩下的握手。 为了避免死锁，当接受“early_data”时，服务器必须处理客户端的ClientHello，然后立即发送消息，而不是在发送ServerHello前等待客户端的EndOfEarlyData消息。</p> 
+<h3><a id="43__Server_Parameters_1020"></a>4.3. Server Parameters</h3> 
+<p>来自服务器的接下来两条消息 EncryptedExtensions和 CertificateRequest，包含来自决定其余握手的服务器的信息。 这些消息使用从server_handshake_traffic_secret派生的密钥加密。</p> 
+<h4><a id="431__Encrypted_Extensions_1022"></a>4.3.1. Encrypted Extensions</h4> 
+<p>在所有握手中，服务器必须在ServerHello消息之后立即发送EncryptedExtensions消息。 这是使用server_handshake_traffic_secret派生密钥加密的第一条消息。</p> 
+<p>EncryptedExtensions消息包含可以被保护的扩展，即，不需要建立加密上下文但不与各个证书相关联的扩展。 客户端必须检查EncryptedExtensions是否存在任何禁止的扩展，如果发现任何此类扩展，必须 用“illegal_parameter”警报中止握手。</p> 
+<p>这个消息的结构：</p> 
+<pre><code class="prism language-c">  <span class="token keyword">struct</span> <span class="token punctuation">{<!-- --></span>
+      Extension extensions<span class="token operator">&lt;</span><span class="token number">0.</span><span class="token number">.2</span><span class="token operator">^</span><span class="token number">16</span><span class="token operator">-</span><span class="token number">1</span><span class="token operator">&gt;</span><span class="token punctuation">;</span>
+  <span class="token punctuation">}</span> EncryptedExtensions<span class="token punctuation">;</span>
+</code></pre> 
+<p>Extensions：扩展列表。更多信息见4.2节的表格。</p> 
+<h4><a id="432__Certificate_Request_1037"></a>4.3.2. 请求证书（Certificate Request）</h4> 
+<p>使用证书进行身份验证的服务器可以选择向客户端请求证书。如果发送了这个消息，必须在EncryptedExtensions之后。</p> 
+<p>此消息的结构：</p> 
+<pre><code class="prism language-c">  <span class="token keyword">struct</span> <span class="token punctuation">{<!-- --></span>
+      opaque certificate_request_context<span class="token operator">&lt;</span><span class="token number">0.</span><span class="token number">.2</span><span class="token operator">^</span><span class="token number">8</span><span class="token operator">-</span><span class="token number">1</span><span class="token operator">&gt;</span><span class="token punctuation">;</span>
+      Extension extensions<span class="token operator">&lt;</span><span class="token number">2.</span><span class="token number">.2</span><span class="token operator">^</span><span class="token number">16</span><span class="token operator">-</span><span class="token number">1</span><span class="token operator">&gt;</span><span class="token punctuation">;</span>
+  <span class="token punctuation">}</span> CertificateRequest<span class="token punctuation">;</span>
+</code></pre> 
+<p>certificate_request_context：一个不透明的字符串，用于表示证书请求，并在客户端的证书消息中回复。 certificate_request_context在此连接的范围内必须是唯一的（从而防止客户端CertificateVerify消息的重放）。该字段应为零长度，除非用于4.6.2节中描述的post-handshake身份验证交互。当请求post-handshake认证时，服务器应该使上下文对客户端不可预测（比如随机生成），从而防止临时访问客户端私钥的攻击者预先计算出有效的CertificateVerify消息。</p> 
+<p>Extensions：描述正在请求的证书参数的扩展集。必须指定“signature_algorithms”扩展名，如果此消息定义了其他扩展也可以选择性包含。客户端必须忽略不认识的扩展。</p> 
+<p>在TLS的先前版本中，CertificateRequest消息携带服务器接受的签名算法和证书授权列表。在TLS 1.3中，前者通过发送“signature_algorithms”和可选的"signature_algorithms_cert"扩展来表示。后者通过发送“certificate_authorities”扩展来表示（见4.2.4节）。<br> 使用PSK认证的服务器不得在主握手中发送CertificateRequest消息，虽然可以在post-handshake认证中发送（见4.6.2），但客户端要已经发送了"post_handshake_auth"扩展（见4.2.6）。</p> 
+<h3><a id="44__Authentication_Messages_1055"></a>4.4. 认证消息（Authentication Messages）</h3> 
+<p>如第2章所述，TLS通常使用一组消息来进行身份验证，密钥确认和握手完整性：Certificate，CertificateVerify和Finished。 （PSK binder也以类似的方式执行密钥确认。） 这三个消息总是在握手中的最后发送。 Certificate和CertificateVerify消息仅在某些情况下发送，如下所定义。Finished的消息总是作为Authentication Block的一部分发送。这些消息使用[sender]_handshake_traffic_secret派生的密钥加密。</p> 
+<p>认证消息的计算统一采用以下输入：<br> • 要使用的证书和签名密钥。<br> • 一个握手上下文，由要包含在transcript哈希中的一组消息组成。<br> • 用于计算MAC密钥的基本密钥。</p> 
+<p>基于这些输入，消息包含：<br> Certificate：用于认证的证书和链中的任何支持证书。请注意，基于证书的客户端身份验证在PSK握手流中不可用（包括0-RTT）。<br> CertificateVerify：Transcript-Hash值的签名（握手上下文+证书）。<br> Finished：Transcript-Hash值的MAC（握手上下文+证书+证书验证），使用Base Key派生的MAC秘钥。</p> 
+<p>下表定义了每个场景的握手上下文和MAC基本密钥：</p> 
+<blockquote> 
+ <p>±----------±------------------------±----------------------------+ | Mode | Handshake Context | Base Key |<br> ±----------±------------------------±----------------------------+ | Server | ClientHello … later | server_handshake_traffic_ |<br> | | of EncryptedExtensions/ | secret |<br> | | CertificateRequest | |<br> | | | |<br> | Client | ClientHello … later | client_handshake_traffic_ |<br> | | of server | secret |<br> | | Finished/EndOfEarlyData | |<br> | | | |<br> | Post- | ClientHello … client | client_application_traffic_ |<br> | Handshake | Finished + | secret_N |<br> | | CertificateRequest | |<br> ±----------±------------------------±----------------------------+</p> 
+</blockquote> 
+<h4><a id="441__Transcript_Hash_1085"></a>4.4.1. Transcript Hash</h4> 
+<p>TLS的很多加密算法使用transcript hash。这个值是通过对每个包含的握手消息进行哈希串联计算出来的，包括携带握手消息类型和长度字段的握手消息头，但不包括记录层头。 即：</p> 
+<pre><code>Transcript-Hash(M1, M2, ... Mn) = Hash(M1 || M2 || ... || Mn)
+</code></pre> 
+<p>作为这个一般规则的例外，当服务器用HelloRetryRequest响应一个ClientHello时，ClientHello1的值会被一个特殊的合成握手消息代替，握手类型为"message_hash"，包含Hash(ClientHello1)。 即：</p> 
+<pre><code class="prism language-c">
+  Transcript<span class="token operator">-</span><span class="token function">Hash</span><span class="token punctuation">(</span>ClientHello1<span class="token punctuation">,</span> HelloRetryRequest<span class="token punctuation">,</span> <span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span> Mn<span class="token punctuation">)</span> <span class="token operator">=</span>
+      <span class="token function">Hash</span><span class="token punctuation">(</span>message_hash <span class="token operator">||</span>        <span class="token comment">/* Handshake type */</span>
+           <span class="token number">00</span> <span class="token number">00</span> Hash<span class="token punctuation">.</span>length  <span class="token operator">||</span>  <span class="token comment">/* Handshake message length (bytes) */</span>
+           <span class="token function">Hash</span><span class="token punctuation">(</span>ClientHello1<span class="token punctuation">)</span> <span class="token operator">||</span>  <span class="token comment">/* Hash of ClientHello1 */</span>
+           HelloRetryRequest  <span class="token operator">||</span> <span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span> <span class="token operator">||</span> Mn<span class="token punctuation">)</span>
+</code></pre> 
+<p>这种结构的原因是允许服务器只在cookie中存储ClientHello1的哈希值，而不用导出整个中间哈希状态，从而进行无状态的HelloRetryRequest（见4.2.2节）。<br> 为了具体化，transcript hash总是取自以下握手消息序列，从第一个ClientHello开始，只包括那些被发送的消息：ClientHello, HelloRetryRequest, ClientHello, ServerHello, EncryptedExtensions, server CertificateRequest, server Certificate, server CertificateVerify, server Finished, EndOfEarlyData, client Certificate, client CertificateVerify, client Finished。<br> 一般来说，实现者可以根据协商好的哈希值保持一个运行中的transcript hash值来实现transcript。 但请注意，后续的post-handshake认证不包括，只包含到主握手结束的消息。</p> 
+<h4><a id="442__Certificate_1104"></a>4.4.2. Certificate</h4> 
+<p>该消息将端点的证书链传递给对端。<br> 每当约定的密钥交换方法使用证书进行认证时，服务器必须发送一条Certificate消息（这包括本文中定义的所有密钥交换方法，PSK除外）。</p> 
+<p>只有服务器通过CertificateRequest消息请求客户端认证时，客户端才必须发送Certificate消息（4.3.2节）。 如果服务器请求客户端认证，但客户端没有合适的证书，则必须发送一个不包含证书的Certificate消息（即"certificate_list "字段长度为0）。 无论证书消息是否为空，都必须发送一个Finished消息。</p> 
+<pre><code class="prism language-c">
+Structure of this message<span class="token operator">:</span>
+      <span class="token keyword">enum</span> <span class="token punctuation">{<!-- --></span>
+          <span class="token function">X509</span><span class="token punctuation">(</span><span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">,</span>
+          <span class="token function">RawPublicKey</span><span class="token punctuation">(</span><span class="token number">2</span><span class="token punctuation">)</span><span class="token punctuation">,</span>
+          <span class="token punctuation">(</span><span class="token number">255</span><span class="token punctuation">)</span>
+      <span class="token punctuation">}</span> CertificateType<span class="token punctuation">;</span>
+
+      <span class="token keyword">struct</span> <span class="token punctuation">{<!-- --></span>
+          <span class="token function">select</span> <span class="token punctuation">(</span>certificate_type<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+              <span class="token keyword">case</span> RawPublicKey<span class="token operator">:</span>
+                <span class="token comment">/* From RFC 7250 ASN.1_subjectPublicKeyInfo */</span>
+                opaque ASN1_subjectPublicKeyInfo<span class="token operator">&lt;</span><span class="token number">1.</span><span class="token number">.2</span><span class="token operator">^</span><span class="token number">24</span><span class="token operator">-</span><span class="token number">1</span><span class="token operator">&gt;</span><span class="token punctuation">;</span>
+
+              <span class="token keyword">case</span> X509<span class="token operator">:</span>
+                opaque cert_data<span class="token operator">&lt;</span><span class="token number">1.</span><span class="token number">.2</span><span class="token operator">^</span><span class="token number">24</span><span class="token operator">-</span><span class="token number">1</span><span class="token operator">&gt;</span><span class="token punctuation">;</span>
+          <span class="token punctuation">}</span><span class="token punctuation">;</span>
+          Extension extensions<span class="token operator">&lt;</span><span class="token number">0.</span><span class="token number">.2</span><span class="token operator">^</span><span class="token number">16</span><span class="token operator">-</span><span class="token number">1</span><span class="token operator">&gt;</span><span class="token punctuation">;</span>
+      <span class="token punctuation">}</span> CertificateEntry<span class="token punctuation">;</span>
+
+      <span class="token keyword">struct</span> <span class="token punctuation">{<!-- --></span>
+          opaque certificate_request_context<span class="token operator">&lt;</span><span class="token number">0.</span><span class="token number">.2</span><span class="token operator">^</span><span class="token number">8</span><span class="token operator">-</span><span class="token number">1</span><span class="token operator">&gt;</span><span class="token punctuation">;</span>
+          CertificateEntry certificate_list<span class="token operator">&lt;</span><span class="token number">0.</span><span class="token number">.2</span><span class="token operator">^</span><span class="token number">24</span><span class="token operator">-</span><span class="token number">1</span><span class="token operator">&gt;</span><span class="token punctuation">;</span>
+      <span class="token punctuation">}</span> Certificate<span class="token punctuation">;</span>
+</code></pre> 
+<p>certificate_request_context：如果该消息是对CertificateRequest的回应，则为该消息中的certificate_request_context的值。 否则（在服务器认证的情况下），该字段长度为零。</p> 
+<p>certificate_list：CertificateEntry结构的序列(链)，每个结构包含一个证书和一组扩展。</p> 
+<p>extensions：CertificateEntry的一组扩展值。 扩展格式在4.2节中定义。 目前服务器证书的有效扩展包括OCSP Status扩展[RFC6066]和SignedCertificateTimestamp扩展[RFC6962]；未来也可以为该消息定义扩展。 服务器的Certificate消息中的扩展必须与ClientHello消息的扩展相对应。 客户端的Certificate消息中的扩展必须与服务器的 CertificateRequest 消息中的扩展相对应。 如果一个扩展用于整个链，它应该包含在第一个CertificateEntry 中。</p> 
+<p>如果对应的证书类型扩展（server_certificate_type或client_certificate_type）没有在EncryptedExtensions中协商，或者协商为X.509证书类型，那么每个CertificateEntry都包含一个DER编码的X.509证书。 发送者的证书必须在列表中的第一个CertificateEntry 中。 后面的每个证书都应该直接认证紧邻它前面的证书。 因为证书验证要求trust anchors是独立分发的，所以指定trust anchors的证书可以从链中省略，前提是支持的对端已知拥有任何省略的证书。</p> 
+<p>注意：在TLS 1.3之前，certificate_list的排序要求每个证书都要对紧接在它前面的证书进行认证；但是，一些实现允许一些灵活性。 服务器有时会为了过渡目的同时发送一个当前的和过时的中间文件，还有一些只是配置不正确，但这些情况还是可以被正确验证。 为了实现最大的兼容性，所有的实现都应该准备好处理任何TLS版本中潜在的无关证书和任意的顺序，但最终实体证书必须放在第一位。</p> 
+<p>如果协商为RawPublicKey证书类型，那么certificate_list必须不超过一个CertificateEntry，其中包含[RFC7250]第3节中定义的ASN1_subjectPublicKeyInfo值。<br> OpenPGP证书类型[RFC6091]不得用于TLS 1.3。<br> 服务器的certificate_list必须是非空的。如果客户端没有合适的证书来响应服务器的认证请求，客户端将发送一个空的证书列表。</p> 
+<h5><a id="4421__OCSP_SCT_1152"></a>4.4.2.1. OCSP状态和 SCT扩展</h5> 
+<p>[RFC6066]和[RFC6961]提供了扩展来协商服务器向客户端发送OCSP响应。 在TLS 1.2及之前版本中，服务器用一个空的扩展来表示协商这个扩展，OCSP信息携带在CertificateStatus消息中。 在TLS 1.3中，服务器的OCSP信息在包含相关证书的CertificateEntry中的扩展中。 具体来说，服务器的"status_request"扩展的主体必须是[RFC6066]中定义的CertificateStatus结构，其解释在[RFC6960]中定义。</p> 
+<p>注意：status_request_v2扩展[RFC6961]已经废弃。TLS 1.3服务器在处理ClientHello消息时，不能根据status_request_v2的存在或其中的信息采取行动，尤其是不能在EncryptedExtensions、CertificateRequest 或 Certificate 消息中发送此扩展。TLS 1.3服务器必须能够处理包含status_request_v2的ClientHello消息，因为使用早期协议版本的客户端发送可能想要使用。</p> 
+<p>服务器可以通过在CertificateRequest消息中发送一个空的"status_request"扩展，要求客户机提供OCSP响应和它的证书。如果客户端选择发送OCSP响应，其"status_request"扩展的主体必须是[RFC6066]中定义的CertificateStatus结构。<br> 同样，[RFC6962]提供了一种机制，在TLS 1.2及以下版本中，服务器可以将签名证书时间戳（SCT，Signed Certificate Timestamp）作为ServerHello中的扩展发送。 在TLS 1.3中，服务器的SCT信息在CertificateEntry的扩展中。</p> 
+<h5><a id="4422__Server_Certificate_Selection_1159"></a>4.4.2.2. 服务端证书选择Server Certificate Selection</h5> 
+<p>服务器发送的证书遵循以下规则：<br>  证书类型必须是X.509v3[RFC5280]，除非另有显式协商（如[RFC7250]）。<br>  服务器的终端实体证书的公钥（和相关的限制）必须与客户的"signature_algorithms"扩展（目前是RSA、ECDSA或EdDSA）中选择的认证算法兼容。<br>  证书必须允许使用秘钥进行签名（即如果有Key Usage扩展，digitalSignature位必须被设置），签名方案在客户端的signature_algorithms或signature_algorithms_cert扩展中指明（见4.2.3节）。<br>  server_name[RFC6066]和certificate_authorities扩展用来指导证书的选择。由于服务器可能需要server_name扩展，客户端应该可用情况下发送此扩展。</p> 
+<p>服务器提供的所有证书必须由客户端提供的签名算法签名（如果客户端能够提供这样的链，见4.2.3节）。 自签证书或预期为trust anchors的证书不作为链的一部分进行验证，因此可以用任何算法进行签名。<br> 如果服务器不能产生一个只通过指定的支持算法进行签名的证书链，那么它应该向客户端发送一个自己选择的包含不知道客户端是否支持的算法证书链来继续握手。这个fallback链一般不应使用已淘汰的SHA-1散列算法，但如果客户端通告允许的话可以使用，否则不得使用。<br> 如果客户端不能使用提供的证书构建一个可接受的链，并决定放弃握手，那么它必须用一个适当的certificate-related警报（默认情况下为unsupported_certificate；更多信息见6.2节）来放弃握手。<br> 如果服务器有多个证书，它就会根据上述标准（除此之外还有其他标准，如传输层端点、本地配置和偏好）选择其中一个。</p> 
+<h5><a id="4423__Client_Certificate_Selection_1170"></a>4.4.2.3. 客户端证书选择Client Certificate Selection</h5> 
+<p>客户端发送的证书遵循以下规则：<br>  证书类型必须是X.509v3[RFC5280]，除非另有明确协商(如[RFC7250])。<br>  如果CertificateRequest消息中存在certificate_authorities扩展，那么证书链中至少有一个证书应该是由所列的CA签发的。<br>  证书必须使用可接受的签名算法来签署，如4.3.2所述。需要注意的是，这放宽了以前版本的TLS中对证书签名算法的限制。<br>  如果CertificateRequest消息包含一个非空的oid_filters扩展，那么终端实体证书必须与客户端识别的扩展名OID匹配，如4.2.5节所述。</p> 
+<h5><a id="4424__Certificate_1176"></a>4.4.2.4. 接收Certificate消息</h5> 
+<p>一般来说，详细的证书验证程序不在TLS的范围内（见[RFC5280]）。 本节提供了特定于TLS的要求。<br> 如果服务器提供了空的Certificate消息，客户端必须用decode_error警告中止握手。<br> 如果客户端没有发送任何证书(比如发送一个空的Certificate消息)，服务器可以自行决定是在没有客户端认证的情况下继续握手，还是用certificate_required 警告中止握手。 另外，如果证书链的某些方面是不能接受的(例如，不是由已知的、受信任的CA签发的)，服务器可以自行决定继续握手（考虑到客户端未被认证）或中止握手。<br> 任何端点收到任何需要使用MD5哈希签名算法来验证的证书，都必须以 bad_certificate警告来中止握手。 SHA-1已废弃，建议任何端点收到任何需要使用SHA-1散列签名算法来验证的证书时，应当以bad_certificate警告中止握手。 为明确起见，这意味着端点可以接受这些算法，用于自签或trust anchors的证书。<br> 建议所有端点尽快过渡到SHA-256或更高版本，以保持与目前正在逐步取消SHA-1支持的实施方案的互操作性。<br> 请注意，包含一种签名算法密钥的证书可以使用不同的签名算法进行签名（例如，用ECDSA密钥签名的RSA密钥）。</p> 
+<h4><a id="443___1183"></a>4.4.3. 证书验证</h4> 
+<p>该消息用于明确证明一个端点拥有与其证书相对应的私钥。CertificateVerify消息也为截至当前的握手提供完整性。服务器在通过证书进行验证时必须发送此消息，客户端在通过证书进行验证时必须发送此消息。客户端在通过证书进行验证时必须发送此消息（如Certificate消息非空时）。该消息必须紧接在Certificate消息之后发送，并在Finished消息之前出现。</p> 
+<pre><code class="prism language-bash">   Structure of this message:
+      struct <span class="token punctuation">{<!-- --></span>
+          SignatureScheme algorithm<span class="token punctuation">;</span>
+          opaque signature<span class="token operator">&lt;</span><span class="token number">0</span><span class="token punctuation">..</span><span class="token number">2</span>^16-<span class="token operator"><span class="token file-descriptor important">1</span>&gt;</span><span class="token punctuation">;</span>
+      <span class="token punctuation">}</span> CertificateVerify<span class="token punctuation">;</span>
+</code></pre> 
+<p>算法字段指定所使用的签字算法（该类型的定义见4.2.3节）。 签名是使用该算法的数字签名。签名的内容是4.4.1节所述的哈希输出，即：</p> 
+<pre><code class="prism language-bash">   Transcript-Hash<span class="token punctuation">(</span>Handshake Context, Certificate<span class="token punctuation">)</span>
+</code></pre> 
+<p>然后，数字签名的计算是在下列各项的连接上进行的：<br>  一个由八位数32（0x20）组成的字符串，重复64次。<br>  context字符串<br>  一个0字节，作为分隔符。<br>  需要签署的内容</p> 
+<p>这个结构的目的是为了防止对以前版本的TLS的攻击，在这种情况下，ServerKeyExchange格式意味着攻击者可以获得一个带有32字节前缀（ClientHello.random）的消息签名。 初始的64字节填充会清除这个前缀和服务器控制的ServerHello.random。<br> 服务器签名的context字符串是"TLS 1.3, server CertificateVerify “。 客户端签名的context字符串是” TLS 1.3, client CertificateVerify "。 它用来区分不同环境下的签名，有助于防止潜在的跨协议攻击。<br> 例如，如果transcript哈希是32字节的01（这个长度对于SHA-256来说是有意义的），那么服务器CertificateVerify的数字签名所覆盖的内容就是：</p> 
+<pre><code class="prism language-c">  <span class="token number">2020202020202020202020202020202020202020202020202020202020202020</span>
+  <span class="token number">2020202020202020202020202020202020202020202020202020202020202020</span>
+  <span class="token number">544</span>c5320312e332c207365727665722043657274696669636174655665726966
+  <span class="token number">79</span>
+  <span class="token number">00</span>
+  <span class="token number">0101010101010101010101010101010101010101010101010101010101010101</span>
+</code></pre> 
+<p>在发送方，计算CertificateVerify消息的签名字段的输入为：<br>  数字签名所涵盖的内容<br>  之前信息中发送的证书所对应的私人签名密钥。</p> 
+<p>如果CertificateVerify消息是由服务器发送的，签名算法必须是客户端 signature_algorithms扩展中提供的算法，除非没有不支持的算法就不能产生有效的证书链（见4.2.3节）。<br> 如果是客户端发送的，签名中使用的签名算法必须是CertificateRequest消息中 signature_algorithms 扩展中supported_signature_algorithms字段中的算法之一。<br> 此外，签名算法必须与发送者的终端实体证书中的秘钥兼容。RSA签名必须使用RSASSA-PSS算法，不管RSASSA-PKCS1-v1_5算法是否出现在signature_algorithms中。 SHA-1算法不得用于任何CertificateVerify消息的签名中。<br> 本规范中的所有 SHA-1 签名算法只用于传统证书，而不适用于CertificateVerify签名。</p> 
+<p>CertificateVerify消息的接收方必须验证签名字段。 验证过程的输入是：<br>  数字签名所涵盖的内容<br>  相关Certificate信息中找到的终端实体证书中包含的公钥。<br>  CertificateVerify消息的签名中收到的数字签名。</p> 
+<p>如果验证失败，接收方必须用decrypt_error警报终止握手。</p> 
+<h4><a id="444__Finished_1236"></a>4.4.4. Finished</h4> 
+<p>Finished消息是Authentication Block中的最后一条消息，它对提供握手和密钥的认证至关重要。<br> Finished消息的接收者必须验证其内容是否正确，如果不正确必须用decrypt_error警报终止连接。</p> 
+<p>一旦一方发送了Finished消息，并且收到并验证了对端的Finished消息，它就可以开始通过连接发送和接收应用数据。 有两种设置允许它在收到对端的Finished之前发送数据：</p> 
+<ol><li>发送0-RTT数据的客户端，如4.2.10所述。</li><li>服务器在第一次发送后可以发送数据，但由于握手还没有完成，所以既不能保证对端的身份，也不能保证它的活性（如ClientHello可能已经被重放）。</li></ol> 
+<p>用于计算Finished消息的密钥是由4.4节中定义的Base Key使用HKDF计算的（见7.1节）。具体来说：</p> 
+<pre><code class="prism language-bash">finished_key <span class="token operator">=</span>
+       HKDF-Expand-Label<span class="token punctuation">(</span>BaseKey, <span class="token string">"finished"</span>, <span class="token string">""</span>, Hash.length<span class="token punctuation">)</span>
+
+   Structure of this message:
+      struct <span class="token punctuation">{<!-- --></span>
+          opaque verify_data<span class="token punctuation">[</span>Hash.length<span class="token punctuation">]</span><span class="token punctuation">;</span>
+      <span class="token punctuation">}</span> Finished<span class="token punctuation">;</span>
+
+   verify_dataj
+      verify_data <span class="token operator">=</span>
+          HMAC<span class="token punctuation">(</span>finished_key,
+               Transcript-Hash<span class="token punctuation">(</span>Handshake Context,
+                               Certificate*, CertificateVerify*<span class="token punctuation">))</span>
+
+      * Only included <span class="token keyword">if</span> present.
+</code></pre> 
+<p>HMAC[RFC2104]采用Hash算法进行握手。如上所述，HMAC的输入一般可以通过运行哈希来实现，如此时只需要握手哈希。<br> 在以前的TLS版本中，verify_data总是12个八位字节长。在TLS 1.3中，是用于握手的Hash的HMAC输出大小。<br> 注意：警报和任何其他非握手记录类型不属于握手消息，不包括在哈希计算中。<br> 在Finished消息之后的任何记录必须按照7.2节所述的适当应用流量密钥进行加密。特别是，这包括服务器响应客户端Certificate和CertificateVerify消息而发送的任何警报。</p> 
+<h3><a id="45__End_of_Early_Data_1270"></a>4.5. End of Early Data</h3> 
+<pre><code class="prism language-bash">struct <span class="token punctuation">{<!-- --></span><span class="token punctuation">}</span> EndOfEarlyData<span class="token punctuation">;</span>
+</code></pre> 
+<p>如果服务器在EncryptedExtensions中发送了 early_data扩展，那么客户端必须在收到服务器Finished后发送EndOfEarlyData消息。如果服务器没有在EncryptedExtensions中发送early_data扩展，那么客户端不得发送EndOfEarlyData消息。该消息表示所有的0-RTT应用_数据消息（如果有的话）已经传输完毕，之后的数据由握手流量密钥保护。服务器不得发送此消息，客户端收到此消息必须以unexpected_message警报终止连接。这个消息是由client_early_traffic_secret衍生的密钥进行加密的。</p> 
+<h3><a id="46__PostHandshake_1278"></a>4.6. Post-Handshake消息</h3> 
+<pre><code>TLS还允许在主握手之后发送其他消息。这些消息使用握手内容类型，并由合适的应用流量密钥进行加密。
+</code></pre> 
+<h4><a id="461__New_Session_Ticket_1280"></a>4.6.1. New Session Ticket消息</h4> 
+<pre><code>在收到客户端Finished消息后，服务端任何时候都可以发送NewSessionTicket消息。 该消息在ticket值和从恢复主秘钥中导出的秘密PSK之间建立了对应关系（一一对应，见第7节）。
+客户端可以通过在ClientHello（4.2.11节）中的pre_shared_key 扩展中包含ticket值，在未来的握手中使用这个PSK。 服务器可以在一个连接上发送多个ticket，可以是紧接着发送，也可以是在特定事件之后（见附录C.4）。例如，服务器可能会在post-handshake认证之后发送一个新的ticket，以便封装额外的客户端认证状态。 多tikcet对客户端有多种用途，包括：  
+</code></pre> 
+<p> 打开多个并行HTTP连接。<br>  通过（例如）Happy Eyeballs [RFC8305]或相关技术跨接口和地址族执行连接竞速。</p> 
+<p>任何ticket必须只用建立原始连接时使用的KDF哈希算法相同的密码套件来恢复。<br> 只有当新的SNI值对原始会话中提交的服务器证书有效时，客户端才必须恢复；只有当SNI值与原始会话中使用的SNI值匹配时，客户端才应该恢复。后者是一种性能优化：通常情况下，没有理由期望一个证书所覆盖的不同服务器能够接受对方的ticket；因此，在这种情况下尝试恢复会浪费一张单次使用的ticket。 如果提供了这样的指示（外部或任何其他方式），客户端可以用不同的SNI值恢复。<br> 如果恢复时向应用程序传递SNI值，实现必须使用恢复ClientHello中发送的值，而不是上一个会话中发送的值。注意，如果服务器实现拒绝所有不同SNI值的PSK标识，则这两个值总是相同的。<br> 注意：虽然恢复主秘钥取决于客户端的第二次发送，但不要求客户端认证的服务器可以独立计算transcript的剩余部分，然后在发送Finished后立即发送NewSessionTicket，而不是等待客户端Finished。 这可能适用于这样的情况：例如，客户端预计将并行打开多个TLS连接，并将从减少恢复握手的开销中受益。</p> 
+<pre><code class="prism language-bash">  struct <span class="token punctuation">{<!-- --></span>
+      uint32 ticket_lifetime<span class="token punctuation">;</span>
+      uint32 ticket_age_add<span class="token punctuation">;</span>
+      opaque ticket_nonce<span class="token operator">&lt;</span><span class="token number">0</span><span class="token punctuation">..</span><span class="token number">25</span><span class="token operator"><span class="token file-descriptor important">5</span>&gt;</span><span class="token punctuation">;</span>
+      opaque ticket<span class="token operator">&lt;</span><span class="token number">1</span><span class="token punctuation">..</span><span class="token number">2</span>^16-<span class="token operator"><span class="token file-descriptor important">1</span>&gt;</span><span class="token punctuation">;</span>
+      Extension extensions<span class="token operator">&lt;</span><span class="token number">0</span><span class="token punctuation">..</span><span class="token number">2</span>^16-<span class="token operator"><span class="token file-descriptor important">2</span>&gt;</span><span class="token punctuation">;</span>
+  <span class="token punctuation">}</span> NewSessionTicket<span class="token punctuation">;</span>
+</code></pre> 
+<p>ticket_lifetime：表示从发布ticket时间开始的32位无符号整数，以秒为单位，网络序。 服务器不得使用任何大于604800秒（7天）的值。 值为零时表示ticket应立即丢弃。无论ticket_lifetime多少，客户端都不得将ticket缓存超过 7 天，可以根据本地政策提前删除ticket。 服务器可以在比ticket_lifetime 更短的时间内将票据视为有效。</p> 
+<p>ticket_age_add：一个安全生成的随机32位值，用于掩盖客户端pre_shared_key 扩展中的ticket年龄。 此值加上客户端的tikcet年龄，模2^32，得到客户端传输的值。服务器必须为每次发送的ticket生成一个新的值。</p> 
+<p>ticket_nonce：每个ticket对应一个值，使ticket在这个连接上唯一。</p> 
+<p>Ticket：作为PSK标识的ticket值。ticket本身是一个不透明的标签。 它可以是一个数据库查询键，也可以是一个自加密和自认证的值。</p> 
+<p>Extensions：ticket的一组扩展。扩展格式在4.2节中定义。客户端必须忽略不认识的扩展。</p> 
+<p>目前为NewSessionTicket定义的唯一扩展是early_data，表示该ticket可用于发送0-RTT数据（4.2.10节）。 包含以下值：<br> max_early_data_size：使用该ticket时，客户端允许发送的0-RTT数据的最大数量，单位为字节。 大小只包含应用数据有效载荷（如明文，但不包括填充或内部内容类型字节）。 服务器接收到超过max_early_data_size字节的0-RTT数据时，应该用unexpected_message警报终止连接。 请注意，由于缺乏加密材料而拒绝早期数据的服务器将无法区分padding和内容，所以客户端不要依赖能够在早期数据记录中发送大量的padding。<br> tikcet关联的PSK计算方式为：</p> 
+<pre><code class="prism language-bash">   HKDF-Expand-Label<span class="token punctuation">(</span>resumption_master_secret,
+                    <span class="token string">"resumption"</span>, ticket_nonce, Hash.length<span class="token punctuation">)</span>
+</code></pre> 
+<p>因为每个NewSessionTicket消息的 ticket_nonce值是不同的，所以每个ticket都会衍生出不同的PSK。<br> 请注意，原则上可以继续发行新的ticket，它可以无限期地延长最初从initial non-PSK握手（很可能与对端证书绑定）中派生的密钥材料的寿命。 建议实施者对这种密钥材料的总寿命进行限制；这些限制应考虑到对端证书的寿命、干预性撤销的可能性以及对端在线CertificateVerify签名后的时间。</p> 
+<h4><a id="462__PostHandshake_Authentication_1322"></a>4.6.2. Post-Handshake Authentication</h4> 
+<p>当客户端发送了post_handshake_auth扩展（见4.2.6节）后，服务器可以在握手完成后的任何时候通过发送CertificateRequest消息来请求客户端认证。 客户端必须用适当的Authentication消息来响应（见4.4节）。 如果客户端选择认证，则必须发送Certificate、CertificateVerify和Finished。 如果客户端拒绝，则必须发送一个不包含证书的Certificate消息，然后是Finished。 客户端对给定响应的所有消息必须连续发送，中间不能有其他类型的消息。<br> 客户端如果在没有发送post_handshake_auth扩展的情况下接收到CertificateRequest消息，必须发送一个unexpected_message的致命警告。</p> 
+<p>注意：由于客户端认证可能涉及到提示用户，服务器必须准备好一些延迟，包括在发送 CertificateRequest和接收响应之间收到任意数量的其他消息。 此外，如果客户端连续收到多个CertificateRequest，可能会以不同的顺序响应（certificate_request_context值允许服务器识别响应）。</p> 
+<h4><a id="463___1327"></a>4.6.3. 秘钥和初始化向量更新</h4> 
+<p>KeyUpdate握手消息用于指示发送方正在更新其发送的加密密钥。这个消息可以由任何一端在Finished消息后发送。在收到Finished消息之前收到KeyUpdate消息必须用unexpected_message警报来终止连接。在发送KeyUpdate消息后，发送方必须使用下一代密钥发送所有流量，这些密钥按照7.2节的描述计算。在收到KeyUpdate消息后，接收方必须更新接收密钥。</p> 
+<pre><code class="prism language-bash">  enum <span class="token punctuation">{<!-- --></span>
+      update_not_requested<span class="token punctuation">(</span><span class="token number">0</span><span class="token punctuation">)</span>, update_requested<span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">)</span>, <span class="token punctuation">(</span><span class="token number">255</span><span class="token punctuation">)</span>
+  <span class="token punctuation">}</span> KeyUpdateRequest<span class="token punctuation">;</span>
+
+  struct <span class="token punctuation">{<!-- --></span>
+      KeyUpdateRequest request_update<span class="token punctuation">;</span>
+  <span class="token punctuation">}</span> KeyUpdate<span class="token punctuation">;</span>
+</code></pre> 
+<p>request_update：表示KeyUpdate的接收者是否应该用自己的KeyUpdate来响应。如果接收到任何其他的值，必须用illegal_parameter警报来终止连接。</p> 
+<p>如果request_update字段被设置为update_requested，那么接收方必须在发送下一个应用数据之前，发送一个自己的KeyUpdate，并将request_update设置为update_not_requested。 这个机制允许任何一方强制更新整个连接，但是会导致接收多个KeyUpdates的实现在沉默的时候用一个更新来响应。 请注意，在发送request_update设置为update_requested的 KeyUpdate和接收对端的KeyUpdate之间，可能会收到任意数量的消息，因为这些消息可能已经在路上。 然而，由于发送和接收密钥来自于独立的流量秘钥，因此保留接收流量秘钥并不会威胁到发送者更改密钥之前发送的数据的前向保密性。<br> 如果实现独立发送request_update设置为update_requested的KeyUpdate，并且它们在传输中交叉，那么每一方也会发送一个响应，结果就是每一方递增两代。<br> 发送方和接收方都必须用旧密钥加密他们的KeyUpdate消息。 此外，双方都必须强制要求在接受任何用新密钥加密的消息之前，收到用旧密钥的KeyUpdate。如果不这样做，可能会引发消息截断攻击。</p> 
+<h2><a id="5___1345"></a>5. 记录协议</h2> 
+<p>TLS记录协议将要传输的数据分片为可管理的块，加密后传输。接收到的数据经过验证、解密、重组，然后传递给上层协议。</p> 
+<p>TLS记录是分类型的，允许多个上层协议在同一个记录层上复用。 本文档规定了四种内容类型：握手、应用数据、警报和change_cipher_spec。 change_cipher_spec记录仅用于兼容性目的（见附录D.4）。<br> 可能会在发送或接收第一个ClientHello消息之后、接收到对端的Finished消息之前的任何时候接收到一个类型为change_cipher_spec的单字节值0x01的未加密记录，这种情况必须简单地丢弃而不做进一步处理。 需要注意的是，该记录可能出现在握手时的某一点上（在等待加密的记录），因此，在试图解密记录之前，有必要检测这种情况。 接收到任何其他change_cipher_spec值，或者接收到加密change_cipher_spec记录，必须以unexpected_message警报中止握手。 如果在第一个ClientHello消息之前或在对端Finished消息之后收到change_cipher_spec记录，必须视为意外的记录类型（尽管无状态服务器可能无法将这些情况与允许的情况区别开）。<br> 除非经过扩展协商，否则不能发送本文中没定义的记录类型。如果收到意外的记录类型，必须用unexpected_message警告来终止连接。新的记录内容类型值由IANA在TLS ContentType注册表中分配，如11节所述。</p> 
+<h3><a id="51___1351"></a>5.1. 记录层</h3> 
+<p>记录层将信息块分段为TLSPlaintext记录，每块携带的数据不多于2^14字节。根据底层ContentType的不同，信息边界的处理方式也不同。 任何未来的内容类型必须指定适当的规则。 请注意，这些规则比TLS 1.2中强制的规则更严格。<br> 握手信息可以合并进一条TLSPlaintext记录，也可以分散在几条记录中，但前提是：<br>  握手消息不得与其他记录类型交织在一起。 也就是说，如果一个握手消息被分割成两条或更多的记录，它们之间不能有任何其他记录。<br>  握手消息不得跨越密钥变化。 必须确保紧接在密钥变化之前的所有消息是否与记录边界一致；如果不一致，则必须用unexpected_message警报终止连接。 因为ClientHello、EndOfEarlyData、ServerHello、Finished和KeyUpdate消息可以在秘钥变化之后立即发送，所以必须按照记录边界来发送这些消息。</p> 
+<p>不得发送零长度的握手类型片段，即使这些片段包含填充。<br> 警报消息（第6节）绝不能分散在多个记录里，并且多个警报消息绝不能合并到一个 TLSPlaintext 记录中。换句话说，具有 Alert 类型的记录必须只包含一条消息。<br> Application Data消息包含对 TLS 不透明的数据。Application Data消息总是加密的。 可以发送零长度的Application Data片段，因为可能作为流量分析手段。Application Data片段可以分散在多个记录中，也可以合并成一个记录。</p> 
+<pre><code class="prism language-bash">  enum <span class="token punctuation">{<!-- --></span>
+      invalid<span class="token punctuation">(</span><span class="token number">0</span><span class="token punctuation">)</span>,
+      change_cipher_spec<span class="token punctuation">(</span><span class="token number">20</span><span class="token punctuation">)</span>,
+      alert<span class="token punctuation">(</span><span class="token number">21</span><span class="token punctuation">)</span>,
+      handshake<span class="token punctuation">(</span><span class="token number">22</span><span class="token punctuation">)</span>,
+      application_data<span class="token punctuation">(</span><span class="token number">23</span><span class="token punctuation">)</span>,
+      <span class="token punctuation">(</span><span class="token number">255</span><span class="token punctuation">)</span>
+  <span class="token punctuation">}</span> ContentType<span class="token punctuation">;</span>
+
+  struct <span class="token punctuation">{<!-- --></span>
+      ContentType <span class="token builtin class-name">type</span><span class="token punctuation">;</span>
+      ProtocolVersion legacy_record_version<span class="token punctuation">;</span>
+      uint16 length<span class="token punctuation">;</span>
+      opaque fragment<span class="token punctuation">[</span>TLSPlaintext.length<span class="token punctuation">]</span><span class="token punctuation">;</span>
+  <span class="token punctuation">}</span> TLSPlaintext<span class="token punctuation">;</span>
+</code></pre> 
+<p>type: 用于处理所附片段的上层协议。</p> 
+<p>legacy_record_version：对于所有TLS1.3的实现都必须设置为0x0303，除了初始的ClientHello可以出于兼容性考虑设置为0x0301（比如在HelloRetryRequest之后没有生成）。 这个字段已经被废弃，必须忽略。以前版本的TLS在某些情况下会在这个字段中使用其他的值。</p> 
+<p>length：下面TLSPlaintext.fragment的长度（以字节为单位），长度不得超过2^14字节。 接收到超过此长度的记录必须使用record_overflow警报终止连接。</p> 
+<p>fragment：正在传输的数据。这个值视为一个独立的块透明传递给类型字段指定的上层协议处理。</p> 
+<p>本文介绍了TLS 1.3，使用的版本是0x0304。 这个版本值是历史性的，源于TLS 1.0的0x0301和SSL 3.0的0x0300。 为了最大限度地提高向后兼容性，包含初始ClientHello的记录必须有0x0301版本（代表TLS 1.0），包含第二个ClientHello或ServerHello的记录必须有0x0303版本（代表TLS 1.2）。 当协商以前版本的TLS时，端点遵循附录D中提供的程序和要求。<br> 当记录保护尚未参与时，TLSPlaintext结构会直接发送。 记录保护开始后，TLSPlaintext 记录将受到保护，并按下一节所述发送。 请注意，Application Data记录不得在未受保护的情况下发送（详情见第2节）。</p> 
+<h3><a id="52__Record_Payload_Protection_1389"></a>5.2. Record Payload Protection</h3> 
+<p>记录保护函数将TLSPlaintext结构转换为TLSCiphertext结构。 去保护函数则相反。 TLS 1.3与之前TLS版本不同，所有的密码都被建模为关联数据认证加密（AEAD，Authenticated Encryption with Associated Data）[RFC5116]。 AEAD功能提供了统一的加密和认证操作，将明文转变成经过认证的密文，然后再转回来。 每条加密记录由一个plaintext头组成，后面是一个加密体，加密体包含一个类型和可选填充。</p> 
+<pre><code class="prism language-bash">  struct <span class="token punctuation">{<!-- --></span>
+      opaque content<span class="token punctuation">[</span>TLSPlaintext.length<span class="token punctuation">]</span><span class="token punctuation">;</span>
+      ContentType <span class="token builtin class-name">type</span><span class="token punctuation">;</span>
+      uint8 zeros<span class="token punctuation">[</span>length_of_padding<span class="token punctuation">]</span><span class="token punctuation">;</span>
+  <span class="token punctuation">}</span> TLSInnerPlaintext<span class="token punctuation">;</span>
+
+  struct <span class="token punctuation">{<!-- --></span>
+      ContentType opaque_type <span class="token operator">=</span> application_data<span class="token punctuation">;</span> /* <span class="token number">23</span> */
+      ProtocolVersion legacy_record_version <span class="token operator">=</span> 0x0303<span class="token punctuation">;</span> /* TLS v1.2 */
+      uint16 length<span class="token punctuation">;</span>
+      opaque encrypted_record<span class="token punctuation">[</span>TLSCiphertext.length<span class="token punctuation">]</span><span class="token punctuation">;</span>
+  <span class="token punctuation">}</span> TLSCiphertext<span class="token punctuation">;</span>
+</code></pre> 
+<p>Content：TLSPlaintext.fragment值，包含握手或警报消息的字节编码，或应用程序要发送的原始数据。<br> type：TLSPlaintext.type值，包含记录的内容类型。<br> zeros：类型字段后的cleartext中可能出现任意长度的零值字节。 这为发送者提供了一个机会，只要总长度不超过记录大小的限制，发送者就可以用选择的数量来填充任何TLS记录。 更多细节见5.4节。<br> opaque_type： TLSCiphertext记录的外层opaque_type字段总是设置为23(application_data)，以兼容习惯于以前版本TLS的中间件。 记录的实际内容类型可以在解密后的TLSInnerPlaintext.type中找到。<br> legacy_record_version： legacy_record_version字段总是0x0303。 TLS 1.3的TLSCiphertexts是在TLS 1.3协商后才生成的，所以不存在收到其他值的历史兼容性问题。 请注意，握手协议，包括ClientHello和ServerHello消息，都会对协议版本进行认证，所以这个值是冗余的。<br> length：以下TLSCiphertext.encrypted_record的长度(以字节为单位)，是内容长度加上填充长度，加上内部内容类型的长度，再加上AEAD算法添加的任何扩展。长度不得超过2^14+256字节。 接收到超过这个长度的记录必须用record_overflow警报终止连接。<br> encrypted_record：序列化TLSInnerPlaintext结构的AEAD加密格式</p> 
+<p>AEAD算法的输入是一个密钥、一个nonce、一个plaintext和"附加数据"，这些数据将被包含在认证检查中，如[RFC5116]2.1节所述。秘钥是client_write_key或server_write_key，nonce是从序列号和client_write_iv 或server_write_iv中分离的(见5.3节)，附加数据是记录头。<br> 如：<br> additional_data = TLSCiphertext.opaque_type ||<br> TLSCiphertext.legacy_record_version ||<br> TLSCiphertext.length</p> 
+<p>AEAD算法的plaintext输入是经过编码的TLSInnerPlaintext结构。 流量密钥的派生在7.3节中定义。<br> AEAD输出由AEAD加密操作输出的密文组成。 由于包含了TLSInnerPlaintext.type和发送者的填充，明文的长度大于相应的TLSPlaintext.length。 AEAD输出的长度一般会比明文大，但大小随AEAD算法而变化。<br> 由于密文可能包含填充，开销的数量可能会随着不同长度的明文而变化。 典型地：</p> 
+<pre><code class="prism language-bash">  AEADEncrypted <span class="token operator">=</span> AEAD-Encrypt<span class="token punctuation">(</span>write_key, nonce, additional_data, plaintext<span class="token punctuation">)</span>
+</code></pre> 
+<p>TLSCiphertext的encrypted_record字段设置为AEADEncrypted。<br> 为了解密和验证，解密函数将密钥、nonce、附加数据和AEADEncrypted值作为输入。 输出是明文或表示解密失败的错误。 没有单独的完整性检查。 符号化为：</p> 
+<pre><code class="prism language-bash">  plaintext of encrypted_record <span class="token operator">=</span>
+      AEAD-Decrypt<span class="token punctuation">(</span>peer_write_key, nonce,
+                   additional_data, AEADEncrypted<span class="token punctuation">)</span>
+</code></pre> 
+<p>如果解密失败，接收方必须以bad_record_mac警告终止连接。<br> 在TLS 1.3中使用的AEAD算法不得产生大于255字节的扩展。如果从对端接收到TLSCiphertext.length大于2^14+256八位数的记录，必须用record_overflow警报终止连接。 这个限制是由最大的TLSInnerPlaintext长度2^14八位数+ContentType的1个八位数+最大的AEAD扩展255八位数得出的。</p> 
+<h3><a id="53__PerRecord_Nonce_1441"></a>5.3. Per-Record Nonce</h3> 
+<pre><code>读取和写入记录会分别维护一个64位的序列号。 读取或写入每条记录后，相应的序列号都会递增1。 序列号在连接开始时和改变密钥时都被设置为0；在特定流量密钥下传输的第一条记录必须使用序列号0。
+</code></pre> 
+<p>因为序列号的大小是64位，所以不应该wrap。如果TLS实现需要对序列号进行wrap，那么它必须rekey（4.6.3节）或者终止连接。<br> 每一种AEAD算法都会规定每记录nonce的长度范围，从N_MIN字节到N_MAX字节的输入[RFC5116]。对于AEAD算法来说，TLS每记录nonce的长度(iv_length)被设置为8字节和N_MIN中较大的一个(见[RFC5116]第4节)。 如果N_MAX小于8个字节，那么AEAD算法就不能用于TLS。 AEAD结构中的每记录nonce的构成如下：</p> 
+<ol><li>64位记录序列号按网络序编码，并向左加零到iv_length。</li><li>填充的序列号与静态client_write_iv或server_write_iv（取决于角色）进行异或。</li></ol> 
+<p>所得到的结果（长度为iv_length）被用作每记录的nonce。</p> 
+<p>注意：这与TLS 1.2中的结构不同，TLS 1.2指定了一个部分显式的nonce。</p> 
+<h3><a id="54___1451"></a>5.4. 记录填充</h3> 
+<p>所有加密的TLS记录都可以被填充以增加TLSCiphertext的大小。 这允许发送者对观察者隐藏流量的大小。<br> 当生成TLSCiphertext记录时，实现者可以选择填充。 一个未填充的记录只是一个填充长度为零的记录。 填充是加密前附加到 ContentType 字段的零值的字符串。 在加密前，实现者必须将padding八位数设置为全零。<br> 如果发送者愿意，Application Data记录可以包含一个零长度的TLSInnerPlaintext.content。 这允许在敏感活动存在或不存在的情况下生成合理大小的覆盖流量。 不能发送包含零长度TLSInnerPlaintext.content的握手和警报记录；如果收到这样的消息，接收者必须用 unexpected_message警报来终止连接。<br> 发送的填充由记录保护机制自动验证；在成功解密一个TLSCiphertext.encrypted_record后，接收者从末尾向开头扫描该字段，直到找到一个非零八位数。 这个非零八位数就是消息的内容类型。 之所以选择这种填充方案，是因为它允许对任何加密的TLS记录进行任意大小的填充（从零到TLS记录大小限制），而不需要引入新的内容类型。 该设计还强制执行全零的padding八位数，这允许快速检测填充错误。<br> 实现必须将其扫描限制在AEAD解密返回的cleartext上。 如果接收者没有在cleartext中找到非零八位数，则必须用unexpected_message警告来终止连接。<br> 填充的存在不会改变整个记录大小限制：完整编码的TLSInnerPlaintext不得超过2^14+1八位数。 如果最大的片段长度被减小（例如，通过[RFC8449]的record_size_limit扩展），那么减小的限制适用于完整的plaintext，包括内容类型和填充。<br> 选择一个填充策略，建议何时填充，填充多少，是一个复杂的话题，超出了本文的范围。 如果在TLS之上的应用层协议有自己的填充，那么在应用层中对应用数据TLS记录进行填充可能是比较好的。 不过，加密的握手或警报记录的填充仍然必须在TLS层处理。 以后的文档可能会定义padding选择算法，或者通过TLS扩展或其他方式定义一个padding策略请求机制。</p> 
+<h3><a id="55__1459"></a>5.5. 秘钥使用限制</h3> 
+<p>在一组给定的密钥下，可以安全加密的明文数量是有密码学限制的。 [AEAD-LIMITS]提供了对这些限制的分析，其假设是底层基元（AES或ChaCha20）没有弱点。在达到这些限制之前，实现应该按照4.6.3节的描述进行密钥更新。<br> 对于AES-GCM来说，在给定的连接上，最多可加密2<sup>24.5大小的记录（约2400万条），同时保持约2</sup>-57的安全系数，以保证验证加密（AE，Authenticated Encryption）的安全性。 对于ChaCha20/Poly1305，记录序列号将在达到安全限值之前被wrap。</p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/22c3b246cad84465aa852eabd406abd4/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">notepad &#43;&#43; 将制表符（tab）替换为空格</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/672c4ac49c4b904b17d177da28586d73/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">Linux环境下Protobuf完整安装和使用教程</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

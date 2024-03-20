@@ -1,0 +1,415 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>基于已知点云地图的NDT的激光SLAM定位 - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="基于已知点云地图的NDT的激光SLAM定位" />
+<meta property="og:description" content="概述 对于L4级自动驾驶系统而言，定位模块通常会融合GNSS、IMU、轮速计（车辆底盘）、摄像头以及激光雷达odometry多种测量，使用滤波算法（EKF、UKF等）以获得平滑、厘米级别的绝对定位，其中基于高精度点云地图和激光雷达的配准定位（Lidar Odometry）因其精度高、可靠性好，在整个融合定位中通常占很大的权重，是自动驾驶定位系统中相对可靠的“绝对定位”数据来源。
+依据网上已开源的算法框架以及各位大佬们的经验分享，本文demo为ROS系统下，基于建图算法（SC-LEGO-LOAM）&#43;点云匹配算法（NDT）进行定位功能实现。
+点云地图 自动驾驶汽车的激光雷达定位通常依赖于提前离线构建好的高精度点云地图，之所以这么做原因有以下几个方面：
+L4级别以上自动驾驶系统对定位精度和稳定性要求很高，绝对误差需要控制在20cm以内；纯SLAM目前来说无法达到自动驾驶对于定位精度、可靠性的要求，即我们现在的研究很难实现自动驾驶车的在线制图和定位（问题包括闭环优化，全局优化，误差累计修正等等）高精度地图制造商的完整生产流程需要较大的算力和人工，他们能够生产非常理想的点云地图和语义地图，但是需要离线生产（时间和人力）；利用高精度地图可以相对简单地实现激光雷达定位，在融合了IMU和轮速计以后这类定位方法的精度和可靠性基本满足自动驾驶汽车定位的需求。 所以综合以上的客观原因，目前的L4和大部分L3自动驾驶系统定位模块仍然是以事先构建的高精度地图为基础进行的配准定位，这个配准使用的传感器，少数厂商使用的是camera(如mobileeye)，绝大多数厂商目前仍然采用的是激光雷达配准思路。
+点云地图就是激光雷达配准所需事先构建的“用来定位的地图”。
+我们使用了LEGO-LOAM和SC-LEGO-LOAM的算法分别进行了点云地图构建，对于面积较大的点云地图，明显采用Scan Context方法对点云地图进行闭环检测和姿态图优化后闭环效果更好，所以在这里采用SC-LEGO-LOAM构建的点云地图进行下一步的点云匹配定位。
+将建好的地图放入map文件夹下项目中的map_loader节点主要用于载入地图：
+MapLoader::MapLoader(ros::NodeHandle &amp;nh){ std::string pcd_file_path, map_topic; nh.param&lt;std::string&gt;(&#34;pcd_path&#34;, pcd_file_path, &#34;&#34;); nh.param&lt;std::string&gt;(&#34;map_topic&#34;, map_topic, &#34;point_map&#34;); init_tf_params(nh); pc_map_pub_ = nh.advertise&lt;sensor_msgs::PointCloud2&gt;(map_topic, 10, true); file_list_.push_back(pcd_file_path); auto pc_msg = CreatePcd(); auto out_msg = TransformMap(pc_msg); if (out_msg.width != 0) { out_msg.header.frame_id = &#34;map&#34;; pc_map_pub_.publish(out_msg); } } 构造函数中读取pcd文件的路径和map topic，并且初始化map的变换参数（如果不需要对map进行变换，则数值都设置为０）
+void MapLoader::init_tf_params(ros::NodeHandle &amp;nh){ nh.param&lt;float&gt;(&#34;x&#34;, tf_x_, 0.0); nh.param&lt;float&gt;(&#34;y&#34;, tf_y_, 0.0); nh.param&lt;float&gt;(&#34;z&#34;, tf_z_, 0.0); nh.param&lt;float&gt;(&#34;roll&#34;, tf_roll_, 0.0); nh.param&lt;float&gt;(&#34;pitch&#34;, tf_pitch_, 0.0); nh." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/a9d4cc97da26a5e8056c7fbe730080e4/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2021-07-14T15:55:04+08:00" />
+<meta property="article:modified_time" content="2021-07-14T15:55:04+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">基于已知点云地图的NDT的激光SLAM定位</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <h3><a id="_0"></a>概述</h3> 
+<p>对于L4级自动驾驶系统而言，定位模块通常会融合GNSS、IMU、轮速计（车辆底盘）、摄像头以及激光雷达odometry多种测量，使用滤波算法（EKF、UKF等）以获得平滑、厘米级别的绝对定位，其中基于高精度点云地图和激光雷达的配准定位（Lidar Odometry）因其精度高、可靠性好，在整个融合定位中通常占很大的权重，是自动驾驶定位系统中相对可靠的“绝对定位”数据来源。</p> 
+<p>依据网上已开源的算法框架以及各位大佬们的经验分享，本文demo为ROS系统下，基于建图算法（SC-LEGO-LOAM）+点云匹配算法（NDT）进行定位功能实现。</p> 
+<h3><a id="_6"></a>点云地图</h3> 
+<p>自动驾驶汽车的激光雷达定位通常依赖于提前离线构建好的高精度点云地图，之所以这么做原因有以下几个方面：</p> 
+<ul><li>L4级别以上自动驾驶系统对定位精度和稳定性要求很高，绝对误差需要控制在20cm以内；</li><li>纯SLAM目前来说无法达到自动驾驶对于定位精度、可靠性的要求，即我们现在的研究很难实现自动驾驶车的在线制图和定位（问题包括闭环优化，全局优化，误差累计修正等等）</li><li>高精度地图制造商的完整生产流程需要较大的算力和人工，他们能够生产非常理想的点云地图和语义地图，但是需要离线生产（时间和人力）；</li><li>利用高精度地图可以相对简单地实现激光雷达定位，在融合了IMU和轮速计以后这类定位方法的精度和可靠性基本满足自动驾驶汽车定位的需求。</li></ul> 
+<p>所以综合以上的客观原因，目前的L4和大部分L3自动驾驶系统定位模块仍然是以事先构建的高精度地图为基础进行的配准定位，这个配准使用的传感器，少数厂商使用的是camera(如mobileeye)，绝大多数厂商目前仍然采用的是激光雷达配准思路。</p> 
+<p>点云地图就是激光雷达配准所需事先构建的“用来定位的地图”。</p> 
+<p>我们使用了LEGO-LOAM和SC-LEGO-LOAM的算法分别进行了点云地图构建，对于面积较大的点云地图，明显采用Scan Context方法对点云地图进行闭环检测和姿态图优化后闭环效果更好，所以在这里采用SC-LEGO-LOAM构建的点云地图进行下一步的点云匹配定位。</p> 
+<p>将建好的地图放入map文件夹下项目中的map_loader节点主要用于载入地图：</p> 
+<pre><code class="prism language-cpp"><span class="token class-name">MapLoader</span><span class="token operator">::</span><span class="token function">MapLoader</span><span class="token punctuation">(</span>ros<span class="token operator">::</span>NodeHandle <span class="token operator">&amp;</span>nh<span class="token punctuation">)</span><span class="token punctuation">{<!-- --></span>
+    std<span class="token operator">::</span>string pcd_file_path<span class="token punctuation">,</span> map_topic<span class="token punctuation">;</span>
+    nh<span class="token punctuation">.</span>param<span class="token operator">&lt;</span>std<span class="token operator">::</span>string<span class="token operator">&gt;</span><span class="token punctuation">(</span><span class="token string">"pcd_path"</span><span class="token punctuation">,</span> pcd_file_path<span class="token punctuation">,</span> <span class="token string">""</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    nh<span class="token punctuation">.</span>param<span class="token operator">&lt;</span>std<span class="token operator">::</span>string<span class="token operator">&gt;</span><span class="token punctuation">(</span><span class="token string">"map_topic"</span><span class="token punctuation">,</span> map_topic<span class="token punctuation">,</span> <span class="token string">"point_map"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token function">init_tf_params</span><span class="token punctuation">(</span>nh<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    pc_map_pub_ <span class="token operator">=</span> nh<span class="token punctuation">.</span>advertise<span class="token operator">&lt;</span>sensor_msgs<span class="token operator">::</span>PointCloud2<span class="token operator">&gt;</span><span class="token punctuation">(</span>map_topic<span class="token punctuation">,</span> <span class="token number">10</span><span class="token punctuation">,</span> <span class="token boolean">true</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    file_list_<span class="token punctuation">.</span><span class="token function">push_back</span><span class="token punctuation">(</span>pcd_file_path<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token keyword">auto</span> pc_msg <span class="token operator">=</span> <span class="token function">CreatePcd</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    
+    <span class="token keyword">auto</span> out_msg <span class="token operator">=</span> <span class="token function">TransformMap</span><span class="token punctuation">(</span>pc_msg<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>out_msg<span class="token punctuation">.</span>width <span class="token operator">!=</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+		out_msg<span class="token punctuation">.</span>header<span class="token punctuation">.</span>frame_id <span class="token operator">=</span> <span class="token string">"map"</span><span class="token punctuation">;</span>
+		pc_map_pub_<span class="token punctuation">.</span><span class="token function">publish</span><span class="token punctuation">(</span>out_msg<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>构造函数中读取pcd文件的路径和map topic，并且初始化map的变换参数（如果不需要对map进行变换，则数值都设置为０）</p> 
+<pre><code class="prism language-cpp"><span class="token keyword">void</span> <span class="token class-name">MapLoader</span><span class="token operator">::</span><span class="token function">init_tf_params</span><span class="token punctuation">(</span>ros<span class="token operator">::</span>NodeHandle <span class="token operator">&amp;</span>nh<span class="token punctuation">)</span><span class="token punctuation">{<!-- --></span>
+    nh<span class="token punctuation">.</span>param<span class="token operator">&lt;</span><span class="token keyword">float</span><span class="token operator">&gt;</span><span class="token punctuation">(</span><span class="token string">"x"</span><span class="token punctuation">,</span> tf_x_<span class="token punctuation">,</span> <span class="token number">0.0</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    nh<span class="token punctuation">.</span>param<span class="token operator">&lt;</span><span class="token keyword">float</span><span class="token operator">&gt;</span><span class="token punctuation">(</span><span class="token string">"y"</span><span class="token punctuation">,</span> tf_y_<span class="token punctuation">,</span> <span class="token number">0.0</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    nh<span class="token punctuation">.</span>param<span class="token operator">&lt;</span><span class="token keyword">float</span><span class="token operator">&gt;</span><span class="token punctuation">(</span><span class="token string">"z"</span><span class="token punctuation">,</span> tf_z_<span class="token punctuation">,</span> <span class="token number">0.0</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    nh<span class="token punctuation">.</span>param<span class="token operator">&lt;</span><span class="token keyword">float</span><span class="token operator">&gt;</span><span class="token punctuation">(</span><span class="token string">"roll"</span><span class="token punctuation">,</span> tf_roll_<span class="token punctuation">,</span> <span class="token number">0.0</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    nh<span class="token punctuation">.</span>param<span class="token operator">&lt;</span><span class="token keyword">float</span><span class="token operator">&gt;</span><span class="token punctuation">(</span><span class="token string">"pitch"</span><span class="token punctuation">,</span> tf_pitch_<span class="token punctuation">,</span> <span class="token number">0.0</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    nh<span class="token punctuation">.</span>param<span class="token operator">&lt;</span><span class="token keyword">float</span><span class="token operator">&gt;</span><span class="token punctuation">(</span><span class="token string">"yaw"</span><span class="token punctuation">,</span> tf_yaw_<span class="token punctuation">,</span> <span class="token number">0.0</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token function">ROS_INFO_STREAM</span><span class="token punctuation">(</span><span class="token string">"x"</span> <span class="token operator">&lt;&lt;</span> tf_x_ <span class="token operator">&lt;&lt;</span><span class="token string">"y: "</span><span class="token operator">&lt;&lt;</span>tf_y_<span class="token operator">&lt;&lt;</span><span class="token string">"z: "</span><span class="token operator">&lt;&lt;</span>tf_z_<span class="token operator">&lt;&lt;</span><span class="token string">"roll: "</span>
+                        <span class="token operator">&lt;&lt;</span>tf_roll_<span class="token operator">&lt;&lt;</span><span class="token string">" pitch: "</span><span class="token operator">&lt;&lt;</span> tf_pitch_<span class="token operator">&lt;&lt;</span><span class="token string">"yaw: "</span><span class="token operator">&lt;&lt;</span>tf_yaw_<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>函数CreatePcd()用于加载pcd，TransformMap()用于平移和旋转地图，我们使用Eigen和pcl::transformPointCloud()实现点云的变换：</p> 
+<pre><code class="prism language-cpp">sensor_msgs<span class="token operator">::</span>PointCloud2 <span class="token class-name">MapLoader</span><span class="token operator">::</span><span class="token function">TransformMap</span><span class="token punctuation">(</span>sensor_msgs<span class="token operator">::</span>PointCloud2 <span class="token operator">&amp;</span> in<span class="token punctuation">)</span><span class="token punctuation">{<!-- --></span>
+    pcl<span class="token operator">::</span>PointCloud<span class="token operator">&lt;</span>pcl<span class="token operator">::</span>PointXYZ<span class="token operator">&gt;</span><span class="token operator">::</span>Ptr <span class="token function">in_pc</span><span class="token punctuation">(</span><span class="token keyword">new</span> pcl<span class="token operator">::</span>PointCloud<span class="token operator">&lt;</span>pcl<span class="token operator">::</span>PointXYZ<span class="token operator">&gt;</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    pcl<span class="token operator">::</span><span class="token function">fromROSMsg</span><span class="token punctuation">(</span>in<span class="token punctuation">,</span> <span class="token operator">*</span>in_pc<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    pcl<span class="token operator">::</span>PointCloud<span class="token operator">&lt;</span>pcl<span class="token operator">::</span>PointXYZ<span class="token operator">&gt;</span><span class="token operator">::</span>Ptr <span class="token function">transformed_pc_ptr</span><span class="token punctuation">(</span><span class="token keyword">new</span> pcl<span class="token operator">::</span>PointCloud<span class="token operator">&lt;</span>pcl<span class="token operator">::</span>PointXYZ<span class="token operator">&gt;</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    Eigen<span class="token operator">::</span>Translation3f <span class="token function">tl_m2w</span><span class="token punctuation">(</span>tf_x_<span class="token punctuation">,</span> tf_y_<span class="token punctuation">,</span> tf_z_<span class="token punctuation">)</span><span class="token punctuation">;</span>                 <span class="token comment">// tl: translation</span>
+    Eigen<span class="token operator">::</span>AngleAxisf <span class="token function">rot_x_m2w</span><span class="token punctuation">(</span>tf_roll_<span class="token punctuation">,</span> Eigen<span class="token operator">::</span><span class="token class-name">Vector3f</span><span class="token operator">::</span><span class="token function">UnitX</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>  <span class="token comment">// rot: rotation</span>
+    Eigen<span class="token operator">::</span>AngleAxisf <span class="token function">rot_y_m2w</span><span class="token punctuation">(</span>tf_pitch_<span class="token punctuation">,</span> Eigen<span class="token operator">::</span><span class="token class-name">Vector3f</span><span class="token operator">::</span><span class="token function">UnitY</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    Eigen<span class="token operator">::</span>AngleAxisf <span class="token function">rot_z_m2w</span><span class="token punctuation">(</span>tf_yaw_<span class="token punctuation">,</span> Eigen<span class="token operator">::</span><span class="token class-name">Vector3f</span><span class="token operator">::</span><span class="token function">UnitZ</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    Eigen<span class="token operator">::</span>Matrix4f tf_m2w <span class="token operator">=</span> <span class="token punctuation">(</span>tl_m2w <span class="token operator">*</span> rot_z_m2w <span class="token operator">*</span> rot_y_m2w <span class="token operator">*</span> rot_x_m2w<span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">matrix</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    pcl<span class="token operator">::</span><span class="token function">transformPointCloud</span><span class="token punctuation">(</span><span class="token operator">*</span>in_pc<span class="token punctuation">,</span> <span class="token operator">*</span>transformed_pc_ptr<span class="token punctuation">,</span> tf_m2w<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token function">SaveMap</span><span class="token punctuation">(</span>transformed_pc_ptr<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    
+    sensor_msgs<span class="token operator">::</span>PointCloud2 output_msg<span class="token punctuation">;</span>
+    pcl<span class="token operator">::</span><span class="token function">toROSMsg</span><span class="token punctuation">(</span><span class="token operator">*</span>transformed_pc_ptr<span class="token punctuation">,</span> output_msg<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">return</span> output_msg<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<h3><a id="_84"></a>输入点云降采样</h3> 
+<p>NDT算法优化的目标函数主要是输入点云和目标点云概率分布的相似性，这种配准算法的计算复杂度和两个要素正相关：</p> 
+<ul><li>输入点云的点的密度</li><li>初始姿态估计的偏差</li></ul> 
+<p>输入点云点越密集，NDT配准所需的计算复杂度就越大；<br> 初始姿态估计越差（越偏离真实的姿态），相应的计算复杂度也越大，初始姿态过差的话NDT甚至无法收敛。<br> 自动驾驶激光雷达定位对实时性有较高的要求，点云配准所用的时间显然越少越好，所以我们可以通过降采样输入点云以提高NDT配准的速度，本文中我们采用VoxelGrid降采样方法降低输入点云的密度，代码在项目的 voxel_grid_filter.cpp中，主要代码如下：</p> 
+<pre><code class="prism language-cpp"><span class="token keyword">static</span> <span class="token keyword">void</span> <span class="token function">scan_callback</span><span class="token punctuation">(</span><span class="token keyword">const</span> sensor_msgs<span class="token operator">::</span>PointCloud2<span class="token operator">::</span>ConstPtr<span class="token operator">&amp;</span> input<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+  pcl<span class="token operator">::</span>PointCloud<span class="token operator">&lt;</span>pcl<span class="token operator">::</span>PointXYZ<span class="token operator">&gt;</span> scan<span class="token punctuation">;</span>
+  pcl<span class="token operator">::</span><span class="token function">fromROSMsg</span><span class="token punctuation">(</span><span class="token operator">*</span>input<span class="token punctuation">,</span> scan<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+  <span class="token keyword">if</span><span class="token punctuation">(</span>measurement_range <span class="token operator">!=</span> MAX_MEASUREMENT_RANGE<span class="token punctuation">)</span><span class="token punctuation">{<!-- --></span>
+    scan <span class="token operator">=</span> <span class="token function">removePointsByRange</span><span class="token punctuation">(</span>scan<span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">,</span> measurement_range<span class="token punctuation">)</span><span class="token punctuation">;</span>
+  <span class="token punctuation">}</span>
+
+  pcl<span class="token operator">::</span>PointCloud<span class="token operator">&lt;</span>pcl<span class="token operator">::</span>PointXYZ<span class="token operator">&gt;</span><span class="token operator">::</span>Ptr <span class="token function">scan_ptr</span><span class="token punctuation">(</span><span class="token keyword">new</span> pcl<span class="token operator">::</span>PointCloud<span class="token operator">&lt;</span>pcl<span class="token operator">::</span>PointXYZ<span class="token operator">&gt;</span><span class="token punctuation">(</span>scan<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+  pcl<span class="token operator">::</span>PointCloud<span class="token operator">&lt;</span>pcl<span class="token operator">::</span>PointXYZ<span class="token operator">&gt;</span><span class="token operator">::</span>Ptr <span class="token function">filtered_scan_ptr</span><span class="token punctuation">(</span><span class="token keyword">new</span> pcl<span class="token operator">::</span>PointCloud<span class="token operator">&lt;</span>pcl<span class="token operator">::</span>PointXYZ<span class="token operator">&gt;</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+  sensor_msgs<span class="token operator">::</span>PointCloud2 filtered_msg<span class="token punctuation">;</span>
+
+  <span class="token comment">// if voxel_leaf_size &lt; 0.1 voxel_grid_filter cannot down sample (It is specification in PCL)</span>
+  <span class="token keyword">if</span> <span class="token punctuation">(</span>voxel_leaf_size <span class="token operator">&gt;=</span> <span class="token number">0.1</span><span class="token punctuation">)</span>
+  <span class="token punctuation">{<!-- --></span>
+    <span class="token comment">// Downsampling the velodyne scan using VoxelGrid filter</span>
+    pcl<span class="token operator">::</span>VoxelGrid<span class="token operator">&lt;</span>pcl<span class="token operator">::</span>PointXYZ<span class="token operator">&gt;</span> voxel_grid_filter<span class="token punctuation">;</span>
+    voxel_grid_filter<span class="token punctuation">.</span><span class="token function">setLeafSize</span><span class="token punctuation">(</span>voxel_leaf_size<span class="token punctuation">,</span> voxel_leaf_size<span class="token punctuation">,</span> voxel_leaf_size<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    voxel_grid_filter<span class="token punctuation">.</span><span class="token function">setInputCloud</span><span class="token punctuation">(</span>scan_ptr<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    voxel_grid_filter<span class="token punctuation">.</span><span class="token function">filter</span><span class="token punctuation">(</span><span class="token operator">*</span>filtered_scan_ptr<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    pcl<span class="token operator">::</span><span class="token function">toROSMsg</span><span class="token punctuation">(</span><span class="token operator">*</span>filtered_scan_ptr<span class="token punctuation">,</span> filtered_msg<span class="token punctuation">)</span><span class="token punctuation">;</span>
+  <span class="token punctuation">}</span>
+  <span class="token keyword">else</span>
+  <span class="token punctuation">{<!-- --></span>
+    pcl<span class="token operator">::</span><span class="token function">toROSMsg</span><span class="token punctuation">(</span><span class="token operator">*</span>scan_ptr<span class="token punctuation">,</span> filtered_msg<span class="token punctuation">)</span><span class="token punctuation">;</span>
+  <span class="token punctuation">}</span>
+
+  filtered_msg<span class="token punctuation">.</span>header <span class="token operator">=</span> input<span class="token operator">-&gt;</span>header<span class="token punctuation">;</span>
+  std<span class="token operator">::</span>cout <span class="token operator">&lt;&lt;</span><span class="token string">"frame.id"</span><span class="token operator">&lt;&lt;</span>filtered_msg<span class="token punctuation">.</span>header<span class="token punctuation">.</span>frame_id <span class="token operator">&lt;&lt;</span> std<span class="token operator">::</span>endl <span class="token punctuation">;</span>
+  filtered_points_pub<span class="token punctuation">.</span><span class="token function">publish</span><span class="token punctuation">(</span>filtered_msg<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>在得到点云以后，首先对点云进行截取，我们只保留 MAX_MEASUREMENT_RANGE 距离以内的点用于定位（本文中MAX_MEASUREMENT_RANGE = 120 米），VoxelGrid降采样的主要参数就是voxel_leaf_size，该参数设定了降采样选取的立方体的边长（单位为米），在一个这样的立方体内只保留１个点，可以在 points_downsample.launch文件中配置该参数：</p> 
+<pre><code class="prism language-cpp"><span class="token operator">&lt;</span>arg name<span class="token operator">=</span><span class="token string">"leaf_size"</span> <span class="token keyword">default</span><span class="token operator">=</span><span class="token string">"3.0"</span> <span class="token operator">/</span><span class="token operator">&gt;</span>
+</code></pre> 
+<p>如上所示，本文采用了３米的leaf size，这个参数可以根据你实际使用的激光雷达点的密度决定，虽然我们追求配准的实时性，但同时我们也不希望牺牲太多定位的精度，所以对输入点云降采样的度需要平衡实时性和定位精度，根据经验，如果你猜用的是16线的激光雷达，那么降采样的leaf size控制在１-２m较为合适，当采用的激光雷达为32线及以上,可以将leaf size设置为2-3m。<br> 降采样后的点云将被输出至 <code>/filtered_points</code> 话题，以供后续的NDT配准定位使用。</p> 
+<h3><a id="NDT_139"></a>使用NDT为自动驾驶车提供高精度定位</h3> 
+<p>这部分代码主要实现在<code>ndt.cpp</code>中：</p> 
+<p><strong>初始姿态获取</strong><br> 一切使用预先构建的地图进行配准定位的方法都需要提供初始姿态，在工业界的实践中，这一初始姿态通常是通过gnss获得，本文中我们简化这一步，在Rviz中手动指定初始姿态，Rviz中设定的初始姿态通常会被默认发送至<code>/initialpose topic</code>上，在<code>NdtLocalizer</code>构造函数中，写一个subscriber监听该topic：</p> 
+<pre><code class="prism language-cpp">initial_pose_sub_ <span class="token operator">=</span> nh_<span class="token punctuation">.</span><span class="token function">subscribe</span><span class="token punctuation">(</span><span class="token string">"initialpose"</span><span class="token punctuation">,</span> <span class="token number">100</span><span class="token punctuation">,</span> <span class="token operator">&amp;</span>NdtLocalizer<span class="token operator">::</span>callback_init_pose<span class="token punctuation">,</span> <span class="token keyword">this</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+</code></pre> 
+<p>当有初始姿态（<code>geometry_msgs::PoseWithCovarianceStamped</code>）传来的时候，执行的是以下回调<code>callback_init_pose</code>：</p> 
+<pre><code class="prism language-cpp"><span class="token keyword">void</span> <span class="token class-name">NdtLocalizer</span><span class="token operator">::</span><span class="token function">callback_init_pose</span><span class="token punctuation">(</span>
+  <span class="token keyword">const</span> geometry_msgs<span class="token operator">::</span>PoseWithCovarianceStamped<span class="token operator">::</span>ConstPtr <span class="token operator">&amp;</span> initial_pose_msg_ptr<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+  <span class="token keyword">if</span> <span class="token punctuation">(</span>initial_pose_msg_ptr<span class="token operator">-&gt;</span>header<span class="token punctuation">.</span>frame_id <span class="token operator">==</span> map_frame_<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    initial_pose_cov_msg_ <span class="token operator">=</span> <span class="token operator">*</span>initial_pose_msg_ptr<span class="token punctuation">;</span>
+  <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token comment">// get TF from pose_frame to map_frame</span>
+    geometry_msgs<span class="token operator">::</span>TransformStamped<span class="token operator">::</span>Ptr <span class="token function">TF_pose_to_map_ptr</span><span class="token punctuation">(</span><span class="token keyword">new</span> geometry_msgs<span class="token operator">::</span>TransformStamped<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token function">get_transform</span><span class="token punctuation">(</span>map_frame_<span class="token punctuation">,</span> initial_pose_msg_ptr<span class="token operator">-&gt;</span>header<span class="token punctuation">.</span>frame_id<span class="token punctuation">,</span> TF_pose_to_map_ptr<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token comment">// transform pose_frame to map_frame</span>
+    geometry_msgs<span class="token operator">::</span>PoseWithCovarianceStamped<span class="token operator">::</span>Ptr <span class="token function">mapTF_initial_pose_msg_ptr</span><span class="token punctuation">(</span>
+      <span class="token keyword">new</span> geometry_msgs<span class="token operator">::</span>PoseWithCovarianceStamped<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    tf2<span class="token operator">::</span><span class="token function">doTransform</span><span class="token punctuation">(</span><span class="token operator">*</span>initial_pose_msg_ptr<span class="token punctuation">,</span> <span class="token operator">*</span>mapTF_initial_pose_msg_ptr<span class="token punctuation">,</span> <span class="token operator">*</span>TF_pose_to_map_ptr<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token comment">// mapTF_initial_pose_msg_ptr-&gt;header.stamp = initial_pose_msg_ptr-&gt;header.stamp;</span>
+    initial_pose_cov_msg_ <span class="token operator">=</span> <span class="token operator">*</span>mapTF_initial_pose_msg_ptr<span class="token punctuation">;</span>
+  <span class="token punctuation">}</span>
+  <span class="token comment">// if click the initpose again, re init！</span>
+  init_pose <span class="token operator">=</span> <span class="token boolean">false</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>在NDT配准中，我们主要关注四个坐标系间的变化，分别是：</p> 
+<ul><li>世界坐标系（frame_id = world）</li><li>地图坐标系（frame_id = map）</li><li>车辆基础坐标系（frame_id = base_link）</li><li>激光雷达坐标系（本文中frame_id = ouster，根据你使用的激光雷达不同，frame id也会不一样）</li></ul> 
+<p>在本项目中，我们使用<code>static_tf.launch</code>发布world 到 map以及ouster到base_link这两个固定变换：</p> 
+<pre><code class="prism language-cpp"><span class="token operator">&lt;</span>node pkg<span class="token operator">=</span><span class="token string">"tf2_ros"</span> type<span class="token operator">=</span><span class="token string">"static_transform_publisher"</span> name<span class="token operator">=</span><span class="token string">"localizer_to_base_link"</span> args<span class="token operator">=</span><span class="token string">"0 0 1.753999 0.03 0.01 0.01 base_link rslidar"</span><span class="token operator">/</span><span class="token operator">&gt;</span>
+<span class="token operator">&lt;</span>node pkg<span class="token operator">=</span><span class="token string">"tf2_ros"</span> type<span class="token operator">=</span><span class="token string">"static_transform_publisher"</span> name<span class="token operator">=</span><span class="token string">"world_to_map"</span> args<span class="token operator">=</span><span class="token string">"0 0 0 0 0 0 map world"</span> <span class="token operator">/</span><span class="token operator">&gt;</span>
+</code></pre> 
+<p>注：在这里我们假定map和world为同一坐标系以简化问题，在具体的自动驾驶系统研发中，你需要根据WGS84坐标系下的经纬度配合通用横轴墨卡托投影（Universal Transverse Mercator，UTM）以获得当前Map到世界坐标系的平移关系以及东北天（East North Up, ENU）坐标系下的旋转量。<br> <code>localizer_to_base_link</code>即激光雷达到base link的变换关系，是激光雷达的外参之一，也是一个静态变换。</p> 
+<p>回到初始姿态获取，得到Rviz上手动指定的初始姿态后，首先对坐标系进行统一，如果该pose是在地图坐标系，那么保存用于后续使用，如果是其他坐标系，则先将该pose转换至地图坐标系，通过函数 <code>get_transform</code> 获取变换关系，该函数定义如下：</p> 
+<pre><code class="prism language-cpp"><span class="token keyword">bool</span> <span class="token class-name">NdtLocalizer</span><span class="token operator">::</span><span class="token function">get_transform</span><span class="token punctuation">(</span>
+  <span class="token keyword">const</span> std<span class="token operator">::</span>string <span class="token operator">&amp;</span> target_frame<span class="token punctuation">,</span> <span class="token keyword">const</span> std<span class="token operator">::</span>string <span class="token operator">&amp;</span> source_frame<span class="token punctuation">,</span>
+  <span class="token keyword">const</span> geometry_msgs<span class="token operator">::</span>TransformStamped<span class="token operator">::</span>Ptr <span class="token operator">&amp;</span> transform_stamped_ptr<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+  <span class="token keyword">if</span> <span class="token punctuation">(</span>target_frame <span class="token operator">==</span> source_frame<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    transform_stamped_ptr<span class="token operator">-&gt;</span>header<span class="token punctuation">.</span>stamp <span class="token operator">=</span> ros<span class="token operator">::</span><span class="token class-name">Time</span><span class="token operator">::</span><span class="token function">now</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    transform_stamped_ptr<span class="token operator">-&gt;</span>header<span class="token punctuation">.</span>frame_id <span class="token operator">=</span> target_frame<span class="token punctuation">;</span>
+    transform_stamped_ptr<span class="token operator">-&gt;</span>child_frame_id <span class="token operator">=</span> source_frame<span class="token punctuation">;</span>
+    transform_stamped_ptr<span class="token operator">-&gt;</span>transform<span class="token punctuation">.</span>translation<span class="token punctuation">.</span>x <span class="token operator">=</span> <span class="token number">0.0</span><span class="token punctuation">;</span>
+    transform_stamped_ptr<span class="token operator">-&gt;</span>transform<span class="token punctuation">.</span>translation<span class="token punctuation">.</span>y <span class="token operator">=</span> <span class="token number">0.0</span><span class="token punctuation">;</span>
+    transform_stamped_ptr<span class="token operator">-&gt;</span>transform<span class="token punctuation">.</span>translation<span class="token punctuation">.</span>z <span class="token operator">=</span> <span class="token number">0.0</span><span class="token punctuation">;</span>
+    transform_stamped_ptr<span class="token operator">-&gt;</span>transform<span class="token punctuation">.</span>rotation<span class="token punctuation">.</span>x <span class="token operator">=</span> <span class="token number">0.0</span><span class="token punctuation">;</span>
+    transform_stamped_ptr<span class="token operator">-&gt;</span>transform<span class="token punctuation">.</span>rotation<span class="token punctuation">.</span>y <span class="token operator">=</span> <span class="token number">0.0</span><span class="token punctuation">;</span>
+    transform_stamped_ptr<span class="token operator">-&gt;</span>transform<span class="token punctuation">.</span>rotation<span class="token punctuation">.</span>z <span class="token operator">=</span> <span class="token number">0.0</span><span class="token punctuation">;</span>
+    transform_stamped_ptr<span class="token operator">-&gt;</span>transform<span class="token punctuation">.</span>rotation<span class="token punctuation">.</span>w <span class="token operator">=</span> <span class="token number">1.0</span><span class="token punctuation">;</span>
+    <span class="token keyword">return</span> <span class="token boolean">true</span><span class="token punctuation">;</span>
+  <span class="token punctuation">}</span>
+
+  <span class="token keyword">try</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token operator">*</span>transform_stamped_ptr <span class="token operator">=</span>
+      tf2_buffer_<span class="token punctuation">.</span><span class="token function">lookupTransform</span><span class="token punctuation">(</span>target_frame<span class="token punctuation">,</span> source_frame<span class="token punctuation">,</span> ros<span class="token operator">::</span><span class="token function">Time</span><span class="token punctuation">(</span><span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">,</span> ros<span class="token operator">::</span><span class="token function">Duration</span><span class="token punctuation">(</span><span class="token number">1.0</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+  <span class="token punctuation">}</span> <span class="token keyword">catch</span> <span class="token punctuation">(</span>tf2<span class="token operator">::</span>TransformException <span class="token operator">&amp;</span> ex<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token function">ROS_WARN</span><span class="token punctuation">(</span><span class="token string">"%s"</span><span class="token punctuation">,</span> ex<span class="token punctuation">.</span><span class="token function">what</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token function">ROS_ERROR</span><span class="token punctuation">(</span><span class="token string">"Please publish TF %s to %s"</span><span class="token punctuation">,</span> target_frame<span class="token punctuation">.</span><span class="token function">c_str</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span> source_frame<span class="token punctuation">.</span><span class="token function">c_str</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    transform_stamped_ptr<span class="token operator">-&gt;</span>header<span class="token punctuation">.</span>stamp <span class="token operator">=</span> ros<span class="token operator">::</span><span class="token class-name">Time</span><span class="token operator">::</span><span class="token function">now</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    transform_stamped_ptr<span class="token operator">-&gt;</span>header<span class="token punctuation">.</span>frame_id <span class="token operator">=</span> target_frame<span class="token punctuation">;</span>
+    transform_stamped_ptr<span class="token operator">-&gt;</span>child_frame_id <span class="token operator">=</span> source_frame<span class="token punctuation">;</span>
+    transform_stamped_ptr<span class="token operator">-&gt;</span>transform<span class="token punctuation">.</span>translation<span class="token punctuation">.</span>x <span class="token operator">=</span> <span class="token number">0.0</span><span class="token punctuation">;</span>
+    transform_stamped_ptr<span class="token operator">-&gt;</span>transform<span class="token punctuation">.</span>translation<span class="token punctuation">.</span>y <span class="token operator">=</span> <span class="token number">0.0</span><span class="token punctuation">;</span>
+    transform_stamped_ptr<span class="token operator">-&gt;</span>transform<span class="token punctuation">.</span>translation<span class="token punctuation">.</span>z <span class="token operator">=</span> <span class="token number">0.0</span><span class="token punctuation">;</span>
+    transform_stamped_ptr<span class="token operator">-&gt;</span>transform<span class="token punctuation">.</span>rotation<span class="token punctuation">.</span>x <span class="token operator">=</span> <span class="token number">0.0</span><span class="token punctuation">;</span>
+    transform_stamped_ptr<span class="token operator">-&gt;</span>transform<span class="token punctuation">.</span>rotation<span class="token punctuation">.</span>y <span class="token operator">=</span> <span class="token number">0.0</span><span class="token punctuation">;</span>
+    transform_stamped_ptr<span class="token operator">-&gt;</span>transform<span class="token punctuation">.</span>rotation<span class="token punctuation">.</span>z <span class="token operator">=</span> <span class="token number">0.0</span><span class="token punctuation">;</span>
+    transform_stamped_ptr<span class="token operator">-&gt;</span>transform<span class="token punctuation">.</span>rotation<span class="token punctuation">.</span>w <span class="token operator">=</span> <span class="token number">1.0</span><span class="token punctuation">;</span>
+    <span class="token keyword">return</span> <span class="token boolean">false</span><span class="token punctuation">;</span>
+  <span class="token punctuation">}</span>
+  <span class="token keyword">return</span> <span class="token boolean">true</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>在获得到map的tf以后，直接通过tf2::doTransform将初始姿态转换到地图坐标系下。(这部分demo中待补充）</p> 
+<h3><a id="_232"></a>初始化地图</h3> 
+<p>NDT配准中的目标点云就是我们事先使用SC-LEGO-LOAM构建的点云地图了，编写Subscriber监听mapLoader节点发来的点云地图message，执行如下回调：</p> 
+<pre><code class="prism language-cpp">map_points_sub_ <span class="token operator">=</span> nh_<span class="token punctuation">.</span><span class="token function">subscribe</span><span class="token punctuation">(</span><span class="token string">"points_map"</span><span class="token punctuation">,</span> <span class="token number">1</span><span class="token punctuation">,</span> <span class="token operator">&amp;</span>NdtLocalizer<span class="token operator">::</span>callback_pointsmap<span class="token punctuation">,</span> <span class="token keyword">this</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+</code></pre> 
+<pre><code class="prism language-cpp"><span class="token keyword">void</span> <span class="token class-name">NdtLocalizer</span><span class="token operator">::</span><span class="token function">callback_pointsmap</span><span class="token punctuation">(</span>
+  <span class="token keyword">const</span> sensor_msgs<span class="token operator">::</span>PointCloud2<span class="token operator">::</span>ConstPtr <span class="token operator">&amp;</span> map_points_msg_ptr<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+  <span class="token keyword">const</span> <span class="token keyword">auto</span> trans_epsilon <span class="token operator">=</span> ndt_<span class="token punctuation">.</span><span class="token function">getTransformationEpsilon</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+  <span class="token keyword">const</span> <span class="token keyword">auto</span> step_size <span class="token operator">=</span> ndt_<span class="token punctuation">.</span><span class="token function">getStepSize</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+  <span class="token keyword">const</span> <span class="token keyword">auto</span> resolution <span class="token operator">=</span> ndt_<span class="token punctuation">.</span><span class="token function">getResolution</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+  <span class="token keyword">const</span> <span class="token keyword">auto</span> max_iterations <span class="token operator">=</span> ndt_<span class="token punctuation">.</span><span class="token function">getMaximumIterations</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+  pcl<span class="token operator">::</span>NormalDistributionsTransform<span class="token operator">&lt;</span>pcl<span class="token operator">::</span>PointXYZ<span class="token punctuation">,</span> pcl<span class="token operator">::</span>PointXYZ<span class="token operator">&gt;</span> ndt_new<span class="token punctuation">;</span>
+
+  ndt_new<span class="token punctuation">.</span><span class="token function">setTransformationEpsilon</span><span class="token punctuation">(</span>trans_epsilon<span class="token punctuation">)</span><span class="token punctuation">;</span>
+  ndt_new<span class="token punctuation">.</span><span class="token function">setStepSize</span><span class="token punctuation">(</span>step_size<span class="token punctuation">)</span><span class="token punctuation">;</span>
+  ndt_new<span class="token punctuation">.</span><span class="token function">setResolution</span><span class="token punctuation">(</span>resolution<span class="token punctuation">)</span><span class="token punctuation">;</span>
+  ndt_new<span class="token punctuation">.</span><span class="token function">setMaximumIterations</span><span class="token punctuation">(</span>max_iterations<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+  pcl<span class="token operator">::</span>PointCloud<span class="token operator">&lt;</span>pcl<span class="token operator">::</span>PointXYZ<span class="token operator">&gt;</span><span class="token operator">::</span>Ptr <span class="token function">map_points_ptr</span><span class="token punctuation">(</span><span class="token keyword">new</span> pcl<span class="token operator">::</span>PointCloud<span class="token operator">&lt;</span>pcl<span class="token operator">::</span>PointXYZ<span class="token operator">&gt;</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+  pcl<span class="token operator">::</span><span class="token function">fromROSMsg</span><span class="token punctuation">(</span><span class="token operator">*</span>map_points_msg_ptr<span class="token punctuation">,</span> <span class="token operator">*</span>map_points_ptr<span class="token punctuation">)</span><span class="token punctuation">;</span>
+  ndt_new<span class="token punctuation">.</span><span class="token function">setInputTarget</span><span class="token punctuation">(</span>map_points_ptr<span class="token punctuation">)</span><span class="token punctuation">;</span>
+  <span class="token comment">// create Thread</span>
+  <span class="token comment">// detach</span>
+  pcl<span class="token operator">::</span>PointCloud<span class="token operator">&lt;</span>pcl<span class="token operator">::</span>PointXYZ<span class="token operator">&gt;</span><span class="token operator">::</span>Ptr <span class="token function">output_cloud</span><span class="token punctuation">(</span><span class="token keyword">new</span> pcl<span class="token operator">::</span>PointCloud<span class="token operator">&lt;</span>pcl<span class="token operator">::</span>PointXYZ<span class="token operator">&gt;</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+  ndt_new<span class="token punctuation">.</span><span class="token function">align</span><span class="token punctuation">(</span><span class="token operator">*</span>output_cloud<span class="token punctuation">,</span> Eigen<span class="token operator">::</span><span class="token class-name">Matrix4f</span><span class="token operator">::</span><span class="token function">Identity</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+  <span class="token comment">// swap</span>
+  ndt_map_mtx_<span class="token punctuation">.</span><span class="token function">lock</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+  ndt_ <span class="token operator">=</span> ndt_new<span class="token punctuation">;</span>
+  ndt_map_mtx_<span class="token punctuation">.</span><span class="token function">unlock</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>其中最关键的一步就是<code>ndt_new.setInputTarget(map_points_ptr)</code>;在获取点云地图以后，设置ndt的目标点云为该点云地图，同时也是这里NDT算法的基本参数：</p> 
+<p>ndt_new.setTransformationEpsilon(trans_epsilon);搜索的最小变化量；<br> ndt_new.setStepSize(step_size);搜索的步长<br> ndt_new.setResolution(resolution);目标点云的ND体素的尺寸，单位为米<br> ndt_new.setMaximumIterations(max_iterations);使用牛顿法优化的迭代次数</p> 
+<h3><a id="NDT_276"></a>NDT配准定位</h3> 
+<p>点云配准定位主要实现于以下回调中：</p> 
+<pre><code class="prism language-cpp"><span class="token keyword">void</span> <span class="token class-name">NdtLocalizer</span><span class="token operator">::</span><span class="token function">callback_pointcloud</span><span class="token punctuation">(</span>
+  <span class="token keyword">const</span> sensor_msgs<span class="token operator">::</span>PointCloud2<span class="token operator">::</span>ConstPtr <span class="token operator">&amp;</span> sensor_points_sensorTF_msg_ptr<span class="token punctuation">)</span>
+</code></pre> 
+<p>该回调监听降采样后的点云，首先解析PointCloud2消息为pcl的PointCloud结构：</p> 
+<pre><code class="prism language-cpp"><span class="token keyword">const</span> std<span class="token operator">::</span>string sensor_frame <span class="token operator">=</span> sensor_points_sensorTF_msg_ptr<span class="token operator">-&gt;</span>header<span class="token punctuation">.</span>frame_id<span class="token punctuation">;</span>
+<span class="token keyword">const</span> <span class="token keyword">auto</span> sensor_ros_time <span class="token operator">=</span> sensor_points_sensorTF_msg_ptr<span class="token operator">-&gt;</span>header<span class="token punctuation">.</span>stamp<span class="token punctuation">;</span>
+
+boost<span class="token operator">::</span>shared_ptr<span class="token operator">&lt;</span>pcl<span class="token operator">::</span>PointCloud<span class="token operator">&lt;</span>pcl<span class="token operator">::</span>PointXYZ<span class="token operator">&gt;&gt;</span> <span class="token function">sensor_points_sensorTF_ptr</span><span class="token punctuation">(</span>
+<span class="token keyword">new</span> pcl<span class="token operator">::</span>PointCloud<span class="token operator">&lt;</span>pcl<span class="token operator">::</span>PointXYZ<span class="token operator">&gt;</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+</code></pre> 
+<p><strong>该点云是在激光雷达坐标系下，所以接着将数据投射到base_link坐标系下</strong>：</p> 
+<pre><code class="prism language-cpp">geometry_msgs<span class="token operator">::</span>TransformStamped<span class="token operator">::</span>Ptr <span class="token function">TF_base_to_sensor_ptr</span><span class="token punctuation">(</span><span class="token keyword">new</span> geometry_msgs<span class="token operator">::</span>TransformStamped<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token function">get_transform</span><span class="token punctuation">(</span>base_frame_<span class="token punctuation">,</span> sensor_frame<span class="token punctuation">,</span> TF_base_to_sensor_ptr<span class="token punctuation">)</span><span class="token punctuation">;</span>
+  <span class="token comment">//const auto exe_start_time = std::chrono::system_clock::now();</span>
+<span class="token keyword">const</span> Eigen<span class="token operator">::</span>Affine3d base_to_sensor_affine <span class="token operator">=</span> tf2<span class="token operator">::</span><span class="token function">transformToEigen</span><span class="token punctuation">(</span><span class="token operator">*</span>TF_base_to_sensor_ptr<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token keyword">const</span> Eigen<span class="token operator">::</span>Matrix4f base_to_sensor_matrix <span class="token operator">=</span> base_to_sensor_affine<span class="token punctuation">.</span><span class="token function">matrix</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span>cast<span class="token operator">&lt;</span><span class="token keyword">float</span><span class="token operator">&gt;</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+boost<span class="token operator">::</span>shared_ptr<span class="token operator">&lt;</span>pcl<span class="token operator">::</span>PointCloud<span class="token operator">&lt;</span>pcl<span class="token operator">::</span>PointXYZ<span class="token operator">&gt;&gt;</span> <span class="token function">sensor_points_baselinkTF_ptr</span><span class="token punctuation">(</span>
+<span class="token keyword">new</span> pcl<span class="token operator">::</span>PointCloud<span class="token operator">&lt;</span>pcl<span class="token operator">::</span>PointXYZ<span class="token operator">&gt;</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+pcl<span class="token operator">::</span><span class="token function">transformPointCloud</span><span class="token punctuation">(</span>
+<span class="token operator">*</span>sensor_points_sensorTF_ptr<span class="token punctuation">,</span> <span class="token operator">*</span>sensor_points_baselinkTF_ptr<span class="token punctuation">,</span> base_to_sensor_matrix<span class="token punctuation">)</span><span class="token punctuation">;</span>
+</code></pre> 
+<p>设置为NDT的输入点云：</p> 
+<pre><code class="prism language-cpp"> ndt_<span class="token punctuation">.</span><span class="token function">setInputSource</span><span class="token punctuation">(</span>sensor_points_baselinkTF_ptr<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+  <span class="token keyword">if</span> <span class="token punctuation">(</span>ndt_<span class="token punctuation">.</span><span class="token function">getInputTarget</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">==</span> <span class="token keyword">nullptr</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token function">ROS_WARN_STREAM_THROTTLE</span><span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">,</span> <span class="token string">"No MAP!"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">return</span><span class="token punctuation">;</span>
+  <span class="token punctuation">}</span>
+</code></pre> 
+<p>最后我们还需要设定这次配准的初始姿态估计，这里需要分为以下两种情况：</p> 
+<pre><code class="prism language-cpp">Eigen<span class="token operator">::</span>Matrix4f initial_pose_matrix<span class="token punctuation">;</span>
+  <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span>init_pose<span class="token punctuation">)</span><span class="token punctuation">{<!-- --></span>
+    Eigen<span class="token operator">::</span>Affine3d initial_pose_affine<span class="token punctuation">;</span>
+    tf2<span class="token operator">::</span><span class="token function">fromMsg</span><span class="token punctuation">(</span>initial_pose_cov_msg_<span class="token punctuation">.</span>pose<span class="token punctuation">.</span>pose<span class="token punctuation">,</span> initial_pose_affine<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    initial_pose_matrix <span class="token operator">=</span> initial_pose_affine<span class="token punctuation">.</span><span class="token function">matrix</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span>cast<span class="token operator">&lt;</span><span class="token keyword">float</span><span class="token operator">&gt;</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token comment">// for the first time, we don't know the pre_trans, so just use the init_trans, </span>
+    <span class="token comment">// which means, the delta trans for the second time is 0</span>
+    pre_trans <span class="token operator">=</span> initial_pose_matrix<span class="token punctuation">;</span>
+    init_pose <span class="token operator">=</span> <span class="token boolean">true</span><span class="token punctuation">;</span>
+  <span class="token punctuation">}</span><span class="token keyword">else</span>
+  <span class="token punctuation">{<!-- --></span>
+    <span class="token comment">// use predicted pose as init guess (currently we only impl linear model)</span>
+    initial_pose_matrix <span class="token operator">=</span> pre_trans <span class="token operator">*</span> delta_trans<span class="token punctuation">;</span>
+  <span class="token punctuation">}</span>
+</code></pre> 
+<p>如果是第一次配准，则使用我们在Rviz中手工指定的初始姿态，否则使用线性模型（匀速匀角速度）预测的初始估计。pcl实现的NDT要求初始姿态估计使用Eigen::Matrix4f表示(也就是标准的齐次变换矩阵)，所以上面的代码中，如果是初次配准，需要将Pose转换为Eigen::Matrix4f，使用<code>tf2::fromMsg()</code>函数完成，对于非初次配准，我们的思路是用上一次NDT的定位结果（变换矩阵<code>pre_trans</code>） + 线性变换量（变换矩阵<code>delta_trans</code>）。在线性代数中，如果用向量<em>AB</em> 描述上一次定位的变换（即上一次定位base_link到地图原点的变换，即<code>pre_trans</code>）， <em>BC</em>表示当前一次定位到上一次定位的变换（即<code>delta_trans</code>）,那么当前的定位<em>AC</em>就可以表示为：<br> <em>AC=AB</em> * <em>BC</em><br> 所以对当前位置的初始姿态估计就可以用 pre_trans * delta_trans表示。</p> 
+<p>接着我们设置该初始估计，并且使用ndt进行配准：</p> 
+<pre><code class="prism language-cpp">ndt_<span class="token punctuation">.</span><span class="token function">align</span><span class="token punctuation">(</span><span class="token operator">*</span>output_cloud<span class="token punctuation">,</span> initial_pose_matrix<span class="token punctuation">)</span><span class="token punctuation">;</span>
+</code></pre> 
+<p>获得了定位的变换矩阵（<strong>base_link 到map的变换</strong>）<code>result_pose_matrix</code></p> 
+<pre><code class="prism language-cpp"><span class="token keyword">const</span> Eigen<span class="token operator">::</span>Matrix4f result_pose_matrix <span class="token operator">=</span> ndt_<span class="token punctuation">.</span><span class="token function">getFinalTransformation</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+</code></pre> 
+<p>将之转换为Pose msg以及TF发布出去，完成本次定位：</p> 
+<pre><code class="prism language-cpp"><span class="token comment">// publish</span>
+  geometry_msgs<span class="token operator">::</span>PoseStamped result_pose_stamped_msg<span class="token punctuation">;</span>
+  result_pose_stamped_msg<span class="token punctuation">.</span>header<span class="token punctuation">.</span>stamp <span class="token operator">=</span> sensor_ros_time<span class="token punctuation">;</span>
+  result_pose_stamped_msg<span class="token punctuation">.</span>header<span class="token punctuation">.</span>frame_id <span class="token operator">=</span> map_frame_<span class="token punctuation">;</span>
+  result_pose_stamped_msg<span class="token punctuation">.</span>pose <span class="token operator">=</span> result_pose_msg<span class="token punctuation">;</span>
+
+  <span class="token keyword">if</span> <span class="token punctuation">(</span>is_converged<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    ndt_pose_pub_<span class="token punctuation">.</span><span class="token function">publish</span><span class="token punctuation">(</span>result_pose_stamped_msg<span class="token punctuation">)</span><span class="token punctuation">;</span>
+  <span class="token punctuation">}</span>
+
+  <span class="token comment">// publish tf(map frame to base frame)</span>
+     <span class="token function">publish_tf</span><span class="token punctuation">(</span>map_frame_<span class="token punctuation">,</span> base_frame_<span class="token punctuation">,</span> result_pose_stamped_msg<span class="token punctuation">)</span><span class="token punctuation">;</span>
+</code></pre> 
+<p>此外，我们还需要计算下一次用于初始姿态估计的delta_trans:</p> 
+<pre><code class="prism language-cpp"><span class="token comment">// calculate the delta tf from pre_trans to current_trans</span>
+  delta_trans <span class="token operator">=</span> pre_trans<span class="token punctuation">.</span><span class="token function">inverse</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">*</span> result_pose_matrix<span class="token punctuation">;</span>
+  
+  pre_trans <span class="token operator">=</span> result_pose_matrix<span class="token punctuation">;</span>
+</code></pre> 
+<p>delta_trans即当前变换和上一次变换的差值（平移量和旋转量的差值）。最后将当前的变换保存为pre_trans供下一次初始姿态估计使用。至此NDT配准的流程结束。</p> 
+<h3><a id="_374"></a>实践</h3> 
+<p>打开终端</p> 
+<pre><code class="prism language-cpp">source devel<span class="token operator">/</span>setup<span class="token punctuation">.</span>bash
+roslaunch ndt_localizer ndt_localizer<span class="token punctuation">.</span>launch
+</code></pre> 
+<p><img src="https://images2.imgbox.com/0a/9e/yFWkjCs2_o.png" alt="在这里插入图片描述"><br> <img src="https://images2.imgbox.com/ba/0d/Zn8gio5J_o.png" alt="在这里插入图片描述"><br> 实时输出匹配时间，基本在8ms左右，满足自动驾驶配准定位实时性的要求,并会实时输出匹配迭代次数、线性变换矩阵.</p> 
+<p><img src="https://images2.imgbox.com/e2/c0/3pIvKSH2_o.png" alt="在这里插入图片描述"></p> 
+<p>通过rostopic echo /ndt_pose，可查看该topic实时输出的定位及角度信息<br> <img src="https://images2.imgbox.com/b7/85/1uMqzpNl_o.png" alt="在这里插入图片描述" width="300" height="400"></p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/df4268e09137c55519205b2bdae8de86/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">复杂网络节点排序方法的评价-SIR传播曲线（Python）</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/ca476c71777c0865fc463f4e792b4e94/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">同时输出多个方法的Top-K节点（Python）</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

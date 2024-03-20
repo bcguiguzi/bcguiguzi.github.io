@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Oracle 数据库内存锁 Latch 解析 - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="Oracle 数据库内存锁 Latch 解析" />
+<meta property="og:description" content="导读
+本文介绍Oracle数据库内存锁Latch的相关概念，帮助你更好的理解Oracle内存锁，方便日后进行问题排查和SQL优化。
+1、什么是 Latch？ latch是一种Oracle低级别的内存保护机制，用于序列化对于非常短时间的内存结构的并发访问。
+latch是一种简单的内存结构。
+latch的大小通常在100-200B左右(取决于Oracle的版本和Oracle运行的平台)。
+latch封装在一个latch 状态对象的结构中（从Oracle 8.0开始）。
+latch可以驻留在固定的SGA(父latch)或共享池。
+latch可以被共享（从Oracle 8.0开始），比如获取cache buffers chains latch用于检查buffer chain 。
+latch是一个lock。
+2、什么是 Latch 争用？ 我想获得一个latch，但是有人已经拿到这个latch了。
+要排查这种latch，需要排查如下信息：
+（1）是谁，为什么要获得一个latch（等待者）
+（2）是谁，为什么拿到了这个latch（阻塞者）
+换句话说，是找出是谁，为什么阻塞我，就像普通的队列锁一样。
+请记住，latch是一种内存锁。
+3、如何排查Latch 争用？ 可以查询如下视图：
+v$session
+v$session_wait
+v$session_name
+v$active_session_history
+PARAMETER1 是latch的地址，地址映射到v l a t c h p a r e n t 和 v latch_parent和v latchp​arent和vlatch_children的ADDR列。
+3.1、查询v$session中的latch地址p1,p2,p3 select event, P1TEXT, P1, P1RAW, P2TEXT, P2, P2RAW, P3TEXT, P3, P3RAW from v$session where event like &#39;%latch%&#39;; 3." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/f7750f93a8b23fdc7997822290e3c873/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2024-03-04T20:16:12+08:00" />
+<meta property="article:modified_time" content="2024-03-04T20:16:12+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Oracle 数据库内存锁 Latch 解析</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-light">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <blockquote> 
+ <p>导读<br> 本文介绍Oracle数据库内存锁Latch的相关概念，帮助你更好的理解Oracle内存锁，方便日后进行问题排查和SQL优化。</p> 
+</blockquote> 
+<h2><a id="1_Latch_3"></a>1、什么是 Latch？</h2> 
+<ul><li> <p>latch是一种Oracle低级别的内存保护机制，用于序列化对于非常短时间的内存结构的并发访问。</p> </li><li> <p>latch是一种简单的内存结构。</p> </li><li> <p>latch的大小通常在100-200B左右(取决于Oracle的版本和Oracle运行的平台)。</p> </li><li> <p>latch封装在一个latch 状态对象的结构中（从Oracle 8.0开始）。</p> </li><li> <p>latch可以驻留在固定的SGA(父latch)或共享池。</p> </li><li> <p>latch可以被共享（从Oracle 8.0开始），比如获取cache buffers chains latch用于检查buffer chain 。</p> </li><li> <p>latch是一个lock。</p> </li></ul> 
+<h2><a id="2_Latch__16"></a>2、什么是 Latch 争用？</h2> 
+<p>我想获得一个latch，但是有人已经拿到这个latch了。</p> 
+<p>要排查这种latch，需要排查如下信息：</p> 
+<p>（1）是谁，为什么要获得一个latch（等待者）</p> 
+<p>（2）是谁，为什么拿到了这个latch（阻塞者）</p> 
+<p>换句话说，是找出是谁，为什么阻塞我，就像普通的队列锁一样。</p> 
+<p>请记住，latch是一种内存锁。</p> 
+<h2><a id="3Latch__32"></a>3、如何排查Latch 争用？</h2> 
+<p>可以查询如下视图：</p> 
+<p>v$session</p> 
+<p>v$session_wait</p> 
+<p>v$session_name</p> 
+<p>v$active_session_history</p> 
+<p>PARAMETER1 是latch的地址，地址映射到v<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         l 
+        
+       
+         a 
+        
+       
+         t 
+        
+       
+         c 
+        
+        
+        
+          h 
+         
+        
+          p 
+         
+        
+       
+         a 
+        
+       
+         r 
+        
+       
+         e 
+        
+       
+         n 
+        
+       
+         t 
+        
+       
+         和 
+        
+       
+         v 
+        
+       
+      
+        latch_parent和v 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.9805em; vertical-align: -0.2861em;"></span><span class="mord mathnormal" style="margin-right: 0.0197em;">l</span><span class="mord mathnormal">a</span><span class="mord mathnormal">t</span><span class="mord mathnormal">c</span><span class="mord"><span class="mord mathnormal">h</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.1514em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight">p</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.2861em;"><span class=""></span></span></span></span></span></span><span class="mord mathnormal">a</span><span class="mord mathnormal">re</span><span class="mord mathnormal">n</span><span class="mord mathnormal">t</span><span class="mord cjk_fallback">和</span><span class="mord mathnormal" style="margin-right: 0.0359em;">v</span></span></span></span></span>latch_children的ADDR列。</p> 
+<h3><a id="31vsessionlatchp1p2p3_45"></a>3.1、查询v$session中的latch地址p1,p2,p3</h3> 
+<pre><code>
+select event,
+       P1TEXT,
+       P1,
+       P1RAW,
+       P2TEXT,
+       P2,
+       P2RAW,
+       P3TEXT,
+       P3,
+       P3RAW
+ from v$session 
+ where event like '%latch%';
+
+
+  
+</code></pre> 
+<h3><a id="32vsession_waitlatchp1p2p3_64"></a>3.2、查询v$session_wait中的latch地址p1,p2,p3</h3> 
+<pre><code>select sid,
+       seq#,
+       event,
+       P1TEXT,
+       P1,
+       P1RAW,
+       P2TEXT,
+       P2,
+       P2RAW,
+       P3TEXT,
+       P3,
+       P3RAW
+  from v$session_wait
+ where event like '%latch%';
+</code></pre> 
+<h3><a id="33vsession_namelatchp1p2p3_83"></a>3.3、查询v$session_name中的latch地址p1,p2,p3的定义</h3> 
+<pre><code> select event#,
+        event_id,
+        name,
+        parameter1,
+        parameter2,
+        parameter3,
+        wait_class_id,
+        wait_class#,
+        wait_class
+   from v$event_name
+  where name like '%latch%';
+</code></pre> 
+<h3><a id="34vactive_session_historylatchp1p2p3_101"></a>3.4、查询v$active_session_history中的latch地址p1,p2,p3</h3> 
+<pre><code>select event, event_id, event#, seq#, p1text, p1, p2text, p2, p3text, p3
+   from v$active_session_history
+  where event like '%latch%';
+</code></pre> 
+<h2><a id="4Latch_110"></a>4、确认Latch的持有者</h2> 
+<p>查询视图v$latchholder</p> 
+<pre><code>select * from v$latchholder;
+       PID        SID LADDR            NAME                                                                   GETS
+---------- ---------- ---------------- ---------------------------------------------------------------- ----------
+       192       1919 07000013E5709FB0 simulator lru latch                                              1003192492
+       678       2871 0700001322A502E0 cache buffers chains                                                4174963
+       801       2881 070000135FDA05D8 gcs resource hash                                                 155350695
+       818       2774 07000013A56D3D90 gc element                                                       1710224681
+</code></pre> 
+<p>这里将显示进程状态对象的top latch持有者，查看latch 持有者的会话ID，即SID。</p> 
+<p>进程状态对象持有的任何latch都显示在那里。</p> 
+<p>在99.99%的情况下，足以用于实际故障排除。</p> 
+<p>v$latchholder不报告持有的其他latch(当持有top latch时)。</p> 
+<p>在0.01%的情况下，可以使用旧的latch争用故障排除方法。另外，也可以通过直接的SGA附加来遍历状态对象树</p> 
+<h2><a id="5Latch_136"></a>5、Latch争用排除方法</h2> 
+<ul><li>确定遇到问题的会话，请记住，通过数据库会话，数据库没有问题，只有用户有问题</li><li>量化该会话等待最多的latch，等待时间是否足够重要。</li><li>确定争用中涉及的子latch，争论是集中在一个特定的子latch上，还是蔓延到许多子latch上?</li><li>确定latch在内核代码中的位置(为什么)。查看视图V<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          L 
+         
+        
+          A 
+         
+        
+          T 
+         
+        
+          C 
+         
+        
+          H 
+         
+        
+          H 
+         
+        
+          O 
+         
+        
+          L 
+         
+        
+          D 
+         
+        
+          E 
+         
+        
+          R 
+         
+        
+          ， 
+         
+        
+          X 
+         
+        
+       
+         LATCHHOLDER ，X 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord mathnormal">L</span><span class="mord mathnormal">A</span><span class="mord mathnormal" style="margin-right: 0.0715em;">TC</span><span class="mord mathnormal" style="margin-right: 0.0813em;">HH</span><span class="mord mathnormal" style="margin-right: 0.0278em;">O</span><span class="mord mathnormal">L</span><span class="mord mathnormal" style="margin-right: 0.0278em;">D</span><span class="mord mathnormal" style="margin-right: 0.0077em;">ER</span><span class="mord cjk_fallback">，</span><span class="mord mathnormal" style="margin-right: 0.0785em;">X</span></span></span></span></span>KSUPRLAT ，X$KSUPR</li></ul>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/166f11024e4eedad7b9eb005d70de613/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">python网络爬虫教程笔记(1)</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/72d60c3e6ce697e95d520881c9e81fe8/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">[伴学笔记] 王道操作系统系列第一章1.1操作系统的基本概述</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

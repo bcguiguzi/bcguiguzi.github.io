@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>【MySQL】深入浅出主从复制数据同步原理 - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="【MySQL】深入浅出主从复制数据同步原理" />
+<meta property="og:description" content="【MySQL】深入浅出主从复制数据同步原理 参考资料：
+全解MySQL之主从篇：死磕主从复制中数据同步原理与优化
+MySQL 日志：undo log、redo log、binlog 有什么用？
+文章目录 【MySQL】深入浅出主从复制数据同步原理一、主从复制架构概述二、MySQL中的主从复制技术MySQL数据同步的原理从节点拉取的数据到底是什么格式？ 三、基于主从模型的不同架构一主一从/多从架构双主/多主架构多主一从架构主从架构小结 四、主从数据一致性的解决方案改变业务逻辑更改复制方式调整数据库架构引入第三方中间件 一、主从复制架构概述 不论任何技术栈，但凡一提高可用、高性能、高稳定这些词汇，必然会牵扯到集群、主从架构的概念，如MQ、Redis、ES、MongoDB、Zookeeper.....任何技术栈中都会有，而MySQL中同样不例外，官方也提供了主从架构的支持，通过调整多个MySQL节点的配置信息，即可将一个节点的数据同步给另一个或多个节点，但这种方式同步的是所有数据！
+主从架构中必须有一个主节点，以及一个或多个从节点，所有的数据都会先写入到主，接着其他从节点会复制主节点上的增量数据，从而保证数据的最终一致性，使用主从复制方案，可以进一步提升数据库的可用性和性能：
+①在主节点宕机或故障的情况下，从节点能自动切换成主节点的身份，从而继续对外提供服务。②提供数据备份的功能，当主节点的数据发生损坏时，从节点中依旧保存着完整数据。③可以基于主从实现读写分离，主节点负责处理写请求，从节点处理读请求，进一步提升性能。 但无论任何技术栈的主从架构，都会存在致命硬伤，同时也会存在些许问题需要解决：
+①硬伤：木桶效应，一个主从集群中所有节点的容量，受限于存储容量最低的哪台服务器。②数据一致性问题：由于同步复制数据的过程是基于网络传输完成的，所以存储延迟性。③脑裂问题：从节点会通过心跳机制，发送网络包来判断主机是否存活，网络故障情况下会产生多主。 上述提到的三个问题中，第一个问题只能靠加大服务器的硬件配置解决，第二个问题相对来说已经有了很好的解决方案（后续讲解），第三个问题则是部署方式决定的，如果将所有节点都部署在同一网段，基本上不会出现集群脑裂问题。
+上面简单了解了主从复制架构的一些基本概念后，接着来聊一聊MySQL中的主从复制。
+二、MySQL中的主从复制技术 MySQL数据同步的原理 MySQL是基于它自身的Bin-log日志来完成数据的异步复制，因为Bin-log日志中会记录所有对数据库产生变更的语句，包括DML数据变更和DDL结构变更语句，数据的同步过程如下：
+上述即是主从同步数据的原理图，但在讲解之前先来了解一下两种数据同步的方式：
+主节点推送：当主节点出现数据变更时，主动向自身注册的所有从节点推送新数据写入。从节点拉取：从节点定期去询问一次主节点是否有数据更新，有则拉取新数据写入。 那MySQL究竟采用的是什么方式呢？其实是「从拉」的方案，但对其稍微做了一些优化，传统的「从拉」方案是需要从节点一直与主节点保持长连接，从节点定时或持续性的对主节点做轮询，查看主机的数据是否发生了变更，而MySQL的数据同步原理如下：
+①客户端将写入数据的需求交给主节点，主节点先向自身写入数据。②数据写入完成后，紧接着会再去记录一份Bin-log二进制日志。③配置主从架构后，主节点上会创建一条专门监听Bin-log日志的log dump线程。④当log dump线程监听到日志发生变更时，会通知从节点来拉取数据。⑤从节点会有专门的I/O线程用于等待主节点的通知，当收到通知时会去请求一定范围的数据。⑥当从节点在主节点上请求到一定数据后，接着会将得到的数据写入到relay-log中继日志。⑦从节点上也会有专门负责监听relay-log变更的SQL线程，当日志出现变更时会开始工作。⑧中继日志出现变更后，接着会从中读取日志记录，然后解析日志并将数据写入到自身磁盘中。 阅读上述流程后，相信大家能感受出MySQL主从复制时做的优化，在主从数据同步的过程中，从节点并不会无限制的询问主机，这样实在太影响效率了，在MySQL中引入了惰性的思想，只有当主节点真正出现数据变更时，才会通知从节点拉取数据！
+从节点拉取的数据到底是什么格式？ 前面从整体角度出发，简单讲述了主从同步数据的过程，但从节点复制的数据到底是什么格式的呢？这里要根据主节点的Bin-log日志格式来决定，它会有三种格式，如下：
+Statment：记录每一条会对数据库产生变更操作的SQL语句（默认格式）。Row：记录具体出现变更的数据（也会包含数据所在的分区以及所位于的数据页）。Mxed：Statment、Row的结合版，可复制的记录SQL语句，不可复制的记录具体数据。 一般在搭建主从架构时，最好将Bin-log日志调整为Mixed格式，因为这种方式绝对不会出现数据不一致性，毕竟默认的Statment格式会导致主从节点间的数据出现不一致，例如：
+insert into `zz_users` values(11,&#34;blblccc&#34;,&#34;男&#34;,&#34;3333&#34;,now()); 当主节点插入数据时，使用了sysdate()、now()....这类函数时，主节点会取自身的系统时间插入数据，而当从节点拉取SQL执行时，则会获取从节点的系统时间插入数据，因为主/从节点执行SQL语句绝对不可能发生在同一时间，因此就会导致主/从节点中，同一条数据的时间不一致。
+有一个数据库表t1，表中有如下两条记录：
+CREATE TABLE t1 ( a int(11) DEFAULT NULL, b int(11) DEFAULT NULL, KEY a (a) ) ENGINE=InnoDB DEFAULT CHARSET=latin1; insert into t1 values(10,2),(20,1); 接着开始执行两个事务的写操作：
+以上两个事务执行之后，数据库里面的记录会变成（11，2）和（20，2），这个发上在主库的数据变更大家都能理解。
+假如事务的隔离级别是read committed，所以，事务1在更新时，只会对b=2这行加上行级锁，不会影响到事务2对b=1这行的写操作。
+以上两个事务执行之后，会在bin log中记录两条记录，因为事务2先提交，所以UPDATE t1 SET b=2 where b=1;会被优先记录，然后再记录UPDATE t1 SET a=11 where b=2;（再次提醒：statement格式的bin log记录的是SQL语句的原文）" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/3a710832efb5b500ad522378e6574690/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-03-30T06:30:00+08:00" />
+<meta property="article:modified_time" content="2023-03-30T06:30:00+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">【MySQL】深入浅出主从复制数据同步原理</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-light">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <h2><a id="MySQL_0"></a>【MySQL】深入浅出主从复制数据同步原理</h2> 
+<p>参考资料：</p> 
+<blockquote> 
+ <p><a href="https://juejin.cn/post/7169834984034402334" rel="nofollow">全解MySQL之主从篇：死磕主从复制中数据同步原理与优化</a></p> 
+ <p><a href="https://www.xiaolincoding.com/mysql/log/how_update.html#mysql-%E6%97%A5%E5%BF%97-undo-log%E3%80%81redo-log%E3%80%81binlog-%E6%9C%89%E4%BB%80%E4%B9%88%E7%94%A8" rel="nofollow">MySQL 日志：undo log、redo log、binlog 有什么用？</a></p> 
+</blockquote> 
+<p></p> 
+<div class="toc"> 
+ <h4>文章目录</h4> 
+ <ul><li><a href="#MySQL_0" rel="nofollow">【MySQL】深入浅出主从复制数据同步原理</a></li><li><ul><li><a href="#_10" rel="nofollow">一、主从复制架构概述</a></li><li><a href="#MySQL_30" rel="nofollow">二、MySQL中的主从复制技术</a></li><li><ul><li><a href="#MySQL_32" rel="nofollow">MySQL数据同步的原理</a></li><li><a href="#_56" rel="nofollow">从节点拉取的数据到底是什么格式？</a></li></ul> 
+   </li><li><a href="#_103" rel="nofollow">三、基于主从模型的不同架构</a></li><li><ul><li><a href="#_107" rel="nofollow">一主一从/多从架构</a></li><li><a href="#_115" rel="nofollow">双主/多主架构</a></li><li><a href="#_128" rel="nofollow">多主一从架构</a></li><li><a href="#_142" rel="nofollow">主从架构小结</a></li></ul> 
+   </li><li><a href="#_150" rel="nofollow">四、主从数据一致性的解决方案</a></li><li><ul><li><a href="#_165" rel="nofollow">改变业务逻辑</a></li><li><a href="#_173" rel="nofollow">更改复制方式</a></li><li><a href="#_181" rel="nofollow">调整数据库架构</a></li><li><a href="#_185" rel="nofollow">引入第三方中间件</a></li></ul> 
+  </li></ul> 
+ </li></ul> 
+</div> 
+<p></p> 
+<h3><a id="_10"></a>一、主从复制架构概述</h3> 
+<p>不论任何技术栈，但凡一提高可用、高性能、高稳定这些词汇，必然会牵扯到集群、主从架构的概念，如<code>MQ、Redis、ES、MongoDB、Zookeeper.....</code>任何技术栈中都会有，而<code>MySQL</code>中同样不例外，官方也提供了主从架构的支持，通过调整多个<code>MySQL</code>节点的配置信息，即可将一个节点的数据同步给另一个或多个节点，但这种方式同步的是所有数据！</p> 
+<p>主从架构中必须有一个主节点，以及一个或多个从节点，所有的数据都会先写入到主，接着其他从节点会复制主节点上的增量数据，从而保证数据的最终一致性，使用主从复制方案，可以进一步提升数据库的可用性和性能：</p> 
+<ul><li>①在主节点宕机或故障的情况下，从节点能自动切换成主节点的身份，从而继续对外提供服务。</li><li>②提供数据备份的功能，当主节点的数据发生损坏时，从节点中依旧保存着完整数据。</li><li>③可以基于主从实现读写分离，主节点负责处理写请求，从节点处理读请求，进一步提升性能。</li></ul> 
+<p>但无论任何技术栈的主从架构，都会存在致命硬伤，同时也会存在些许问题需要解决：</p> 
+<ul><li>①硬伤：木桶效应，一个主从集群中所有节点的容量，受限于存储容量最低的哪台服务器。</li><li>②数据一致性问题：由于同步复制数据的过程是基于网络传输完成的，所以存储延迟性。</li><li>③脑裂问题：从节点会通过心跳机制，发送网络包来判断主机是否存活，网络故障情况下会产生多主。</li></ul> 
+<p>上述提到的三个问题中，第一个问题只能靠加大服务器的硬件配置解决，第二个问题相对来说已经有了很好的解决方案（后续讲解），第三个问题则是部署方式决定的，如果将所有节点都部署在同一网段，基本上不会出现集群脑裂问题。</p> 
+<p>上面简单了解了主从复制架构的一些基本概念后，接着来聊一聊<code>MySQL</code>中的主从复制。</p> 
+<h3><a id="MySQL_30"></a>二、MySQL中的主从复制技术</h3> 
+<h4><a id="MySQL_32"></a>MySQL数据同步的原理</h4> 
+<p><code>MySQL</code>是基于它自身的<code>Bin-log</code>日志来完成数据的异步复制，因为<code>Bin-log</code>日志中会记录所有对数据库产生变更的语句，包括<code>DML</code>数据变更和<code>DDL</code>结构变更语句，数据的同步过程如下：</p> 
+<p><img src="https://images2.imgbox.com/06/df/ixAG06Hp_o.png" alt="屏幕截图(2)"></p> 
+<p>上述即是主从同步数据的原理图，但在讲解之前先来了解一下两种数据同步的方式：</p> 
+<ul><li>主节点推送：当主节点出现数据变更时，主动向自身注册的所有从节点推送新数据写入。</li><li>从节点拉取：从节点定期去询问一次主节点是否有数据更新，有则拉取新数据写入。</li></ul> 
+<p>那<code>MySQL</code>究竟采用的是什么方式呢？其实是「从拉」的方案，但对其稍微做了一些优化，传统的「从拉」方案是需要从节点一直与主节点保持长连接，从节点定时或持续性的对主节点做轮询，查看主机的数据是否发生了变更，而<code>MySQL</code>的数据同步原理如下：</p> 
+<ul><li>①客户端将写入数据的需求交给主节点，主节点先向自身写入数据。</li><li>②数据写入完成后，紧接着会再去记录一份<code>Bin-log</code>二进制日志。</li><li>③配置主从架构后，主节点上会创建一条专门监听<code>Bin-log</code>日志的<code>log dump</code>线程。</li><li>④当<code>log dump</code>线程监听到日志发生变更时，会通知从节点来拉取数据。</li><li>⑤从节点会有专门的<code>I/O</code>线程用于等待主节点的通知，当收到通知时会去请求一定范围的数据。</li><li>⑥当从节点在主节点上请求到一定数据后，接着会将得到的数据写入到<code>relay-log</code>中继日志。</li><li>⑦从节点上也会有专门负责监听<code>relay-log</code>变更的<code>SQL</code>线程，当日志出现变更时会开始工作。</li><li>⑧中继日志出现变更后，接着会从中读取日志记录，然后解析日志并将数据写入到自身磁盘中。</li></ul> 
+<p>阅读上述流程后，相信大家能感受出<code>MySQL</code>主从复制时做的优化，在主从数据同步的过程中，从节点并不会无限制的询问主机，这样实在太影响效率了，在<code>MySQL</code>中引入了惰性的思想，只有当主节点真正出现数据变更时，才会通知从节点拉取数据！</p> 
+<h4><a id="_56"></a>从节点拉取的数据到底是什么格式？</h4> 
+<p>前面从整体角度出发，简单讲述了主从同步数据的过程，但从节点复制的数据到底是什么格式的呢？这里要根据主节点的<code>Bin-log</code>日志格式来决定，它会有三种格式，如下：</p> 
+<ul><li><code>Statment</code>：记录每一条会对数据库产生变更操作的<code>SQL</code>语句（默认格式）。</li><li><code>Row</code>：记录具体出现变更的数据（也会包含数据所在的分区以及所位于的数据页）。</li><li><code>Mxed</code>：<code>Statment、Row</code>的结合版，可复制的记录<code>SQL</code>语句，不可复制的记录具体数据。</li></ul> 
+<blockquote> 
+ <p>一般在搭建主从架构时，最好将<code>Bin-log</code>日志调整为<code>Mixed</code>格式，因为这种方式绝对不会出现数据不一致性，毕竟默认的<code>Statment</code>格式会导致主从节点间的数据出现不一致，例如：</p> 
+</blockquote> 
+<ul><li> <pre><code class="prism language-sql"><span class="token keyword">insert</span> <span class="token keyword">into</span> <span class="token identifier"><span class="token punctuation">`</span>zz_users<span class="token punctuation">`</span></span> <span class="token keyword">values</span><span class="token punctuation">(</span><span class="token number">11</span><span class="token punctuation">,</span><span class="token string">"blblccc"</span><span class="token punctuation">,</span><span class="token string">"男"</span><span class="token punctuation">,</span><span class="token string">"3333"</span><span class="token punctuation">,</span><span class="token function">now</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+</code></pre> <p>当主节点插入数据时，使用了<code>sysdate()、now()....</code>这类函数时，主节点会取自身的系统时间插入数据，而当从节点拉取<code>SQL</code>执行时，则会获取从节点的系统时间插入数据，因为主/从节点执行<code>SQL</code>语句绝对不可能发生在同一时间，因此就会导致主/从节点中，同一条数据的时间不一致。</p> </li><li> <p>有一个数据库表t1，表中有如下两条记录：</p> <pre><code class="prism language-sql"><span class="token keyword">CREATE</span> <span class="token keyword">TABLE</span> t1 <span class="token punctuation">(</span>
+    a <span class="token keyword">int</span><span class="token punctuation">(</span><span class="token number">11</span><span class="token punctuation">)</span> <span class="token keyword">DEFAULT</span> <span class="token boolean">NULL</span><span class="token punctuation">,</span>
+    b <span class="token keyword">int</span><span class="token punctuation">(</span><span class="token number">11</span><span class="token punctuation">)</span> <span class="token keyword">DEFAULT</span> <span class="token boolean">NULL</span><span class="token punctuation">,</span>
+   <span class="token keyword">KEY</span> a <span class="token punctuation">(</span>a<span class="token punctuation">)</span>
+<span class="token punctuation">)</span> <span class="token keyword">ENGINE</span><span class="token operator">=</span><span class="token keyword">InnoDB</span> <span class="token keyword">DEFAULT</span> <span class="token keyword">CHARSET</span><span class="token operator">=</span>latin1<span class="token punctuation">;</span>
+<span class="token keyword">insert</span> <span class="token keyword">into</span> t1 <span class="token keyword">values</span><span class="token punctuation">(</span><span class="token number">10</span><span class="token punctuation">,</span><span class="token number">2</span><span class="token punctuation">)</span><span class="token punctuation">,</span><span class="token punctuation">(</span><span class="token number">20</span><span class="token punctuation">,</span><span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+</code></pre> <p>接着开始执行两个事务的写操作：</p> <p><img src="https://images2.imgbox.com/11/30/eLjRh84c_o.png" alt="image-20230328170107814"></p> <p>以上两个事务执行之后，数据库里面的记录会变成（11，2）和（20，2），这个发上在主库的数据变更大家都能理解。</p> <p>假如事务的隔离级别是read committed，所以，事务1在更新时，只会对b=2这行加上行级锁，不会影响到事务2对b=1这行的写操作。</p> <p>以上两个事务执行之后，会在bin log中记录两条记录，因为事务2先提交，所以<code>UPDATE t1 SET b=2 where b=1;</code>会被优先记录，然后再记录<code>UPDATE t1 SET a=11 where b=2;</code>（再次提醒：statement格式的bin log记录的是SQL语句的原文）</p> <p>这样bin log同步到备库之后，SQL语句回放时，会先执行<code>UPDATE t1 SET b=2 where b=1;</code>，再执行<code>UPDATE t1 SET a=11 where b=2;</code>。</p> <p>这时候，数据库中的数据就会变成（11，2）和（11，2）。这就导致主库和备库的数据不一致了！！！</p> </li></ul> 
+<p><strong>而将<code>Bin-log</code>日志调整为<code>Mixed</code>格式后，就不会再出现这样的问题，因为对于这种不可复制的记录，会直接选择记录具体变更过的数据到日志中，当从节点读取数据写入时，则可以直接将数据放到磁盘对应的位置中即可。</strong></p> 
+<blockquote> 
+ <p>那为什么不选择<code>Row</code>格式来作为数据同步时的格式呢？</p> 
+</blockquote> 
+<p>这种方式同步数据不需要经过<code>SQL</code>解析过程，只需直接将数据放到磁盘的具体位置即可，但这种方式会让主节点的<code>I/O</code>负载直线拉高，在传输时也会大量占用网络带宽，因此一般都不会选择<code>Row</code>作为同步复制时的格式。</p> 
+<h3><a id="_103"></a>三、基于主从模型的不同架构</h3> 
+<p>前面将最基本的主从复制原理和细节讲清楚了，虽然<code>MySQL</code>官方只提供了最基本的主从复制技术的支持，但这并不妨碍咱们将其玩出花来，目前业内可以基于主从机制实现：一主一从/多从、双主/多主、多主一从、级联复制四种架构，下面详细聊一聊每种架构。</p> 
+<h4><a id="_107"></a>一主一从/多从架构</h4> 
+<p>一主一从或一主多从，这是传统的主从复制模型，也就是多个主从节点组成的集群中，只有一个主节点，剩余的所有节点都为其附属关系，大致如下：</p> 
+<p><img src="https://images2.imgbox.com/8b/17/wz7a436D_o.png" alt="主从架构.drawio"></p> 
+<p>这种架构中，从节点的所有数据都源自于主节点，如上图所示，为了充分的利用好这种架构，一般都会基于它实现读写分离，也就是将客户端的写请求发给主节点处理，将客户端的读请求发给从节点处理。这种模式下，相较于单机节点而言，能够在性能上进一步提升，因为读写请求都被分发到了不同的节点处理，所以吞吐量至少会提升<code>50%</code>以上。</p> 
+<h4><a id="_115"></a>双主/多主架构</h4> 
+<p>上述的一主一从/多从架构，更加适用于一些读大于写的场景，因为这类项目中，读请求的数量远超出写请求，因此将读操作分发到从库上，能够大大降低主库的访问压力，但如若你的项目中读写请求的比例对半开，同时整体的并发量也不算低，至少超出了单库的承载阈值，这时就可以选用双主/多主架构，如下：</p> 
+<p><img src="https://images2.imgbox.com/eb/66/TauXhqrg_o.png" alt="主从架构.drawio"></p> 
+<p>上图是一个典型的双主架构，这里有两个<code>MySQL</code>节点，它们都是主库，也都属于对方的从库，也就是两者之间会相互同步数据，这时为了防止主键出现冲突，一般都会通过设置数据库自增步长的方式来防重，通常会将两个节点的自增步长设为<code>2</code>，然后为两个节点分配自增初始值<code>1、2</code>，最终会出现如下效果：</p> 
+<ul><li><code>DB1：1、3、5、7、9、11、13、15、17.......</code></li><li><code>DB2：2、4、6、8、10、12、14、16、18......</code></li></ul> 
+<p>在两个库上插入数据时，各自会以上述序列进行主键的递增，接着两个节点会各自同步对方的数据，这也就意味着双方都具备完整的数据，因此无论是：简单读、简单写、批量写、多表查…等任何类型的操作，都可以随便分发到任意节点上处理。</p> 
+<h4><a id="_128"></a>多主一从架构</h4> 
+<p>除开上述两种主从架构的基本玩法外，面对于不同场景时也会有一些新奇玩法，比如面对于一些写大于读的场景，不管是一主多从、还是多主的方式，似乎都无法很好的解决这个问题，因此要处理这类问题时，可以选用多主一从架构，啥意思呢？如下图：</p> 
+<p><img src="https://images2.imgbox.com/4c/43/xaXwkeNZ_o.png" alt="主从架构.drawio"></p> 
+<p>因为这种架构要解决写大于读造成的性能瓶颈，所以这里会采用多主来承载客户端的写请求，同时为了做好主键防重，也需要设置数据库自增步长和初始值，这里有三个主节点，因此自增步长为三，初始值分别为<code>1、2、3</code>，最终三个主节点中的数据如下：</p> 
+<ul><li><code>DB1：1、4、7、10、13、16.....</code></li><li><code>DB2：2、5、8、11、14、17.....</code></li><li><code>DB3：3、6、9、12、15、18.....</code></li></ul> 
+<p>而这三个主节点都会具备一个相同的从节点，也就是只有一个从库，它会负责同步所有主库的数据，这也就意味着从库中会具备三个主库的完整数据，这样做有什么好处呢？通过多个主节点解决了写请求导致压力过大的问题，同时从库中还有完整数据，因此也不会由于拆分了主库而影响读操作。</p> 
+<h4><a id="_142"></a>主从架构小结</h4> 
+<p>下面做个简单的小总结：</p> 
+<ul><li>一主多从架构：适用于读大于写的场景，采用多个从库来分担数据库系统的读压力。</li><li>多主架构：适用于读写参半的场景，采用多个主库来承载数据库系统整体的读写压力。</li><li>多主一从架构：适用于写大于读的场景，采用多个主库分担写压力，单个从库承载读压力。</li></ul> 
+<h3><a id="_150"></a>四、主从数据一致性的解决方案</h3> 
+<p>到这里为止，对于主从复制架构中绝大多数知识点和细节技术，都已经做了全面概述，最后再来重点叙说一个点，则是主从节点之间的数据一致性问题。通常情况下，对<code>MySQL</code>搭建了主从集群，往往从节点不会只充当备库的角色，为了充分利用已有的资源，都会在主从热备的基础上，采用读写分离方案，将写请求分发给主库、读请求分发给从库处理。</p> 
+<blockquote> 
+ <p>这样的确能够充分发挥从库所在机器的性能，但随之而来的还有一些问题，由于从库需要处理读取数据的请求，但主从节点之间的数据绝对会有一定延时，那对于一些关键性的数据，在主库上修改之后，再去从库上读取，这时就很有可能读取到的是旧数据，即修改前的原数据。</p> 
+</blockquote> 
+<p>但这种情况对于用户而言显然是无法接受的，比如一个用户将个人信息修改后，然后再次查看时，发现个人信息依旧是修改之前的原数据，这时用户就有可能再次修改，经过反反复复多次修改后，用户发现依旧未生效，大多数情况下都会心里骂一句：“去你*的，乐色系统”！</p> 
+<p>想要解决上述这种读写分离导致的数据不一致性，主要有四种解决方案：</p> 
+<ul><li>业务逻辑做改变</li><li>复制方式做更改</li><li>数据库架构做调整</li><li>引入第三方中间件</li></ul> 
+<h4><a id="_165"></a>改变业务逻辑</h4> 
+<p>改变业务逻辑的潜在含义是：对业务做一定更改，比如当用户立即修改数据后，因为在从库读不到数据，所以先显示一个审核状态，这样能够给出用户的反馈，从而避免用户再次重复操作，如：</p> 
+<p><img src="https://images2.imgbox.com/c4/31/j6WeLXd8_o.png" alt="image-20230328163908174"></p> 
+<p>上述是掘金的个人资料，当用户手动更改后，会先显示一个「审核中」的状态，这种方式属于和数据不一致妥协的方案，接受一定的数据延迟，不过这种方式并不适用于一些对数据实时性要求较高的场景。</p> 
+<h4><a id="_173"></a>更改复制方式</h4> 
+<p>在之前曾聊过<code>MySQL</code>四种数据同步复制的方式，即全同步、异步、半同步与无损复制，<code>MySQL</code>默认会是异步复制模式，即主节点写入数据后会立即返回成功的状态给客户端，这样能够确保性能达到最佳，但如果对实时性要求较高，可以将其改为全同步或半同步模式。</p> 
+<blockquote> 
+ <p>改成全同步的模式能够确保数据<code>100%</code>不会存在延迟，但性能会因此严重下降，因此半同步是个不错的选择，但如果数据库仅仅是一主一从的架构，那么半同步模式和全同步模式没有任何区别，因为半同步是至少要求一个从库返回<code>ACK</code>，才向客户端返回写入成功，而一主一从架构中只有一个从节点~</p> 
+</blockquote> 
+<p>不过就算是半同步（无损）复制模式，对比异步复制而言，依旧会导致性能下降较为严重。</p> 
+<h4><a id="_181"></a>调整数据库架构</h4> 
+<p>如果无法接受主从架构带来的短期数据不一致，那可以升级服务器硬件，并将架构恢复成单库架构，所有读写操作都走单库完成，这就自然不会出现数据不一致问题。但如果升级硬件配置后，无法承载客户端的访问压力时，可将整体架构升级到分库分表架构，制定好合适的分片策略和路由键，每次读写数据都根据业务不同，操作不同的库。</p> 
+<h4><a id="_185"></a>引入第三方中间件</h4> 
+<p>前面聊到的三种方案，多多少少都存在一些局限性，因为要么接受数据不一致、要么损失性能、要么使用更高规模的架构处理，但这些方案似乎都存在令人不能接受的后患，那有没有一种万全之策来解决这个问题呢？答案是有的，就是引入<code>Canal</code>中间件来监控主节点的<code>Bin-log</code>日志。</p> 
+<blockquote> 
+ <p>在之前讲主从同步数据原理时，曾讲到过，主节点上存在一个<code>log dump</code>线程会监听<code>Bin-log</code>日志，当日志出现变更时会通知从节点来拉取数据，而<code>Canal</code>的思想也是一样的，会监控主节点的<code>Bin-log</code>日志，当发生变更时，就直接去拉取数据，然后直接推送给从节点写入。</p> 
+</blockquote> 
+<p><code>Canal</code>在主从集群的身份就类似于一个中间商，对于主节点而言，它是一个从库，因为<code>Canal</code>会去主库上拉取新增数据。而对于集群中真正的从节点而言，它是一个主库，因为<code>Canal</code>会给其他真正的从节点推送数据。但这种方式也无法做到真正的数据实时性，毕竟<code>Canal</code>监听变更、拉取数据、推送数据都需要时间，这部分的时间开销必然存在，只是它会比从库去主库上拉取，速度会更快一些罢了。</p> 
+<blockquote> 
+ <p>一般企业内部都会引入<code>Canal</code>来解决数据不一致问题，因为它不仅仅只能解决主从延迟问题，还能解决<code>MySQL-ES、MySQL-Redis.....</code>等多种数据不一致的场景，<code>Canal</code>是由阿里巴巴开源的一项技术，也包括在阿里内部应用也较为广泛。</p> 
+</blockquote> 
+<p>当然，也可以制定某些敏感数据走主库查询，这样能够确保数据的实时性，但容易模糊读写分离的界限，不过因为不需要引入额外的技术，所以在某些情况下也是个不错的方案。</p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/37e75d3a6ef6ebb8bdfa8e0535ca7e7a/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">第十四届蓝桥杯大赛——真题训练第11天</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/a2b6638f304977383391d82ebbba12f6/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">类初始化过程与对象创建过程</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Mysql事务细节研究（进阶篇） - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="Mysql事务细节研究（进阶篇）" />
+<meta property="og:description" content="多碧莉-CSDN博客
+文章出处如上
+背景：最近由于参加春招面试，回顾此处知识点的时候发现自身有诸多疑问。虽然自己曾经写的文章可以整体的帮助自己快速回忆事物的各种特性，以及各种隔离级别下可能出现的问题和解决方案。但当时的认知浅显，存在诸多细节疑问点并不清楚。
+比如疑问如下：
+写操作写入redo log日志，是直接写入文件还是先写内存缓冲区再写入redo log日志文件?写入redo log日志文件和数据落盘两者的区别是什么？时机相同吗？数据库崩溃之后的完整恢复过程是怎样的？ 如上的种种细节问题，当时大三期间自己写此相关博客之时并未涉及。如下是我当时写的宏观总结，但少了很多细节的思考。
+mysql事务的理解学习, 面试不问索引原理就是事务原理_mysql事务原理的理解-CSDN博客
+引入士多碧莉工程师博主的文章原因是因为，读完他（她）的文章之后觉得非常简介易懂，而且带有该博主独特的思考，对我很有帮助，为了将来我再需要阅读回忆此内容文章之时省去新文章的查找时间以及陌生内容的熟知时间，故而将该博主的我需要的文章做了整合，我也会私下联系该博主，希望得到他的许可，如果他（她）本人不允许，之后会删除该文章。
+聊聊 mysql 事务？（一）_mysql 事务会默认-CSDN博客
+聊聊 mysql 事务？（二：redo log保证事务持久性）_redo log如何实现持久化-CSDN博客
+聊聊 mysql 事务？（三：从redo log恢复数据）_使用redolog恢复数据库-CSDN博客
+MySQL崩溃后的恢复_mysql 崩溃恢复全过程-CSDN博客
+分享，成体系，避免无数知识碎片的冲击。将自己的所学用语言和视频讲出来，整理出来（成体系了，解决了很多问题，文章带有自己的风格，易懂）。费曼学习法（将一个新知识快速深入理解，记忆的方式就是探讨学习或者讲给别人或者写作，视频分享）。" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/d9301d647967b4e19f92ed7160503dfb/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2024-02-19T10:24:21+08:00" />
+<meta property="article:modified_time" content="2024-02-19T10:24:21+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Mysql事务细节研究（进阶篇）</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p><a href="https://blog.csdn.net/weixin_40647516?type=blog" title="多碧莉-CSDN博客">多碧莉-CSDN博客</a></p> 
+<p>文章出处如上</p> 
+<p>背景：最近由于参加春招面试，回顾此处知识点的时候发现自身有诸多疑问。虽然自己曾经写的文章可以整体的帮助自己快速回忆事物的各种特性，以及各种隔离级别下可能出现的问题和解决方案。但当时的认知浅显，存在诸多细节疑问点并不清楚。</p> 
+<p>比如疑问如下：</p> 
+<ul><li>写操作写入redo log日志，是直接写入文件还是先写内存缓冲区再写入redo log日志文件?</li><li>写入redo log日志文件和数据落盘两者的区别是什么？时机相同吗？</li><li>数据库崩溃之后的完整恢复过程是怎样的？</li></ul> 
+<p>如上的种种细节问题，当时大三期间自己写此相关博客之时并未涉及。如下是我当时写的宏观总结，但少了很多细节的思考。</p> 
+<p><a href="https://blog.csdn.net/weixin_53695360/article/details/124026899" title="mysql事务的理解学习, 面试不问索引原理就是事务原理_mysql事务原理的理解-CSDN博客">mysql事务的理解学习, 面试不问索引原理就是事务原理_mysql事务原理的理解-CSDN博客</a></p> 
+<p>引入士多碧莉工程师博主的文章原因是因为，读完他（她）的文章之后觉得非常简介易懂，而且带有该博主独特的思考，对我很有帮助，为了将来我再需要阅读回忆此内容文章之时省去新文章的查找时间以及陌生内容的熟知时间，故而将该博主的我需要的文章做了整合，我也会私下联系该博主，希望得到他的许可，如果他（她）本人不允许，之后会删除该文章。</p> 
+<p> <a href="https://blog.csdn.net/weixin_40647516/article/details/126905100" title="聊聊 mysql 事务？（一）_mysql 事务会默认-CSDN博客">聊聊 mysql 事务？（一）_mysql 事务会默认-CSDN博客</a></p> 
+<p><a href="https://blog.csdn.net/weixin_40647516/article/details/126906506" title="聊聊 mysql 事务？（二：redo log保证事务持久性）_redo log如何实现持久化-CSDN博客">聊聊 mysql 事务？（二：redo log保证事务持久性）_redo log如何实现持久化-CSDN博客</a></p> 
+<p><a href="https://blog.csdn.net/weixin_40647516/article/details/126948034" title="聊聊 mysql 事务？（三：从redo log恢复数据）_使用redolog恢复数据库-CSDN博客">聊聊 mysql 事务？（三：从redo log恢复数据）_使用redolog恢复数据库-CSDN博客</a></p> 
+<p><a href="https://blog.csdn.net/weixin_40647516/article/details/127690903" title="MySQL崩溃后的恢复_mysql 崩溃恢复全过程-CSDN博客">MySQL崩溃后的恢复_mysql 崩溃恢复全过程-CSDN博客</a></p> 
+<p>分享，成体系，避免无数知识碎片的冲击。将自己的所学用语言和视频讲出来，整理出来（成体系了，解决了很多问题，文章带有自己的风格，易懂）。费曼学习法（将一个新知识快速深入理解，记忆的方式就是探讨学习或者讲给别人或者写作，视频分享）。</p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/a355758ff53fa3b79facee71ed663b3c/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">uniapp条件编译</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/42497958533b875c5c1deef78ef2ffb0/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">html开启严格模式</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

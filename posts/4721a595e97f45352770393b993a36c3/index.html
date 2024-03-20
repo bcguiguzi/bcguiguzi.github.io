@@ -1,0 +1,333 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>bert 相似度任务训练简单版本,faiss 寻找相似 topk - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="bert 相似度任务训练简单版本,faiss 寻找相似 topk" />
+<meta property="og:description" content="目录
+任务
+代码
+train.py
+predit.py
+faiss 最相似的 topk
+数
+任务 使用 bert-base-chinese 训练相似度任务，参考：微调BERT模型实现相似性判断 - 知乎
+参考他上面代码，他使用的是 BertForNextSentencePrediction 模型，BertForNextSentencePrediction 原本是设计用于下一个句子预测任务的。在BERT的原始训练中，模型会接收到一对句子，并试图预测第二个句子是否紧跟在第一个句子之后；所以使用这个模型标签(label)只能是 0,1，相当于二分类任务了
+但其实在相似度任务中，我们每一条数据都是【text1\ttext2\tlabel】的形式，其中 label 代表相似度，可以给两个文本打分表示相似度，也可以映射为分类任务，0 代表不相似，1 代表相似，他这篇文章利用了这种思想，对新手还挺有用的。
+现在我搞了一个招聘数据，里面有办公区域列，处理过了，每一行代表【地址1\t地址2\t相似度】
+只要两文本中有一个地址相似我就作为相似，标签为 1，否则 0
+利用这数据微调，没有使用验证数据集，就最后使用测试集来看看效果。
+代码 train.py import json import torch from transformers import BertTokenizer, BertForNextSentencePrediction from torch.utils.data import DataLoader, Dataset # 能用gpu就用gpu # device = torch.device(&#34;cuda&#34; if torch.cuda.is_available() else &#34;cpu&#34;) device = torch.device(&#34;cpu&#34;) bacth_size = 32 epoch = 3 auto_save_batch = 5000 learning_rate = 2e-5 # 准备数据集 class MyDataset(Dataset): def __init__(self, data_file_paths): self." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/4721a595e97f45352770393b993a36c3/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2024-03-03T11:32:00+08:00" />
+<meta property="article:modified_time" content="2024-03-03T11:32:00+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">bert 相似度任务训练简单版本,faiss 寻找相似 topk</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p id="main-toc"><strong>目录</strong></p> 
+<p id="%E4%BB%BB%E5%8A%A1-toc" style="margin-left:0px;"><a href="#%E4%BB%BB%E5%8A%A1" rel="nofollow">任务</a></p> 
+<p id="%E4%BB%A3%E7%A0%81-toc" style="margin-left:0px;"><a href="#%E4%BB%A3%E7%A0%81" rel="nofollow">代码</a></p> 
+<p id="train.py-toc" style="margin-left:40px;"><a href="#train.py" rel="nofollow">train.py</a></p> 
+<p id="predit.py-toc" style="margin-left:40px;"><a href="#predit.py" rel="nofollow">predit.py</a></p> 
+<p id="faiss%20%E6%9C%80%E7%9B%B8%E4%BC%BC%E7%9A%84%20topk-toc" style="margin-left:0px;"><a href="#faiss%20%E6%9C%80%E7%9B%B8%E4%BC%BC%E7%9A%84%20topk" rel="nofollow">faiss 最相似的 topk</a></p> 
+<p id="%E6%95%B0%E6%8D%AE-toc" style="margin-left:0px;"><a href="#%E6%95%B0%E6%8D%AE" rel="nofollow">数</a></p> 
+<hr id="hr-toc"> 
+<p></p> 
+<h2 id="%E4%BB%BB%E5%8A%A1">任务</h2> 
+<p>使用 bert-base-chinese 训练相似度任务，参考：<a href="https://zhuanlan.zhihu.com/p/625832757" rel="nofollow" title="微调BERT模型实现相似性判断 - 知乎">微调BERT模型实现相似性判断 - 知乎</a></p> 
+<p>参考他上面代码，他使用的是 BertForNextSentencePrediction 模型，B<code>ertForNextSentencePrediction </code>原本是设计用于下一个句子预测任务的。在BERT的原始训练中，模型会接收到一对句子，并试图预测第二个句子是否紧跟在第一个句子之后；所以使用这个模型<strong>标签(label)只能是 0,1</strong>，相当于二分类任务了</p> 
+<p></p> 
+<p>但其实在相似度任务中，我们每一条数据都是【text1\ttext2\tlabel】的形式，其中 label 代表相似度，可以给两个文本打分表示相似度，也可以<strong>映射为分类任务</strong>，0 代表不相似，1 代表相似，他这篇文章利用了这种思想，对新手还挺有用的。</p> 
+<p></p> 
+<p>现在我搞了一个招聘数据，里面有办公区域列，处理过了，每一行代表【地址1\t地址2\t相似度】</p> 
+<p><img alt="" height="459" src="https://images2.imgbox.com/ac/19/tNSFeswR_o.png" width="838"></p> 
+<p>只要两文本中有一个地址相似我就作为相似，标签为 1，否则 0</p> 
+<p>利用这数据微调，没有使用验证数据集，就最后使用测试集来看看效果。</p> 
+<p></p> 
+<p></p> 
+<h2 id="%E4%BB%A3%E7%A0%81">代码</h2> 
+<h3 id="train.py">train.py</h3> 
+<pre><code class="language-python">import json
+import torch
+from transformers import BertTokenizer, BertForNextSentencePrediction
+from torch.utils.data import DataLoader, Dataset
+
+
+# 能用gpu就用gpu
+# device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+device = torch.device("cpu")
+
+bacth_size = 32
+epoch = 3
+auto_save_batch = 5000
+learning_rate = 2e-5
+
+
+# 准备数据集
+class MyDataset(Dataset):
+    def __init__(self, data_file_paths):
+        self.texts = []
+        self.labels = []
+        # 分词器用默认的
+        self.tokenizer = BertTokenizer.from_pretrained('../bert-base-chinese')
+        # 自己实现对数据集的解析
+        with open(data_file_paths, 'r', encoding='utf-8') as f:
+            for line in f:
+                text1, text2, label = line.split('\t')
+                self.texts.append((text1, text2))
+                self.labels.append(int(label))
+
+    def __len__(self):
+        return len(self.texts)
+
+    def __getitem__(self, idx):
+        text1, text2 = self.texts[idx]
+        label = self.labels[idx]
+        encoded_text = self.tokenizer(text1, text2, padding='max_length', truncation=True, max_length=128, return_tensors='pt')
+        return encoded_text, label
+
+
+# 训练数据文件路径
+train_dataset = MyDataset('../data/train.txt')
+
+# 定义模型
+# num_labels=5 定义相似度评分有几个
+model = BertForNextSentencePrediction.from_pretrained('../bert-base-chinese', num_labels=6)
+model.to(device)
+optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
+
+# 训练模型
+train_loader = DataLoader(train_dataset, batch_size=bacth_size, shuffle=True)
+trained_data = 0
+batch_after_last_save = 0
+total_batch = 0
+total_epoch = 0
+
+for epoch in range(epoch):
+    trained_data = 0
+    for batch in train_loader:
+        inputs, labels = batch
+        # 不知道为啥，出来的数据维度是 (batch_size, 1, 128)，需要把第二维去掉
+        inputs['input_ids'] = inputs['input_ids'].squeeze(1)
+        inputs['token_type_ids'] = inputs['token_type_ids'].squeeze(1)
+        inputs['attention_mask'] = inputs['attention_mask'].squeeze(1)
+        # 因为要用GPU，将数据传输到gpu上
+        inputs = inputs.to(device)
+        labels = labels.to(device)
+        optimizer.zero_grad()
+        outputs = model(**inputs, labels=labels)
+        loss, logits = outputs[:2]
+        loss.backward()
+        optimizer.step()
+        trained_data += len(labels)
+        trained_process = float(trained_data) / len(train_dataset)
+        batch_after_last_save += 1
+        total_batch += 1
+        # 每训练 auto_save_batch 个 batch，保存一次模型
+        if batch_after_last_save &gt;= auto_save_batch:
+            batch_after_last_save = 0
+            model.save_pretrained(f'../output/cn_equal_model_{total_epoch}_{total_batch}.pth')
+            print("保存模型：cn_equal_model_{}_{}.pth".format(total_epoch, total_batch))
+        print("训练进度：{:.2f}%, loss={:.4f}".format(trained_process * 100, loss.item()))
+    total_epoch += 1
+    model.save_pretrained(f'../output/cn_equal_model_{total_epoch}_{total_batch}.pth')
+    print("保存模型：cn_equal_model_{}_{}.pth".format(total_epoch, total_batch))</code></pre> 
+<p>训练好后的文件，输出的最后一个文件夹才是效果最好的模型：</p> 
+<p><img alt="" height="115" src="https://images2.imgbox.com/ae/ce/gX3JLFVF_o.png" width="779"></p> 
+<p><img alt="" height="201" src="https://images2.imgbox.com/87/31/LFFs9Jek_o.png" width="484"></p> 
+<p></p> 
+<h3 id="predit.py">predit.py</h3> 
+<pre><code class="language-python">import torch
+from transformers import BertTokenizer, BertForNextSentencePrediction
+
+
+tokenizer = BertTokenizer.from_pretrained('../bert-base-chinese')
+model = BertForNextSentencePrediction.from_pretrained('../output/cn_equal_model_3_171.pth')
+
+with torch.no_grad():
+    with open('../data/test.txt', 'r', encoding='utf8') as f:
+        lines = f.readlines()
+        correct = 0
+        for i, line in enumerate(lines):
+            text1, text2, label = line.split('\t')
+            encoded_text = tokenizer(text1, text2, padding='max_length', truncation=True, max_length=128, return_tensors='pt')
+            outputs = model(**encoded_text)
+            res = torch.argmax(outputs.logits, dim=1).item()
+            print(text1, text2, label, res)
+            if str(res) == label.strip('\n'):
+                correct += 1
+            print(f'{i + 1}/{len(lines)}')
+        print(f'acc:{correct / len(lines)}')
+</code></pre> 
+<p><img alt="" height="210" src="https://images2.imgbox.com/b3/8b/ShzDjVfM_o.png" width="637"></p> 
+<p>可以看到还是较好的学习了我数据特征：只要两文本中有一个地址相似我就作为相似，标签为 1，否则 0</p> 
+<p></p> 
+<p></p> 
+<h2 id="faiss%20%E6%9C%80%E7%9B%B8%E4%BC%BC%E7%9A%84%20topk">faiss 最相似的 topk</h2> 
+<p>使用 faiss 寻找 topk 相似的，从结果上看最相似的基本都还是找到排到较为靠前的位置</p> 
+<pre><code class="language-python">import torch
+import faiss
+import pandas as pd
+import numpy as np
+from transformers import BertTokenizer, BertModel
+
+
+# 假设有一个数据集df，其中包含'index'列和'text'列
+df = pd.read_csv('../data/DataAnalyst.csv', encoding='gbk')  # 根据实际情况加载数据集
+df = df.dropna().drop_duplicates().reset_index()
+df['index'] = df.index
+df = df[['index', '公司所在商区']]  # 保留所需列
+df['公司所在商区'] = df['公司所在商区'].map(lambda row: ','.join(eval(row)))
+
+# device = torch.device('gpu' if torch.cuda.is_available() else 'cpu')
+device = torch.device('cpu')
+
+# 加载微调好的模型和tokenizer
+tokenizer = BertTokenizer.from_pretrained('../bert-base-chinese')
+model = BertModel.from_pretrained('../output/cn_equal_model_3_171.pth')
+model.eval()
+
+
+# 将数据集转化为模型所需的格式并计算所有样本的向量表示
+def encode_texts(df):
+    text_vectors = []
+    for index, row in df.iterrows():
+        text = row['公司所在商区']
+        inputs = tokenizer(text, padding='max_length', truncation=True, max_length=128, return_tensors='pt')
+        with torch.no_grad():
+            embeddings = model(**inputs.to(device))['last_hidden_state'][:, 0]
+            text_vectors.append(embeddings.cpu().numpy())
+        print(f'{index + 1}/{len(df)}')
+    return np.vstack(text_vectors)
+
+# 加载数据集并计算所有样本的向量
+print('enbedding all data...')
+all_embeddings = encode_texts(df)
+
+# 初始化Faiss索引
+print('init faiss all embedding...')
+index = faiss.IndexFlatIP(all_embeddings.shape[1])  # 使用内积空间，适用于余弦相似度
+index.add(all_embeddings)
+print('init faiss all embedding finish~~~')
+
+
+# 定义查找最相似样本的函数
+def find_top_k_similar(query_text, k=100):
+    print('当前 query_text embedding.')
+    query_embedding = encode_single_text(query_text)
+    print('begin to search topk....')
+    D, I = index.search(query_embedding, k)  # 返回距离和索引
+    top_k_indices = df.iloc[I[0]].index.tolist()  # 将索引转换为原始数据集的索引
+    return top_k_indices
+
+
+# 编码单个文本的函数
+def encode_single_text(text):
+    inputs = tokenizer(text, padding='max_length', truncation=True, max_length=128, return_tensors='pt')
+    with torch.no_grad():
+        embedding = model(**inputs.to(device))['last_hidden_state'][:, 0].cpu().numpy()
+    print('当前 query_text embedding finish!')
+    return embedding
+
+
+# 示例：找一个query_text的top10相似样本
+query_text = "左家庄,国展,西坝河"
+top10_indices = find_top_k_similar(query_text)
+# 获取与查询文本最相似的前10条原始文本
+top10_texts = [df.loc[index, '公司所在商区'] for index in top10_indices]
+
+print(f"与'{query_text}'最相似的前100条样本及其文本：")
+for i, (idx, text) in enumerate(zip(top10_indices, top10_texts)):
+    print(f"{i+1}. 索引：{idx}，文本：{text}")</code></pre> 
+<p><img alt="" height="758" src="https://images2.imgbox.com/2f/9d/dzT2MTuv_o.png" width="888"></p> 
+<p></p> 
+<p></p> 
+<h2 id="%E6%95%B0%E6%8D%AE" style="background-color:transparent;">数据</h2> 
+<p>链接：https://pan.baidu.com/s/1Cpr-ZD9Neakt73naGdsVTw <br> 提取码：eryw <br> 链接：https://pan.baidu.com/s/1qHYjXC7UCeUsXVnYTQIPCg <br> 提取码：o8py <br> 链接：https://pan.baidu.com/s/1CTntG1Z6AIhiPt6i8Ad97Q <br> 提取码：x6sz <br>  </p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/84ab1e0e407cfd9f694f2bc2685dd343/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">Excel MATCH函数 两张顺序不同表格,统一排序</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/af2a59aae0628cf8e837b599866d3dcb/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">大模型（LLM）的训练语料信息汇总</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

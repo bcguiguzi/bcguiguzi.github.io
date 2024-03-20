@@ -1,0 +1,355 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>web调用服务器上的exe_世界上究竟有没有安全的网络？如何才能不被木马入侵 - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="web调用服务器上的exe_世界上究竟有没有安全的网络？如何才能不被木马入侵" />
+<meta property="og:description" content="网络安全
+事件描述由于经常购买服务器 ，某天，发现一台服务器上面虽然安装了 360 ，但是 ，仍然提示入侵提示 。让我特别纳闷，于是开始调查下原因
+首先设想了三种可能性:1.存在系统漏洞2.由于前期运维在服务器上装了一些工具软件，会不会工具软件引入的病毒3.应用层漏洞。
+首先，用更新库的漏扫对系统层面的漏洞检测，未发现任何异常；
+由于会有开发连接进这台服务器，去开发那里收集工具软件进行查毒处理，也没发现异常，排除通过软件带入病毒的可能；那难道是通过应用层漏洞进来的？
+因为系统上线前都会经过web渗透测试，文件上传，SQL注入等常规漏洞已经修复，虽然这样，还是重新验证了一遍漏洞，没有问题，又用D盾webshell检测工具进行了扫面，未发现任何webshell。
+那病毒是怎么产生的？
+溯源准备
+由于病毒无法清干净，也不清楚黑客是已经在机器上做了哪些手脚，于是重新搭建一个干净的环境，给系统打好最新的补丁。
+由于前期没有在主机端做日志收集类工具，缺乏主机端的攻击溯源手段，于是临时搭建了splunk日志分析系统，并在新搭建的服务器上安装了sysmon日志收集工具，对主机层面进行了日志收集。
+过了一星期左右，小Z发现系统进程里面居然多了个叫wcmoye的进程，凭感觉这不是个正常程序，那就先从这个程序开始入手调查吧。
+常规排查
+常规排查还是采用了微软经典系统工具systeminternals套件，分别对启动项，系统进程，网络连接等简单做了排查。
+启动项除了services这一项发现了一个奇怪的StuvwxAbcdefg Jkl，其他没有特别值得注意的地方。
+进程排查就是那个叫wcmoye.exe的进程
+进程依赖于StuvwxAbcdefgh Jkl这个服务
+网络通信：用tcpview观察wcmoye.exe会不定时连接一公网ip的9999端口
+同时会有一些注册表及文件系统上的行为，确定wcmoye躲在C:windowssyswow64目录下
+初步排查得出的结论是：wcmoye进程依赖于名叫Stuvwx Abcdefg Jkl系统服务，去syn链接公网ip的9999端口，是个木马程序。
+在对wcmoye有了一定认识之后，小Z想它是从哪里来的，这时，之前搭建的日志分析系统派上了用场。
+0×4 日志排查
+这个问题得从wcmoye.exe在系统中产生的第一时间着手调查。于是打开splunk开始搜索：通过 wcmoye关键字的搜索，发现6月6日20：24发生如下可疑事件：
+20：24：11 Tomcat目录下有一个叫NewRat的可执行文件生成wcmoye.exe，原来wcmoye是有一个叫NewRat的可执行文件生成的，但是回到Tomcat目录下查看，并没有发现NewRat.exe这个文件.
+不急，进一步搜索NewRat，发现了更大的信息量:在wcmoye被创建的前一秒 20：24：10，tomcat7.exe去调用cmd.exe执行了一段比较长的脚本，
+随着时序跟踪事件的发展，发现在20：24：12 调用cmd.exe删除了NewRat.exe
+同时还观察到services.exe的执行，系统服务创建
+关注sysmon的EventCode 3 ，wcmoye的进程会与下载NewRat的那个公网ip的9999端口有通信日志，
+其实到这里，wcmoye是从哪里进来的已经基本搞清楚了，接下来的问题就是为什么会进来？Tomcat为什么去执行这些恶意命令？现在唯一的线索就是日志中的那个ftp登陆的ip以及账号密码了，继续吧。
+0×5 顺藤摸瓜
+带着好奇心，继续探索过程，直接进入了这个ftp服务器!
+使用FileZilla进入ftp服务器的目录，以一目十行地速度快速扫了一遍，首先蹦入小Z眼帘的就是NewRat.exe，不错，和前面的调查结果相吻合，NewRat就安静地躺在这里。
+还有个独特专版st2-045 winlinux小组版文件夹，潜意识告诉这个文件夹里面很可能有谜底的答案，先直接百度一下
+好家伙，双系统传马还Kill国内外主流杀毒软件，关键是st2-045这个就是远程代码执行(RCE)漏洞(S2-045,CVE-2017-5638)，不禁一颤，之前居然没想到测试这个高危的提权漏洞。
+start.bat开始看吧
+有一个叫wincmd.txt的文件，是winows平台下的执行脚本，红框的内容和前面splunk日志中的那段日志一模一样，也就是帮引导到这里的那段关键日志。
+Linux平台的脚本：关闭防火墙，下载一个叫tatada的ELF文件，把netstat等系统命令改名，清空日志等等
+Result.txt文件，记录着一些扫描到的ip的端口开放情况
+Windows.txt和linux.txt里面貌似都是存在漏洞的网址。。。
+而且其中有一个关键的发现，就是所在公司的网站接口居然在一个叫http.txt的list里面
+到这里，已经大致猜得出自己的公司网站是怎么被盯上的了。再看下几个可执行文件:
+S.exe就是扫描器
+IDA载入str045
+看得出Str045.exe就是struts2-045的利用脚本程序，他会去读取S.exe扫描出的ip及端口开放情况的文件，组合do，action等开启多线程去exploit，然后根据被攻击的系统版本，去执行相应的脚本，像这台web服务器是windows的，就会去执行wincmd.txt。
+0×6 网络架构
+目前调查到的种种迹象让坚信黑客是通过struts2-45漏洞进来的！于是去网上下载了一个最新的struts漏洞检查工具，直接对网站的80端口进行检测，但结果出乎意料，居然没有漏洞报警。
+黑客服务器上只有针对strusts2-045的攻击脚本，但是检测又没有发现漏洞。这个矛盾的问题不禁思考更多的可能性。
+在陷入迷茫的深思同时， 不经意的翻看着tomcat的localhost_access_log日志，突然一批ABAB型日志出现在他眼前，一个公网地址，一个内网地址，时间就在NewRat出现的前几分钟20:20:36：
+这串高度相关的日志 究竟隐藏着什么意义？会不会是解开谜团的入口？带着强烈的好奇心，咨询了网络组的同事，什么情况下才会出现这样的情况，网络组给出了网站如下的网络架构，并说明了由于业务的临时需求，新对网络架构做了新的调整。" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/0603571ac155b51859fcab1223f7743b/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2020-11-27T06:53:33+08:00" />
+<meta property="article:modified_time" content="2020-11-27T06:53:33+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">web调用服务器上的exe_世界上究竟有没有安全的网络？如何才能不被木马入侵</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <div style="font-size:16px;"> 
+ <div class="pgc-img"> 
+  <img src="https://images2.imgbox.com/b8/88/F4ITyB3e_o.png" alt="18f0e6ae38c4fb0ee1afd90b7e914b71.png"> 
+ </div> 
+ <p><strong>网络安全</strong></p> 
+ <p>事件描述由于经常购买服务器 ，某天，发现一台服务器上面虽然安装了 360 ，但是 ，仍然提示入侵提示 。让我特别纳闷，于是开始调查下原因</p> 
+ <p>首先设想了三种可能性:1.存在系统漏洞2.由于前期运维在服务器上装了一些工具软件，会不会工具软件引入的病毒3.应用层漏洞。</p> 
+ <p>首先，用更新库的漏扫对系统层面的漏洞检测，未发现任何异常；</p> 
+ <p>由于会有开发连接进这台服务器，去开发那里收集工具软件进行查毒处理，也没发现异常，排除通过软件带入病毒的可能；那难道是通过应用层漏洞进来的？</p> 
+ <p>因为系统上线前都会经过web渗透测试，文件上传，SQL注入等常规漏洞已经修复，虽然这样，还是重新验证了一遍漏洞，没有问题，又用D盾webshell检测工具进行了扫面，未发现任何webshell。</p> 
+ <p>那病毒是怎么产生的？</p> 
+ <p>溯源准备</p> 
+ <p>由于病毒无法清干净，也不清楚黑客是已经在机器上做了哪些手脚，于是重新搭建一个干净的环境，给系统打好最新的补丁。</p> 
+ <p>由于前期没有在主机端做日志收集类工具，缺乏主机端的攻击溯源手段，于是临时搭建了splunk日志分析系统，并在新搭建的服务器上安装了sysmon日志收集工具，对主机层面进行了日志收集。</p> 
+ <p>过了一星期左右，小Z发现系统进程里面居然多了个叫wcmoye的进程，凭感觉这不是个正常程序，那就先从这个程序开始入手调查吧。</p> 
+ <p>常规排查</p> 
+ <p>常规排查还是采用了微软经典系统工具systeminternals套件，分别对启动项，系统进程，网络连接等简单做了排查。</p> 
+ <p>启动项除了services这一项发现了一个奇怪的StuvwxAbcdefg Jkl，其他没有特别值得注意的地方。</p> 
+ <div class="pgc-img"> 
+  <img src="https://images2.imgbox.com/3b/9a/P4DWkwQu_o.png" alt="aca350405a4c215bd1c0c56c0336a813.png"> 
+ </div> 
+ <p>进程排查就是那个叫wcmoye.exe的进程</p> 
+ <div class="pgc-img"> 
+  <img src="https://images2.imgbox.com/b7/da/lgSR3e82_o.png" alt="bb7aca15cace9eb5f12f5e9d318b0b56.png"> 
+ </div> 
+ <p>进程依赖于StuvwxAbcdefgh Jkl这个服务</p> 
+ <div class="pgc-img"> 
+  <img src="https://images2.imgbox.com/57/45/LMK0nYrd_o.png" alt="c891a02757376429e9ea3c5b8c20a7d1.png"> 
+ </div> 
+ <p>网络通信：用tcpview观察wcmoye.exe会不定时连接一公网ip的9999端口</p> 
+ <div class="pgc-img"> 
+  <img src="https://images2.imgbox.com/b4/cd/YvUsLSC1_o.png" alt="c91ec0bc831a63d7ec3a87b0e01ffc0e.png"> 
+ </div> 
+ <p>同时会有一些注册表及文件系统上的行为，确定wcmoye躲在C:windowssyswow64目录下</p> 
+ <div class="pgc-img"> 
+  <img src="https://images2.imgbox.com/ad/3a/iGP6uePc_o.png" alt="85f1adcafa7460b4101fa0970cb13d9b.png"> 
+ </div> 
+ <p>初步排查得出的结论是：wcmoye进程依赖于名叫Stuvwx Abcdefg Jkl系统服务，去syn链接公网ip的9999端口，是个木马程序。</p> 
+ <p>在对wcmoye有了一定认识之后，小Z想它是从哪里来的，这时，之前搭建的日志分析系统派上了用场。</p> 
+ <p><strong>0×4 日志排查</strong></p> 
+ <p>这个问题得从wcmoye.exe在系统中产生的第一时间着手调查。于是打开splunk开始搜索：通过 wcmoye关键字的搜索，发现6月6日20：24发生如下可疑事件：</p> 
+ <p>20：24：11 Tomcat目录下有一个叫NewRat的可执行文件生成wcmoye.exe，原来wcmoye是有一个叫NewRat的可执行文件生成的，但是回到Tomcat目录下查看，并没有发现NewRat.exe这个文件.</p> 
+ <div class="pgc-img"> 
+  <img src="https://images2.imgbox.com/d5/c0/kvkblYlO_o.png" alt="a22bff287648f060c130fb123dd7d768.png"> 
+ </div> 
+ <div class="pgc-img"> 
+  <img src="https://images2.imgbox.com/4f/38/E7k5Xk3d_o.png" alt="f3105bf0c79c9b77de9e3a6c1a973c5f.png"> 
+ </div> 
+ <p>不急，进一步搜索NewRat，发现了更大的信息量:在wcmoye被创建的前一秒 20：24：10，tomcat7.exe去调用cmd.exe执行了一段比较长的脚本，</p> 
+ <p>随着时序跟踪事件的发展，发现在20：24：12 调用cmd.exe删除了NewRat.exe</p> 
+ <div class="pgc-img"> 
+  <img src="https://images2.imgbox.com/03/9a/UQ0eaMf5_o.png" alt="3daf9143ada979f33de10b8d6c88dd7b.png"> 
+ </div> 
+ <p>同时还观察到services.exe的执行，系统服务创建</p> 
+ <div class="pgc-img"> 
+  <img src="https://images2.imgbox.com/a7/a8/K0xBy5pD_o.png" alt="9a7ed3b1ccc092d28ae68ad419296716.png"> 
+ </div> 
+ <p>关注sysmon的EventCode 3 ，wcmoye的进程会与下载NewRat的那个公网ip的9999端口有通信日志，</p> 
+ <div class="pgc-img"> 
+  <img src="https://images2.imgbox.com/bb/1d/bjR7CurQ_o.png" alt="69b58dbdf7c39a116fe2da0d6e34d8d0.png"> 
+ </div> 
+ <p>其实到这里，wcmoye是从哪里进来的已经基本搞清楚了，接下来的问题就是为什么会进来？Tomcat为什么去执行这些恶意命令？现在唯一的线索就是日志中的那个ftp登陆的ip以及账号密码了，继续吧。</p> 
+ <p><strong>0×5 顺藤摸瓜</strong></p> 
+ <p>带着好奇心，继续探索过程，直接进入了这个ftp服务器!</p> 
+ <div class="pgc-img"> 
+  <img src="https://images2.imgbox.com/80/9a/1EvMIEPz_o.png" alt="a06ad53be5a38c0d61c36072021738c2.png"> 
+ </div> 
+ <p>使用FileZilla进入ftp服务器的目录，以一目十行地速度快速扫了一遍，首先蹦入小Z眼帘的就是NewRat.exe，不错，和前面的调查结果相吻合，NewRat就安静地躺在这里。</p> 
+ <div class="pgc-img"> 
+  <img src="https://images2.imgbox.com/64/7b/EP7w1ef8_o.png" alt="8a3af28231c67124869da0488c02d09a.png"> 
+ </div> 
+ <p>还有个独特专版st2-045 winlinux小组版文件夹，潜意识告诉这个文件夹里面很可能有谜底的答案，先直接百度一下</p> 
+ <div class="pgc-img"> 
+  <img src="https://images2.imgbox.com/9a/28/Ps1ZhJBt_o.png" alt="a5610951f8beb07cdc3984c6b9319dbe.png"> 
+ </div> 
+ <p>好家伙，双系统传马还Kill国内外主流杀毒软件，关键是st2-045这个就是远程代码执行(RCE)漏洞(S2-045,CVE-2017-5638)，不禁一颤，之前居然没想到测试这个高危的提权漏洞。</p> 
+ <div class="pgc-img"> 
+  <img src="https://images2.imgbox.com/7c/22/gj65AynD_o.png" alt="b4cef871f2bff4c6a30c2e8f985b50ee.png"> 
+ </div> 
+ <p>start.bat开始看吧</p> 
+ <div class="pgc-img"> 
+  <img src="https://images2.imgbox.com/ce/eb/2D1hxymh_o.png" alt="7992e3088288794d8edb77deef06a17c.png"> 
+ </div> 
+ <div class="pgc-img"> 
+  <img src="https://images2.imgbox.com/c0/e6/2cmh3nW2_o.png" alt="7c11e6c2aa6e5c63c0c8734c2abf7a25.png"> 
+ </div> 
+ <p>有一个叫wincmd.txt的文件，是winows平台下的执行脚本，红框的内容和前面splunk日志中的那段日志一模一样，也就是帮引导到这里的那段关键日志。</p> 
+ <div class="pgc-img"> 
+  <img src="https://images2.imgbox.com/04/08/mKOOvSfE_o.png" alt="38ff006b86fa2606ca41bcc6a9081458.png"> 
+ </div> 
+ <p>Linux平台的脚本：关闭防火墙，下载一个叫tatada的ELF文件，把netstat等系统命令改名，清空日志等等</p> 
+ <div class="pgc-img"> 
+  <img src="https://images2.imgbox.com/2f/bc/40WZTsTc_o.png" alt="73896d5fc11382deb445eb50de3093b4.png"> 
+ </div> 
+ <div class="pgc-img"> 
+  <img src="https://images2.imgbox.com/a4/2b/TRx2BIT4_o.png" alt="f165875eca4be77f3846da3c739d6298.png"> 
+ </div> 
+ <p>Result.txt文件，记录着一些扫描到的ip的端口开放情况</p> 
+ <div class="pgc-img"> 
+  <img src="https://images2.imgbox.com/fd/c6/REm92TJ5_o.png" alt="9b5c987fe7622ba572439ff4f83c993e.png"> 
+ </div> 
+ <div class="pgc-img"> 
+  <img src="https://images2.imgbox.com/42/7d/xrF7uRXw_o.png" alt="60a4c0c74ede848703beba9ba63f29ab.png"> 
+ </div> 
+ <p>Windows.txt和linux.txt里面貌似都是存在漏洞的网址。。。</p> 
+ <p>而且其中有一个关键的发现，就是所在公司的网站接口居然在一个叫http.txt的list里面</p> 
+ <div class="pgc-img"> 
+  <img src="https://images2.imgbox.com/e3/1f/0jePFFOn_o.png" alt="ef29b08c04a1ec8bf05783f76e714382.png"> 
+ </div> 
+ <p>到这里，已经大致猜得出自己的公司网站是怎么被盯上的了。再看下几个可执行文件:</p> 
+ <p>S.exe就是扫描器</p> 
+ <div class="pgc-img"> 
+  <img src="https://images2.imgbox.com/03/3b/u4oNbLoh_o.png" alt="2954741465973148e326c7e1d976ab68.png"> 
+ </div> 
+ <p>IDA载入str045</p> 
+ <div class="pgc-img"> 
+  <img src="https://images2.imgbox.com/8a/6a/SIdtyQTK_o.png" alt="9e38976d97011a783476a6a3043f726f.png"> 
+ </div> 
+ <div class="pgc-img"> 
+  <img src="https://images2.imgbox.com/0c/24/Zo1QDlak_o.png" alt="800d73aa4aea23003bb5feeb06fc22d7.png"> 
+ </div> 
+ <div class="pgc-img"> 
+  <img src="https://images2.imgbox.com/fa/0b/1cEE3WLx_o.png" alt="fb1f0574935f0433b6f9754956a53b67.png"> 
+ </div> 
+ <div class="pgc-img"> 
+  <img src="https://images2.imgbox.com/f1/d9/7n0b0cYP_o.png" alt="accc2bd293322ee731f533a067f1701a.png"> 
+ </div> 
+ <div class="pgc-img"> 
+  <img src="https://images2.imgbox.com/34/65/onQMGTfV_o.png" alt="57d5068c10ff4dc6c40a47e41ee3b911.png"> 
+ </div> 
+ <p>看得出Str045.exe就是struts2-045的利用脚本程序，他会去读取S.exe扫描出的ip及端口开放情况的文件，组合do，action等开启多线程去exploit，然后根据被攻击的系统版本，去执行相应的脚本，像这台web服务器是windows的，就会去执行wincmd.txt。</p> 
+ <p><strong>0×6 网络架构</strong></p> 
+ <p>目前调查到的种种迹象让坚信黑客是通过struts2-45漏洞进来的！于是去网上下载了一个最新的struts漏洞检查工具，直接对网站的80端口进行检测，但结果出乎意料，居然没有漏洞报警。</p> 
+ <div class="pgc-img"> 
+  <img src="https://images2.imgbox.com/0e/f4/gNo1fi5m_o.png" alt="953eca3946f7f5826f6d1a4b250f6e1f.png"> 
+ </div> 
+ <p>黑客服务器上只有针对strusts2-045的攻击脚本，但是检测又没有发现漏洞。这个矛盾的问题不禁思考更多的可能性。</p> 
+ <p>在陷入迷茫的深思同时， 不经意的翻看着tomcat的localhost_access_log日志，突然一批ABAB型日志出现在他眼前，一个公网地址，一个内网地址，时间就在NewRat出现的前几分钟20:20:36：</p> 
+ <div class="pgc-img"> 
+  <img src="https://images2.imgbox.com/1a/09/ZGMkCl0F_o.png" alt="7cbfd9a6368bea95c80d88f16e5bc879.png"> 
+ </div> 
+ <p>这串高度相关的日志 究竟隐藏着什么意义？会不会是解开谜团的入口？带着强烈的好奇心，咨询了网络组的同事，什么情况下才会出现这样的情况，网络组给出了网站如下的网络架构，并说明了由于业务的临时需求，新对网络架构做了新的调整。</p> 
+ <div class="pgc-img"> 
+  <img src="https://images2.imgbox.com/d8/cd/s44UP9f0_o.png" alt="78b4c15e6f3b4393eeb6353a23789763.png"> 
+ </div> 
+ <p>服务器的内网端口是7070，公网防火墙上开放了80，443和8090端口。公网端口8090作了NAT对应内网的7070端口，据说是因为业务新需求开放的；同时为了安全考虑，公网用户如果只访问了80后，F5会做强制443端口跳转访问F5的一个vip地址。</p> 
+ <p>这种网络架构，当有人在公网扫描到80和8090端口时，就会出现ABAB型日志，即A就是通过NAT进来的，B是从vip地址过来的。所以才会出现上述奇怪日志的原因，那个时刻，是黑客服务器在扫描 80和8090端口。</p> 
+ <p><strong>0×7 水落石出</strong></p> 
+ <p>NewRat也是在那个奇怪的日志后产生的，这时一个念头闪现在脑海里，还是用struts漏洞利用工具，不过这次是去尝试web的的8090端口！一串清晰的红字,警告:存在Struts远程代码执行漏洞S2-045 ！</p> 
+ <div class="pgc-img"> 
+  <img src="https://images2.imgbox.com/8b/68/35e9ds0D_o.png" alt="6b8c37ab4f55f81a10fbb164c50b68c5.png"> 
+ </div> 
+ <p>再试试443端口，也能检测出：</p> 
+ <div class="pgc-img"> 
+  <img src="https://images2.imgbox.com/85/e3/dz0GG3Sh_o.png" alt="cc975a0e04febde87a9f4f2ab2461d1b.png"> 
+ </div> 
+ <p>获取web系统内网IP信息</p> 
+ <div class="pgc-img"> 
+  <img src="https://images2.imgbox.com/b6/e3/VNoRGlbY_o.png" alt="3dc9293eedf26c9ce7ea65ed1f3344f2.png"> 
+ </div> 
+ <div class="pgc-img"> 
+  <img src="https://images2.imgbox.com/f0/5e/nODUPEPg_o.png" alt="a382bc3a9db7dee94d02a90a3c488ec5.png"> 
+ </div> 
+ <p>而且通过搜索tomcat目录找到 struts的版本为2.5.10，的确是存在S2-045漏洞的版本。</p> 
+ <p>至此，这次入侵的来龙去脉，小Z已经调查清楚了。由于网站使用了struts框架 版本为2.5.10，存在struts2-045漏洞，黑客通过公网扫描找到网站，进而执行exploit把病毒程序传到服务器里面执行，不停的病毒警告是因为不断有人在公网利用漏洞入侵服务器。</p> 
+ <p><strong>0×8 题外话</strong></p> 
+ <p>但同时，小Z也注意到了另一个问题，为什么struts漏洞利用工具直接访问80端口无法检测出漏洞?</p> 
+ <p>小Z于是想到了Wireshark，这个网络放大镜或许能给出点蛛丝马迹。还是抓包对比一下吧。</p> 
+ <p>抓一下未检测出漏洞的80端口的包，</p> 
+ <div class="pgc-img"> 
+  <img src="https://images2.imgbox.com/0e/cf/H8SdJw6c_o.png" alt="192950de346e3ecd31d3210bdc91a007.png"> 
+ </div> 
+ <div class="pgc-img"> 
+  <img src="https://images2.imgbox.com/95/a5/sLhfW98R_o.png" alt="d280d36859db862857a98d22806c2b67.png"> 
+ </div> 
+ <div class="pgc-img"> 
+  <img src="https://images2.imgbox.com/1c/92/ndCFhD9E_o.png" alt="2d165ca1adbb664416c11e707b4588de.png"> 
+ </div> 
+ <div class="pgc-img"> 
+  <img src="https://images2.imgbox.com/b9/0b/fFW4hGd6_o.png" alt="d378b4cc388785b044d8d111d79125e3.png"> 
+ </div> 
+ <p>第一次get请求，F5返回了一个https的302重定向后，由于connection:close，F5直接做出了FIN ACK</p> 
+ <div class="pgc-img"> 
+  <img src="https://images2.imgbox.com/e9/16/Tuhs42sB_o.png" alt="83586c04eaf58fb1cc58ab8900fde993.png"> 
+ </div> 
+ <div class="pgc-img"> 
+  <img src="https://images2.imgbox.com/d7/99/JNe6UDh2_o.png" alt="b6e11fa14bd98d55d0df3730a63c7ec8.png"> 
+ </div> 
+ <div class="pgc-img"> 
+  <img src="https://images2.imgbox.com/b3/b9/dhbTZsIe_o.png" alt="3cf2089f5dc3f5953df70b50b06e36a6.png"> 
+ </div> 
+ <p>第二次，软件请求的还是与80端口，而且get请求是带完整https url路径的,这种请求格式导致F5返回一个奇怪的重定向https://WWW.XXX.COMhttps://WWW.XXX.COM/test/test.do.导致漏洞验证失败。</p> 
+ <p>再来对比一下浏览器页面访问80端口测试：经过tcp三次握手，浏览器发出get请求之后，F5返回一个302重定向，浏览器于是向443端口开始了三次握手，接下来就是https的通信过程，</p> 
+ <div class="pgc-img"> 
+  <img src="https://images2.imgbox.com/de/66/3zNtFs9S_o.png" alt="74f0ff529bf236fbdb7abd09378edcbf.png"> 
+ </div> 
+ <div class="pgc-img"> 
+  <img src="https://images2.imgbox.com/17/ca/8msVNucc_o.png" alt="906c24ed5f77e576787a4fd9699ab707.png"> 
+ </div> 
+ <p>通过对比实验分析，发现在漏洞利用工具在测试80端口时，如果网站做了80转443端口的强制跳转，浏览器在得到302重定向后就开始向443端口开始3次握手，而测试软件的数据包处理过程就有问题，这时候直接测试80端口软件就会存在误报<strong>。</strong></p> 
+ <p>小Z之前由于粗心，只测试网站的80端口，得出错误的结论，原因也找到了。</p> 
+ <p><strong>0×9 结尾</strong></p> 
+ <p>到此为止，所有的谜团一一解开，小c结束了这次曲折的入侵取证之路。</p> 
+ <p>作者：诸葛蛋蛋</p> 
+ <p>链接：https://www.zhihu.com/people/zhuan-zhi-pcdan-dan/posts</p> 
+ <p>来源：知乎</p> 
+ <p>著作权归作者所有。商业转载请联系作者获得授权，非商业转载请注明出处。</p> 
+</div>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/15ffc5f31e9eaae4b010a7c31b0b6049/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">python扫雷代码_Python&#43;OpenCV实现自动扫雷，创造属于自己的世界记录！</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/4ae9f9b0cb78834a74d42fe2ba55c6cb/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">科来数据包生成器找不到网卡_一个HTTP数据包的奇幻之旅</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

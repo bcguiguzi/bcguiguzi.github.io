@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>muduo源代码分析1：一个线程安全的Counter示例 - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="muduo源代码分析1：一个线程安全的Counter示例" />
+<meta property="og:description" content="现在开始讲《Linux多线程服务端编程：使用muduoC&#43;&#43;网络库》一书的代码，对服务器多线程C&#43;&#43;编程做一系列的介绍，首先本节将介绍最简单的一个线程安全示例Counter,其实现的是一个线程安全的计数器，首先下载书中源代码：
+git clone http://github.com/chenshuo/recipes.git
+代码是基于moduo网络库和标准boost库实现，故首先要安装boost和moduo，boost库的安装参看boost安装。
+示例代码 Counter.cc在目录/recipes/thread/test下，首先介绍下如何编译Counter.cc，Counter.cc的编译还涉及到3个其他文件，均在目录/recipes/thread/下，分别为Mutex.h、Thread.h和Thread.cc，makefile内容如下：
+CXX = g&#43;&#43; DEBUG = -g -O2 CFLAGS = $(DEBUG) -Wall -c RM = rm -rf LIBS = -lpthread -lboost_system -lboost_thread TARGET = Counter OBJS =Counter.o Thread.o $(TARGET) : $(OBJS) $(CXX) $^ -o $@ $(LIBS) Counter.o : Counter.cc $(CXX) $(CFLAGS) $&lt; -o $@ Thread.o : ../Thread.cc $(CXX) $(CFLAGS) $&lt; -o $@ clean: $(RM) $(TARGET) *.o 注意这里涉及boost库和多线程的编译，需要连接静态文件：-lpthread -lboost_system -lboost_thread。
+下面来看代码，首先看Counter.cc的代码：
+#include &#34;../Mutex.h&#34; using muduo::MutexLock; using muduo::MutexLockGuard; // A thread-safe counter class Counter : boost::noncopyable { // copy-ctor and assignment should be private by default for a class." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/17cc27d6d6e082698bacfbc5771b80e7/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2020-12-10T22:54:21+08:00" />
+<meta property="article:modified_time" content="2020-12-10T22:54:21+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">muduo源代码分析1：一个线程安全的Counter示例</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p>现在开始讲《Linux多线程服务端编程：使用muduoC++网络库》一书的代码，对服务器多线程C++编程做一系列的介绍，首先本节将介绍最简单的一个线程安全示例Counter,其实现的是一个线程安全的计数器，首先下载书中源代码：</p> 
+<p>git clone http://github.com/chenshuo/recipes.git</p> 
+<p>代码是基于moduo网络库和标准boost库实现，故首先要安装boost和moduo，boost库的安装参看<a href="https://blog.csdn.net/fangfanglovezhou/article/details/105337528">boost安装。</a></p> 
+<p>示例代码 Counter.cc在目录/recipes/thread/test下，首先介绍下如何编译Counter.cc，Counter.cc的编译还涉及到3个其他文件，均在目录/recipes/thread/下，分别为Mutex.h、Thread.h和Thread.cc，makefile内容如下：</p> 
+<pre><code class="language-bash">CXX = g++
+DEBUG = -g -O2
+CFLAGS = $(DEBUG) -Wall -c
+RM = rm -rf
+LIBS = -lpthread -lboost_system -lboost_thread
+TARGET = Counter
+OBJS =Counter.o Thread.o
+$(TARGET) : $(OBJS)
+	$(CXX) $^ -o $@ $(LIBS)
+Counter.o : Counter.cc
+	$(CXX) $(CFLAGS) $&lt; -o $@
+Thread.o : ../Thread.cc
+	$(CXX) $(CFLAGS) $&lt; -o $@
+clean:
+	$(RM) $(TARGET) *.o
+</code></pre> 
+<p>注意这里涉及boost库和多线程的编译，需要连接静态文件：-lpthread -lboost_system -lboost_thread。</p> 
+<p>下面来看代码，首先看Counter.cc的代码：</p> 
+<pre><code class="language-cpp">#include "../Mutex.h"
+using muduo::MutexLock;
+using muduo::MutexLockGuard;
+
+// A thread-safe counter
+class Counter : boost::noncopyable
+{
+  // copy-ctor and assignment should be private by default for a class.
+ public:
+  Counter() : value_(0) {}
+  Counter&amp; operator=(const Counter&amp; rhs);
+
+  int64_t value() const;
+  int64_t getAndIncrease();
+
+  friend void swap(Counter&amp; a, Counter&amp; b);
+
+ private:
+  mutable MutexLock mutex_;
+  int64_t value_;
+};
+
+int64_t Counter::value() const
+{
+  MutexLockGuard lock(mutex_);
+  return value_;
+}
+
+int64_t Counter::getAndIncrease()
+{
+  MutexLockGuard lock(mutex_);
+  int64_t ret = value_++;
+  return ret;
+}
+
+void swap(Counter&amp; a, Counter&amp; b)
+{
+  MutexLockGuard aLock(a.mutex_);  // potential dead lock
+  MutexLockGuard bLock(b.mutex_);
+  int64_t value = a.value_;
+  a.value_ = b.value_;
+  b.value_ = value;
+}
+
+Counter&amp; Counter::operator=(const Counter&amp; rhs)
+{
+  if (this == &amp;rhs)
+    return *this;
+
+  MutexLockGuard myLock(mutex_);  // potential dead lock
+  MutexLockGuard itsLock(rhs.mutex_);
+  value_ = rhs.value_;
+  return *this;
+}
+
+int main()
+{
+  Counter c;
+  c.getAndIncrease();
+}
+</code></pre> 
+<p>类Counter继承了boost::noncopyable类，作用是禁用拷贝赋值函数和赋值运算。这个例子很简单，对成员变量value进行计数，可以返回value值，可以递加value的值，且可以交换两个对象的成员value的值。首先看函数value():</p> 
+<pre><code class="language-cpp">int64_t Counter::value() const
+{
+  MutexLockGuard lock(mutex_);
+  return value_;
+}</code></pre> 
+<p>声明为const有两个作用：1.声明为const，才能被const对象调用；2.声明为const，不允许修改成员变量。这里用到了类MutexLockGuard，其定义在Mutex.h文件中：</p> 
+<pre><code class="language-cpp">class MutexLockGuard : boost::noncopyable
+{
+ public:
+  explicit MutexLockGuard(MutexLock&amp; mutex) : mutex_(mutex)
+  {
+    mutex_.lock();
+  }
+
+  ~MutexLockGuard()
+  {
+    mutex_.unlock();
+  }
+
+ private:
+
+  MutexLock&amp; mutex_;
+};</code></pre> 
+<p>主要用到了MutexLock类，其定义同样在Mutex.h文件中：</p> 
+<pre><code class="language-cpp">class MutexLock : boost::noncopyable
+{
+ public:
+  MutexLock()
+    : holder_(0)
+  {
+    pthread_mutex_init(&amp;mutex_, NULL);
+  }
+
+  ~MutexLock()
+  {
+    assert(holder_ == 0);
+    pthread_mutex_destroy(&amp;mutex_);
+  }
+
+  bool isLockedByThisThread()
+  {
+    return holder_ == CurrentThread::tid();
+  }
+
+  void assertLocked()
+  {
+    assert(isLockedByThisThread());
+  }
+
+  // internal usage
+
+  void lock()
+  {
+    pthread_mutex_lock(&amp;mutex_);
+    holder_ = CurrentThread::tid();
+  }
+
+  void unlock()
+  {
+    holder_ = 0;
+    pthread_mutex_unlock(&amp;mutex_);
+  }
+
+  pthread_mutex_t* getPthreadMutex() /* non-const */
+  {
+    return &amp;mutex_;
+  }
+
+ private:
+
+  pthread_mutex_t mutex_;
+  pid_t holder_;
+};
+</code></pre> 
+<p>这里定义了线程互斥变量pthread_mutex_t mutex_，holder_在锁定的时候保存锁定线程的线程id,调用lock锁定互斥变量，调用unlock解锁互斥变量，holder_重新置为0。我们再回到MutexLockGuard的定义，可以看到MutexLockGuard通过构造函数传入一个互斥变量，并锁定该互斥变量，在析构的时候会解锁该互斥变量。现在再看Value函数就很容易理解了，MutexLockGuard定义局部变量lock，此时会调用构造函数锁定mutex_,当value函数执行完成后，局部变量lock生命周期结束，调用析构函数释放mutex_。这里注意两点，一点是互斥成员变量声明为mutex_，这样即便在const的函数中其值也是可变的；swap函数定义为友元函数，其本身不是类成员函数，但由于声明为友元，故可以访问类的私有变量。这是最简答的一个多线程加锁的例子，但仍然是有问题的，例如Counter是动态创建的，且通过一个指针来访问，那么解析这个对象的时候是否有线程正在执行该对象是未知的。</p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/e36c7942341a974c794963b1d1fe94bc/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">Android-返回上一层Activity</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/89b5da680a2de0f2f20cc72c7cd8c2c7/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">测试用例怎么写_浅谈测试用例的编写</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

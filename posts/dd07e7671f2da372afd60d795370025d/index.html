@@ -1,0 +1,693 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>深入理解ngx_http_upstream_vnswrr_module负载均衡模块 - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="深入理解ngx_http_upstream_vnswrr_module负载均衡模块" />
+<meta property="og:description" content="目录 1. 引言2. 启用vnswrr负载均衡模块3. 源码剖析3.1 配置指令分析3.2 负载均衡算法配置初始化3.3 负载均衡请求上下文的初始化3.4 获取peer 1. 引言 之前有讨论了nginx的swrr算法的两个问题，并引出了阿里tengine的vnswrr算法如何来克服swrr的问题。本文通过源码层面对ngx_http_upstream_vnswrr_module模块进行分析，来深入理解vnswrr负载均衡算法。关于swrr算法的思考可以查看《nginx upstream server主动健康检测模块添加https检测功能》。关于vnswrr的算法原理可以参考《阿里七层流量入口负载均衡算法演变之路》。
+2. 启用vnswrr负载均衡模块 配置指令的格式为：
+指令： vnswrr [max_init=init_vode_num] 默认值： - 上下文: upstream 其中init_vnode_num是初始化虚拟节点的数量，具体可以参考《阿里七层流量入口负载均衡算法演变之路》中**接入层 VNSWRR 算法（V2）**部分的描述。
+以5台rs服务器为例开启vnswrr，距离如下：
+upstream { vnswrr 5; server 192.168.0.1 weight=1; server 192.168.0.2 weight=1; server 192.168.0.3 weight=3; server 192.168.0.4 weight=3; server 192.168.0.5 weight=5; server 192.168.0.6 weight=5; } 3. 源码剖析 3.1 配置指令分析 本模块定义了配置指令vnswrr，代码如下：
+static ngx_command_t ngx_http_upstream_vnswrr_commands[] = { { ngx_string(&#34;vnswrr&#34;), NGX_HTTP_UPS_CONF|NGX_CONF_NOARGS|NGX_CONF_TAKE1, ngx_http_upstream_vnswrr, 0, 0, NULL }, ngx_null_command }; 以上定义了指令分析回调函数ngx_http_upstream_vnswrr, 其源码如下：" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/dd07e7671f2da372afd60d795370025d/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2024-03-13T18:10:33+08:00" />
+<meta property="article:modified_time" content="2024-03-13T18:10:33+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">深入理解ngx_http_upstream_vnswrr_module负载均衡模块</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p></p> 
+<div class="toc"> 
+ <h4>目录</h4> 
+ <ul><li><a href="#1__3" rel="nofollow">1. 引言</a></li><li><a href="#2_vnswrr_8" rel="nofollow">2. 启用vnswrr负载均衡模块</a></li><li><a href="#3__34" rel="nofollow">3. 源码剖析</a></li><li><ul><li><a href="#31__36" rel="nofollow">3.1 配置指令分析</a></li><li><a href="#32__118" rel="nofollow">3.2 负载均衡算法配置初始化</a></li><li><a href="#33__262" rel="nofollow">3.3 负载均衡请求上下文的初始化</a></li><li><a href="#34_peer_302" rel="nofollow">3.4 获取peer</a></li></ul> 
+ </li></ul> 
+</div> 
+<p></p> 
+<h2><a id="1__3"></a>1. 引言</h2> 
+<p>   之前有讨论了nginx的swrr算法的两个问题，并引出了阿里tengine的vnswrr算法如何来克服swrr的问题。本文通过源码层面对ngx_http_upstream_vnswrr_module模块进行分析，来深入理解vnswrr负载均衡算法。关于swrr算法的思考可以查看<a href="https://mp.weixin.qq.com/s?__biz=Mzk0NTY1NzM1OA==&amp;mid=2247483697&amp;idx=1&amp;sn=837df92fc32ff3723ad5a2d5fb0e0808&amp;chksm=c3134250f464cb46771a33ccadb49667f893289656e97ece26cd96edc47f2f15da6497ce1f03&amp;token=2013918375&amp;lang=zh_CN#rd" rel="nofollow">《nginx upstream server主动健康检测模块添加https检测功能》</a>。关于vnswrr的算法原理可以参考<a href="https://www.upyun.com/opentalk/444.html" rel="nofollow">《阿里七层流量入口负载均衡算法演变之路》</a>。</p> 
+<h2><a id="2_vnswrr_8"></a>2. 启用vnswrr负载均衡模块</h2> 
+<p>  配置指令的格式为：</p> 
+<pre><code>指令：    vnswrr  [max_init=init_vode_num]
+默认值：  -
+上下文:   upstream
+
+</code></pre> 
+<p>  其中init_vnode_num是初始化虚拟节点的数量，具体可以参考<a href="https://www.upyun.com/opentalk/444.html" rel="nofollow">《阿里七层流量入口负载均衡算法演变之路》</a>中**接入层 VNSWRR 算法（V2）**部分的描述。</p> 
+<p>  以5台rs服务器为例开启vnswrr，距离如下：</p> 
+<pre><code>upstream {
+    vnswrr 5;
+    server 192.168.0.1 weight=1;
+    server 192.168.0.2 weight=1;
+    server 192.168.0.3 weight=3;
+    server 192.168.0.4 weight=3;
+    server 192.168.0.5 weight=5;
+    server 192.168.0.6 weight=5;
+}
+
+</code></pre> 
+<h2><a id="3__34"></a>3. 源码剖析</h2> 
+<h3><a id="31__36"></a>3.1 配置指令分析</h3> 
+<p>   本模块定义了配置指令vnswrr，代码如下：</p> 
+<pre><code class="prism language-c"><span class="token keyword">static</span> <span class="token class-name">ngx_command_t</span>  ngx_http_upstream_vnswrr_commands<span class="token punctuation">[</span><span class="token punctuation">]</span> <span class="token operator">=</span> <span class="token punctuation">{<!-- --></span>
+
+    <span class="token punctuation">{<!-- --></span> <span class="token function">ngx_string</span><span class="token punctuation">(</span><span class="token string">"vnswrr"</span><span class="token punctuation">)</span><span class="token punctuation">,</span>
+      NGX_HTTP_UPS_CONF<span class="token operator">|</span>NGX_CONF_NOARGS<span class="token operator">|</span>NGX_CONF_TAKE1<span class="token punctuation">,</span>
+      ngx_http_upstream_vnswrr<span class="token punctuation">,</span>
+      <span class="token number">0</span><span class="token punctuation">,</span>
+      <span class="token number">0</span><span class="token punctuation">,</span>
+      <span class="token constant">NULL</span> <span class="token punctuation">}</span><span class="token punctuation">,</span>
+
+      ngx_null_command
+<span class="token punctuation">}</span><span class="token punctuation">;</span>
+</code></pre> 
+<p>  以上定义了指令分析回调函数ngx_http_upstream_vnswrr, 其源码如下：</p> 
+<pre><code class="prism language-c"><span class="token keyword">static</span> <span class="token keyword">char</span> <span class="token operator">*</span>
+<span class="token function">ngx_http_upstream_vnswrr</span><span class="token punctuation">(</span><span class="token class-name">ngx_conf_t</span> <span class="token operator">*</span>cf<span class="token punctuation">,</span> <span class="token class-name">ngx_command_t</span> <span class="token operator">*</span>cmd<span class="token punctuation">,</span> <span class="token keyword">void</span> <span class="token operator">*</span>conf<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+    <span class="token class-name">ngx_http_upstream_srv_conf_t</span>            <span class="token operator">*</span>uscf<span class="token punctuation">;</span>
+    <span class="token class-name">ngx_http_upstream_vnswrr_srv_conf_t</span>     <span class="token operator">*</span>uvnscf<span class="token punctuation">;</span>
+    <span class="token class-name">ngx_str_t</span>                               <span class="token operator">*</span>value<span class="token punctuation">;</span>
+    <span class="token class-name">ngx_int_t</span>                                max_init<span class="token punctuation">;</span>
+
+    uscf <span class="token operator">=</span> <span class="token function">ngx_http_conf_get_module_srv_conf</span><span class="token punctuation">(</span>cf<span class="token punctuation">,</span> ngx_http_upstream_module<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>uscf<span class="token operator">-&gt;</span>peer<span class="token punctuation">.</span>init_upstream<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token function">ngx_conf_log_error</span><span class="token punctuation">(</span>NGX_LOG_WARN<span class="token punctuation">,</span> cf<span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">,</span>
+                           <span class="token string">"load balancing method redefined"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+	<span class="token comment">/* 将vnswrr的负载均衡算法配置初始化回调函数挂进去 */</span>
+    uscf<span class="token operator">-&gt;</span>peer<span class="token punctuation">.</span>init_upstream <span class="token operator">=</span> ngx_http_upstream_init_vnswrr<span class="token punctuation">;</span>
+
+	<span class="token comment">/* 不象哈希负载均衡算法，本算法可以支持主备服务器 */</span>
+    uscf<span class="token operator">-&gt;</span>flags <span class="token operator">=</span> NGX_HTTP_UPSTREAM_CREATE
+                  <span class="token operator">|</span>NGX_HTTP_UPSTREAM_WEIGHT
+                  <span class="token operator">|</span>NGX_HTTP_UPSTREAM_BACKUP
+                  <span class="token operator">|</span>NGX_HTTP_UPSTREAM_MAX_FAILS
+                  <span class="token operator">|</span>NGX_HTTP_UPSTREAM_FAIL_TIMEOUT
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">if</span> <span class="token expression"><span class="token function">defined</span><span class="token punctuation">(</span>nginx_version<span class="token punctuation">)</span> <span class="token operator">&amp;&amp;</span> nginx_version <span class="token operator">&gt;=</span> <span class="token number">1011005</span></span></span>
+                  <span class="token operator">|</span>NGX_HTTP_UPSTREAM_MAX_CONNS
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+                  <span class="token operator">|</span>NGX_HTTP_UPSTREAM_DOWN<span class="token punctuation">;</span>
+
+	<span class="token comment">/* 获取vnswrr的配置上下文 */</span>
+    uvnscf <span class="token operator">=</span> <span class="token function">ngx_http_conf_upstream_srv_conf</span><span class="token punctuation">(</span>uscf<span class="token punctuation">,</span>
+                                ngx_http_upstream_vnswrr_module<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    value <span class="token operator">=</span> cf<span class="token operator">-&gt;</span>args<span class="token operator">-&gt;</span>elts<span class="token punctuation">;</span>
+
+    max_init <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+	
+	<span class="token comment">/* 如果有max_init参数，就从配置指令中解析初始虚拟节点数量 */</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>cf<span class="token operator">-&gt;</span>args<span class="token operator">-&gt;</span>nelts <span class="token operator">&gt;</span> <span class="token number">1</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+
+        <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">ngx_strncmp</span><span class="token punctuation">(</span>value<span class="token punctuation">[</span><span class="token number">1</span><span class="token punctuation">]</span><span class="token punctuation">.</span>data<span class="token punctuation">,</span> <span class="token string">"max_init="</span><span class="token punctuation">,</span> <span class="token number">9</span><span class="token punctuation">)</span> <span class="token operator">==</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+
+            max_init <span class="token operator">=</span> <span class="token function">ngx_atoi</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>value<span class="token punctuation">[</span><span class="token number">1</span><span class="token punctuation">]</span><span class="token punctuation">.</span>data<span class="token punctuation">[</span><span class="token number">9</span><span class="token punctuation">]</span><span class="token punctuation">,</span> value<span class="token punctuation">[</span><span class="token number">1</span><span class="token punctuation">]</span><span class="token punctuation">.</span>len <span class="token operator">-</span> <span class="token number">9</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+            <span class="token keyword">if</span> <span class="token punctuation">(</span>max_init <span class="token operator">==</span> NGX_ERROR<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+
+                <span class="token function">ngx_conf_log_error</span><span class="token punctuation">(</span>NGX_LOG_EMERG<span class="token punctuation">,</span> cf<span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">,</span>
+                                   <span class="token string">"invalid parameter \"%V\""</span><span class="token punctuation">,</span> <span class="token operator">&amp;</span>value<span class="token punctuation">[</span><span class="token number">1</span><span class="token punctuation">]</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+                <span class="token keyword">return</span> NGX_CONF_ERROR<span class="token punctuation">;</span>
+            <span class="token punctuation">}</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+
+    uvnscf<span class="token operator">-&gt;</span>max_init <span class="token operator">=</span> max_init<span class="token punctuation">;</span>
+
+    <span class="token keyword">return</span> NGX_CONF_OK<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<h3><a id="32__118"></a>3.2 负载均衡算法配置初始化</h3> 
+<p>  nginx在解析完配置文件后，会为每个upstream调用前面设置好的init_upstream回调函数来初始化设置好的负载均衡算法，对于开启了vnswrr算法，则会回调ngx_http_upstream_init_vnswrr函数，该回调由3.1节中ngx_http_upstream_vnswrr函数设置。下面来分析一下ngx_http_upstream_init_vnswrr函数：</p> 
+<pre><code class="prism language-c"><span class="token keyword">static</span> <span class="token class-name">ngx_int_t</span>
+<span class="token function">ngx_http_upstream_init_vnswrr</span><span class="token punctuation">(</span><span class="token class-name">ngx_conf_t</span> <span class="token operator">*</span>cf<span class="token punctuation">,</span>
+    <span class="token class-name">ngx_http_upstream_srv_conf_t</span> <span class="token operator">*</span>us<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+    <span class="token class-name">ngx_http_upstream_rr_peers_t</span>           <span class="token operator">*</span>peers<span class="token punctuation">,</span> <span class="token operator">*</span>backup<span class="token punctuation">;</span>
+    <span class="token class-name">ngx_http_upstream_vnswrr_srv_conf_t</span>    <span class="token operator">*</span>uvnscf<span class="token punctuation">,</span> <span class="token operator">*</span>ubvnscf<span class="token punctuation">;</span>
+    <span class="token class-name">ngx_http_upstream_server_t</span>             <span class="token operator">*</span>server<span class="token punctuation">;</span>
+    <span class="token class-name">ngx_uint_t</span>                              i<span class="token punctuation">,</span> g<span class="token punctuation">,</span> bg<span class="token punctuation">,</span> max_init<span class="token punctuation">;</span>
+
+    <span class="token function">ngx_log_debug0</span><span class="token punctuation">(</span>NGX_LOG_DEBUG_HTTP<span class="token punctuation">,</span> cf<span class="token operator">-&gt;</span>log<span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">,</span> <span class="token string">"init vnswrr"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+	<span class="token comment">/* 借用round-robin的ngx_http_upstream_init_round_robin初始化peer链表 */</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">ngx_http_upstream_init_round_robin</span><span class="token punctuation">(</span>cf<span class="token punctuation">,</span> us<span class="token punctuation">)</span> <span class="token operator">!=</span> NGX_OK<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">return</span> NGX_ERROR<span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+	<span class="token comment">/* 对于配置的每个server(包括主和备)，计算配置的所有server权重的最大公约数 */</span>
+    g <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+    bg <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>us<span class="token operator">-&gt;</span>servers<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        server <span class="token operator">=</span> us<span class="token operator">-&gt;</span>servers<span class="token operator">-&gt;</span>elts<span class="token punctuation">;</span>
+
+        <span class="token keyword">for</span> <span class="token punctuation">(</span>i <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span> i <span class="token operator">&lt;</span> us<span class="token operator">-&gt;</span>servers<span class="token operator">-&gt;</span>nelts<span class="token punctuation">;</span> i<span class="token operator">++</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">if</span> <span class="token punctuation">(</span>server<span class="token punctuation">[</span>i<span class="token punctuation">]</span><span class="token punctuation">.</span>backup<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                bg <span class="token operator">=</span> <span class="token function">ngx_http_upstream_gcd</span><span class="token punctuation">(</span>bg<span class="token punctuation">,</span> server<span class="token punctuation">[</span>i<span class="token punctuation">]</span><span class="token punctuation">.</span>weight<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+                g <span class="token operator">=</span> <span class="token function">ngx_http_upstream_gcd</span><span class="token punctuation">(</span>g <span class="token punctuation">,</span> server<span class="token punctuation">[</span>i<span class="token punctuation">]</span><span class="token punctuation">.</span>weight<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token punctuation">}</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>g <span class="token operator">==</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        g <span class="token operator">=</span> <span class="token number">1</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>bg <span class="token operator">==</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        bg <span class="token operator">=</span> <span class="token number">1</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    uvnscf <span class="token operator">=</span> <span class="token function">ngx_http_conf_upstream_srv_conf</span><span class="token punctuation">(</span>us<span class="token punctuation">,</span>
+                                ngx_http_upstream_vnswrr_module<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>uvnscf <span class="token operator">==</span> <span class="token constant">NULL</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">return</span> NGX_ERROR<span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    peers <span class="token operator">=</span> <span class="token punctuation">(</span><span class="token class-name">ngx_http_upstream_rr_peers_t</span> <span class="token operator">*</span><span class="token punctuation">)</span> us<span class="token operator">-&gt;</span>peer<span class="token punctuation">.</span>data<span class="token punctuation">;</span>
+
+    max_init <span class="token operator">=</span> uvnscf<span class="token operator">-&gt;</span>max_init<span class="token punctuation">;</span>
+
+	<span class="token comment">/* init_number为初始虚拟节点的序号
+	   last_number为最后一次分配的虚拟节点的序号
+	   last_peer为最后一次分配的peer的指针
+	 */</span>
+    uvnscf<span class="token operator">-&gt;</span>init_number <span class="token operator">=</span> NGX_CONF_UNSET_UINT<span class="token punctuation">;</span>
+    uvnscf<span class="token operator">-&gt;</span>last_number <span class="token operator">=</span> NGX_CONF_UNSET_UINT<span class="token punctuation">;</span>
+    uvnscf<span class="token operator">-&gt;</span>last_peer <span class="token operator">=</span> <span class="token constant">NULL</span><span class="token punctuation">;</span>
+    uvnscf<span class="token operator">-&gt;</span>next <span class="token operator">=</span> <span class="token constant">NULL</span><span class="token punctuation">;</span>
+    uvnscf<span class="token operator">-&gt;</span>gcd <span class="token operator">=</span> g<span class="token punctuation">;</span>
+
+	<span class="token comment">/* 如果没有配置max_init，则设置为peer的数量
+	   max_init最大为总的权重
+	 */</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span>max_init<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        uvnscf<span class="token operator">-&gt;</span>max_init <span class="token operator">=</span> peers<span class="token operator">-&gt;</span>number<span class="token punctuation">;</span>
+
+    <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token keyword">if</span> <span class="token punctuation">(</span>max_init <span class="token operator">&gt;</span> peers<span class="token operator">-&gt;</span>total_weight<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        uvnscf<span class="token operator">-&gt;</span>max_init <span class="token operator">=</span> peers<span class="token operator">-&gt;</span>total_weight<span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+	<span class="token comment">/* 设置负载均衡请求上下文初始化回调函数 */</span>
+    us<span class="token operator">-&gt;</span>peer<span class="token punctuation">.</span>init <span class="token operator">=</span> ngx_http_upstream_init_vnswrr_peer<span class="token punctuation">;</span>
+
+	<span class="token comment">/* 如果upstream是配置成带权重模式的，即所有服务器的weight不都等于1，则走正常vnswrr
+	   算法，否则，退化为简单的round-robin算法。对于vnswrr，需要分配虚拟节点并进行初始化，
+	   虚拟节点的数量是总权重除以上面算出的最大公约数。稍微思考一下，就知道这个是合理的，
+	   譬如三台server，他们的权重都分别是2,4,6,那么其效果和1,2,3是一样的，
+	   所以找到最大公约数，并把这个最大公约数除掉以后得到有效权重。
+	*/</span>
+	
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>peers<span class="token operator">-&gt;</span>weighted<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        uvnscf<span class="token operator">-&gt;</span>vpeers <span class="token operator">=</span> <span class="token function">ngx_pcalloc</span><span class="token punctuation">(</span>cf<span class="token operator">-&gt;</span>pool<span class="token punctuation">,</span>
+                                    <span class="token keyword">sizeof</span><span class="token punctuation">(</span><span class="token class-name">ngx_http_upstream_rr_vpeers_t</span><span class="token punctuation">)</span>
+                                    <span class="token operator">*</span> peers<span class="token operator">-&gt;</span>total_weight <span class="token operator">/</span> uvnscf<span class="token operator">-&gt;</span>gcd<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>uvnscf<span class="token operator">-&gt;</span>vpeers <span class="token operator">==</span> <span class="token constant">NULL</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">return</span> NGX_ERROR<span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+		<span class="token comment">/* 初始化一批虚拟节点，最多是max_init个虚拟节点，避免一次性初始化大量的虚拟节点
+		   当值nginx的cpu突发overload
+		*/</span>
+        <span class="token function">ngx_http_upstream_init_virtual_peers</span><span class="token punctuation">(</span>peers<span class="token punctuation">,</span> uvnscf<span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">,</span> uvnscf<span class="token operator">-&gt;</span>max_init<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token punctuation">}</span>
+
+    <span class="token comment">/* 下面是backup服务器部分的初始化逻辑，和主服务器是一样的 */</span>
+    backup <span class="token operator">=</span> peers<span class="token operator">-&gt;</span>next<span class="token punctuation">;</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>backup<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        ubvnscf <span class="token operator">=</span> <span class="token function">ngx_pcalloc</span><span class="token punctuation">(</span>cf<span class="token operator">-&gt;</span>pool<span class="token punctuation">,</span>
+                              <span class="token keyword">sizeof</span><span class="token punctuation">(</span><span class="token class-name">ngx_http_upstream_vnswrr_srv_conf_t</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>ubvnscf <span class="token operator">==</span> <span class="token constant">NULL</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">return</span> NGX_ERROR<span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+
+        ubvnscf<span class="token operator">-&gt;</span>init_number <span class="token operator">=</span> NGX_CONF_UNSET_UINT<span class="token punctuation">;</span>
+        ubvnscf<span class="token operator">-&gt;</span>last_number <span class="token operator">=</span> NGX_CONF_UNSET_UINT<span class="token punctuation">;</span>
+        ubvnscf<span class="token operator">-&gt;</span>last_peer <span class="token operator">=</span> <span class="token constant">NULL</span><span class="token punctuation">;</span>
+        ubvnscf<span class="token operator">-&gt;</span>gcd <span class="token operator">=</span> bg<span class="token punctuation">;</span>
+        
+        ubvnscf<span class="token operator">-&gt;</span>max_init <span class="token operator">=</span> max_init<span class="token punctuation">;</span>
+
+        <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span>max_init<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            ubvnscf<span class="token operator">-&gt;</span>max_init <span class="token operator">=</span> backup<span class="token operator">-&gt;</span>number<span class="token punctuation">;</span>
+
+        <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token keyword">if</span> <span class="token punctuation">(</span>max_init <span class="token operator">&gt;</span> backup<span class="token operator">-&gt;</span>total_weight<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            ubvnscf<span class="token operator">-&gt;</span>max_init <span class="token operator">=</span> backup<span class="token operator">-&gt;</span>total_weight<span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+
+		<span class="token comment">/* 把主服务器和backup服务器链起来 */</span>
+        uvnscf<span class="token operator">-&gt;</span>next <span class="token operator">=</span> ubvnscf<span class="token punctuation">;</span>
+
+        <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span>backup<span class="token operator">-&gt;</span>weighted<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">return</span> NGX_OK<span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+
+        ubvnscf<span class="token operator">-&gt;</span>vpeers <span class="token operator">=</span> <span class="token function">ngx_pcalloc</span><span class="token punctuation">(</span>cf<span class="token operator">-&gt;</span>pool<span class="token punctuation">,</span>
+                                      <span class="token keyword">sizeof</span><span class="token punctuation">(</span><span class="token class-name">ngx_http_upstream_rr_vpeers_t</span><span class="token punctuation">)</span>
+                                      <span class="token operator">*</span> backup<span class="token operator">-&gt;</span>total_weight <span class="token operator">/</span> ubvnscf<span class="token operator">-&gt;</span>gcd<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>ubvnscf<span class="token operator">-&gt;</span>vpeers <span class="token operator">==</span> <span class="token constant">NULL</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">return</span> NGX_ERROR<span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+
+        <span class="token function">ngx_http_upstream_init_virtual_peers</span><span class="token punctuation">(</span>backup<span class="token punctuation">,</span> ubvnscf<span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">,</span> 
+                                             ubvnscf<span class="token operator">-&gt;</span>max_init<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token keyword">return</span> NGX_OK<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>  ngx_http_upstream_init_vnswrr函数的逻辑就是分别对主服务器和备服务器组进行加载操作，初始化一部分虚拟节点，详细的逻辑在源码中已经进行了注释，不再赘述。</p> 
+<h3><a id="33__262"></a>3.3 负载均衡请求上下文的初始化</h3> 
+<p>  当nginx接收到http请求需要连接上游服务器的时候，就会发起负载均衡请求上下文的初始化回调，对于vnswrr算法就是回调ngx_http_upstream_init_vnswrr_peer函数了。</p> 
+<pre><code class="prism language-c"><span class="token keyword">static</span> <span class="token class-name">ngx_int_t</span>
+<span class="token function">ngx_http_upstream_init_vnswrr_peer</span><span class="token punctuation">(</span><span class="token class-name">ngx_http_request_t</span> <span class="token operator">*</span>r<span class="token punctuation">,</span>
+    <span class="token class-name">ngx_http_upstream_srv_conf_t</span> <span class="token operator">*</span>us<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+    <span class="token class-name">ngx_http_upstream_vnswrr_srv_conf_t</span>    <span class="token operator">*</span>uvnscf<span class="token punctuation">;</span>
+    <span class="token class-name">ngx_http_upstream_vnswrr_peer_data_t</span>   <span class="token operator">*</span>vnsp<span class="token punctuation">;</span>
+
+    uvnscf <span class="token operator">=</span> <span class="token function">ngx_http_conf_upstream_srv_conf</span><span class="token punctuation">(</span>us<span class="token punctuation">,</span>
+                                          ngx_http_upstream_vnswrr_module<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+	<span class="token comment">/* 创建请求上下文并进行初始化设置 */</span>
+    vnsp <span class="token operator">=</span> <span class="token function">ngx_palloc</span><span class="token punctuation">(</span>r<span class="token operator">-&gt;</span>pool<span class="token punctuation">,</span> <span class="token keyword">sizeof</span><span class="token punctuation">(</span><span class="token class-name">ngx_http_upstream_vnswrr_peer_data_t</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>vnsp <span class="token operator">==</span> <span class="token constant">NULL</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">return</span> NGX_ERROR<span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    vnsp<span class="token operator">-&gt;</span>uvnscf <span class="token operator">=</span> uvnscf<span class="token punctuation">;</span>
+    r<span class="token operator">-&gt;</span>upstream<span class="token operator">-&gt;</span>peer<span class="token punctuation">.</span>data <span class="token operator">=</span> <span class="token operator">&amp;</span>vnsp<span class="token operator">-&gt;</span>rrp<span class="token punctuation">;</span>
+
+	<span class="token comment">/* 因为本模块是依赖于round-robin模块的，譬如上游服务器的已分配状态等，
+	   这里也需要调用ngx_http_upstream_init_round_robin_peer进行初始化 */</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">ngx_http_upstream_init_round_robin_peer</span><span class="token punctuation">(</span>r<span class="token punctuation">,</span> us<span class="token punctuation">)</span> <span class="token operator">!=</span> NGX_OK<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">return</span> NGX_ERROR<span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+	<span class="token comment">/* 设置获取peer的回调 */</span>
+    r<span class="token operator">-&gt;</span>upstream<span class="token operator">-&gt;</span>peer<span class="token punctuation">.</span>get <span class="token operator">=</span> ngx_http_upstream_get_vnswrr_peer<span class="token punctuation">;</span>
+
+    <span class="token keyword">return</span> NGX_OK<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>  这里最关键的就是设置了获取peer的回调函数ngx_http_upstream_get_vnswrr_peer。</p> 
+<h3><a id="34_peer_302"></a>3.4 获取peer</h3> 
+<p>  一切准备就绪后，nginx会在请求上游连接的时候调用ngx_event_connect_peer，而在ngx_event_connect_peer函数中将回调ngx_http_upstream_get_vnswrr_peer函数来获取目的服务器的地址信息。接下来来详细分析这个函数，源码如下：</p> 
+<pre><code class="prism language-c"><span class="token keyword">static</span> <span class="token class-name">ngx_int_t</span>
+<span class="token function">ngx_http_upstream_get_vnswrr_peer</span><span class="token punctuation">(</span><span class="token class-name">ngx_peer_connection_t</span> <span class="token operator">*</span>pc<span class="token punctuation">,</span> <span class="token keyword">void</span> <span class="token operator">*</span>data<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+    <span class="token class-name">ngx_http_upstream_vnswrr_peer_data_t</span>  <span class="token operator">*</span>vnsp <span class="token operator">=</span> data<span class="token punctuation">;</span>
+
+    <span class="token class-name">ngx_int_t</span>                              rc<span class="token punctuation">;</span>
+    <span class="token class-name">ngx_uint_t</span>                             i<span class="token punctuation">,</span> n<span class="token punctuation">;</span>
+    <span class="token class-name">ngx_http_upstream_rr_peer_t</span>           <span class="token operator">*</span>peer<span class="token punctuation">;</span>
+    <span class="token class-name">ngx_http_upstream_rr_peers_t</span>          <span class="token operator">*</span>peers<span class="token punctuation">;</span>
+    <span class="token class-name">ngx_http_upstream_rr_peer_data_t</span>      <span class="token operator">*</span>rrp<span class="token punctuation">;</span>
+
+    <span class="token function">ngx_log_debug1</span><span class="token punctuation">(</span>NGX_LOG_DEBUG_HTTP<span class="token punctuation">,</span> pc<span class="token operator">-&gt;</span>log<span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">,</span>
+                   <span class="token string">"get vnswrr peer, try: %ui"</span><span class="token punctuation">,</span> pc<span class="token operator">-&gt;</span>tries<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    pc<span class="token operator">-&gt;</span>cached <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+    pc<span class="token operator">-&gt;</span>connection <span class="token operator">=</span> <span class="token constant">NULL</span><span class="token punctuation">;</span>
+
+    rrp <span class="token operator">=</span> <span class="token operator">&amp;</span>vnsp<span class="token operator">-&gt;</span>rrp<span class="token punctuation">;</span>
+
+    peers <span class="token operator">=</span> rrp<span class="token operator">-&gt;</span>peers<span class="token punctuation">;</span>
+    <span class="token function">ngx_http_upstream_rr_peers_wlock</span><span class="token punctuation">(</span>peers<span class="token punctuation">)</span><span class="token punctuation">;</span>   <span class="token comment">/* 共享内存加写锁 */</span>
+
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>peers<span class="token operator">-&gt;</span>single<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+	    <span class="token comment">/*对于只有一个peer的情况，如果这个peer没有down且连接数没有超过限制，
+	      则直接分配这个peer*/</span>
+        peer <span class="token operator">=</span> peers<span class="token operator">-&gt;</span>peer<span class="token punctuation">;</span>
+
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>peer<span class="token operator">-&gt;</span>down<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">goto</span> failed<span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">if</span> <span class="token expression"><span class="token function">defined</span><span class="token punctuation">(</span>nginx_version<span class="token punctuation">)</span> <span class="token operator">&amp;&amp;</span> nginx_version <span class="token operator">&gt;=</span> <span class="token number">1011005</span></span></span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>peer<span class="token operator">-&gt;</span>max_conns <span class="token operator">&amp;&amp;</span> peer<span class="token operator">-&gt;</span>conns <span class="token operator">&gt;=</span> peer<span class="token operator">-&gt;</span>max_conns<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">goto</span> failed<span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">if</span> <span class="token expression"><span class="token punctuation">(</span>NGX_HTTP_UPSTREAM_CHECK<span class="token punctuation">)</span></span></span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">ngx_http_upstream_check_peer_down</span><span class="token punctuation">(</span>peer<span class="token operator">-&gt;</span>check_index<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">goto</span> failed<span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+        rrp<span class="token operator">-&gt;</span>current <span class="token operator">=</span> peer<span class="token punctuation">;</span>
+
+    <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+
+        <span class="token comment">/* 如果有多个peer,则调用ngx_http_upstream_get_vnswrr获取peer信息 */</span>
+
+        peer <span class="token operator">=</span> <span class="token function">ngx_http_upstream_get_vnswrr</span><span class="token punctuation">(</span>vnsp<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>peer <span class="token operator">==</span> <span class="token constant">NULL</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">goto</span> failed<span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+
+        <span class="token function">ngx_log_debug2</span><span class="token punctuation">(</span>NGX_LOG_DEBUG_HTTP<span class="token punctuation">,</span> pc<span class="token operator">-&gt;</span>log<span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">,</span>
+                       <span class="token string">"get vnswrr peer, current: %p %i"</span><span class="token punctuation">,</span>
+                       peer<span class="token punctuation">,</span> peer<span class="token operator">-&gt;</span>current_weight<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+	<span class="token comment">/* 将分配到的peer的地址写入到ngx_peer_connection_t(pc_中 */</span>
+    pc<span class="token operator">-&gt;</span>sockaddr <span class="token operator">=</span> peer<span class="token operator">-&gt;</span>sockaddr<span class="token punctuation">;</span>
+    pc<span class="token operator">-&gt;</span>socklen <span class="token operator">=</span> peer<span class="token operator">-&gt;</span>socklen<span class="token punctuation">;</span>
+    pc<span class="token operator">-&gt;</span>name <span class="token operator">=</span> <span class="token operator">&amp;</span>peer<span class="token operator">-&gt;</span>name<span class="token punctuation">;</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">if</span> <span class="token expression"><span class="token punctuation">(</span>T_NGX_HTTP_DYNAMIC_RESOLVE<span class="token punctuation">)</span></span></span>
+    pc<span class="token operator">-&gt;</span>host <span class="token operator">=</span> <span class="token operator">&amp;</span>peer<span class="token operator">-&gt;</span>host<span class="token punctuation">;</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span>    </span>
+
+    peer<span class="token operator">-&gt;</span>conns<span class="token operator">++</span><span class="token punctuation">;</span>
+
+	<span class="token comment">/* 释放上面加的写锁 */</span>
+    <span class="token function">ngx_http_upstream_rr_peers_unlock</span><span class="token punctuation">(</span>peers<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token keyword">return</span> NGX_OK<span class="token punctuation">;</span>
+
+failed<span class="token operator">:</span>
+
+	<span class="token comment">/* 主服务器分配失败了，如果有备服务器，那么从备服务器进行分配 */</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>peers<span class="token operator">-&gt;</span>next<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+
+        <span class="token function">ngx_log_debug0</span><span class="token punctuation">(</span>NGX_LOG_DEBUG_HTTP<span class="token punctuation">,</span> pc<span class="token operator">-&gt;</span>log<span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">,</span> <span class="token string">"backup servers"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+		<span class="token comment">/* 切换到备服务器组 */</span>
+        rrp<span class="token operator">-&gt;</span>peers <span class="token operator">=</span> peers<span class="token operator">-&gt;</span>next<span class="token punctuation">;</span>
+
+        vnsp<span class="token operator">-&gt;</span>uvnscf <span class="token operator">=</span> vnsp<span class="token operator">-&gt;</span>uvnscf <span class="token operator">?</span> vnsp<span class="token operator">-&gt;</span>uvnscf<span class="token operator">-&gt;</span>next <span class="token operator">:</span> vnsp<span class="token operator">-&gt;</span>uvnscf<span class="token punctuation">;</span>
+
+        n <span class="token operator">=</span> <span class="token punctuation">(</span>rrp<span class="token operator">-&gt;</span>peers<span class="token operator">-&gt;</span>number <span class="token operator">+</span> <span class="token punctuation">(</span><span class="token number">8</span> <span class="token operator">*</span> <span class="token keyword">sizeof</span><span class="token punctuation">(</span><span class="token class-name">uintptr_t</span><span class="token punctuation">)</span> <span class="token operator">-</span> <span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">)</span>
+                <span class="token operator">/</span> <span class="token punctuation">(</span><span class="token number">8</span> <span class="token operator">*</span> <span class="token keyword">sizeof</span><span class="token punctuation">(</span><span class="token class-name">uintptr_t</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+        <span class="token keyword">for</span> <span class="token punctuation">(</span>i <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span> i <span class="token operator">&lt;</span> n<span class="token punctuation">;</span> i<span class="token operator">++</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            rrp<span class="token operator">-&gt;</span>tried<span class="token punctuation">[</span>i<span class="token punctuation">]</span> <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+        
+        <span class="token comment">/* 释放上面加的写锁 */</span>
+        <span class="token function">ngx_http_upstream_rr_peers_unlock</span><span class="token punctuation">(</span>peers<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+		<span class="token comment">/* 递归调用本函数自己，重新进行一次获取peer的操作 */</span>
+        rc <span class="token operator">=</span> <span class="token function">ngx_http_upstream_get_vnswrr_peer</span><span class="token punctuation">(</span>pc<span class="token punctuation">,</span> vnsp<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+	    <span class="token comment">/* 备服务器也分配失败，则返回NGX_BUSY */</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>rc <span class="token operator">!=</span> NGX_BUSY<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">return</span> rc<span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+        
+		<span class="token comment">/* 重新加上写锁，在返回前释放 */</span>
+        <span class="token function">ngx_http_upstream_rr_peers_wlock</span><span class="token punctuation">(</span>peers<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+    
+    <span class="token comment">/* 释放上面加的写锁 */</span>
+    <span class="token function">ngx_http_upstream_rr_peers_unlock</span><span class="token punctuation">(</span>peers<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    pc<span class="token operator">-&gt;</span>name <span class="token operator">=</span> peers<span class="token operator">-&gt;</span>name<span class="token punctuation">;</span>
+
+    <span class="token keyword">return</span> NGX_BUSY<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>  本函数针对如果只有一个peer的情况来说，就不需要再进行vnswrr算法了，反过来则进行vnswrr的分配操作，vnswrr算法调用了ngx_http_upstream_get_vnswrr函数进行实际的分配工作。下面就是vnswrr的最核心的代码了，源码如下：</p> 
+<pre><code class="prism language-c"><span class="token keyword">static</span> <span class="token class-name">ngx_http_upstream_rr_peer_t</span> <span class="token operator">*</span>
+<span class="token function">ngx_http_upstream_get_vnswrr</span><span class="token punctuation">(</span><span class="token class-name">ngx_http_upstream_vnswrr_peer_data_t</span>  <span class="token operator">*</span>vnsp<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+    <span class="token class-name">time_t</span>                                  now<span class="token punctuation">;</span>
+    <span class="token class-name">uintptr_t</span>                               m<span class="token punctuation">;</span>
+    <span class="token class-name">ngx_uint_t</span>                              i<span class="token punctuation">,</span> n<span class="token punctuation">,</span> p<span class="token punctuation">,</span> flag<span class="token punctuation">,</span> begin_number<span class="token punctuation">;</span>
+    <span class="token class-name">ngx_http_upstream_rr_peer_t</span>            <span class="token operator">*</span>peer<span class="token punctuation">,</span> <span class="token operator">*</span>best<span class="token punctuation">;</span>
+    <span class="token class-name">ngx_http_upstream_rr_peers_t</span>           <span class="token operator">*</span>peers<span class="token punctuation">;</span>
+    <span class="token class-name">ngx_http_upstream_rr_vpeers_t</span>          <span class="token operator">*</span>vpeers<span class="token punctuation">;</span>
+    <span class="token class-name">ngx_http_upstream_rr_peer_data_t</span>       <span class="token operator">*</span>rrp<span class="token punctuation">;</span>
+    <span class="token class-name">ngx_http_upstream_vnswrr_srv_conf_t</span>    <span class="token operator">*</span>uvnscf<span class="token punctuation">;</span>
+
+    now <span class="token operator">=</span> <span class="token function">ngx_time</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    best <span class="token operator">=</span> <span class="token constant">NULL</span><span class="token punctuation">;</span>
+
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">if</span> <span class="token expression"><span class="token punctuation">(</span>NGX_SUPPRESS_WARN<span class="token punctuation">)</span></span></span>
+    p <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+
+    rrp <span class="token operator">=</span> <span class="token operator">&amp;</span>vnsp<span class="token operator">-&gt;</span>rrp<span class="token punctuation">;</span>
+    peers <span class="token operator">=</span> rrp<span class="token operator">-&gt;</span>peers<span class="token punctuation">;</span>
+    uvnscf <span class="token operator">=</span> vnsp<span class="token operator">-&gt;</span>uvnscf<span class="token punctuation">;</span>
+    vpeers <span class="token operator">=</span> uvnscf<span class="token operator">-&gt;</span>vpeers<span class="token punctuation">;</span>
+
+	<span class="token comment">/* last_number == NGX_CONF_UNSET_UINT
+	   表示本worker进程第一次进入到ngx_http_upstream_get_vnswrr函数，
+	   这里通过将init_number设置为一个随机值来避免多进程产生的“共振”效应。
+	   初始化随机值这个机制在《阿里七层流量入口负载均衡算法演变之路》中有提到
+	 */</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>uvnscf<span class="token operator">-&gt;</span>last_number <span class="token operator">==</span> NGX_CONF_UNSET_UINT<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        uvnscf<span class="token operator">-&gt;</span>init_number <span class="token operator">=</span> <span class="token function">ngx_random</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">%</span> peers<span class="token operator">-&gt;</span>number<span class="token punctuation">;</span>
+		
+		<span class="token comment">/* 如果是带权重模式，则使用了虚拟节点来进行负载均衡，
+		   所以从虚拟节点中选取peer
+		 */</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>peers<span class="token operator">-&gt;</span>weighted<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            peer <span class="token operator">=</span> vpeers<span class="token punctuation">[</span>uvnscf<span class="token operator">-&gt;</span>init_number<span class="token punctuation">]</span><span class="token punctuation">.</span>vpeer<span class="token punctuation">;</span>
+
+        <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token comment">/* 如果是不带权重的模式，则没有虚拟节点，
+               需要直接在peers列表中循环init_number次数，选择第nit_number个peer
+            */</span>
+            <span class="token keyword">for</span> <span class="token punctuation">(</span>peer <span class="token operator">=</span> peers<span class="token operator">-&gt;</span>peer<span class="token punctuation">,</span> i <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span> i <span class="token operator">&lt;</span> uvnscf<span class="token operator">-&gt;</span>init_number<span class="token punctuation">;</span> i<span class="token operator">++</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                peer <span class="token operator">=</span> peer<span class="token operator">-&gt;</span>next<span class="token punctuation">;</span>
+            <span class="token punctuation">}</span>
+        <span class="token punctuation">}</span>
+
+        uvnscf<span class="token operator">-&gt;</span>last_number <span class="token operator">=</span> uvnscf<span class="token operator">-&gt;</span>init_number<span class="token punctuation">;</span>
+        uvnscf<span class="token operator">-&gt;</span>last_peer <span class="token operator">=</span> peer<span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>peers<span class="token operator">-&gt;</span>weighted<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token comment">/* 如果当前初始化好的虚拟节点已经都被分配过一次了，并且还有没初始化过的虚拟节点，
+           则再次分配虚拟节点，最多max_init个。 
+        */</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>uvnscf<span class="token operator">-&gt;</span>vnumber <span class="token operator">!=</span> peers<span class="token operator">-&gt;</span>total_weight <span class="token operator">/</span> uvnscf<span class="token operator">-&gt;</span>gcd
+            <span class="token operator">&amp;&amp;</span> <span class="token punctuation">(</span>uvnscf<span class="token operator">-&gt;</span>last_number <span class="token operator">+</span> <span class="token number">1</span> <span class="token operator">==</span> uvnscf<span class="token operator">-&gt;</span>vnumber<span class="token punctuation">)</span><span class="token punctuation">)</span>
+        <span class="token punctuation">{<!-- --></span>
+            n <span class="token operator">=</span> peers<span class="token operator">-&gt;</span>total_weight <span class="token operator">/</span> uvnscf<span class="token operator">-&gt;</span>gcd <span class="token operator">-</span> uvnscf<span class="token operator">-&gt;</span>vnumber<span class="token punctuation">;</span>
+            <span class="token keyword">if</span> <span class="token punctuation">(</span>n <span class="token operator">&gt;</span> uvnscf<span class="token operator">-&gt;</span>max_init<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                n <span class="token operator">=</span> uvnscf<span class="token operator">-&gt;</span>max_init<span class="token punctuation">;</span>
+            <span class="token punctuation">}</span>
+
+            <span class="token function">ngx_http_upstream_init_virtual_peers</span><span class="token punctuation">(</span>peers<span class="token punctuation">,</span> uvnscf<span class="token punctuation">,</span> uvnscf<span class="token operator">-&gt;</span>vnumber<span class="token punctuation">,</span>
+                                     n <span class="token operator">+</span> uvnscf<span class="token operator">-&gt;</span>vnumber<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+        <span class="token punctuation">}</span>
+
+        <span class="token comment">/* 在虚拟节点循环队列中分配下一个vpeer
+           begin_numer为当前分配的虚拟节点在虚拟节点循环队列中的序号
+         */</span> 
+        begin_number <span class="token operator">=</span> <span class="token punctuation">(</span>uvnscf<span class="token operator">-&gt;</span>last_number <span class="token operator">+</span> <span class="token number">1</span><span class="token punctuation">)</span> <span class="token operator">%</span> uvnscf<span class="token operator">-&gt;</span>vnumber<span class="token punctuation">;</span>
+        peer <span class="token operator">=</span> vpeers<span class="token punctuation">[</span>begin_number<span class="token punctuation">]</span><span class="token punctuation">.</span>vpeer<span class="token punctuation">;</span>
+
+    <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token comment">/* 如果是不带权重模式，那么直接通过peer链进行peer的分配
+		   一个peer中有多个地址的，那么先分配这个peer的地址，
+		   否则，找下一个peer，begin_number为当前分配的peer在peer列表中的序号
+		 */</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>uvnscf<span class="token operator">-&gt;</span>last_peer <span class="token operator">&amp;&amp;</span> uvnscf<span class="token operator">-&gt;</span>last_peer<span class="token operator">-&gt;</span>next<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            begin_number <span class="token operator">=</span> <span class="token punctuation">(</span>uvnscf<span class="token operator">-&gt;</span>last_number <span class="token operator">+</span> <span class="token number">1</span><span class="token punctuation">)</span> <span class="token operator">%</span> peers<span class="token operator">-&gt;</span>number<span class="token punctuation">;</span>
+            peer <span class="token operator">=</span> uvnscf<span class="token operator">-&gt;</span>last_peer<span class="token operator">-&gt;</span>next<span class="token punctuation">;</span>
+
+        <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+            begin_number <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+            peer <span class="token operator">=</span> peers<span class="token operator">-&gt;</span>peer<span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+
+	<span class="token comment">/* 以下对上面分配的peer进行状态过滤，如果分配的peer不能用，
+	   需要再往下循环获取下一个peer */</span>
+	<span class="token comment">/* 这里 i != begin_number || flag的判断用来检测是否已经循环了一圈回来了
+	   循环了一圈回来的，那么所有的peer就已经遍历了，还是不能满足分配的需要。
+	 */</span>
+    <span class="token keyword">for</span> <span class="token punctuation">(</span>i <span class="token operator">=</span> begin_number<span class="token punctuation">,</span> flag <span class="token operator">=</span> <span class="token number">1</span><span class="token punctuation">;</span> i <span class="token operator">!=</span> begin_number <span class="token operator">||</span> flag<span class="token punctuation">;</span>
+         i <span class="token operator">=</span> peers<span class="token operator">-&gt;</span>weighted
+         <span class="token operator">?</span> <span class="token punctuation">(</span><span class="token punctuation">(</span>i <span class="token operator">+</span> <span class="token number">1</span><span class="token punctuation">)</span> <span class="token operator">%</span> uvnscf<span class="token operator">-&gt;</span>vnumber<span class="token punctuation">)</span> <span class="token operator">:</span> <span class="token punctuation">(</span><span class="token punctuation">(</span>i <span class="token operator">+</span> <span class="token number">1</span><span class="token punctuation">)</span> <span class="token operator">%</span> peers<span class="token operator">-&gt;</span>number<span class="token punctuation">)</span><span class="token punctuation">,</span>
+         peer <span class="token operator">=</span> peers<span class="token operator">-&gt;</span>weighted
+         <span class="token operator">?</span> vpeers<span class="token punctuation">[</span>i<span class="token punctuation">]</span><span class="token punctuation">.</span>vpeer <span class="token operator">:</span> <span class="token punctuation">(</span>peer<span class="token operator">-&gt;</span>next <span class="token operator">?</span> peer<span class="token operator">-&gt;</span>next <span class="token operator">:</span> peers<span class="token operator">-&gt;</span>peer<span class="token punctuation">)</span><span class="token punctuation">)</span>
+    <span class="token punctuation">{<!-- --></span>
+
+        flag <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>peers<span class="token operator">-&gt;</span>weighted<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+			<span class="token comment">/* 这里也有可能分配的虚拟节点已经被遍历过一次了，并且还有没初始化过的虚拟节点，
+           则再次分配虚拟节点，最多max_init个 */</span>
+            n <span class="token operator">=</span> peers<span class="token operator">-&gt;</span>total_weight <span class="token operator">/</span> uvnscf<span class="token operator">-&gt;</span>gcd <span class="token operator">-</span> uvnscf<span class="token operator">-&gt;</span>vnumber<span class="token punctuation">;</span>
+            <span class="token keyword">if</span> <span class="token punctuation">(</span>n <span class="token operator">&gt;</span> uvnscf<span class="token operator">-&gt;</span>max_init<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                n <span class="token operator">=</span> uvnscf<span class="token operator">-&gt;</span>max_init<span class="token punctuation">;</span>
+            <span class="token punctuation">}</span>
+
+            <span class="token keyword">if</span> <span class="token punctuation">(</span>n <span class="token operator">&gt;</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                <span class="token function">ngx_http_upstream_init_virtual_peers</span><span class="token punctuation">(</span>peers<span class="token punctuation">,</span> uvnscf<span class="token punctuation">,</span> uvnscf<span class="token operator">-&gt;</span>vnumber<span class="token punctuation">,</span>
+                                        n <span class="token operator">+</span> uvnscf<span class="token operator">-&gt;</span>vnumber<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token punctuation">}</span>
+
+            n <span class="token operator">=</span> vpeers<span class="token punctuation">[</span>i<span class="token punctuation">]</span><span class="token punctuation">.</span>rindex <span class="token operator">/</span> <span class="token punctuation">(</span><span class="token number">8</span> <span class="token operator">*</span> <span class="token keyword">sizeof</span><span class="token punctuation">(</span><span class="token class-name">uintptr_t</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            m <span class="token operator">=</span> <span class="token punctuation">(</span><span class="token class-name">uintptr_t</span><span class="token punctuation">)</span> <span class="token number">1</span> <span class="token operator">&lt;&lt;</span> vpeers<span class="token punctuation">[</span>i<span class="token punctuation">]</span><span class="token punctuation">.</span>rindex <span class="token operator">%</span> <span class="token punctuation">(</span><span class="token number">8</span> <span class="token operator">*</span> <span class="token keyword">sizeof</span><span class="token punctuation">(</span><span class="token class-name">uintptr_t</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+        <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+            n <span class="token operator">=</span>  i <span class="token operator">/</span> <span class="token punctuation">(</span><span class="token number">8</span> <span class="token operator">*</span> <span class="token keyword">sizeof</span><span class="token punctuation">(</span><span class="token class-name">uintptr_t</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            m <span class="token operator">=</span> <span class="token punctuation">(</span><span class="token class-name">uintptr_t</span><span class="token punctuation">)</span> <span class="token number">1</span> <span class="token operator">&lt;&lt;</span> i <span class="token operator">%</span> <span class="token punctuation">(</span><span class="token number">8</span> <span class="token operator">*</span> <span class="token keyword">sizeof</span><span class="token punctuation">(</span><span class="token class-name">uintptr_t</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+
+		<span class="token comment">/* 节点是否已经分配过的状态判断 */</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>rrp<span class="token operator">-&gt;</span>tried<span class="token punctuation">[</span>n<span class="token punctuation">]</span> <span class="token operator">&amp;</span> m<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">continue</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+
+		<span class="token comment">/* 节点是否已经被设置为down状态判断 */</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>peer<span class="token operator">-&gt;</span>down<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">continue</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+
+		<span class="token comment">/* 节点是否故障保护状态判断 */</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>peer<span class="token operator">-&gt;</span>max_fails
+            <span class="token operator">&amp;&amp;</span> peer<span class="token operator">-&gt;</span>fails <span class="token operator">&gt;=</span> peer<span class="token operator">-&gt;</span>max_fails
+            <span class="token operator">&amp;&amp;</span> now <span class="token operator">-</span> peer<span class="token operator">-&gt;</span>checked <span class="token operator">&lt;=</span> peer<span class="token operator">-&gt;</span>fail_timeout<span class="token punctuation">)</span>
+        <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">continue</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+
+		<span class="token comment">/* 节点的当前在线连接是否超过限制判断 */</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">if</span> <span class="token expression"><span class="token function">defined</span><span class="token punctuation">(</span>nginx_version<span class="token punctuation">)</span> <span class="token operator">&amp;&amp;</span> nginx_version <span class="token operator">&gt;=</span> <span class="token number">1011005</span></span></span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>peer<span class="token operator">-&gt;</span>max_conns <span class="token operator">&amp;&amp;</span> peer<span class="token operator">-&gt;</span>conns <span class="token operator">&gt;=</span> peer<span class="token operator">-&gt;</span>max_conns<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">continue</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">if</span> <span class="token expression"><span class="token punctuation">(</span>NGX_HTTP_UPSTREAM_CHECK<span class="token punctuation">)</span></span></span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">ngx_http_upstream_check_peer_down</span><span class="token punctuation">(</span>peer<span class="token operator">-&gt;</span>check_index<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">continue</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+
+		<span class="token comment">/*  得到了分配好的节点 */</span>
+		best <span class="token operator">=</span> peer<span class="token punctuation">;</span>
+        uvnscf<span class="token operator">-&gt;</span>last_peer <span class="token operator">=</span> peer<span class="token punctuation">;</span>
+        uvnscf<span class="token operator">-&gt;</span>last_number <span class="token operator">=</span> i<span class="token punctuation">;</span>
+        p <span class="token operator">=</span> i<span class="token punctuation">;</span>
+        <span class="token keyword">break</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>best <span class="token operator">==</span> <span class="token constant">NULL</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">return</span> <span class="token constant">NULL</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    rrp<span class="token operator">-&gt;</span>current <span class="token operator">=</span> best<span class="token punctuation">;</span>
+
+	<span class="token comment">/* 在tried位表中设置当前节点已经被分配过 */</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>peers<span class="token operator">-&gt;</span>weighted<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        n <span class="token operator">=</span> vpeers<span class="token punctuation">[</span>p<span class="token punctuation">]</span><span class="token punctuation">.</span>rindex <span class="token operator">/</span> <span class="token punctuation">(</span><span class="token number">8</span> <span class="token operator">*</span> <span class="token keyword">sizeof</span><span class="token punctuation">(</span><span class="token class-name">uintptr_t</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        m <span class="token operator">=</span> <span class="token punctuation">(</span><span class="token class-name">uintptr_t</span><span class="token punctuation">)</span> <span class="token number">1</span> <span class="token operator">&lt;&lt;</span> vpeers<span class="token punctuation">[</span>p<span class="token punctuation">]</span><span class="token punctuation">.</span>rindex <span class="token operator">%</span> <span class="token punctuation">(</span><span class="token number">8</span> <span class="token operator">*</span> <span class="token keyword">sizeof</span><span class="token punctuation">(</span><span class="token class-name">uintptr_t</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+        n <span class="token operator">=</span> p <span class="token operator">/</span> <span class="token punctuation">(</span><span class="token number">8</span> <span class="token operator">*</span> <span class="token keyword">sizeof</span><span class="token punctuation">(</span><span class="token class-name">uintptr_t</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        m <span class="token operator">=</span> <span class="token punctuation">(</span><span class="token class-name">uintptr_t</span><span class="token punctuation">)</span> <span class="token number">1</span> <span class="token operator">&lt;&lt;</span> p <span class="token operator">%</span> <span class="token punctuation">(</span><span class="token number">8</span> <span class="token operator">*</span> <span class="token keyword">sizeof</span><span class="token punctuation">(</span><span class="token class-name">uintptr_t</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    rrp<span class="token operator">-&gt;</span>tried<span class="token punctuation">[</span>n<span class="token punctuation">]</span> <span class="token operator">|=</span> m<span class="token punctuation">;</span>
+
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>now <span class="token operator">-</span> best<span class="token operator">-&gt;</span>checked <span class="token operator">&gt;</span> best<span class="token operator">-&gt;</span>fail_timeout<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        best<span class="token operator">-&gt;</span>checked <span class="token operator">=</span> now<span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token keyword">return</span> best<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>  以上函数中，如果是不带权重的模式，那么就是最简单的round-robin分配机制，每次分配就循环往后前进一个peer，一个特别的地方就是第一次分配的时候设置了一个随机值位置，从这个随机位置开始进行正式分配，避免产生“共振”；如果是带权重的模式，那么才是真正的vnswrr算法，这个算法另外创建了虚拟节点，虚拟节点的总数量是总权重/各服务器权重的最大公约数，为了避免一次性集中分配虚拟节点导致CPU压力突发，所以每次最多分配max_init个数的虚拟节点。<br>   这是这些逻辑交织在一起，看上去ngx_http_upstream_get_vnswrr函数似乎有些复杂了。<br>   和不带权重的模式一样，它也会在第一次分配的时候设置一个随机值位置，从随机的虚拟节点开始分配，避免“共振”现象的发生。</p> 
+<p>  除了以上特别说明的部分，其他逻辑几乎就是round-robin代码的翻版，还是非常好理解的，本文列出的源码中也给出了注释，就不再赘述了。</p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/74d8d3b1cec20517bff5faf0c58c4539/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">多线程请求后台资源，ReentrantLock锁定业务代码只执行一次</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/565529100e90166cde498197c6a240c2/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">C语言（循环）单元练习</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

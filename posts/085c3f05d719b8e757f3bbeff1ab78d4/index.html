@@ -1,0 +1,455 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>C&#43;&#43;对象Json序列化最佳实践（基于Rapidjson库）：C&#43;&#43;内存对象和Json字符串互相转换 - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="C&#43;&#43;对象Json序列化最佳实践（基于Rapidjson库）：C&#43;&#43;内存对象和Json字符串互相转换" />
+<meta property="og:description" content="介绍：Rapidjson
+Rapidjson库是C&#43;&#43;对象序列化到Json字符串的非常好的工具，以效率著称，腾讯的人写的。
+官方网站：点击打开链接
+本文全部资源百度云
+这个库的缺点（个人拙见）：
+1 暴露的细节相对较多：容器，迭代器，类型，成员函数，序列化，反序列化，都有非常细致的操作。这个给使用者带来记忆负担较重。至少需要同时暴露Value类型和Document类型才能完整的实现Object内部包含Object类型。但这个包装起来很麻烦。
+2 使用移动语义和自动内存回收：这个是内存占用小的保障，但是光是移动语义就给使用者造成很多不便。移动语义当然提高了效率，但是和使用者的程序代码风格不能很好的融合。移动语义使得Document的管理的内存数据在Document释放的时候就被析构，Object内包含Object的时候不好像C&#43;&#43;基础类型语义那样去赋值操作（赋值就是副本，不担心原对象释放）。为了既能够使用移动语义和Document自动管理内存，又能够使用子对象的数据赋值，本文实现的CJsonObject对象返回和设置子对象均使用std::shared_ptr&lt;CJsonObject&gt;来实现。
+3 序列化的思路好，但是没有和反序列化很好的结合：
+官网上的序列化实现的思路是仿照STL的思路，使用类似输出操作符重载的方式给类增加序列化的函数（而不是输出操作符重载），从而使得复杂的类型（包括类类型成员的）可以借助成员类型的序列化来实现自己的序列化。
+这种方式好处是明显的，程序结构清晰，Rapidjson对现有代码的冲击最小，想序列化哪一个就实现个序列化的成员函数就行了。但是却没有发现反序列化的例子。反序列化就是将json字符串通过Parse来创建一个C&#43;&#43;内存对象，从而使用这个内存对象。
+其实和序列化的场景一样，大多数人使用json都是想让原有类型支持序列化和反序列化，而不是抛弃原有类型（原有类型存在于大量的已有代码中，这样冲击太大）
+还有一种思路是：将Rapidjson视为反序列化的工具，需要反序列化的时候临时创建Document对象来实现。但是数据在Document中，要想让现有C&#43;&#43;类拿到这些数据，还是要一个一个的GetInt，GetBool，GetDouble等取出来再赋值给现有C&#43;&#43;对象。这个是无法忍受的，只能再实现一套帮助类来做转换。这样增加了一批帮助类其实也是负担，而且程序代码分散而不集中。
+本文的思路：
+1 借鉴Rapidjson序列化的思路，让需要序列化的类自己实现统一的（通过实现基类CJsonBase来做到）序列化和反序列化成员函数。这样对现有代码的冲击最小，需要新写的代码量最小，最大程度的保护的原有的C&#43;&#43;业务类
+2 为序列化和反序列化实现一个执行类：CJsonObject，该类型提供序列化和反序列化时的所有操作实现。包括：CreateFromJson，ToJson，Get/SetInt GetSetBool 等。
+3 优点：对现有代码的冲击最小（只需要包含添加CJsonObject类即可）；只针对对现有代码的序列化和反序列化场景（比如C&#43;&#43;对象存储到Redis；公开接口API形式跟外部通信，等等）
+本文示例代码：借鉴了官网的serialize.cpp实现
+#include &#34;stdafx.h&#34; #include &#34;JsonObject.h&#34; #include &#34;Person.h&#34; #include &lt;iostream&gt; #include &lt;list&gt; using namespace std; int _tmain(int argc, _TCHAR* argv[]) { std::list&lt;Employee&gt; employees; std::list&lt;Employee&gt; employeesCopyFromJson; employees.push_back(Employee(&#34;Milo YIP&#34;, 34, true)); employees.back().AddDependent(Dependent(&#34;Lua YIP&#34;, 3, new Education(&#34;Happy Kindergarten&#34;, 3.5))); employees.back().AddDependent(Dependent(&#34;Mio YIP&#34;, 1)); employees.push_back(Employee(&#34;Percy TSE&#34;, 30, false)); cout&lt;&lt;&#34;C&#43;&#43;对象-&gt;Json字符串：&#34;&lt;&lt;endl; for (auto itr = employees." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/085c3f05d719b8e757f3bbeff1ab78d4/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2018-04-17T13:16:39+08:00" />
+<meta property="article:modified_time" content="2018-04-17T13:16:39+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">C&#43;&#43;对象Json序列化最佳实践（基于Rapidjson库）：C&#43;&#43;内存对象和Json字符串互相转换</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p style="width:905px;height:39px;"></p> 
+<p></p> 
+<p style="width:905px;height:17px;"></p> 
+<p></p> 
+<p></p> 
+<p>介绍：Rapidjson</p> 
+<p></p> 
+<p></p> 
+<p>Rapidjson库是C++对象序列化到Json字符串的非常好的工具，以效率著称，腾讯的人写的。</p> 
+<p></p> 
+<p></p> 
+<p>官方网站：<a href="http://rapidjson.org/" rel="nofollow">点击打开链接</a></p> 
+<p><a href="https://pan.baidu.com/s/1Pxh51QhHSG4l4ZamCjOzcw" rel="nofollow">本文全部资源百度云</a></p> 
+<p></p> 
+<p>这个库的缺点（个人拙见）：</p> 
+<p></p> 
+<p></p> 
+<p>1 暴露的细节相对较多：容器，迭代器，类型，成员函数，序列化，反序列化，都有非常细致的操作。这个给使用者带来记忆负担较重。至少需要同时暴露Value类型和Document类型才能完整的实现Object内部包含Object类型。但这个包装起来很麻烦。</p> 
+<p></p> 
+<p></p> 
+<p>2 使用移动语义和自动内存回收：这个是内存占用小的保障，但是光是移动语义就给使用者造成很多不便。移动语义当然提高了效率，但是和使用者的程序代码风格不能很好的融合。移动语义使得Document的管理的内存数据在Document释放的时候就被析构，Object内包含Object的时候不好像C++基础类型语义那样去赋值操作（赋值就是副本，不担心原对象释放）。为了既能够使用移动语义和Document自动管理内存，又能够使用子对象的数据赋值，本文实现的CJsonObject对象返回和设置子对象均使用std::shared_ptr&lt;CJsonObject&gt;来实现。</p> 
+<p></p> 
+<p></p> 
+<p>3 序列化的思路好，但是没有和反序列化很好的结合：</p> 
+<p></p> 
+<p></p> 
+<p>官网上的序列化实现的思路是仿照STL的思路，使用类似输出操作符重载的方式给类增加序列化的函数（而不是输出操作符重载），从而使得复杂的类型（包括类类型成员的）可以借助成员类型的序列化来实现自己的序列化。</p> 
+<p></p> 
+<p></p> 
+<p>这种方式好处是明显的，程序结构清晰，Rapidjson对现有代码的冲击最小，想序列化哪一个就实现个序列化的成员函数就行了。但是却没有发现反序列化的例子。反序列化就是将json字符串通过Parse来创建一个C++内存对象，从而使用这个内存对象。</p> 
+<p></p> 
+<p></p> 
+<p>其实和序列化的场景一样，大多数人使用json都是想让原有类型支持序列化和反序列化，而不是抛弃原有类型（原有类型存在于大量的已有代码中，这样冲击太大）</p> 
+<p></p> 
+<p></p> 
+<p>还有一种思路是：将Rapidjson视为反序列化的工具，需要反序列化的时候临时创建Document对象来实现。但是数据在Document中，要想让现有C++类拿到这些数据，还是要一个一个的GetInt，GetBool，GetDouble等取出来再赋值给现有C++对象。这个是无法忍受的，只能再实现一套帮助类来做转换。这样增加了一批帮助类其实也是负担，而且程序代码分散而不集中。</p> 
+<p></p> 
+<p></p> 
+<p></p> 
+<p></p> 
+<p></p> 
+<p></p> 
+<p><br></p> 
+<p></p> 
+<p></p> 
+<p>本文的思路：</p> 
+<p></p> 
+<p></p> 
+<p>1 借鉴Rapidjson序列化的思路，让需要序列化的类自己实现统一的（通过实现基类CJsonBase来做到）序列化和反序列化成员函数。这样对现有代码的冲击最小，需要新写的代码量最小，最大程度的保护的原有的C++业务类</p> 
+<p></p> 
+<p></p> 
+<p></p> 
+<p></p> 
+<p>2 为序列化和反序列化实现一个执行类：CJsonObject，该类型提供序列化和反序列化时的所有操作实现。包括：CreateFromJson，ToJson，Get/SetInt GetSetBool 等。</p> 
+<p></p> 
+<p></p> 
+<p>3 优点：对现有代码的冲击最小（只需要包含添加CJsonObject类即可）；只针对对现有代码的序列化和反序列化场景（比如C++对象存储到Redis；公开接口API形式跟外部通信，等等）</p> 
+<p>本文示例代码：借鉴了官网的serialize.cpp实现</p> 
+<p></p> 
+<pre><code class="language-cpp">#include "stdafx.h"
+#include "JsonObject.h"
+#include "Person.h"
+
+#include &lt;iostream&gt;
+#include &lt;list&gt;
+using namespace std;
+
+int _tmain(int argc, _TCHAR* argv[])
+{
+	std::list&lt;Employee&gt; employees;
+	std::list&lt;Employee&gt; employeesCopyFromJson;
+
+	employees.push_back(Employee("Milo YIP", 34, true));
+	employees.back().AddDependent(Dependent("Lua YIP", 3, new Education("Happy Kindergarten", 3.5)));
+	employees.back().AddDependent(Dependent("Mio YIP", 1));
+	
+	employees.push_back(Employee("Percy TSE", 30, false));
+
+	cout&lt;&lt;"C++对象-&gt;Json字符串："&lt;&lt;endl;
+	for (auto itr = employees.begin(); itr != employees.end(); ++itr)
+	{
+		cout&lt;&lt; itr-&gt;ToJson()&lt;&lt;endl;
+		Employee employee;
+		employee.CreateFromJson(itr-&gt;ToJson().c_str());
+		employeesCopyFromJson.push_back(employee);
+	}
+	cout&lt;&lt;endl;
+	cout&lt;&lt;"Json字符串-&gt;C++对象-&gt;Json字符串："&lt;&lt;endl;
+
+	for (auto itr = employeesCopyFromJson.begin(); itr != employeesCopyFromJson.end(); ++itr)
+	{
+		cout&lt;&lt; itr-&gt;ToJson()&lt;&lt;endl;
+	}
+
+	 return 0;
+}
+
+</code></pre> 
+<br> 
+<p></p> 
+<p></p> 
+<p>程序输出：</p> 
+<p></p> 
+<p>C++对象-&gt;Json字符串：<br>{<!-- --><br>    "name": "Milo YIP",<br>    "age": 34,<br>    "dependent": [<br>        {<!-- --><br>            "name": "Lua YIP",<br>            "age": 3,<br>            "education": {<!-- --><br>                "school": "Happy Kindergarten",<br>                "GPA": 3.5<br>            }<br>        },<br>        {<!-- --><br>            "name": "Mio YIP",<br>            "age": 1<br>        }<br>    ],<br>    "married": true<br>}<br>{<!-- --><br>    "name": "Percy TSE",<br>    "age": 30,<br>    "dependent": [],<br>    "married": false<br>}</p> 
+<p></p> 
+<p style="width:906px;height:686px;"></p> 
+<p></p> 
+<p>Json字符串-&gt;C++对象-&gt;Json字符串：<br>{<!-- --><br>    "name": "Milo YIP",<br>    "age": 34,<br>    "dependent": [<br>        {<!-- --><br>            "name": "Lua YIP",<br>            "age": 3,<br>            "education": {<!-- --><br>                "school": "Happy Kindergarten",<br>                "GPA": 3.5<br>            }<br>        },<br>        {<!-- --><br>            "name": "Mio YIP",<br>            "age": 1<br>        }<br>    ],<br>    "married": true<br>}<br>{<!-- --><br>    "name": "Percy TSE",<br>    "age": 30,<br>    "dependent": [],<br>    "married": false<br>}<br>请按任意键继续. . .</p> 
+<p></p> 
+<p></p> 
+<p><img src="https://images2.imgbox.com/90/f2/SNTQGSLe_o.png" alt=""></p> 
+<p></p> 
+<p></p> 
+<p></p> 
+<p>附件：本文修改官网序列化示例代码的Person.h文件</p> 
+<p></p> 
+<pre><code class="language-cpp">#include &lt;list&gt;
+#include &lt;memory&gt;
+#include &lt;vector&gt;
+#include "JsonObject.h"
+
+class Person : public CJsonObjectBase
+{
+public:
+	Person(void){}
+	Person(const std::string&amp; name, unsigned age) : name_(name), age_(age) {}
+	Person(const Person&amp; rhs) : name_(rhs.name_), age_(rhs.age_) {}
+	virtual ~Person();
+	//序列化
+	virtual std::string ToJson(void) const
+	{
+		CJsonObject json;
+		json.SetStringValue("name", name_);
+		json.SetULongValue("age", age_);
+
+		return json.ToJson();
+	}
+	//反序列化
+	virtual void CreateFromJson(const char* _json)
+	{
+		CJsonObject jsonObj;
+		jsonObj.CreateFromJson(_json);
+		name_ = jsonObj.GetStringValue("name");
+		age_ = jsonObj.GetULongValue("age");
+	}
+
+
+	Person&amp; operator=(const Person&amp; rhs) {
+		name_ = rhs.name_;
+		age_ = rhs.age_;
+		return *this;
+	}
+
+public:
+	std::string name_;
+	unsigned age_;
+};
+
+Person::~Person() {
+}
+
+class Education  : public CJsonObjectBase{
+public:
+	Education(void) {}
+	Education(const std::string&amp; school, double GPA) : school_(school), GPA_(GPA) {}
+	Education(const Education&amp; rhs) : school_(rhs.school_), GPA_(rhs.GPA_) {}
+	//序列化
+	virtual std::string ToJson(void) const
+	{
+		CJsonObject json;
+		json.SetStringValue("school", school_);
+		json.SetDoubleValue("GPA", GPA_);
+		return json.ToJson();
+	}
+	//反序列化
+	virtual void CreateFromJson(const char* _json)
+	{
+		CJsonObject jsonObj;
+		jsonObj.CreateFromJson(_json);
+		school_ = jsonObj.GetStringValue("school");
+		GPA_ = jsonObj.GetDoubleValue("GPA");
+	}
+
+public:
+	std::string school_;
+	double GPA_;
+};
+
+class Dependent : public Person {
+public:
+	Dependent(void):education_(0){};
+	Dependent(const std::string&amp; name, unsigned age, Education* education = 0) : Person(name, age), education_(education) {}
+	Dependent(const Dependent&amp; rhs) : Person(rhs), education_(0) { education_ = (rhs.education_ == 0) ? 0 : new Education(*rhs.education_); }
+	virtual ~Dependent();
+
+	Dependent&amp; operator=(const Dependent&amp; rhs) {
+		if (this == &amp;rhs)
+			return *this;
+		delete education_;
+		education_ = (rhs.education_ == 0) ? 0 : new Education(*rhs.education_);
+		return *this;
+	}
+
+	//序列化
+	virtual std::string ToJson(void) const
+	{
+		CJsonObject json;
+		json.CreateFromJson(Person::ToJson().c_str());
+		
+		std::shared_ptr&lt;CJsonObject&gt; spEducationObj = std::make_shared&lt;CJsonObject&gt;();
+		if (education_ != nullptr)
+		{
+			spEducationObj-&gt;CreateFromJson(education_-&gt;ToJson().c_str());
+			json.SetObjectValue("education", spEducationObj);
+		}
+		else
+		{
+			//空指针的话，Json中根本就没这个成员
+		}
+
+		return json.ToJson();
+	}
+	//反序列化
+	virtual void CreateFromJson(const char* _json)
+	{
+		Person::CreateFromJson(_json);
+
+		CJsonObject jsonObj;
+		jsonObj.CreateFromJson(_json);
+
+		if (education_ != nullptr)
+		{
+			delete education_;
+			education_ = nullptr;
+		}
+		try
+		{
+			auto spEdution = jsonObj.GetObjectValue("education");
+			education_ = new Education;
+			education_-&gt;CreateFromJson(spEdution-&gt;ToJson().c_str());
+		}
+		catch (CJsonException e)
+		{
+			delete education_;
+			education_ = nullptr;
+		}
+	}
+
+public:
+	Education *education_;
+};
+
+Dependent::~Dependent() {
+	delete education_; 
+}
+
+class Employee : public Person {
+public:
+	Employee(void){};
+	Employee(const std::string&amp; name, unsigned age, bool married) : Person(name, age), dependents_(), married_(married) {}
+	Employee(const Employee&amp; rhs) : Person(rhs), dependents_(rhs.dependents_), married_(rhs.married_) {}
+	virtual ~Employee();
+
+	//序列化
+	virtual std::string ToJson(void) const;
+	//反序列化
+	virtual void CreateFromJson(const char* _json);
+
+	Employee&amp; operator=(const Employee&amp; rhs) {
+		static_cast&lt;Person&amp;&gt;(*this) = rhs;
+		dependents_ = rhs.dependents_;
+		married_ = rhs.married_;
+		return *this;
+	}
+
+	void AddDependent(const Dependent&amp; dependent) {
+		dependents_.push_back(dependent);
+	}
+
+public:
+	std::vector&lt;Dependent&gt; dependents_;
+	bool married_;
+};
+
+Employee::~Employee() {
+}
+
+std::string Employee::ToJson(void) const
+{
+	std::list&lt;std::shared_ptr&lt;CJsonObject&gt;&gt; listJsonObj;
+	for (auto itr = dependents_.begin(); itr != dependents_.end(); ++itr)
+	{
+		std::shared_ptr&lt;CJsonObject&gt; pJsonDependent = std::make_shared&lt;CJsonObject&gt;();
+		pJsonDependent-&gt;CreateFromJson(itr-&gt;ToJson());
+		listJsonObj.push_back(pJsonDependent);
+		//listJsonObj.push_back(CJsonObject);//这种写法：复制到容器的副本会导致原来的对象析构
+	}
+
+	CJsonObject json;
+	json.CreateFromJson(Person::ToJson());
+	json.SetObjectListValue("dependent", listJsonObj);
+	json.SetBoolValue("married", married_);
+	
+	std::string str = json.ToJson();
+	
+	return std::move(str);
+}
+
+void Employee::CreateFromJson(const char* _json)
+{
+	Person::CreateFromJson(_json);
+
+	CJsonObject jsonObj;
+	jsonObj.CreateFromJson(_json);
+
+	married_ = jsonObj.GetBoolValue("married");
+
+	auto listDependents = jsonObj.GetObjectListValue("dependent");
+	
+
+	for (auto itr = listDependents.begin(); itr != listDependents.end(); ++itr)
+	{
+		Dependent dependent;
+		dependent.CreateFromJson((*itr)-&gt;ToJson().c_str());
+		this-&gt;dependents_.push_back(dependent);
+	}
+}
+</code></pre> 
+<p></p> 
+<p>全部资源：</p> 
+<p></p> 
+<p></p> 
+<p>有需要的联系我头像<img src="https://images2.imgbox.com/ee/5a/ri0hv7SF_o.png" alt=""></p> 
+<p>有需要的扫描我头像加我即可。（付费资源哦！）<br></p> 
+<p><br></p> 
+<div>
+  ﻿﻿ 
+</div>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/0a3e555dc06f0070578ce2d6df5cd81c/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">快速入门Docker---用Docker搭建Python的开发环境</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/e075aefe9ec93081f8850cc81eb4f678/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">FastDFS_简介和原理</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

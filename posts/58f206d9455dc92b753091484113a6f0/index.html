@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>浅析 Semi-Supervised Learning 中的 consistency 问题 - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="浅析 Semi-Supervised Learning 中的 consistency 问题" />
+<meta property="og:description" content="浅析 Semi-Supervised Learning 中的 Consistency 问题 传统半监督学习简述：现有半监督学习的问题 —— Individual Consistency实现方法总结 传统半监督学习简述： 区别于全监督学习，半监督学习针对训练集标记不完整的情况：仅仅部分数据具有标签，然而大量数据是没有标签的。因此，目前半监督学习的关键问题在于如何充分地挖掘没有标签数据的价值。主流的半监督学习方法有下面几种：
+Self-Training 方法。这是一种很直观的思路：既然大量数据是没有标签的，那么能否对这些数据生成一些伪标签 Pseuo Labels，对这些伪标签数据的训练从而利用原始的无标签数据。Adversarial-Learning-based 方法。这类方法基于一种假设，无标签数据通常具有和有标签数据在某种程度上类似的潜在标签。所以很自然地，可以采用 GAN 的图像模拟思路来进行对 Labeled Data 进行类似于 Unlabeled Data 的数据增强，进而利用 Unlabeled Data 的潜在知识。Consistency-based 方法。 这类方法的核心思路在于 consistency loss，对于进过扰动的 unlabeled data，模型应该对其做出一致性的预测 —— 可以理解成一种利用 unlabeled data 进行网络正则化的方法。 其中经典的算法有 Π-model，Temporal Ensembling 和 Mean Teacher。这些内容具体可以参见 飘入东湖的鱼的知乎专栏。本篇博客的后续讨论都是基于 Mean Teacher 模型上的。 现有半监督学习的问题 —— Individual Consistency 目前大多数半监督学习方法都是基于 consistency-enforcing strategy，利用无标签数据对网络进行正则化，要求预测结果对于输入扰动和网络参数扰动具有一致性。具体来说，给定一个输入样本，对其进行一定程度的扰动 (如添加 Gaussian noise)，使得网络对于这些样本具有相似的预测结果。
+这类方法的局限性在于 没有考虑样本和样本之间的关系 —— 这些关系能够有助于从无标签的样本中提取语义信息。如下图所示， 传统半监督学习考虑 individual consistency，将每个样本当成独立的个体考虑，仅仅考虑它和对应扰动之后的样本之间的对应关系。除此之外，我们能否进一步考虑样本之间的关系一致性 (Relation Consistency)，在添加扰动之后其 relation consistency 也应该保持 —— 最小化，从而确保 high-level semantic information 也能够被学习到，进而确保学习的鲁棒性和高判别性。" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/58f206d9455dc92b753091484113a6f0/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2020-06-17T21:31:45+08:00" />
+<meta property="article:modified_time" content="2020-06-17T21:31:45+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">浅析 Semi-Supervised Learning 中的 consistency 问题</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-light">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p></p> 
+<div class="toc"> 
+ <h4>浅析 Semi-Supervised Learning 中的 Consistency 问题</h4> 
+ <ul><li><ul><li><a href="#_1" rel="nofollow">传统半监督学习简述：</a></li><li><a href="#__Individual_Consistency_7" rel="nofollow">现有半监督学习的问题 —— Individual Consistency</a></li><li><a href="#_11" rel="nofollow">实现方法</a></li><li><a href="#_17" rel="nofollow">总结</a></li></ul> 
+ </li></ul> 
+</div> 
+<p></p> 
+<h3><a id="_1"></a>传统半监督学习简述：</h3> 
+<p>区别于<strong>全监督学习</strong>，半监督学习针对<strong>训练集标记不完整</strong>的情况：仅仅部分数据具有标签，然而大量数据是没有标签的。因此，目前半监督学习的关键问题在于如何<mark>充分地挖掘没有标签数据的价值</mark>。主流的半监督学习方法有下面几种：</p> 
+<ol><li>Self-Training 方法。这是一种很直观的思路：既然大量数据是没有标签的，那么能否对这些数据生成一些伪标签 Pseuo Labels，对这些伪标签数据的训练从而利用原始的无标签数据。</li><li>Adversarial-Learning-based 方法。这类方法基于一种假设，无标签数据通常具有和有标签数据在某种程度上类似的潜在标签。所以很自然地，可以采用 GAN 的图像模拟思路来进行对 Labeled Data 进行类似于 Unlabeled Data 的数据增强，进而利用 Unlabeled Data 的潜在知识。</li><li>Consistency-based 方法。 <strong>这类方法的核心思路在于 consistency loss，对于进过扰动的 unlabeled data，模型应该对其做出一致性的预测 —— 可以理解成一种利用 unlabeled data 进行网络正则化的方法。</strong> 其中经典的算法有 Π-model，Temporal Ensembling 和 Mean Teacher。这些内容具体可以参见 <a href="https://zhuanlan.zhihu.com/p/99513085?from=groupmessage" rel="nofollow">飘入东湖的鱼的知乎专栏</a>。本篇博客的后续讨论都是基于 <mark>Mean Teacher</mark> 模型上的。</li></ol> 
+<h3><a id="__Individual_Consistency_7"></a>现有半监督学习的问题 —— Individual Consistency</h3> 
+<p>目前大多数半监督学习方法都是基于 consistency-enforcing strategy，利用无标签数据对网络进行正则化，要求<strong>预测结果对于输入扰动和网络参数扰动具有一致性</strong>。具体来说，给定一个输入样本，对其进行一定程度的扰动 (如添加 Gaussian noise)，使得网络对于这些样本具有相似的预测结果。<br> 　　这类方法的局限性在于 <mark>没有考虑样本和样本之间的关系</mark> —— 这些关系能够有助于从无标签的样本中提取语义信息。如下图所示， 传统半监督学习考虑 individual consistency，将每个样本当成独立的个体考虑，仅仅考虑它和对应扰动之后的样本之间的对应关系。除此之外，我们能否进一步考虑<strong>样本之间的关系一致性 (Relation Consistency)</strong>，<mark>在添加扰动之后其 relation consistency 也应该保持 —— 最小化</mark>，从而确保 high-level semantic information 也能够被学习到，进而确保学习的鲁棒性和高判别性。<br> <img src="https://images2.imgbox.com/53/8f/tmjIvSVB_o.png" alt="在这里插入图片描述"></p> 
+<h3><a id="_11"></a>实现方法</h3> 
+<p><img src="https://images2.imgbox.com/36/88/n0hkUz6s_o.png" alt="在这里插入图片描述"></p> 
+<ul><li>上图的骨架结构是传统的 mean-teacher 框架，其中包括对于 student model 的有监督损失函数 <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+         
+         
+           L 
+          
+         
+           s 
+          
+         
+        
+       
+         L_s 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.83333em; vertical-align: -0.15em;"></span><span class="mord"><span class="mord mathdefault">L</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.151392em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight">s</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span></span></span></span></span> (cross entropy loss)，和上述提到的 individual consistency loss <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+         
+         
+           L 
+          
+         
+           c 
+          
+         
+        
+       
+         L_c 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.83333em; vertical-align: -0.15em;"></span><span class="mord"><span class="mord mathdefault">L</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.151392em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight">c</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span></span></span></span></span> (这里采用的是 mse loss)</li><li><span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+         
+         
+           L 
+          
+          
+          
+            s 
+           
+          
+            r 
+           
+          
+            c 
+           
+          
+         
+        
+       
+         L_{src} 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.83333em; vertical-align: -0.15em;"></span><span class="mord"><span class="mord mathdefault">L</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.151392em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathdefault mtight">s</span><span class="mord mathdefault mtight" style="margin-right: 0.02778em;">r</span><span class="mord mathdefault mtight">c</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span></span></span></span></span> (Sample Relation Consistency)。这里考虑一个 mini-batch 内样本的关系一致性，简单来说就是计算在全连接层之前的 feature map 之间的 similarity。给定 batch size = <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          B 
+         
+        
+       
+         B 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.68333em; vertical-align: 0em;"></span><span class="mord mathdefault" style="margin-right: 0.05017em;">B</span></span></span></span></span>，即可得到尺寸为 <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          B 
+         
+        
+          × 
+         
+        
+          B 
+         
+        
+       
+         B \times B 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.76666em; vertical-align: -0.08333em;"></span><span class="mord mathdefault" style="margin-right: 0.05017em;">B</span><span class="mspace" style="margin-right: 0.222222em;"></span><span class="mbin">×</span><span class="mspace" style="margin-right: 0.222222em;"></span></span><span class="base"><span class="strut" style="height: 0.68333em; vertical-align: 0em;"></span><span class="mord mathdefault" style="margin-right: 0.05017em;">B</span></span></span></span></span> 的 similarity matrix。对于 student model 和 teacher model 得到的 similarity matrix 计算其之间的差异，作为 <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+         
+         
+           L 
+          
+          
+          
+            s 
+           
+          
+            r 
+           
+          
+            c 
+           
+          
+         
+        
+       
+         L_{src} 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.83333em; vertical-align: -0.15em;"></span><span class="mord"><span class="mord mathdefault">L</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.151392em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathdefault mtight">s</span><span class="mord mathdefault mtight" style="margin-right: 0.02778em;">r</span><span class="mord mathdefault mtight">c</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span></span></span></span></span>。进而优化 <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+         
+         
+           L 
+          
+          
+          
+            s 
+           
+          
+            r 
+           
+          
+            c 
+           
+          
+         
+        
+       
+         L_{src} 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.83333em; vertical-align: -0.15em;"></span><span class="mord"><span class="mord mathdefault">L</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.151392em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathdefault mtight">s</span><span class="mord mathdefault mtight" style="margin-right: 0.02778em;">r</span><span class="mord mathdefault mtight">c</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span></span></span></span></span> 即可达到对于样本关系一致性的约束。</li></ul> 
+<h3><a id="_17"></a>总结</h3> 
+<ul><li>从方法核心的角度来看，这个方法很类似于对于 feature map 的一致性约束，只不过这里是先对 feature map 计算相似性，然后再对相似性做了一致性的约束。所以文章后续也有讨论，这样通过约束相似性的方式是优于直接约束 feature map。</li></ul>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/e23eb7c7e165e965bcb813137308608c/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">Syntax error near *的解决方案</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/89e89dec4d93268f0fd5f0ba62f3649e/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">vuex：弄懂mapState、mapGetters、mapMutations、mapActions</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

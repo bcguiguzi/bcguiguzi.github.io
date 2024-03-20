@@ -1,0 +1,359 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Django中ORM的锁和事务 - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="Django中ORM的锁和事务" />
+<meta property="og:description" content="Django中ORM的锁和事务 一、锁1.行级锁2.表锁 二、事务1.全局开启2.局部使用事务 一、锁 1.行级锁 select_for_update(nowait=False, skip_locked=False)
+#注意必须用在事务里面，至于如何开启事务，我们看下面的事务一节。
+返回一个锁住行直到事务结束的查询集，如果数据库支持，它将生成一个 SELECT … FOR UPDATE 语句。
+举个例子：
+entries = Entry.objects.select_for_update().filter(author=request.user) #加互斥锁，由于mysql在查询时自动加的是共享锁，所以我们可以手动加上互斥锁。create、update、delete操作时，mysql自动加行级互斥锁 所有匹配的行将被锁定，直到事务结束。这意味着可以通过锁防止数据被其它事务修改。
+一般情况下如果其他事务锁定了相关行，那么本查询将被阻塞，直到锁被释放。 如果这不想要使查询阻塞 的话，使用select_for_update(nowait=True)。 如果其它事务持有冲突的锁，互斥锁, 那么查询将引发 DatabaseError 异常。你也可以使用select_for_update(skip_locked=True)忽略锁定的行。 nowait和　skip_locked是互斥的，同时设置会导致ValueError。
+目前，postgresql，oracle和mysql数据库后端支持select_for_update()。 但是，MySQL不支持nowait和skip_locked参数。
+使用不支持这些选项的数据库后端（如MySQL）将nowait=True或skip_locked=True转换为select_for_update()将导致抛出DatabaseError异常，这可以防止代码意外终止。
+2.表锁 class LockingManager(models.Manager): &#34;&#34;&#34; Add lock/unlock functionality to manager. Example:: class Job(models.Model): #其实不用这么复杂，直接在orm创建表的时候，给这个表定义一个lock和unlock方法， # 借助django提供的connection模块来发送锁表的原生sql语句和解锁的原生sql语句就可以了， # 不用外层的这个LckingManager(model.Manager)类 manager = LockingManager() counter = models.IntegerField(null=True, default=0) @staticmethod def do_atomic_update(job_id) &#39;&#39;&#39; Updates job integer, keeping it below 5 &#39;&#39;&#39; try: # Ensure only one HTTP request can do this update at once." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/6c99ecb5f5ca61d5bab49e136d49d63d/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2019-05-30T19:47:28+08:00" />
+<meta property="article:modified_time" content="2019-05-30T19:47:28+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Django中ORM的锁和事务</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-tomorrow-night">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p></p> 
+<div class="toc"> 
+ <h4>Django中ORM的锁和事务</h4> 
+ <ul><li><a href="#_1" rel="nofollow">一、锁</a></li><li><ul><li><a href="#1_2" rel="nofollow">1.行级锁</a></li><li><a href="#2_20" rel="nofollow">2.表锁</a></li></ul> 
+  </li><li><a href="#_83" rel="nofollow">二、事务</a></li><li><ul><li><a href="#1_84" rel="nofollow">1.全局开启</a></li><li><a href="#2_124" rel="nofollow">2.局部使用事务</a></li></ul> 
+ </li></ul> 
+</div> 
+<p></p> 
+<h2><a id="_1"></a>一、锁</h2> 
+<h3><a id="1_2"></a>1.行级锁</h3> 
+<p>select_for_update(nowait=False, skip_locked=False)</p> 
+<blockquote> 
+ <p>#注意必须用在事务里面，至于如何开启事务，我们看下面的事务一节。</p> 
+</blockquote> 
+<p>返回一个锁住行直到事务结束的查询集，如果数据库支持，它将生成一个 SELECT … FOR UPDATE 语句。<br> 举个例子：</p> 
+<pre><code class="prism language-python">entries <span class="token operator">=</span> Entry<span class="token punctuation">.</span>objects<span class="token punctuation">.</span>select_for_update<span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token builtin">filter</span><span class="token punctuation">(</span>author<span class="token operator">=</span>request<span class="token punctuation">.</span>user<span class="token punctuation">)</span>  
+<span class="token comment">#加互斥锁，由于mysql在查询时自动加的是共享锁，所以我们可以手动加上互斥锁。create、update、delete操作时，mysql自动加行级互斥锁</span>
+</code></pre> 
+<p>所有匹配的行将被锁定，直到事务结束。这意味着可以通过锁防止数据被其它事务修改。</p> 
+<p>一般情况下如果其他事务锁定了相关行，那么本查询将被阻塞，直到锁被释放。 如果这不想要使查询阻塞 的话，使用select_for_update(nowait=True)。 如果其它事务持有冲突的锁，互斥锁, 那么查询将引发 DatabaseError 异常。你也可以使用select_for_update(skip_locked=True)忽略锁定的行。 nowait和　　skip_locked是互斥的，同时设置会导致ValueError。</p> 
+<p>目前，postgresql，oracle和mysql数据库后端支持select_for_update()。 但是，MySQL不支持nowait和skip_locked参数。</p> 
+<p>使用不支持这些选项的数据库后端（如MySQL）将nowait=True或skip_locked=True转换为select_for_update()将导致抛出DatabaseError异常，这可以防止代码意外终止。</p> 
+<h3><a id="2_20"></a>2.表锁</h3> 
+<pre><code class="prism language-python"><span class="token keyword">class</span> <span class="token class-name">LockingManager</span><span class="token punctuation">(</span>models<span class="token punctuation">.</span>Manager<span class="token punctuation">)</span><span class="token punctuation">:</span>
+    <span class="token triple-quoted-string string">""" Add lock/unlock functionality to manager.
+
+    Example::
+
+        class Job(models.Model): #其实不用这么复杂，直接在orm创建表的时候，给这个表定义一个lock和unlock方法，
+        # 借助django提供的connection模块来发送锁表的原生sql语句和解锁的原生sql语句就可以了，
+        # 不用外层的这个LckingManager(model.Manager)类
+
+            manager = LockingManager()
+
+            counter = models.IntegerField(null=True, default=0)
+
+            @staticmethod
+            def do_atomic_update(job_id)
+                ''' Updates job integer, keeping it below 5 '''
+                try:
+                    # Ensure only one HTTP request can do this update at once.
+                    Job.objects.lock()
+
+                    job = Job.object.get(id=job_id)
+                    # If we don't lock the tables two simultanous
+                    # requests might both increase the counter
+                    # going over 5
+                    if job.counter &lt; 5:
+                        job.counter += 1                                        
+                        job.save()
+
+                finally:
+                    Job.objects.unlock()
+
+
+    """</span>    
+
+    <span class="token keyword">def</span> <span class="token function">lock</span><span class="token punctuation">(</span>self<span class="token punctuation">)</span><span class="token punctuation">:</span>
+        <span class="token triple-quoted-string string">""" Lock table. 
+
+        Locks the object model table so that atomic update is possible.
+        Simulatenous database access request pend until the lock is unlock()'ed.
+
+        Note: If you need to lock multiple tables, you need to do lock them
+        all in one SQL clause and this function is not enough. To avoid
+        dead lock, all tables must be locked in the same order.
+
+        See http://dev.mysql.com/doc/refman/5.0/en/lock-tables.html
+        """</span>
+        cursor <span class="token operator">=</span> connection<span class="token punctuation">.</span>cursor<span class="token punctuation">(</span><span class="token punctuation">)</span>
+        table <span class="token operator">=</span> self<span class="token punctuation">.</span>model<span class="token punctuation">.</span>_meta<span class="token punctuation">.</span>db_table
+        logger<span class="token punctuation">.</span>debug<span class="token punctuation">(</span><span class="token string">"Locking table %s"</span> <span class="token operator">%</span> table<span class="token punctuation">)</span>
+        cursor<span class="token punctuation">.</span>execute<span class="token punctuation">(</span><span class="token string">"LOCK TABLES %s WRITE"</span> <span class="token operator">%</span> table<span class="token punctuation">)</span>
+        row <span class="token operator">=</span> cursor<span class="token punctuation">.</span>fetchone<span class="token punctuation">(</span><span class="token punctuation">)</span>
+        <span class="token keyword">return</span> row
+
+    <span class="token keyword">def</span> <span class="token function">unlock</span><span class="token punctuation">(</span>self<span class="token punctuation">)</span><span class="token punctuation">:</span>
+        <span class="token triple-quoted-string string">""" Unlock the table. """</span>
+        cursor <span class="token operator">=</span> connection<span class="token punctuation">.</span>cursor<span class="token punctuation">(</span><span class="token punctuation">)</span>
+        table <span class="token operator">=</span> self<span class="token punctuation">.</span>model<span class="token punctuation">.</span>_meta<span class="token punctuation">.</span>db_table
+        cursor<span class="token punctuation">.</span>execute<span class="token punctuation">(</span><span class="token string">"UNLOCK TABLES"</span><span class="token punctuation">)</span>
+        row <span class="token operator">=</span> cursor<span class="token punctuation">.</span>fetchone<span class="token punctuation">(</span><span class="token punctuation">)</span>
+        <span class="token keyword">return</span> row  
+</code></pre> 
+<h2><a id="_83"></a>二、事务</h2> 
+<h3><a id="1_84"></a>1.全局开启</h3> 
+<p>在Web应用中，常用的事务处理方式是将每个请求都包裹在一个事务中。这个功能使用起来非常简单，你只需要将它的配置项ATOMIC_REQUESTS设置为True。</p> 
+<p>它是这样工作的：当有请求过来时，Django会在调用视图方法前开启一个事务。如果请求却正确处理并正确返回了结果，Django就会提交该事务。否则，Django会回滚该事务。</p> 
+<pre><code class="prism language-python">DATABASES <span class="token operator">=</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token string">'default'</span><span class="token punctuation">:</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token string">'ENGINE'</span><span class="token punctuation">:</span> <span class="token string">'django.db.backends.mysql'</span><span class="token punctuation">,</span>
+        <span class="token string">'NAME'</span><span class="token punctuation">:</span> <span class="token string">'mxshop'</span><span class="token punctuation">,</span>
+        <span class="token string">'HOST'</span><span class="token punctuation">:</span> <span class="token string">'127.0.0.1'</span><span class="token punctuation">,</span>
+        <span class="token string">'PORT'</span><span class="token punctuation">:</span> <span class="token string">'3306'</span><span class="token punctuation">,</span>
+        <span class="token string">'USER'</span><span class="token punctuation">:</span> <span class="token string">'root'</span><span class="token punctuation">,</span>
+        <span class="token string">'PASSWORD'</span><span class="token punctuation">:</span> <span class="token string">'123'</span><span class="token punctuation">,</span>
+        <span class="token string">'OPTIONS'</span><span class="token punctuation">:</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token string">"init_command"</span><span class="token punctuation">:</span> <span class="token string">"SET default_storage_engine='INNODB'"</span><span class="token punctuation">,</span>
+　　　　　　　<span class="token comment">#'init_command': "SET sql_mode='STRICT_TRANS_TABLES'", #配置开启严格sql模式</span>
+        <span class="token punctuation">}</span>
+        <span class="token string">"ATOMIC_REQUESTS"</span><span class="token punctuation">:</span> <span class="token boolean">True</span><span class="token punctuation">,</span> <span class="token comment">#全局开启事务，绑定的是http请求响应整个过程</span>
+        <span class="token string">"AUTOCOMMIT"</span><span class="token punctuation">:</span><span class="token boolean">False</span><span class="token punctuation">,</span> <span class="token comment">#全局取消自动提交，慎用</span>
+    <span class="token punctuation">}</span>，
+　　<span class="token string">'other'</span><span class="token punctuation">:</span><span class="token punctuation">{<!-- --></span>
+　　　　<span class="token string">'ENGINE'</span><span class="token punctuation">:</span> <span class="token string">'django.db.backends.mysql'</span><span class="token punctuation">,</span> 
+            <span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+　　<span class="token punctuation">}</span>  <span class="token comment"># 还可以配置其他数据库</span>
+</code></pre> 
+<p>对部分视图函数取消事务</p> 
+<pre><code class="prism language-python"><span class="token keyword">from</span> django<span class="token punctuation">.</span>db <span class="token keyword">import</span> transaction
+
+@transaction<span class="token punctuation">.</span>non_atomic_requests
+<span class="token keyword">def</span> <span class="token function">my_view</span><span class="token punctuation">(</span>request<span class="token punctuation">)</span><span class="token punctuation">:</span>
+    do_stuff<span class="token punctuation">(</span><span class="token punctuation">)</span>
+
+@transaction<span class="token punctuation">.</span>non_atomic_requests<span class="token punctuation">(</span>using<span class="token operator">=</span><span class="token string">'other'</span><span class="token punctuation">)</span>
+<span class="token keyword">def</span> <span class="token function">my_other_view</span><span class="token punctuation">(</span>request<span class="token punctuation">)</span><span class="token punctuation">:</span>
+    do_stuff_on_the_other_database<span class="token punctuation">(</span><span class="token punctuation">)</span>
+</code></pre> 
+<p>但是Django 文档中说，不推荐开启全局事务。因为如果将事务跟 HTTP 请求绑定到一起的时，然而view 是依赖于应用程序对数据库的查询语句效率和数据库当前的锁竞争情况。当流量上来的时候，性能会有影响。</p> 
+<h3><a id="2_124"></a>2.局部使用事务</h3> 
+<p>atomic(using=None, savepoint=True)[source] ，参数：using=‘other’,就是当你操作其他数据库的时候，这个事务才生效，看上面我们的数据库配置，除了default，还有一个other，默认的是default。savepoint的意思是开启事务保存点。<br> 　<br> 原子性是数据库事务的一个属性。使用atomic，我们就可以创建一个具备原子性的代码块。一旦代码块正常运行完毕，所有的修改会被提交到数据库。反之，如果有异常，更改会被回滚。</p> 
+<p>被atomic管理起来的代码块还可以内嵌到方法中。这样的话，即便内部代码块正常运行，如果外部代码块抛出异常的话，它也没有办法把它的修改提交到数据库中。</p> 
+<ol><li>用法1：给视图函数装饰器</li></ol> 
+<pre><code class="prism language-python"><span class="token keyword">from</span> django<span class="token punctuation">.</span>db <span class="token keyword">import</span> transaction
+
+@transaction<span class="token punctuation">.</span>atomic
+<span class="token keyword">def</span> <span class="token function">viewfunc</span><span class="token punctuation">(</span>request<span class="token punctuation">)</span><span class="token punctuation">:</span>
+    <span class="token comment"># This code executes inside a transaction.</span>
+    do_stuff<span class="token punctuation">(</span><span class="token punctuation">)</span>
+</code></pre> 
+<ol start="2"><li>用法2：作为上下文管理器来使用</li></ol> 
+<pre><code class="prism language-python"><span class="token keyword">from</span> django<span class="token punctuation">.</span>db <span class="token keyword">import</span> transaction
+
+<span class="token keyword">def</span> <span class="token function">viewfunc</span><span class="token punctuation">(</span>request<span class="token punctuation">)</span><span class="token punctuation">:</span>
+    <span class="token comment"># This code executes in autocommit mode (Django's default).</span>
+    do_stuff<span class="token punctuation">(</span><span class="token punctuation">)</span>
+
+    <span class="token keyword">with</span> transaction<span class="token punctuation">.</span>atomic<span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">:</span>   <span class="token comment">#保存点</span>
+        <span class="token comment"># This code executes inside a transaction.</span>
+        do_more_stuff<span class="token punctuation">(</span><span class="token punctuation">)</span>
+
+    do_other_stuff<span class="token punctuation">(</span><span class="token punctuation">)</span>
+</code></pre> 
+<p>一旦把atomic代码块放到try/except中，完整性错误就会被自然的处理掉了，比如下面这个例子：</p> 
+<pre><code class="prism language-python"><span class="token keyword">from</span> django<span class="token punctuation">.</span>db <span class="token keyword">import</span> IntegrityError<span class="token punctuation">,</span> transaction
+
+@transaction<span class="token punctuation">.</span>atomic
+<span class="token keyword">def</span> <span class="token function">viewfunc</span><span class="token punctuation">(</span>request<span class="token punctuation">)</span><span class="token punctuation">:</span>
+    create_parent<span class="token punctuation">(</span><span class="token punctuation">)</span>
+
+    <span class="token keyword">try</span><span class="token punctuation">:</span>
+        <span class="token keyword">with</span> transaction<span class="token punctuation">.</span>atomic<span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">:</span>
+            generate_relationships<span class="token punctuation">(</span><span class="token punctuation">)</span>
+    <span class="token keyword">except</span> IntegrityError<span class="token punctuation">:</span>
+        handle_exception<span class="token punctuation">(</span><span class="token punctuation">)</span>
+
+    add_children<span class="token punctuation">(</span><span class="token punctuation">)</span>
+</code></pre> 
+<ol start="3"><li>用法3：还可以嵌套使用，函数的事务嵌套上下文管理器的事务，上下文管理器的事务嵌套上下文管理器的事务等</li></ol> 
+<pre><code class="prism language-python"><span class="token keyword">from</span> django<span class="token punctuation">.</span>db <span class="token keyword">import</span> IntegrityError<span class="token punctuation">,</span> transaction
+
+@transaction<span class="token punctuation">.</span>atomic
+<span class="token keyword">def</span> <span class="token function">viewfunc</span><span class="token punctuation">(</span>request<span class="token punctuation">)</span><span class="token punctuation">:</span>
+    create_parent<span class="token punctuation">(</span><span class="token punctuation">)</span>
+
+    <span class="token keyword">try</span><span class="token punctuation">:</span>
+        <span class="token keyword">with</span> transaction<span class="token punctuation">.</span>atomic<span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">:</span>
+            generate_relationships<span class="token punctuation">(</span><span class="token punctuation">)</span>
+　　　　　　　<span class="token comment">#other_task()  #还要注意一点，如果你在事务里面写了别的操作，只有这些操作全部完成之后，事务才会commit，也就是说，如果你这个任务是查询上面更改的数据表里面的数据，那么看到的还是事务提交之前的数据。</span>
+    <span class="token keyword">except</span> IntegrityError<span class="token punctuation">:</span>
+        handle_exception<span class="token punctuation">(</span><span class="token punctuation">)</span>
+
+    add_children<span class="token punctuation">(</span><span class="token punctuation">)</span>
+</code></pre> 
+<p>这个例子中，即使generate_relationships()中的代码打破了数据完整性约束，你仍然可以在add_children()中执行数据库操作，并且create_parent()产生的更改也有效。需要注意的是，在调用handle_exception()之前，generate_relationships()中的修改就已经被安全的回滚了。因此，如果有需要，你照样可以在异常处理函数中操作数据库。</p> 
+<p>尽量不要在atomic代码块中捕获异常</p> 
+<p>因为当atomic块中的代码执行完的时候，Django会根据代码正常运行来执行相应的提交或者回滚操作。如果在atomic代码块里面捕捉并处理了异常，就有可能隐盖代码本身的错误，从而可能会有一些意料之外的不愉快事情发生。</p> 
+<p>担心主要集中在DatabaseError和它的子类（如IntegrityError）。如果这种异常真的发生了，事务就会被破坏掉，而Django会在代码运行完后执行回滚操作。如果你试图在回滚前执行一些数据库操作，Django会抛出TransactionManagementError。通常你会在一个ORM相关的信号处理器抛出异常时遇到这个行为。</p> 
+<p>捕获异常的正确方式正如上面atomic代码块所示。如果有必要，添加额外的atomic代码块来做这件事情，也就是事务嵌套。这么做的好处是：当异常发生时，它能明确地告诉你那些操作需要回滚，而那些是不需要的。</p> 
+<p>为了保证原子性，atomic还禁止了一些API。像试图提交、回滚事务，以及改变数据库连接的自动提交状态这些操作，在atomic代码块中都是不予许的，否则就会抛出异常。</p> 
+<p>下面是Django的事务管理代码：</p> 
+<ul><li>进入最外层atomic代码块时开启一个事务；</li><li>进入内部atomic代码块时创建保存点；</li><li>退出内部atomic时释放或回滚事务；注意如果有嵌套，内层的事务也是不会提交的，可以释放（正常结束）或者回滚</li><li>退出最外层atomic代码块时提交或者回滚事务；</li></ul> 
+<p>你可以将保存点参数设置成False来禁止内部代码块创建保存点。如果发生了异常，Django在退出第一个父块的时候执行回滚，如果存在保存点，将回滚到这个保存点的位置，否则就是回滚到最外层的代码块。外层事务仍然能够保证原子性。然而，这个选项应该仅仅用于保存点开销较大的时候。毕竟它有个缺点：会破坏上文描述的错误处理机制。</p> 
+<p>注意：transaction只对数据库层的操作进行事务管理,不能理解为python操作的事务管理</p> 
+<pre><code class="prism language-python"><span class="token keyword">def</span> <span class="token function">example_view</span><span class="token punctuation">(</span>request<span class="token punctuation">)</span><span class="token punctuation">:</span>
+    tag <span class="token operator">=</span> <span class="token boolean">False</span>
+    <span class="token keyword">with</span> transaction<span class="token punctuation">.</span>atomic<span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">:</span>
+        tag <span class="token operator">=</span> <span class="token boolean">True</span>
+        change_obj<span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token comment"># 修改对象变量</span>
+        obj<span class="token punctuation">.</span>save<span class="token punctuation">(</span><span class="token punctuation">)</span>
+        <span class="token keyword">raise</span> DataError
+    <span class="token keyword">print</span><span class="token punctuation">(</span><span class="token string">"tag = "</span><span class="token punctuation">,</span>tag<span class="token punctuation">)</span> <span class="token comment">#结果是True，也就是说在事务中的python变量赋值，即便是事务回滚了，这个赋值也是成功的</span>
+</code></pre> 
+<p>还要注意：如果你配置了全局的事务，它和局部事务可能会产生冲突，你可能会发现你局部的事务完成之后，如果你的函数里面其他的sql除了问题，也就是没在这个上下文管理器的局部事务包裹范围内的函数里面的其他的sql出现了问题，你的局部事务也是提交不上的，因为全局会回滚这个请求和响应所涉及到的所有的sql，所以还是建议以后的项目尽量不要配置全局的事务，通过局部事务来搞定，当然了，看你们的业务场景。</p> 
+<p>transaction的其他方法</p> 
+<pre><code class="prism language-python">@transaction<span class="token punctuation">.</span>atomic
+<span class="token keyword">def</span> <span class="token function">viewfunc</span><span class="token punctuation">(</span>request<span class="token punctuation">)</span><span class="token punctuation">:</span>
+
+  a<span class="token punctuation">.</span>save<span class="token punctuation">(</span><span class="token punctuation">)</span>
+  <span class="token comment"># open transaction now contains a.save()</span>
+  sid <span class="token operator">=</span> transaction<span class="token punctuation">.</span>savepoint<span class="token punctuation">(</span><span class="token punctuation">)</span>  <span class="token comment">#创建保存点</span>
+
+  b<span class="token punctuation">.</span>save<span class="token punctuation">(</span><span class="token punctuation">)</span>
+  <span class="token comment"># open transaction now contains a.save() and b.save()</span>
+
+  <span class="token keyword">if</span> want_to_keep_b<span class="token punctuation">:</span>
+      transaction<span class="token punctuation">.</span>savepoint_commit<span class="token punctuation">(</span>sid<span class="token punctuation">)</span> <span class="token comment">#提交保存点</span>
+      <span class="token comment"># open transaction still contains a.save() and b.save()</span>
+  <span class="token keyword">else</span><span class="token punctuation">:</span>
+      transaction<span class="token punctuation">.</span>savepoint_rollback<span class="token punctuation">(</span>sid<span class="token punctuation">)</span>  <span class="token comment">#回滚保存点</span>
+      <span class="token comment"># open transaction now contains only a.save()</span>
+
+  transaction<span class="token punctuation">.</span>commit<span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token comment">#手动提交事务，默认是自动提交的，也就是说如果你没有设置取消自动提交，那么这句话不用写，如果你配置了那个AUTOCOMMIT=False，那么就需要自己手动进行提交。</span>
+</code></pre> 
+<p>为保证事务的隔离性，我们还可以结合上面的锁来实现，也就是说在事务里面的查询语句，咱们使用select_for_update显示的加锁方式来保证隔离性，事务结束后才会释放这个锁，例如：（了解）</p> 
+<pre><code class="prism language-python">@transaction<span class="token punctuation">.</span>atomic <span class="token comment">## 轻松开启事务</span>
+<span class="token keyword">def</span> <span class="token function">handle</span><span class="token punctuation">(</span>self<span class="token punctuation">)</span><span class="token punctuation">:</span>
+    <span class="token comment">## 测试是否存在此用户</span>
+    <span class="token keyword">try</span><span class="token punctuation">:</span>
+        <span class="token comment">## 锁定被查询行直到事务结束</span>
+        user <span class="token operator">=</span> 
+    User<span class="token punctuation">.</span>objects<span class="token punctuation">.</span>select_for_update<span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span>get<span class="token punctuation">(</span>open_id<span class="token operator">=</span>self<span class="token punctuation">.</span>user<span class="token punctuation">.</span>open_id<span class="token punctuation">)</span>
+        <span class="token comment">#other sql 语句</span>
+    <span class="token keyword">except</span> User<span class="token punctuation">.</span>DoesNotExist<span class="token punctuation">:</span>
+        <span class="token keyword">raise</span> BaseError<span class="token punctuation">(</span><span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">,</span> <span class="token string">'User does not exist.'</span><span class="token punctuation">)</span>
+</code></pre> 
+<p>通过Django外部的python脚本来测试一下事务：</p> 
+<pre><code class="prism language-python">　<span class="token keyword">import</span> os
+
+<span class="token keyword">if</span> __name__ <span class="token operator">==</span> <span class="token string">'__main__'</span><span class="token punctuation">:</span>
+    os<span class="token punctuation">.</span>environ<span class="token punctuation">.</span>setdefault<span class="token punctuation">(</span><span class="token string">"DJANGO_SETTINGS_MODULE"</span><span class="token punctuation">,</span> <span class="token string">"BMS.settings"</span><span class="token punctuation">)</span>
+    <span class="token keyword">import</span> django
+    django<span class="token punctuation">.</span>setup<span class="token punctuation">(</span><span class="token punctuation">)</span>
+
+    <span class="token keyword">import</span> datetime
+    <span class="token keyword">from</span> app01 <span class="token keyword">import</span> models
+
+    <span class="token keyword">try</span><span class="token punctuation">:</span>
+        <span class="token keyword">from</span> django<span class="token punctuation">.</span>db <span class="token keyword">import</span> transaction
+        <span class="token keyword">with</span> transaction<span class="token punctuation">.</span>atomic<span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">:</span>
+            new_publisher <span class="token operator">=</span> models<span class="token punctuation">.</span>Publisher<span class="token punctuation">.</span>objects<span class="token punctuation">.</span>create<span class="token punctuation">(</span>name<span class="token operator">=</span><span class="token string">"火星出版社"</span><span class="token punctuation">)</span>
+            models<span class="token punctuation">.</span>Book<span class="token punctuation">.</span>objects<span class="token punctuation">.</span>create<span class="token punctuation">(</span>title<span class="token operator">=</span><span class="token string">"橘子物语"</span><span class="token punctuation">,</span> publish_date<span class="token operator">=</span>datetime<span class="token punctuation">.</span>date<span class="token punctuation">.</span>today<span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span> publisher_id<span class="token operator">=</span><span class="token number">10</span><span class="token punctuation">)</span>  <span class="token comment"># 指定一个不存在的出版社id</span>
+    <span class="token keyword">except</span> Exception <span class="token keyword">as</span> e<span class="token punctuation">:</span>
+        <span class="token keyword">print</span><span class="token punctuation">(</span><span class="token builtin">str</span><span class="token punctuation">(</span>e<span class="token punctuation">)</span><span class="token punctuation">)</span>
+</code></pre> 
+<p>下面再说一些设置事务的小原则吧：</p> 
+<ol><li>保持事务短小</li><li>尽量避免事务中rollback</li><li>尽量避免savepoint</li><li>默认情况下，依赖于悲观锁</li><li>为吞吐量要求苛刻的事务考虑乐观锁</li><li>显示声明打开事务</li><li>锁的行越少越好，锁的时间越短越好</li></ol>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/3d39cab6739dea19f0739a594fd9d1b3/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">Vuex—— state,mapState,...mapState对象展开符详解</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/02d41e5fbafde58ad5e038038ec2c993/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">JVM如何判断数据是引用还是基本数据（保守式GC）</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

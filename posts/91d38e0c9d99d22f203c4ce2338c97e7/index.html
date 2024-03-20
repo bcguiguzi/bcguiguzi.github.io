@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Flutter混编方案在起点客户端的实践之路 - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="Flutter混编方案在起点客户端的实践之路" />
+<meta property="og:description" content="点击上方蓝字关注我，知识会给你力量
+起点读书客户端一直紧跟新技术的潮流，从很早开始，就在进行Flutter的尝试，在筹备了许久之后（移除了包大小的KPI指标），我们终于在最新的业务开发中，使用了Flutter。
+Flutter虽然会带来一些包体积的增加，但带来的收益却是：
+愉悦的开发体验，不用再忍受漫长的编译，强大的热更新可以快速进行UI开发
+跨端的统一UI设计，双端不用做太多的适配就可以运行
+开发效率提升一倍以上，同时也提升设计和测试的效率
+千呼万唤始出来，让我们来看下起点读书客户端是如何进行Flutter混编开发的。
+轻量化引擎架构 由于起点读书客户端目前依然是以原生开发为主，所以我们在嵌入Flutter模块时，首先要考虑的就是使用哪种混合栈方案。目前市面上常见的混合栈方案，主要就是两种：一种是以Flutter Boost为例的单引擎方案，另一种是以EngineGroup来实现的多引擎方案。这两种混合栈的方案，各有一些优缺点。
+优势劣势单引擎混合栈与Native独立开来，对Native的依赖最小，混编开发流程清晰、方便混编存在混合栈内存泄漏等问题，会存在一些底层的Crash；Flutter和Native端都需要独立实现一套完整的网络和基础库等基础模块多引擎混合栈相比单引擎方案，性能更好，在多实例下内存压力更小，开发更加简便对Native依赖大，多实例之间数据无法共享，需要从Native进行转发 我们在这两种架构方案的基础上，各取所长，提出了一套轻量化的引擎架构。
+首先，我们采用的是EngineGroup的混合栈方案，这个方案对于小规模嵌入Flutter页面的NativeApp来说，是性价比最高的选择，它的技术架构如下所示。
+但是和传统的Flutter开发方案又有所不同，我们将Flutter页面当作一个渲染容器，在一个Flutter页面中，所有的数据都来源于Native，Flutter只作渲染UI和处理交互逻辑，这种方案和之前的方案进行对比，结果如下。
+优势劣势轻量化引擎方案Flutter端极其轻量，极大化利用Flutter高效开发UI的优势数据依赖Native，存在双向通信，Native需要作一些额外的处理 在这种轻量化的架构方案下，我们作了一些改进：
+Flutter只作UI渲染，网络请求、基础数据等内容，都通过Native桥接，最大化的复用了Native的已有能力，Flutter端不用重新复刻一套，同时，对于UI上的异常，可以很方便的进行处理，避免在Flutter中使用网络库等能力时带来的新异常
+抛弃Flutter端常规的路由概念，将业务页面封装为独立的scheme，类似Native中的ActionUrl，简化调用逻辑
+通过搭建一套数据mock的方式，在Flutter端进行开发，避免在开发阶段，需要从Native获取数据的问题
+综上所述，经过多方面的考虑和调整，最终确定了当前起点读书Flutter的架构方案。
+在当前架构下，Native端需要实现一套通用的Channel协议，通过BasicMessageChannel�来实现一些对性能较高的Channel场景，例如埋点、网络请求等，通过MethodChannel来实现一些通用的Native方法调用，以及拓展业务特有逻辑的方法调用。
+参数传递 在创建Flutter页面时，借助dartEntrypointArgs�，可以从Native传递相应的参数，代码如下。
+在Flutter端，可以在entry-point�中获取相应的参数。
+// XXX主页 @pragma(&#39;vm:entry-point&#39;) void XXX(List&lt;String&gt;? args) =&gt; SafeApp().run(ThemeApp(args: args, child: XXXPage(args))); ❝ 后续继续优化，可以将参数封装为一个Map，双端进行解析，这样在获取参数时能更加具有语义化。
+❞ 桥接 Channel在这个方案中扮演着非常重要的角色，它是Flutter和Native之间的纽带。我们根据Channel的使用场景，将其分为了四类。
+NativeCommonApi：适用于与Native频繁通信或者对性能要求较高的场景。
+reportException：上报通用异常
+reportTrackerImpression：上报页面曝光
+reportTrackerClick：上报点击
+reportTrackerColumn：上报栏目曝光
+doActionUrlCall：执行Native action url
+NativeFontApi：加载Native字体。
+loadNativeFont：加载Native字体
+NativeNetApi：加载Native网络请求数据。
+getNativeNetBridge：通用get请求
+postNativeNetBridge：通用post请求
+NativeMethodCall：适用于与Native的单次交互场景，通用的方法需要在这里新增，并在Native中新增实现。
+finish：关闭Flutter页面
+canPopFlutterPage：是否可以Pop当前Flutter页面（iOS用）
+isInBookShelf：获取当前bookId是否在书架
+getUserGender：获取当前用户Gender
+showToast：Native显示Toast
+对于性能要求较高的场景，我们使用BasicMessageChannel�，而单次的Native调用，我们使用MethodChannel�，经过不同的场景（超大数据量、连续多次频繁请求）等测试，其数据符合预期，调用延时相对于请求时间来说，基本可以忽略不计，同时，其稳定性也经受住了考验。
+❝ 在开发的早期阶段，桥接函数不太丰富的前提下，在开发Flutter时，有时候还是需要Native开发人员对新的通用桥接函数进行补充，但随着函数的丰富，这个操作会越来越少，最后逐渐就不太需要Native开发人员参与Flutter的开发与调试了。
+❞ UI组件化的实践 由于目前起点读书的轻量化引擎架构设计，Flutter只作UI渲染，所以我们需要充分利用Flutter的热更新特性，提高业务UI的开发效率。
+黑夜模式与颜色Token 目前起点读书的黑夜模式，有两种设置方式，一种是跟随系统，用户可以在App内部设置，也可以在手机内进行切换，另一种是手动在App内部设置固定黑夜模式或者非黑夜模式。
+Flutter页面在创建时，会传入当前App设置黑夜模式的枚举——「system」、「light」、「dark」�，在Flutter中，会根据设置的模式来进行切换。而如果用户在打开Flutter页面后，在手机内进行黑夜模式的切换，Flutter也会自动进行切换。相关代码如下。
+在处理颜色的映射时，我们会根据设计给出的映射关系，根据是否为黑夜模式，将指定token映射为对应的色值，例如下面的示例。" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/91d38e0c9d99d22f203c4ce2338c97e7/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-09-26T08:30:34+08:00" />
+<meta property="article:modified_time" content="2023-09-26T08:30:34+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Flutter混编方案在起点客户端的实践之路</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <div id="js_content"> 
+ <p><img src="https://images2.imgbox.com/82/39/ePS1SP62_o.png" alt="b17cef07345d7668b6fd7f9c11220c8a.png"></p> 
+ <p>点击上方蓝字关注我，知识会给你力量</p> 
+ <p><img src="https://images2.imgbox.com/f8/35/LPhX3FQh_o.png" alt="e7e775aac18c8f5b6de5c8a7d962caa4.png"></p> 
+ <p>起点读书客户端一直紧跟新技术的潮流，从很早开始，就在进行Flutter的尝试，在筹备了许久之后（移除了包大小的KPI指标），我们终于在最新的业务开发中，使用了Flutter。</p> 
+ <p>Flutter虽然会带来一些包体积的增加，但带来的收益却是：</p> 
+ <ul><li><p>愉悦的开发体验，不用再忍受漫长的编译，强大的热更新可以快速进行UI开发</p></li><li><p>跨端的统一UI设计，双端不用做太多的适配就可以运行</p></li><li><p>开发效率提升一倍以上，同时也提升设计和测试的效率</p></li></ul> 
+ <p>千呼万唤始出来，让我们来看下起点读书客户端是如何进行Flutter混编开发的。</p> 
+ <h2>轻量化引擎架构</h2> 
+ <p>由于起点读书客户端目前依然是以原生开发为主，所以我们在嵌入Flutter模块时，首先要考虑的就是使用哪种混合栈方案。目前市面上常见的混合栈方案，主要就是两种：一种是以Flutter Boost为例的单引擎方案，另一种是以EngineGroup来实现的多引擎方案。这两种混合栈的方案，各有一些优缺点。</p> 
+ <table><thead><tr><th><br></th><th>优势</th><th>劣势</th></tr></thead><tbody><tr><td>单引擎混合栈</td><td>与Native独立开来，对Native的依赖最小，混编开发流程清晰、方便</td><td>混编存在混合栈内存泄漏等问题，会存在一些底层的Crash；Flutter和Native端都需要独立实现一套完整的网络和基础库等基础模块</td></tr><tr><td>多引擎混合栈</td><td>相比单引擎方案，性能更好，在多实例下内存压力更小，开发更加简便</td><td>对Native依赖大，多实例之间数据无法共享，需要从Native进行转发</td></tr></tbody></table> 
+ <p>我们在这两种架构方案的基础上，各取所长，提出了一套轻量化的引擎架构。</p> 
+ <p>首先，我们采用的是EngineGroup的混合栈方案，这个方案对于小规模嵌入Flutter页面的NativeApp来说，是性价比最高的选择，它的技术架构如下所示。</p> 
+ <p>但是和传统的Flutter开发方案又有所不同，我们将Flutter页面当作一个渲染容器，在一个Flutter页面中，所有的数据都来源于Native，Flutter只作渲染UI和处理交互逻辑，这种方案和之前的方案进行对比，结果如下。</p> 
+ <table><thead><tr><th><br></th><th>优势</th><th>劣势</th></tr></thead><tbody><tr><td>轻量化引擎方案</td><td>Flutter端极其轻量，极大化利用Flutter高效开发UI的优势</td><td>数据依赖Native，存在双向通信，Native需要作一些额外的处理</td></tr></tbody></table> 
+ <p>在这种轻量化的架构方案下，我们作了一些改进：</p> 
+ <ul><li><p>Flutter只作UI渲染，网络请求、基础数据等内容，都通过Native桥接，最大化的复用了Native的已有能力，Flutter端不用重新复刻一套，同时，对于UI上的异常，可以很方便的进行处理，避免在Flutter中使用网络库等能力时带来的新异常</p></li><li><p>抛弃Flutter端常规的路由概念，将业务页面封装为独立的scheme，类似Native中的ActionUrl，简化调用逻辑</p></li><li><p>通过搭建一套数据mock的方式，在Flutter端进行开发，避免在开发阶段，需要从Native获取数据的问题</p></li></ul> 
+ <p>综上所述，经过多方面的考虑和调整，最终确定了当前起点读书Flutter的架构方案。<br><img src="https://images2.imgbox.com/78/41/Sxyg08vC_o.png" alt="ca61abf12e0820335cfb1f69f611d508.png"><br>在当前架构下，Native端需要实现一套通用的Channel协议，通过BasicMessageChannel�来实现一些对性能较高的Channel场景，例如埋点、网络请求等，通过MethodChannel来实现一些通用的Native方法调用，以及拓展业务特有逻辑的方法调用。</p> 
+ <h3>参数传递</h3> 
+ <p>在创建Flutter页面时，借助dartEntrypointArgs�，可以从Native传递相应的参数，代码如下。<br><img src="https://images2.imgbox.com/86/84/YdjomUAF_o.png" alt="080a4a9e658c37c500b3cc96a6f61fb4.png"><br>在Flutter端，可以在entry-point�中获取相应的参数。</p> 
+ <pre class="has"><code class="language-go">// XXX主页
+@pragma('vm:entry-point')
+void XXX(List&lt;String&gt;? args) =&gt; SafeApp().run(ThemeApp(args: args, child: XXXPage(args)));</code></pre> 
+ <blockquote> 
+  ❝ 
+  <p>后续继续优化，可以将参数封装为一个Map，双端进行解析，这样在获取参数时能更加具有语义化。</p> 
+  ❞ 
+ </blockquote> 
+ <h3>桥接</h3> 
+ <p>Channel在这个方案中扮演着非常重要的角色，它是Flutter和Native之间的纽带。我们根据Channel的使用场景，将其分为了四类。</p> 
+ <ul><li><p>NativeCommonApi：适用于与Native频繁通信或者对性能要求较高的场景。</p> 
+   <ul><li><p>reportException：上报通用异常</p></li><li><p>reportTrackerImpression：上报页面曝光</p></li><li><p>reportTrackerClick：上报点击</p></li><li><p>reportTrackerColumn：上报栏目曝光</p></li><li><p>doActionUrlCall：执行Native action url</p></li></ul></li><li><p>NativeFontApi：加载Native字体。</p> 
+   <ul><li><p>loadNativeFont：加载Native字体</p></li></ul></li><li><p>NativeNetApi：加载Native网络请求数据。</p> 
+   <ul><li><p>getNativeNetBridge：通用get请求</p></li><li><p>postNativeNetBridge：通用post请求</p></li></ul></li><li><p>NativeMethodCall：适用于与Native的单次交互场景，通用的方法需要在这里新增，并在Native中新增实现。</p> 
+   <ul><li><p>finish：关闭Flutter页面</p></li><li><p>canPopFlutterPage：是否可以Pop当前Flutter页面（iOS用）</p></li><li><p>isInBookShelf：获取当前bookId是否在书架</p></li><li><p>getUserGender：获取当前用户Gender</p></li><li><p>showToast：Native显示Toast</p></li></ul></li></ul> 
+ <p>对于性能要求较高的场景，我们使用BasicMessageChannel�，而单次的Native调用，我们使用MethodChannel�，经过不同的场景（超大数据量、连续多次频繁请求）等测试，其数据符合预期，调用延时相对于请求时间来说，基本可以忽略不计，同时，其稳定性也经受住了考验。</p> 
+ <blockquote> 
+  ❝ 
+  <p>在开发的早期阶段，桥接函数不太丰富的前提下，在开发Flutter时，有时候还是需要Native开发人员对新的通用桥接函数进行补充，但随着函数的丰富，这个操作会越来越少，最后逐渐就不太需要Native开发人员参与Flutter的开发与调试了。</p> 
+  ❞ 
+ </blockquote> 
+ <h2>UI组件化的实践</h2> 
+ <p>由于目前起点读书的轻量化引擎架构设计，Flutter只作UI渲染，所以我们需要充分利用Flutter的热更新特性，提高业务UI的开发效率。</p> 
+ <h3>黑夜模式与颜色Token</h3> 
+ <p>目前起点读书的黑夜模式，有两种设置方式，一种是跟随系统，用户可以在App内部设置，也可以在手机内进行切换，另一种是手动在App内部设置固定黑夜模式或者非黑夜模式。</p> 
+ <p>Flutter页面在创建时，会传入当前App设置黑夜模式的枚举——「system」、「light」、「dark」�，在Flutter中，会根据设置的模式来进行切换。而如果用户在打开Flutter页面后，在手机内进行黑夜模式的切换，Flutter也会自动进行切换。相关代码如下。<br><img src="https://images2.imgbox.com/63/a5/0TA88MkA_o.png" alt="68a6f61e33c2f2b7af16586459ad43b9.png"><br>在处理颜色的映射时，我们会根据设计给出的映射关系，根据是否为黑夜模式，将指定token映射为对应的色值，例如下面的示例。</p> 
+ <pre class="has"><code class="language-go">Color get surface_gray_700 =&gt; isDarkMode ? white_alpha_70 : gray_700;</code></pre> 
+ <p>黑夜模式与非黑夜模式的设置是通过拓展ThemeExtension�来实现的，并在MaterialApp�中分别设置theme、darkTheme�和themeMode�，从而利用Theme，在切换时，自动对颜色Token进行切换映射。</p> 
+ <h3>字体与TextStyle</h3> 
+ <p>由于起点读书有内嵌字体，以及多行文本的Font Matrix问题，这些都会对设计师的文本设计造成困扰，在Flutter中，我们通过StrutStyle�来与设计师对齐字体和Font Matrix的影响，让开发者在开发过程中，避免单独处理文本的设计问题，同时，也减轻设计师的走查工作量。<br><img src="https://images2.imgbox.com/06/8b/oyTqrnQp_o.png" alt="7075b06a69b851087872858b8c3e484a.png"><br>在代码中，只需要使用设计师给出的字体token即可，代码如下。<br><img src="https://images2.imgbox.com/18/24/9rI3yyrD_o.png" alt="15cad52d8d0c07eb29b3e42a5b3e53bf.png"><br>内嵌的Native字体，会在初始化的时候通过Channel从Native桥接过来，借助FontLoader�来加载字体的uInt8List�数据流。</p> 
+ <h3>UI组件库</h3> 
+ <p>统一UI组件库，可以让开发者在开发的过程中，快速创建符合设计规范的组件，减少开发工作量，同时也减少设计的走查工作量，目前直接运行example中的main.dart即可启动启动Flutter UI组件库展示程序，如下所示。</p> 
+ <p>在这里开发者可以查看当前已有规范的UI组件，并查看相关示例代码，直接在项目中使用。同时，后续会抽取更多的通用组合组件，例如通用书卡、通用评论、工具栏等组件，进一步提高开发效率。</p> 
+ <blockquote> 
+  ❝ 
+  <p>借助Flutter的跨平台功能，example可以非常方便的运行在Web中，从而方便给设计师和产品进行走查。</p> 
+  ❞ 
+ </blockquote> 
+ <h3>图片外接纹理</h3> 
+ <p>Flutter原生的Image处理方式存在一些内存问题，虽然使用简单，但是对内存水位的影响较大，特别是在复用一些Native缓存图片的场景，所以，针对图片的处理，我们使用了外接纹理的方式，借助Texture来实现图片在Native的处理逻辑，复用Native已有的、成熟的处理方式，例如在Android中使用Glide进行图片加载，并控制缓存。</p> 
+ <p>通过图片外接纹理，显著降低了Flutter对于图片的内存消耗，同时也减少了内存抖动，让Flutter更加稳定。相关技术方案，可以参考我的这篇文章。<br>Flutter混编工程之打通纹理之路</p> 
+ <h2>埋点</h2> 
+ <p>对于业务App来说，数据埋点，是一件非常重要的工作。起点读书目前在Native的埋点方案，存在很多准确性的问题，其原因就是Native的埋点方式是以数据作为驱动的，由于Native预加载的存在，就会导致有部分埋点提前进行了曝光，而在Flutter中，埋点是以UI作为驱动的，所以其天生就更加符合产品的直观逻辑感受，所以相比Native，Flutter的埋点会更加方便。</p> 
+ <p>借助Flutter开源的visibility_detector�（海外团队封装库reportable），我们可以很方便的检测Widget的渲染状态，从而对其进行埋点，封装后的代码如下。<br><img src="https://images2.imgbox.com/54/ea/0dncKpRH_o.png" alt="ff18dda0db349d69c2bed3d6844df329.png"><br>埋点数据同样是通过Channel桥接到Native，复用原有的埋点和上报逻辑进行处理。</p> 
+ <h2>混编开发流程</h2> 
+ <p>当前起点Flutter工程的目录结构如下。<br><img src="https://images2.imgbox.com/f2/d1/4lf7Seay_o.png" alt="e574f1eabd5e73da2afd48b03e9db559.png"><br>其中：</p> 
+ <ul><li><p>example是UI组件库的示例工程</p></li><li><p>lib/biz目录下，是业务开发的主要目录</p></li></ul> 
+ <p>当业务开发者拿到业务需求后，只需要在example中增加业务页面的临时入口，即可进入开发流程。</p> 
+ <p>通常情况下，我们会先进行需求评审，接下创建接口协议，并输出接口mock数据，在Flutter业务的开发过程中，需要首先在example中，增加mock数据，如下图所示。<br><img src="https://images2.imgbox.com/07/5b/VV3TW7EQ_o.png" alt="a351eb3175125f5708c54ee4f016ada4.png"><br>然后在QDFlutterDemoMainPage�中，增加mock的支持。<br><img src="https://images2.imgbox.com/28/07/a4SMqOC7_o.png" alt="b52ba3bd91cd13ddc1ad8d5fa1a53324.png"><br>这样处理之后，我们在开发Flutter业务逻辑时，就可以直接运行Flutter代码，而不用依赖Native。最后，在lib/main.dart中，增加业务逻辑页面的入口函数。<br><img src="https://images2.imgbox.com/96/86/LWSAMBeD_o.png" alt="2aaafd100e1871d2cdb83ed62553ee9d.png"><br>如果业务不包含特殊的业务处理，则直接通过�BaseFlutterActivity.start�的方式进行调用即可，如果是包含特殊业务处理的，则需要使用其继承类来进行调用，并在继承类中，实现自身的特殊业务处理。</p> 
+ <p>在当前git业务分支开发完成后，需要在当前git分支执行build_aar.sh脚本，编译aar包到指定的Native目录下，然后在Native正常进行编译即可，在混编模式下，Flutter页面会自动适配到从Native获取数据，而不是从mock端获取数据，此时即可与后端进行联调。</p> 
+ <blockquote> 
+  ❝ 
+  <p>在Debug编译下，可以通过Flutter Attach来进行断点调试。</p> 
+  ❞ 
+ </blockquote> 
+ <p>当功能测试完成后，需要将业务分支合并到master分支，并重新编译aar后，合入Native的master分支，并进行回归测试。</p> 
+ <h3>收益</h3> 
+ <p>在使用Flutter对Native业务进行辅助开发后，带来的收益主要是下面几个方面。</p> 
+ <p>首先，对于开发人员来说：</p> 
+ <ul><li><p>提升Native业务开发效率，原本双端的开发工作，可以统一为单端开发，效率提升将近一倍</p></li><li><p>双端业务逻辑能保持统一，避免出现iOS、Android不一致的场景</p></li><li><p>提升编译速度，借助Flutter的热重载和本地Mock机制，可以提高30%的开发效率，不用再等待漫长的编译</p></li></ul> 
+ <p>其次，对于测试人员来说：</p> 
+ <ul><li><p>测试人员可以针对单端设备进行业务逻辑的重点测试，再对双端进行回归验证，可以避免在双端执行重复的测试用例</p></li><li><p>对于埋点的测试，更是可以减少一半的重复验证工作</p></li></ul> 
+ <p>另外，对于设计人员来说：</p> 
+ <ul><li><p>设计师可在进行视觉验收时，可以以单端为主，另一端为辅的方式进行走查，验收效率提升将近一倍</p></li><li><p>由于双端设计统一，不用再处理某端阴影、字体、Blur等需要单独适配的场景，也提高了设计的统一度</p></li></ul> 
+ <h2>业务实践</h2> 
+ <p>在起点读书最新上线的新版书单广场页面中，我们使用Flutter来进行开发，打通了Flutter和Native之间的从评审、开发、测试到视觉走查的一系列流程。</p> 
+ <table><thead><tr><th><img src="https://images2.imgbox.com/51/93/rQpqKo2S_o.png" alt="358f76d66a7a16fd5a7b4cd31e064e95.png"></th><th><img src="https://images2.imgbox.com/9c/db/deoMhWCb_o.png" alt="04b731894f7959146a1f206f02b08039.png"></th></tr></thead><tbody><tr><td><img src="https://images2.imgbox.com/69/83/BrVuSSBY_o.png" alt="6868a255373da332deff762aa5475c8a.png"></td><td><img src="https://images2.imgbox.com/d4/96/S3Bm6WA8_o.jpg" alt="7b3625984ccd2670aee73b545efa8171.jpeg"></td></tr></tbody></table> 
+ <p>欢迎大家体验。</p> 
+ <p style="text-align:center;">向大家推荐下我的网站 https://www.yuque.com/xuyisheng  点击原文一键直达</p> 
+ <p style="text-align:center;">专注 Android-Kotlin-Flutter 欢迎大家访问</p> 
+ <p>往期推荐</p> 
+ <ul><li><p><a href="https://so.csdn.net/so/search?q=Flutter%E6%80%A7%E8%83%BD%E6%8F%AD%E7%A7%98%E4%B9%8BRepaintBoundary">Flutter性能揭秘之RepaintBoundary</a></p></li><li><p><a href="https://so.csdn.net/so/search?q=%E5%BD%93%E6%88%91%E7%94%A8ChatGPT%E6%91%B8%E4%BA%86%E4%B8%80%E4%B8%8A%E5%8D%88%E9%B1%BC%EF%BC%8C%E7%BB%93%E6%9E%9C......">当我用ChatGPT摸了一上午鱼，结果......</a></p></li><li><p><a href="https://so.csdn.net/so/search?q=%E4%BB%8EKotlin%E4%B8%ADreturn@forEach%E4%BA%86%E4%B8%AA%E5%AF%82%E5%AF%9E">从Kotlin中return@forEach了个寂寞</a></p></li><li><p><a href="https://so.csdn.net/so/search?q=FlutterComponent%E6%9C%80%E4%BD%B3%E5%AE%9E%E8%B7%B5%E4%B9%8BWidget%20Lifecycle">FlutterComponent最佳实践之Widget Lifecycle</a><br></p></li></ul> 
+ <p style="text-align:left;"><strong>本文原创公众号：群英传</strong><strong>，授权转载请联系微信(Tomcat_xu)</strong><strong>，授权后，请在原创发表24小时后转载。</strong></p> 
+ <p style="text-align:center;">&lt; END &gt;</p> 
+ <p style="text-align:center;">作者：徐宜生</p> 
+ <p style="text-align:right;"><strong><strong>更文不易，点个“三连”支持一下👇</strong></strong><br></p> 
+</div>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/95e87f545d03801f0fe755fc996653e2/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">网络工程师基础笔记（一）</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/779b9e58d3868e136b3876ba81e80428/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">veImageX 演进之路：Web 图片加载提速50%</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

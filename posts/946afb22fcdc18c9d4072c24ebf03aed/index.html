@@ -1,0 +1,482 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>秒杀场景下如何保证数据一致性？就这个问题我给出了最详细的方案 - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="秒杀场景下如何保证数据一致性？就这个问题我给出了最详细的方案" />
+<meta property="og:description" content="什么是秒杀？ 从字面意思理解，所谓秒杀，就是在极短时间内，大量的请求涌入，处理不当时容易出现服务崩溃或数据不一致等问题的高并发场景。
+常见的秒杀场景有淘宝双十一、网约车司机抢单、12306抢票等等。
+高并发场景下秒杀超卖Bug复现 在这里准备了一个商品秒杀的小案例，
+1.按照正常的逻辑编写代码，请求进来先查库存，库存大于0时扣减库存，然后执行其他订单逻辑业务代码；
+/** * 商品秒杀 */ @Service public class GoodsOrderServiceImpl implements OrderService { @Autowired private GoodsDao goodsDao; @Autowired private OrderDao orderDao; /** * 下单 * * @param goodsId 商品ID * @param userId 用户ID * @return */ @Override public boolean grab(int goodsId, int userId) { // 查询库存 int stock = goodsDao.selectStock(goodsId); try { // 这里睡2秒是为了模拟等并发都来到这，模拟真实大量请求涌入 Thread.sleep(2000); } catch (InterruptedException e) { e.printStackTrace(); } // 库存大于0，扣件库存，保存订单 if (stock &gt; 0) { goodsDao." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/946afb22fcdc18c9d4072c24ebf03aed/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2021-04-01T11:35:58+08:00" />
+<meta property="article:modified_time" content="2021-04-01T11:35:58+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">秒杀场景下如何保证数据一致性？就这个问题我给出了最详细的方案</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <h2>什么是秒杀？</h2> 
+<p>从字面意思理解，所谓秒杀，就是在极短时间内，大量的请求涌入，处理不当时容易出现服务崩溃或数据不一致等问题的高并发场景。</p> 
+<p>常见的秒杀场景有淘宝双十一、网约车司机抢单、12306抢票等等。</p> 
+<h2>高并发场景下秒杀超卖Bug复现</h2> 
+<p>在这里准备了一个商品秒杀的小案例，</p> 
+<p>1.按照正常的逻辑编写代码，请求进来先查库存，库存大于0时扣减库存，然后执行其他订单逻辑业务代码；</p> 
+<pre><code>/**
+ * 商品秒杀
+ */
+@Service
+public class GoodsOrderServiceImpl implements OrderService {
+
+    @Autowired
+    private GoodsDao goodsDao;
+
+    @Autowired
+    private OrderDao orderDao;
+
+    /**
+     * 下单
+     *
+     * @param goodsId 商品ID
+     * @param userId  用户ID
+     * @return
+     */
+    @Override
+    public boolean grab(int goodsId, int userId) {
+        // 查询库存
+        int stock = goodsDao.selectStock(goodsId);
+        try {
+            // 这里睡2秒是为了模拟等并发都来到这，模拟真实大量请求涌入
+            Thread.sleep(2000);
+        } catch (InterruptedException e) {
+            e.printStackTrace();
+        }
+
+        // 库存大于0，扣件库存，保存订单
+        if (stock &gt; 0) {
+            goodsDao.updateStock(goodsId, stock - 1);
+            orderDao.insert(goodsId, userId);
+            return true;
+        }
+        return false;
+    }
+}</code></pre> 
+<pre><code>@Service("grabNoLockService")
+public class GrabNoLockServiceImpl implements GrabService {
+
+    @Autowired
+    OrderService orderService;
+
+    /**
+     * 无锁的抢购逻辑
+     *
+     * @param goodsId
+     * @param userId
+     * @return
+     */
+    @Override
+    public String grabOrder(int goodsId, int userId) {
+        try {
+            System.out.println("用户:" + userId + " 执行抢购逻辑");
+            boolean b = orderService.grab(goodsId, userId);
+            if (b) {
+                System.out.println("用户:" + userId + " 抢购成功");
+            } else {
+                System.out.println("用户:" + userId + " 抢购失败");
+            }
+        } finally {
+
+        }
+        return null;
+    }
+}</code></pre> 
+<p>2.库存设置为2个；</p> 
+<p><img alt="秒杀场景下如何保证数据一致性？就这个问题我给出了最详细的方案" src="https://images2.imgbox.com/46/27/fBDpr5sk_o.png"></p> 
+<p> </p> 
+<p>3.使用jmeter开10个线程压测。</p> 
+<ul><li><strong>压测结果</strong></li></ul> 
+<p>库存剩余： 1</p> 
+<p><img alt="秒杀场景下如何保证数据一致性？就这个问题我给出了最详细的方案" src="https://images2.imgbox.com/2e/be/vgmjz0wf_o.png"></p> 
+<p> </p> 
+<p>抢购订单： 10</p> 
+<p><img alt="秒杀场景下如何保证数据一致性？就这个问题我给出了最详细的方案" src="https://images2.imgbox.com/37/24/3VIz7LWe_o.png"></p> 
+<p> </p> 
+<p>出问题了！出大问题了！！</p> 
+<p>本来有两个库存，现在还剩一个，而秒杀成功的却有10个，出现了严重的超卖问题！</p> 
+<p><strong>问题分析：</strong></p> 
+<p>问题其实很简单，当秒杀开始，10个请求同时进来，同时去查库存，发现库存=2，然后都去扣减库存，把库存变为1，秒杀成功，共卖出商品10件，库存减1。</p> 
+<p>那么怎么解决这个问题呢，说起来也挺简单，加锁就行了。</p> 
+<h2>单机模式下的解决方案</h2> 
+<p><strong>加JVM锁</strong></p> 
+<p>首先在单机模式下，服务只有一个，加JVM锁就OK，synchronized和Lock都可。</p> 
+<pre><code>@Service("grabJvmLockService")
+public class GrabJvmLockServiceImpl implements GrabService {
+
+    @Autowired
+    OrderService orderService;
+
+    /**
+     * JVM锁的抢购逻辑
+     *
+     * @param goodsId
+     * @param userId
+     * @return
+     */
+    @Override
+    public String grabOrder(int goodsId, int userId) {
+        String lock = (goodsId + "");
+
+        synchronized (lock.intern()) {
+            try {
+                System.out.println("用户:" + userId + " 执行抢购逻辑");
+                boolean b = orderService.grab(goodsId, userId);
+                if (b) {
+                    System.out.println("用户:" + userId + " 抢购成功");
+                } else {
+                    System.out.println("用户:" + userId + " 抢购失败");
+                }
+            } finally {
+
+            }
+        }
+        return null;
+    }
+}</code></pre> 
+<p>这里以synchronized为例，加锁之后恢复库存重新压测，结果：</p> 
+<ul><li>压测结果</li></ul> 
+<p>库存剩余： 0</p> 
+<p><img alt="秒杀场景下如何保证数据一致性？就这个问题我给出了最详细的方案" src="https://images2.imgbox.com/b4/fa/KzvJZm7O_o.png"></p> 
+<p> </p> 
+<p>抢购订单： 2</p> 
+<p><img alt="秒杀场景下如何保证数据一致性？就这个问题我给出了最详细的方案" src="https://images2.imgbox.com/d4/b7/lbFsjxsR_o.png"></p> 
+<p> </p> 
+<p>大功告成！</p> 
+<p><strong>JVM锁在集群模式下还有效果吗？</strong></p> 
+<p>单机模式下的问题解决了，那么在集群模式下，加JVM级别的锁还有效吗？</p> 
+<p>这里起了两个服务，并且加了一层网关，用来做负载均衡，重新压测，</p> 
+<ul><li>压测结果</li></ul> 
+<p>库存剩余： 0</p> 
+<p><img alt="秒杀场景下如何保证数据一致性？就这个问题我给出了最详细的方案" src="https://images2.imgbox.com/07/ae/doWU6okh_o.png"></p> 
+<p> </p> 
+<p>抢购订单： 4</p> 
+<p><img alt="秒杀场景下如何保证数据一致性？就这个问题我给出了最详细的方案" src="https://images2.imgbox.com/f1/b9/uFE0uA7n_o.png"></p> 
+<p> </p> 
+<p>答案是显而易见的，锁无效！！</p> 
+<h2>集群模式下的解决方案</h2> 
+<p><strong>问题分析：</strong></p> 
+<p>出现这种问题的原因是，JVM级别的锁在两个服务中是不同的两把锁，两个服务各拿个的，各卖各的，不具有互斥性。</p> 
+<p><img alt="秒杀场景下如何保证数据一致性？就这个问题我给出了最详细的方案" src="https://images2.imgbox.com/3d/43/kzAd2ZjX_o.png"></p> 
+<p> </p> 
+<p>那怎么办呢？也好办，把锁独立出来就好了，让两个服务去拿同一把锁，也就是<strong>分布式锁</strong>。</p> 
+<p><img alt="秒杀场景下如何保证数据一致性？就这个问题我给出了最详细的方案" src="https://images2.imgbox.com/90/df/rmfUv3Cf_o.png"></p> 
+<p> </p> 
+<p><strong>分布式锁：</strong></p> 
+<p>分布式锁是控制分布式系统之间同步访问共享资源的一种方式。</p> 
+<p>在分布式系统中，常常需要协调他们的动作。如果不同的系统或是同一个系统的不同主机之间共享了一个或一组资源，那么访问这些资源的时候，往往需要互斥来防止彼此干扰来保证一致性，这个时候，便需要使用到分布式锁。</p> 
+<p>常见的分布式锁的实现方式有MySQL、Redis、Zookeeper等。</p> 
+<p><strong>分布式锁--MySQL：</strong></p> 
+<p>MySQL实现锁的方案是：准备一张表作为锁，</p> 
+<ul><li><strong>加锁</strong>时将要抢购的<strong>商品ID</strong>作为主键或者唯一索引插入作为锁的表中，这样其他线程来加锁时就会插入失败，从而保证互斥性；</li><li><strong>解锁</strong>时将这条记录删除，其他线程可以继续加锁。</li></ul> 
+<p>按照上面的方案，编写的部分代码：</p> 
+<ul><li>锁</li></ul> 
+<pre><code>/**
+ * MySQL写的分布式锁
+ */
+@Service
+@Data
+public class MysqlLock implements Lock {
+
+    @Autowired
+    private GoodsLockDao goodsLockDao;
+
+    private ThreadLocal&lt;GoodsLock&gt; goodsLockThreadLocal;
+
+    @Override
+    public void lock() {
+        // 1、尝试加锁
+        if (tryLock()) {
+            System.out.println("尝试加锁");
+            return;
+        }
+        // 2.休眠
+        try {
+            Thread.sleep(10);
+        } catch (InterruptedException e) {
+            e.printStackTrace();
+        }
+        // 3.递归再次调用
+        lock();
+    }
+
+    /**
+     * 非阻塞式加锁，成功，就成功，失败就失败。直接返回
+     */
+    @Override
+    public boolean tryLock() {
+        try {
+            GoodsLock goodsLock = goodsLockThreadLocal.get();
+            goodsLockDao.insert(goodsLock);
+            System.out.println("加锁对象：" + goodsLockThreadLocal.get());
+            return true;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    @Override
+    public void unlock() {
+        goodsLockDao.delete(goodsLockThreadLocal.get().getGoodsId());
+        System.out.println("解锁对象：" + goodsLockThreadLocal.get());
+        goodsLockThreadLocal.remove();
+    }
+
+    @Override
+    public void lockInterruptibly() throws InterruptedException {
+        // TODO Auto-generated method stub
+
+    }
+
+    @Override
+    public boolean tryLock(long time, TimeUnit unit) throws InterruptedException {
+        // TODO Auto-generated method stub
+        return false;
+    }
+    
+    @Override
+    public Condition newCondition() {
+        // TODO Auto-generated method stub
+        return null;
+    }
+}</code></pre> 
+<ul><li>抢购逻辑</li></ul> 
+<pre><code>@Service("grabMysqlLockService")
+public class GrabMysqlLockServiceImpl implements GrabService {
+
+    @Autowired
+    private MysqlLock lock;
+    
+    @Autowired
+    OrderService orderService;
+
+    ThreadLocal&lt;GoodsLock&gt; goodsLock = new ThreadLocal&lt;&gt;();
+
+    @Override
+    public String grabOrder(int goodsId, int userId) {
+        // 生成key
+        GoodsLock gl = new GoodsLock();
+        gl.setGoodsId(goodsId);
+        gl.setUserId(userId);
+        goodsLock.set(gl);
+        lock.setGoodsLockThreadLocal(goodsLock);
+
+        // lock
+        lock.lock();
+
+        // 执行业务
+        try {
+            System.out.println("用户:"+userId+" 执行抢购逻辑");
+
+            boolean b = orderService.grab(goodsId, userId);
+            if(b) {
+                System.out.println("用户:"+userId+" 抢购成功");
+            }else {
+                System.out.println("用户:"+userId+" 抢购失败");
+            }
+        } finally {
+            // 释放锁
+            lock.unlock();
+        }
+        return null;
+    }
+}</code></pre> 
+<p>恢复库存后继续压测，结果符合预期，数据一致。</p> 
+<ul><li>压测结果</li></ul> 
+<p>剩余库存：0</p> 
+<p><img alt="秒杀场景下如何保证数据一致性？就这个问题我给出了最详细的方案" src="https://images2.imgbox.com/e6/ea/57U29ZTC_o.png"></p> 
+<p> </p> 
+<p>抢购成功：2</p> 
+<p><img alt="秒杀场景下如何保证数据一致性？就这个问题我给出了最详细的方案" src="https://images2.imgbox.com/f4/d9/IxjBsdOa_o.png"></p> 
+<p> </p> 
+<p>问题与解决方案：</p> 
+<ol><li>由于突然断网等原因，导致锁没有释放成功怎么办？</li></ol> 
+<p><strong>答</strong>：在作为锁的表中加<strong>开始时间</strong>、<strong>结束时间</strong>两个字段作为锁的有效期，由于各种原因导致锁没有及时释放时，可以根据有效期进行判断锁是否有效。</p> 
+<ol><li>给锁加了有效期后，若有效期结束，线程任务还没有执行完毕怎么办？</li></ol> 
+<p><strong>答</strong>：可以引入watch dog机制，在任务未执行结束前，给锁续期，这个在后面再详细解释。</p> 
+<p><strong>分布式锁--Redis：</strong></p> 
+<p>在一些中小型项目中可以使用MySQL方案，在大型项目中，给MySQL的配置加上去也可以使用，但用得最多的还是Redis。</p> 
+<p>Redis加锁的实现方式是使用setnx命令，格式：setnx key value。</p> 
+<p>setnx是「<strong>set if not exists</strong>」的缩写；若key不存在，则将key的值设置为value；当key存在时，不做任何操作。</p> 
+<ul><li>加锁：setnx key value</li><li>解锁：del key</li></ul> 
+<p>Redis分布式锁--死锁问题</p> 
+<p>产生原因</p> 
+<p>已经加锁的服务在执行过程中挂掉了，没有来得及释放锁，锁一直存在在Redis中，导致其他服务无法加锁。</p> 
+<p>解决方案</p> 
+<p>设置key的过期时间，让key自动过期，过期后，key就不存在了，其他服务就能继续加锁。</p> 
+<ul><li>要注意的是，添加过期时间时，不能使用这种方式：</li></ul> 
+<pre><code>setnx key value;
+expire key time_in_second;</code></pre> 
+<p>这种方式也可能在第一句setnx成功后挂掉，过期时间没有设置，导致死锁。</p> 
+<ul><li>有效的方案是通过一行命令加锁并设置过期时间，格式如下：</li></ul> 
+<pre><code>set key value nx ex time_in_second;</code></pre> 
+<p>这种方式在 Redis 2.6.12 版本开始支持，老版本的Redis可以使用LuaScript。</p> 
+<p>过期时间引发的问题</p> 
+<p>问题一：假设锁过期时间设置为10秒，服务1加锁后执行10秒还未结束，此时锁过期了，服务2来加锁也能成功，导致两个服务同时拿到锁。</p> 
+<p>问题二：服务1在执行了14秒后结束去释放锁，会把服务2加的锁释放掉，此时服务3又能加锁成功。</p> 
+<p>解决方案：</p> 
+<p>问题二容易解决，在释放锁的时候判断一下是不是自己加的锁，如果是自己加的锁，就释放；如果不是则略过。</p> 
+<p>问题一解决方案：就是上面说的 <strong>Watch Dog（看门狗）机制</strong></p> 
+<p>简单的理解就是另起一个子线程（看门狗），帮主线程看着过期时间，当主线程在执行业务逻辑没有结束时，过期时间每过三分之一，子线程（看门狗）就把过期时间续满，从而保证主线程没有结束，锁就不会过期。</p> 
+<ul><li><strong>Watch Dog（看门狗）机制的实现</strong></li></ul> 
+<pre><code>@Service
+public class RenewGrabLockServiceImpl implements RenewGrabLockService {
+
+    @Autowired
+    private RedisTemplate&lt;String, String&gt; redisTemplate;
+
+    @Override
+    @Async
+    public void renewLock(String key, String value, int time) {
+        System.out.println("续命"+key+"  "+value);
+        String v = redisTemplate.opsForValue().get(key);
+        // 写成死循环，加判断
+        if (StringUtils.isNotBlank(v) &amp;&amp; v.equals(value)){
+            int sleepTime = time / 3;
+            try {
+                Thread.sleep(sleepTime * 1000);
+            } catch (InterruptedException e) {
+                e.printStackTrace();
+            }
+            redisTemplate.expire(key,time,TimeUnit.SECONDS);
+            renewLock(key,value,time);
+        }
+    }</code></pre> 
+<p>Redis单节点故障：</p> 
+<p>如果执行过程中Redis挂掉了，所有服务来加锁都加不上锁，这就是单节点故障问题。</p> 
+<p><img alt="秒杀场景下如何保证数据一致性？就这个问题我给出了最详细的方案" src="https://images2.imgbox.com/4c/40/GCglX3My_o.png"></p> 
+<p> </p> 
+<p>解决方案：</p> 
+<p>使用多台Redis。</p> 
+<p>首先来分析一个问题，多台Redis之间可以做主从吗？</p> 
+<p><img alt="秒杀场景下如何保证数据一致性？就这个问题我给出了最详细的方案" src="https://images2.imgbox.com/a7/fd/lzsetqaf_o.png"></p> 
+<p> </p> 
+<p>Redis主从问题：</p> 
+<p>当一个线程加锁成功后，key还没有被同步过去，Redis Master节点挂了，此时Slave节点中没有key的存在，另一个服务来加锁依然可以加锁成功。</p> 
+<p><img alt="秒杀场景下如何保证数据一致性？就这个问题我给出了最详细的方案" src="https://images2.imgbox.com/5a/0f/BmvWXFun_o.png"></p> 
+<p> </p> 
+<p>所以，不能使用<strong>主从</strong>方案。</p> 
+<p>还有一种方案是<strong>红锁</strong>。</p> 
+<p>红锁：</p> 
+<p>红锁方案也是使用多台Redis，但是多台Redis之间没有任何关系，就是独立的Redis。</p> 
+<p>加锁时，在一台Redis上加锁成功后，马上去下一台Redis上加锁，最终若在过半的Redis上加锁成功，则加锁成功，否则加锁失败。</p> 
+<p><img alt="秒杀场景下如何保证数据一致性？就这个问题我给出了最详细的方案" src="https://images2.imgbox.com/e1/cb/oxY3LfoC_o.png"></p> 
+<p> </p> 
+<p><strong>红锁会不会出现超卖问题？</strong></p> 
+<p>会！。</p> 
+<p>如果运维小哥很勤快，做了自动化，Redis挂掉之后，马上重启了一台，那么重启的Redis里没有之前加锁的key，其他线程依然能够加锁成功，这就导致两个线程同时拿到锁。</p> 
+<p><img alt="秒杀场景下如何保证数据一致性？就这个问题我给出了最详细的方案" src="https://images2.imgbox.com/52/40/AyRqUhwj_o.png"></p> 
+<p> </p> 
+<ul><li>解决方案：<strong>延迟重启</strong>挂掉的Redis，延迟一天启动也没有问题，重启太快才会有问题。</li></ul> 
+<p><strong>终极问题：</strong></p> 
+<p>到现在为止程序已经完美了吗？</p> 
+<p>并没有！</p> 
+<p>当程序在执行的时候，锁也加上了，狗（watch dog）也开始不停地续期，一切看似很美好，但是Java里还有一个终极问题--STW（Stop The World）。</p> 
+<p>当遇到FullGC时，JVM会发生STW（Stop The World），此时，世界被按下了暂停键，执行任务的主线程暂停了，用来续期的狗（watch dog）也不会再续期，Redis中的锁会慢慢过期，当锁过期之后，其他JVM又可以来成功加锁，原来的问题又出现了，同时有两个服务拿到锁。</p> 
+<p><img alt="秒杀场景下如何保证数据一致性？就这个问题我给出了最详细的方案" src="https://images2.imgbox.com/f8/c2/BUFTRiKD_o.png"></p> 
+<p> </p> 
+<p><strong>解决方案：</strong></p> 
+<ul><li>方案一： 鸵鸟算法</li><li>方案二： 终极方案 -- Zookeeper+MySQL乐观锁</li></ul> 
+<p><strong>分布式锁--Zookeeper+MySQL乐观锁</strong></p> 
+<p>Zookeeper是怎么解决STW问题的呢？</p> 
+<ul><li>加锁时，在zookeeper中创建一个<strong>临时顺序节点</strong>，创建成功后zookeeper会生成一个<strong>序号</strong>，将这个<strong>序号</strong>存到MySQL中的verson字段做校验； 如果锁未释放，发生了STW，紧接着锁过期，其他服务去加锁后，会将MySQL中的version字段变掉；</li><li>解锁时，验证version字段是否是自己加锁时的内容 如果是，删除节点，释放锁； 如果不是，说明自己已经昏睡过了，执行失败。</li></ul> 
+<p>世界变得清静了。</p> 
+<h2>相关代码</h2> 
+<ul><li>gitee: distributed-lock</li></ul> 
+<blockquote> 
+ <p>作者：三生萬物<br> 链接：<br> https://juejin.cn/post/6944967816562884644<br> 来源：掘金</p> 
+</blockquote>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/24c674c9b9adb868262b9d302bdf3240/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">Keil5编程之Error: L6200E: Symbol xxx multiply defined (by xxx.o and xxx.o）</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/9dca115faba4b72371596fecf672573c/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">LeetCode 74.搜索二维矩阵</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

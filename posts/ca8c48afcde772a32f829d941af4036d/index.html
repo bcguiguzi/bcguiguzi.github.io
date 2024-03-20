@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>u-boot relocate_code原理简单说明 - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="u-boot relocate_code原理简单说明" />
+<meta property="og:description" content="看了u-boot的relocate_code函数，以及查了网上其他人的帖子后，写一下自己对relocate_code的理解。
+参考文章
+http://blog.csdn.net/skyflying2012/article/details/37660265
+http://blog.csdn.net/gjq_1988/article/details/22315913
+1. 重定向
+uboot最重要的一个功能就是relocate，重定向。重定向最通俗的说，就是把NAND Flash上程序搬到内存中。重定向涉及到三个地址，链接地址、加载地址和运行地址。我们先假设这三个地址都是0x32000000。
+链接地址是我们在uboot里面配置的，由链接器读取并用于生成uboot的二进制。
+加载地址是uboot重定向时，拷贝源码的目的地址。通俗地讲，就是把NAND Flash里的uboot代码拷贝到内存的哪个地址上。
+运行地址是指uboot在内存中运行的地址。uboot运行时的一些寻址操作，就跟运行地址有关系。
+由于uboot的二进制文件直接或间接地包括了内存的绝对物理地址，所以以上三个地址一般是一样的。通俗地讲，uboot把内存的绝对物理地址固定在了二进制文件里，所以uboot应该被拷贝到内存哪个地方，下一条指令应该跳转到哪个物理地址都是在编译的时候就已经固定的。
+2. 旧版本uboot的重定向
+旧版本的uboot只有一个重定向，而且这个重定向是由移植uboot的工程师，根据具体的板子配置来编写的。比如从NAND Flash拷贝0x32000000开始的内存地址；或者从NOR Flash拷贝到0x80800000开始的内存地址。这都是由CPU和板子配置决定的。
+3. 新版本uboot的重定向
+新版本的uboot有两个重定向，第一个重定向跟老版本是一模一样的，目的就是从NAND Flash或者NOR Flash这些存储设备中把代码拷贝到内存地址(destA)中。还有第二个重定向，这个重定向函数就是relocate_code。这部分代码是uboot官方做好的，我们并不需要修改。它的作用就是把uboot从当前的位置(destA)拷贝到内存的高端地址(destB)上。Linux内核一般用的低端的内存地址，所以uboot选了一个高端地址。但至于为什么还得有第二次的重定向，原因我并不清楚。即使把第二次的重定向屏蔽，uboot还是可以正常运行的。
+4.relocate_code函数原理
+relocate_code并不是简单的把destA的内容拷贝到destB就完事这么简单的。如果就这样直接拷贝，uboot是运行不了的，原因如第1点所述。
+看了别人的文章以后，有了大致的概念。这里我假设要把0x32000000地址上的uboot重定向到0x80000000。
+1）链接器要加上-pie的选项，这样生成的代码就是位置无关的。通俗地讲，就是以前我要跳转到一个函数，可能我就直接一条语句，就跳过去了。
+320068c8:	eb001688 bl	320068e4 &lt;funcA&gt; ;funcA在0x320068e4的地址，直接跳转到0x320068e4的绝对地址 .... 320068e4 &lt;funcA&gt;: 320068e4:	e59f0000 mov r0, r1 .... 但位置无关的代码，就会根据PC的值，做一个相对位置的跳转，而PC值是可以在运行时被修改的。 320068c8:	eb001688 ldr r0, [pc, #20];这里表示是把将要跳转的地址放到r0中，没有把绝对地址固定在命令里。r0=pc&#43;8&#43;20=0x320068c8&#43;8&#43;20。这个8是由ARM的流水线机制决定的，PC里的值是当前地址&#43;8.320068cc: e3a00000 mov pc, r0; 把r0的值赋给pc，实现跳转 .... 320068e4 &lt;funcA&gt;: 320068e4:	e59f0000 mov r0, r1 .... 上面的代码在relocate_code之后，直接修改pc到新位置0x80000000，这个时候由于funcA的位置已经变为0x800068e4，而pc的值也变为0x800068c8，所以经过计算以后的跳转是不会出错的。
+2) 有了上面的一点还不够，上面只实现了重定向以后函数的跳转，但一些全局变量的位置还是不正确。
+全局变量的重定向，借助了一个叫GOT(Global Offset Table)的表。每一条GOT Entry记录了一个对象的地址，这个对象可以是变量或者函数。" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/ca8c48afcde772a32f829d941af4036d/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2016-12-18T18:12:38+08:00" />
+<meta property="article:modified_time" content="2016-12-18T18:12:38+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">u-boot relocate_code原理简单说明</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p>看了u-boot的relocate_code函数，以及查了网上其他人的帖子后，写一下自己对relocate_code的理解。</p> 
+<p><br> </p> 
+<p>参考文章</p> 
+<p>http://blog.csdn.net/skyflying2012/article/details/37660265</p> 
+<p>http://blog.csdn.net/gjq_1988/article/details/22315913</p> 
+<p><br> </p> 
+<p>1. 重定向<br> </p> 
+<p>uboot最重要的一个功能就是relocate，重定向。重定向最通俗的说，就是把NAND Flash上程序搬到内存中。重定向涉及到三个地址，链接地址、加载地址和运行地址。我们先假设这三个地址都是0x32000000。</p> 
+<p>链接地址是我们在uboot里面配置的，由链接器读取并用于生成uboot的二进制。</p> 
+<p>加载地址是uboot重定向时，拷贝源码的目的地址。通俗地讲，就是把NAND Flash里的uboot代码拷贝到内存的哪个地址上。</p> 
+<p>运行地址是指uboot在内存中运行的地址。uboot运行时的一些寻址操作，就跟运行地址有关系。</p> 
+<p>由于uboot的二进制文件直接或间接地包括了内存的绝对物理地址，所以以上三个地址一般是一样的。通俗地讲，uboot把内存的绝对物理地址固定在了二进制文件里，所以uboot应该被拷贝到内存哪个地方，下一条指令应该跳转到哪个物理地址都是在编译的时候就已经固定的。</p> 
+<p><br> </p> 
+<p>2. 旧版本uboot的重定向</p> 
+<p>旧版本的uboot只有一个重定向，而且这个重定向是由移植uboot的工程师，根据具体的板子配置来编写的。比如从NAND Flash拷贝0x32000000开始的内存地址；或者从NOR Flash拷贝到0x80800000开始的内存地址。这都是由CPU和板子配置决定的。</p> 
+<p><br> </p> 
+<p>3. 新版本uboot的重定向</p> 
+<p>新版本的uboot有两个重定向，第一个重定向跟老版本是一模一样的，目的就是从NAND Flash或者NOR Flash这些存储设备中把代码拷贝到内存地址(destA)中。还有第二个重定向，这个重定向函数就是relocate_code。这部分代码是uboot官方做好的，我们并不需要修改。它的作用就是把uboot从当前的位置(destA)拷贝到内存的高端地址(destB)上。Linux内核一般用的低端的内存地址，所以uboot选了一个高端地址。但至于为什么还得有第二次的重定向，原因我并不清楚。即使把第二次的重定向屏蔽，uboot还是可以正常运行的。<br> </p> 
+<p><br> </p> 
+<p>4.relocate_code函数原理</p> 
+<p>relocate_code并不是简单的把destA的内容拷贝到destB就完事这么简单的。如果就这样直接拷贝，uboot是运行不了的，原因如第1点所述。</p> 
+<p>看了别人的文章以后，有了大致的概念。这里我假设要把0x32000000地址上的uboot重定向到0x80000000。</p> 
+<p>1）链接器要加上-pie的选项，这样生成的代码就是位置无关的。通俗地讲，就是以前我要跳转到一个函数，可能我就直接一条语句，就跳过去了。</p> 
+<p></p> 
+<pre><code class="language-html">320068c8:	eb001688 	bl	320068e4 &lt;funcA&gt; ;funcA在0x320068e4的地址，直接跳转到0x320068e4的绝对地址
+....
+320068e4 &lt;funcA&gt;:
+320068e4:	e59f0000 	mov r0, r1
+....</code></pre> 
+<br> 但位置无关的代码，就会根据PC的值，做一个相对位置的跳转，而PC值是可以在运行时被修改的。 
+<br> 
+<p></p> 
+<p></p> 
+<pre><code class="language-html">320068c8:	eb001688        ldr  r0, [pc,  #20];这里表示是把将要跳转的地址放到r0中，没有把绝对地址固定在命令里。r0=pc+8+20=0x320068c8+8+20。这个8是由ARM的流水线机制决定的，PC里的值是当前地址+8.
+320068cc:       e3a00000        mov pc, r0; 把r0的值赋给pc，实现跳转                         
+....
+320068e4 &lt;funcA&gt;:
+320068e4:	e59f0000 	mov r0, r1
+....</code></pre> 
+<p></p> 
+<p><strong>上面的代码在relocate_code之后，直接修改pc到新位置0x80000000，这个时候由于funcA的位置已经变为0x800068e4，而pc的值也变为0x800068c8，所以经过计算以后的跳转是不会出错的。</strong></p> 
+<p><br> </p> 
+<p>2) 有了上面的一点还不够，上面只实现了重定向以后函数的跳转，但一些全局变量的位置还是不正确。</p> 
+<p>全局变量的重定向，借助了一个叫<span style="color:#ff00"><span style="font-size:14px"><span style="color:#000000"></span></span></span><span style="font-size:14px"><span style="font-size:16px"></span></span>GOT(Global Offset Table)的表。每一条GOT Entry记录了一个对象的地址，这个对象可以是变量或者函数。<br> </p> 
+<p></p> 
+<pre><code class="language-plain">320068f0 &lt;test_rel_dyn&gt;:
+....
+320068f8:	e59f3028 	ldr	r3, [pc, #40];计算全局变量global_var对应的GOT entry=pc+40=0x320068f8+8+40=0x32006928
+320068fc:	e3a02014 	mov	r2, #20
+....
+32006908:	e5832000 	str	r2, [r3];对全局变量global_var进行赋值
+....
+32006928:	32028bfc 	andcc	r8, r2, #252, 22;函数结尾附加的GOT，通过这个entry，我们就可以知道global_var实际位置在0x32028bfc
+
+
+32028bfc &lt;global_var&gt;:
+32028bfc:	0000000a 	andeq	r0, r0, sl;global_var的实际存放位置，初始值为0x0a</code></pre> 
+<br> 
+<strong>怎样通过GOT找到global_var呢？我们在读写global_var的时候，先通过pc相对寻址找到GOT中glabal_var的entry在0x32006928，然后就知道global_var实际的保存地址在在0x32028bfc，然后我们就可以读写global_var了。</strong> 
+<p></p> 
+<p><strong>重定向的时候，relocate_code除了把uboot从0x32000000拷贝到0x80000000以外，还需要修改GOT中每个entry的值。怎么改？就是把原值加上(0x80000000-0x32000000)。</strong><br> </p> 
+<p>global_var第一次重定向以后在0x32028bfc的位置，第二次重定向被拷贝到0x80028bfc。那么读写global_var就变成：</p> 
+<p><strong>查找global_var对应的GOT entry=pc+40=0x800068f8+8+40=0x80006928。这个时候0x80006928中保存的值应该是0x32028bfc+(0x80000000-0x32000000)=80028bfc！</strong>没错，跟global_var的新位置对上了！</p> 
+<p><br> </p> 
+<p>3）函数可以跳转了，全局变量也可以读写了，那是不是就完了呢？其实不是，还有汇编部分的变量需要relocate，这部分的原理跟第2点中的全局变量relocate是差不多的，但细节有点不一样。具体可以参考上面引用的两篇文章。</p> 
+<p><br> </p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/475f4999a368d06f40c4423ff59a6627/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">保守式GC</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/0e3d4cb628b2fe571c41c9be2a21fcf8/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">Spring Security http basic 示例代码</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

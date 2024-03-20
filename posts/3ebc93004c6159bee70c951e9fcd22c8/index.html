@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>深度学习自学记录（7）——yolov3的整体流程四大步详细纪录 - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="深度学习自学记录（7）——yolov3的整体流程四大步详细纪录" />
+<meta property="og:description" content="深度学习自学记录（7）——yolov3的整体流程四大步详细纪录 1、整体流程2、解码得到预测结果3、编码过程4、loss的计算5、yolov3整体思路整理完毕 1、整体流程 YOLO系列是很流行的目标检测模型。现在已经更新到yolov4版本，但最经典的还是yolov3版本，v4可以说是对yolov3的一些列改进手段的最优组合。
+yolov3总得来讲可以分为四大模块：
+（1）特征提取&#43;yolohead：获得模型的输出y_pre；
+（2）y_pre的解码：将y_pre转化为预测结果，得到真实图片上的预测框的位置（Xmin，Xmax，Ymin，Ymax）、框的得分以及目标类别；
+（3）真实标签的编码：将标签文件中的真实值转化成与y_pre相同形式的tensor——y_true；
+（4）loss值计算：对比y_pre，y_true计算loss值进行训练。
+第一部分的过程很简单，对图片进行特征提取并输出一定shape的tensor，本篇博客主要记录一下解码得到预测结果，编码过程以及loss计算的部分。
+2、解码得到预测结果 yolo输出的结果中包含三个不同尺度的特征层，我们以13x13的特征层介绍解码思路：
+首先明确一点：13x13的特征图中一共有13x13个网格点，每一个网格点负责右下角方框区域的预测。
+【1】每一个网格点产生3中不同尺度的先验框，一共是13x13x3个先验框。在输出的（4&#43;1&#43;num_class）中包含每一个每一个先验框的信息：
+4：先验框的调整系数，分别是x_offest，y_offest，w，h1：先验框内包含目标的置信度，box_confidenceunm_class：每一个类别的概率，判断属于哪一类，box_class_probs 【2】我们利用4中的信息来确定预测框的位置：通过x_offest，y_offest对网格点进行偏移，得到框的中心点的坐标，再经过图像尺寸（scale = input_shape/13）的缩放，就可以得到真实图片上预测框的中心点的坐标（x，y）。效果图如图所示
+通过w和h对先验框（anchor）进行微调，得到框的实际宽高，再根据图像尺寸（scale = input_shape/13）的缩放，就可以得到真实图片上预测框的实际宽和高（w，h）。至此得到了实际预测框的位置信息（x，y，w，h）。
+【3】我们利用1&#43;num_class得到预测框的得分：box_confidence是预测框含有物体的概率，box_class_probs是每一个类别的概率值，两者存在这一个正相关的关系，所以代码中 box_scores = box_confidence * box_class_probs，框的得分=框的置信度x类别置信度。至此得到了实际预测框的得分box_scores 。
+【4】通过上面的方法，我们可以得到三个特征层上所有的预测框，一共13x13x3&#43;26x26x3&#43;52x52x3个预测框。最后，对这些框进行两个筛选，得到最终的预测输出值。第一次筛选：根据box_scores 与score_threshold对比，将得分低于阈值的框删除。第二次筛选：根据iou_threshold利用NMS在重叠度高于阈值的框中保留得分最高的框。
+最终得到最后的输出结果！！！大功告成！！
+3、编码过程 所谓编码，就是将真实框转化为yolov3输出的形式（基于网格点和anchor表达真实框的位置），以便计算loss值。说白了就是用三个特征图上的网格点和先验框表示真实框的位置，在数据（比如m,13,13,3,4&#43;1&#43;num_class）中存在真实框的点和anchor的位置有值，其他位置为0。——有些拗口，下面会解释。
+编码的过程：
+【1】从标签中获得真实框的中心以及宽和高，除去input_shape变成比例模式。
+【2】创建包含三种特征层的全0列表，与yolov3的输出tensor的维度一致：（m,13,13,3,4&#43;1&#43;num_class）、（m,26,26,3,4&#43;1&#43;num_class）、（m,52,52,3,4&#43;1&#43;num_class），方便后面的数据写入；
+【3】计算每一个真实框与先验框（9中不同的尺寸）的IOU，IOU最大的先验框负责那一个真实框的表达，同时根据先验框的尺寸和真实框中心点坐标得到所属特征层以及特征层上网格点的位置。至此我们明确了所有真实框用哪一个anchor表达，确定了这个先验框的所属特征层和网格点，得到形如（m,13,13,1）的tensor。
+【4】明确表达真实框的先验框（先验框内有目标），下面就是求出相应的调参系数x_offest，y_offest，w，h，用网格点和anchor表示真实框。负责表达真实框的先验框置信度为1（为计算loss时的正样本，先验框内有目标），不负责表达真实框的位置全为0。并将有目标的先验框内目标类别转化为num_class维度，得到形如（m,13,13,1，4&#43;1&#43;num_class）的tensor——y_true；
+至此，我们将全部的真实框转化为了不同特征图上的用先验框和网格点表达的形式。并且有目标的先验框置信度为1，是loss中的正样本，得到了最终的y_true。
+4、loss的计算 loss值得计算就是求得模型的输出y_pre与真实值y_true的差距，训练的过程就是让y_pre靠近y_true的过程。
+正样本：目标，存在真实目标而先验框框
+负样本：背景，不存在真实目标的先验框，即正样本之外所有的先验框。
+负样本要远远多于正样本，造成正负样本不平衡的问题
+下面以13x13的特征层为例，介绍loss的计算过程：
+【1】首先从y_true中取出该特征层中真实存在目标的先验框（m,13,13,1）（即负责表达真实框的先验框，正样本）和对应目标的种类（m,13,13,num_class），这些先验框真实存在目标，其置信度为1。
+【2】一共包括三个部分的loss值计算：
+x_offest,y_offest,w,h的位置损失：计算的是正样本（真实存在目标的先验框），利用y_pre和y_true的对比结果求得。class_loss分类损失：计算的是正样本（真实存在目标的先验框），利用y_pre和y_true的对比结果求得。置信度损失：计算针对正样本（真实存在目标的先验框）和负样本（除正样本之外的所有anchor，也即是背景，不真实真实目标）（1）--------对于正样本，y_pre的置信度与1对比求得loss；（2）--------对于负样本，首先舍弃一定数目的负样本，目的是为了正负样本的平衡（这也是为什么focalloss对yolov3的提升不大的原因），将IOU&gt;0.5但不用来表达真实框的先验框舍去，不参与loss的计算；将剩下的负样本的模型输出y_pre与0对比求loss。 将三个特征层上的所有loss加在一起就得到了yolov3的loss值。至此loss计算完毕！！！需要注意的是
+（1）正样本是真实存在目标的先验框，由y_true（置信度为1）决定
+（2）正样本参与了所有loss值得计算
+（3）部分负样本参与置信度损失的计算：为平衡正负样本，将真实框和先验框IOU&lt;0.5的负样本保留，将y_pre与0对比计算置信度损失。
+5、yolov3整体思路整理完毕 如有错误请指正" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/3ebc93004c6159bee70c951e9fcd22c8/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2020-05-15T17:14:38+08:00" />
+<meta property="article:modified_time" content="2020-05-15T17:14:38+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">深度学习自学记录（7）——yolov3的整体流程四大步详细纪录</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p></p> 
+<div class="toc"> 
+ <h4>深度学习自学记录（7）——yolov3的整体流程四大步详细纪录</h4> 
+ <ul><li><a href="#1_1" rel="nofollow">1、整体流程</a></li><li><a href="#2_10" rel="nofollow">2、解码得到预测结果</a></li><li><a href="#3_25" rel="nofollow">3、编码过程</a></li><li><a href="#4loss_34" rel="nofollow">4、loss的计算</a></li><li><a href="#5yolov3_54" rel="nofollow">5、yolov3整体思路整理完毕</a></li></ul> 
+</div> 
+<p></p> 
+<h2><a id="1_1"></a>1、整体流程</h2> 
+<p>YOLO系列是很流行的目标检测模型。现在已经更新到yolov4版本，但最经典的还是yolov3版本，v4可以说是对yolov3的一些列改进手段的最优组合。<br> yolov3总得来讲可以分为四大模块：<br> （<strong>1</strong>）<strong>特征提取+yolohead</strong>：获得模型的输出y_pre；<br> （<strong>2</strong>）<strong>y_pre的解码</strong>：将y_pre转化为预测结果，得到真实图片上的预测框的位置（Xmin，Xmax，Ymin，Ymax）、框的得分以及目标类别；<br> （<strong>3</strong>）<strong>真实标签的编码</strong>：将标签文件中的真实值转化成与y_pre相同形式的tensor——y_true；<br> （<strong>4</strong>）<strong>loss值计算</strong>：对比y_pre，y_true计算loss值进行训练。<br> <img src="https://images2.imgbox.com/c0/ba/jPc1I3U0_o.jpg" alt="在这里插入图片描述"><br> 第一部分的过程很简单，对图片进行特征提取并输出一定shape的tensor，本篇博客主要记录一下<strong>解码得到预测结果</strong>，<strong>编码过程以及loss计算</strong>的部分。</p> 
+<h2><a id="2_10"></a>2、解码得到预测结果</h2> 
+<p>yolo输出的结果中包含三个不同尺度的特征层，我们以13x13的特征层介绍解码思路：<br> 首先明确一点：13x13的特征图中一共有13x13个网格点，每一个网格点负责右下角方框区域的预测。<br> 【<strong>1</strong>】<strong>每一个网格点产生3中不同尺度的先验框，一共是13x13x3个先验框</strong>。在输出的（4+1+num_class）中包含每一个每一个先验框的信息：</p> 
+<ul><li><strong>4</strong>：先验框的调整系数，分别是<strong>x_offest，y_offest，w，h</strong></li><li><strong>1</strong>：先验框内包含目标的置信度，<strong>box_confidence</strong></li><li><strong>unm_class</strong>：每一个类别的概率，判断属于哪一类，<strong>box_class_probs</strong></li></ul> 
+<p>【<strong>2</strong>】<strong>我们利用4中的信息来确定预测框的位置</strong>：<strong>通过x_offest，y_offest对网格点进行偏移</strong>，得到框的中心点的坐标，再经过图像尺寸（scale = input_shape/13）的缩放，就可以得到真实图片上预测框的中心点的坐标（x，y）。效果图如图所示<br> <img src="https://images2.imgbox.com/22/66/AFIVluML_o.jpg" alt="在这里插入图片描述"><br> <strong>通过w和h对先验框（anchor）进行微调</strong>，得到框的实际宽高，再根据图像尺寸（scale = input_shape/13）的缩放，就可以得到真实图片上预测框的实际宽和高（w，h）。<strong>至此得到了实际预测框的位置信息（x，y，w，h）</strong>。<br> 【<strong>3</strong>】<strong>我们利用1+num_class得到预测框的得分</strong>：box_confidence是预测框含有物体的概率，box_class_probs是每一个类别的概率值，两者存在这一个正相关的关系，所以代码中 box_scores = box_confidence * box_class_probs，<strong>框的得分=框的置信度x类别置信度</strong>。<strong>至此得到了实际预测框的得分box_scores</strong> 。<br> 【<strong>4</strong>】<strong>通过上面的方法，我们可以得到三个特征层上所有的预测框</strong>，一共13x13x3+26x26x3+52x52x3个预测框。<strong>最后，对这些框进行两个筛选，得到最终的预测输出值</strong>。<strong>第一次筛选</strong>：根据box_scores 与score_threshold对比，将得分低于阈值的框删除。<strong>第二次筛选</strong>：根据iou_threshold利用NMS在重叠度高于阈值的框中保留得分最高的框。</p> 
+<p><strong>最终得到最后的输出结果！！！大功告成！！</strong></p> 
+<h2><a id="3_25"></a>3、编码过程</h2> 
+<p><strong>所谓编码，就是将真实框转化为yolov3输出的形式（基于网格点和anchor表达真实框的位置），以便计算loss值</strong>。说白了就是<strong>用三个特征图上的网格点和先验框表示真实框的位置，在数据（比如m,13,13,3,4+1+num_class）中存在真实框的点和anchor的位置有值，其他位置为0</strong>。——有些拗口，下面会解释。<br> 编码的过程：<br> 【<strong>1</strong>】从标签中获得真实框的中心以及宽和高，除去input_shape变成比例模式。<br> 【<strong>2</strong>】创建包含三种特征层的<strong>全0</strong>列表，与yolov3的输出tensor的维度一致：（m,13,13,3,4+1+num_class）、（m,26,26,3,4+1+num_class）、（m,52,52,3,4+1+num_class），方便后面的数据写入；<br> 【<strong>3</strong>】计算每一个真实框与先验框（9中不同的尺寸）的IOU，IOU最大的先验框负责那一个真实框的表达，同时根据<strong>先验框的尺寸和真实框中心点坐标</strong>得到<strong>所属特征层以及特征层上网格点的位置</strong>。<strong>至此我们明确了所有真实框用哪一个anchor表达，确定了这个先验框的所属特征层和网格点，得到形如（m,13,13,1）的tensor</strong>。<br> 【<strong>4</strong>】明确表达真实框的先验框（先验框内有目标），下面就是<strong>求出相应的调参系数x_offest，y_offest，w，h，用网格点和anchor表示真实框</strong>。<strong>负责表达真实框的先验框置信度为1（为计算loss时的正样本，先验框内有目标）</strong>，<strong>不负责表达真实框的位置全为0</strong>。并将有目标的先验框内目标类别转化为num_class维度，<strong>得到形如（m,13,13,1，4+1+num_class）的tensor——y_true</strong>；</p> 
+<p>至此，<strong>我们将全部的真实框转化为了不同特征图上的用先验框和网格点表达的形式。并且有目标的先验框置信度为1，是loss中的正样本，得到了最终的y_true</strong>。</p> 
+<h2><a id="4loss_34"></a>4、loss的计算</h2> 
+<p>loss值得计算就是求得模型的输出y_pre与真实值y_true的差距，训练的过程就是让y_pre靠近y_true的过程。</p> 
+<blockquote> 
+ <p>正样本：目标，存在真实目标而先验框框<br> 负样本：背景，不存在真实目标的先验框，即正样本之外所有的先验框。<br> <strong>负样本要远远多于正样本，造成正负样本不平衡的问题</strong></p> 
+</blockquote> 
+<p>下面以13x13的特征层为例，介绍loss的计算过程：<br> 【1】首先从y_true中取出该特征层中真实存在目标的先验框（m,13,13,1）（<strong>即负责表达真实框的先验框，正样本</strong>）和对应目标的种类（m,13,13,num_class），这些先验框真实存在目标，其置信度为1。<br> 【2】一共包括三个部分的loss值计算：</p> 
+<ul><li><strong>x_offest,y_offest,w,h的位置损失</strong>：<strong>计算的是正样本（真实存在目标的先验框）</strong>，利用y_pre和y_true的对比结果求得。</li><li><strong>class_loss分类损失</strong>：<strong>计算的是正样本（真实存在目标的先验框）</strong>，利用y_pre和y_true的对比结果求得。</li><li><strong>置信度损失</strong>：<strong>计算针对正样本（真实存在目标的先验框）和负样本（除正样本之外的所有anchor，也即是背景，不真实真实目标）</strong>（1）--------对于正样本，y_pre的置信度与1对比求得loss；（2）--------对于负样本，首先舍弃一定数目的负样本，目的是为了正负样本的平衡（<strong>这也是为什么focalloss对yolov3的提升不大的原因</strong>），将IOU&gt;0.5但不用来表达真实框的先验框舍去，不参与loss的计算；将剩下的负样本的模型输出y_pre与0对比求loss。</li></ul> 
+<p>将三个特征层上的所有loss加在一起就得到了yolov3的loss值。至此loss计算完毕！！！需要注意的是<br> <strong>（1）正样本是真实存在目标的先验框，由y_true（置信度为1）决定<br> （2）正样本参与了所有loss值得计算<br> （3）部分负样本参与置信度损失的计算：为平衡正负样本，将真实框和先验框IOU&lt;0.5的负样本保留，将y_pre与0对比计算置信度损失。</strong></p> 
+<h2><a id="5yolov3_54"></a>5、yolov3整体思路整理完毕</h2> 
+<p>如有错误请指正</p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/1378b2eedcf514a589990025a0a9b207/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">基于live555实现流媒体代理服务器（7）-终结篇</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/81af61cd543829436317d404848e16ff/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">Word文档最后一页总是删除不掉怎么办？</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

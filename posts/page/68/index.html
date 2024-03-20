@@ -1,0 +1,620 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Posts - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="Posts" />
+<meta property="og:description" content="编程鬼谷子的博客" />
+<meta property="og:type" content="website" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+	<link rel="alternate" type="application/rss+xml" href="/posts/index.xml" title="编程鬼谷子的博客">
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main list" role="main">
+	<header class="main__header">
+		<h1 class="main__title">Posts</h1>
+	</header><article class="list__item post">
+	
+	<header class="list__header">
+		<h2 class="list__title post__title">
+			<a href="/posts/0146c807635c82a8adcb96a21ddd8c22/" rel="bookmark">
+			图解Linux虚拟文件系统(VFS)之关系篇
+			</a>
+		</h2>
+		
+	</header>
+	<div class="content list__excerpt post__content clearfix">
+		目录
+1.什么是虚拟文件系统？
+2.Linux系统文件树
+3.文件系统注册
+4.文件系统挂载
+4.1 索引挂载点
+4.2 创建新文件系统挂载实例
+4.3 新旧挂载实例对接
+总结：
+大家好，今天和大家探讨一下Linux虚拟文件系统，虚拟文件系统是我一直想要去聊的一个知识点，如果你想从事Linux开发相关的工作，一定要了解虚拟文件系统。
+1.什么是虚拟文件系统？ Linux虚拟文件系统（Virtual File System，VFS）是Linux操作系统中的一个重要组成部分，它提供了一个统一的接口，使得用户和应用程序可以通过相同的方式访问不同类型的文件系统。
+VFS的设计目标是将不同类型的文件系统抽象为一个统一的接口，使得用户和应用程序无需关心底层文件系统的具体实现细节。通过VFS用户可以使用相同的系统调用（如open、read、write等）来访问不同类型的文件系统，包括本地文件系统（如ext4、XFS等）、网络文件系统（如NFS、CIFS等）以及虚拟文件系统（如procfs、sysfs等）。
+VFS由以下几个主要组件组成：
+虚拟文件系统接口：VFS定义了一组通用的文件系统操作接口。
+超级块（super_block）：每个文件系统都有一个超级块，它包含了文件系统的元数据信息，如文件系统类型、块大小、inode表等，超级块提供了对文件系统的整体描述和管理。
+目录项（dentry）：dentry是目录项的缩写，用于表示文件系统中的目录和文件，dentry包含了目录和文件对应的inode指针，通过它可以快速定位到目录下的文件或子目录。
+文件节点（inode）：inode是文件系统中的一个数据结构，用于存储文件或目录的元数据信息，如文件大小、权限、所有者等，每个文件或目录都对应一个唯一的inode。
+文件对象（file）：file是表示打开文件的数据结构，它包含了对应的inode指针、当前读写位置等信息，通过file可以进行文件的读写操作。
+2.Linux系统文件树 对于一个普通的Linux用户或者运维人员，Linux系统文件树通常的样子如下图，以根文件系统根目录为起点，通过根目录遍历整个文件树。
+而在系统开发人员眼中，Linux系统文件树则变成这样一个结构，每个文件和目录都对应一个dentry结构体。
+dentry到底是什么？
+dentry结构体的主要作用是提供文件系统层次结构的表示，它们通过形成一个树状结构来组织目录和文件，每个dentry都有一个唯一的路径名，可以通过遍历dentry树来找到特定文件或目录。
+struct dentry结构体定义：
+struct dentry { struct dentry *d_parent; struct qstr d_name; struct inode *d_inode; const struct dentry_operations *d_op; struct super_block *d_sb; struct list_head d_child; struct list_head d_subdirs; .... }; struct dentry结构体通过d_parent，d_child，d_subdirs等成员将文件系统组成一颗文件树，要了解Linux文件系统，我们得学会运用dentry。
+小节：dentry是VFS重要的组成部分，要理解VFS先从dentry开始。
+3.文件系统注册 通过前面的学习，我们了解到dentry结构的重要性，接下来围绕dentry结构体来解析文件VFS各组件之间的关系，我们先来看一下整体架构图：
+Linux文件系统对应一个file_system_type结构体对象，file_system_type结构体定义如下：
+struct file_system_type { const char *name; int fs_flags; int (*init_fs_context)(struct fs_context *); const struct fs_parameter_spec *parameters; struct dentry *(*mount) (struct file_system_type *, int, const char *, void *); void (*kill_sb) (struct super_block *); .
+	</div>
+	<div class="list__footer clearfix">
+		<a class="list__footer-readmore btn" href="/posts/0146c807635c82a8adcb96a21ddd8c22/">Read more…</a>
+	</div>
+</article><article class="list__item post">
+	
+	<header class="list__header">
+		<h2 class="list__title post__title">
+			<a href="/posts/f20c88bda5de078e394ed31220440999/" rel="bookmark">
+			Kotlin 的 Flow 简单使用
+			</a>
+		</h2>
+		
+	</header>
+	<div class="content list__excerpt post__content clearfix">
+		当使用 Kotlin 的 Flow 处理异步数据流时，可以遵循以下步骤。Flow 提供了一种声明式、异步和可组合的处理异步数据的方式。
+创建 Flow Flow 是使用 flow 构建器创建的。有两种主要的创建方式：使用 flowOf 和使用 asFlow。
+1 flowOf： 从多个元素创建 Flow。
+fun createFlowOf(): Flow&lt;Int&gt; = flowOf(1, 2, 3)
+2 asFlow： 从集合（List、Array等）创建 Flow。
+fun createListFlow(): Flow&lt;Int&gt; = listOf(1, 2, 3).asFlow()
+操作符 Flow 提供了一系列操作符，用于对数据流进行转换和处理。
+map： 转换每个元素。
+filter： 过滤元素。
+transform： 复杂的转换操作。
+zip： 将两个 Flow 组合成一个。
+flatMapConcat： 将每个元素映射到一个 Flow，然后将这些 Flow 连接在一起。
+收集 Flow 使用 collect 函数来订阅 Flow 并处理其发出的值。
+fun collectExample() { runBlocking { createFlowOf().collect { value -&gt; println(value) } } } 异常处理 Flow 具有异常处理机制，可以使用 catch 操作符捕获异常。
+	</div>
+	<div class="list__footer clearfix">
+		<a class="list__footer-readmore btn" href="/posts/f20c88bda5de078e394ed31220440999/">Read more…</a>
+	</div>
+</article><article class="list__item post">
+	
+	<header class="list__header">
+		<h2 class="list__title post__title">
+			<a href="/posts/285a8fb443a92c113eb992ed6c608810/" rel="bookmark">
+			笔记本安装centos7和ubuntu22.02系统教程
+			</a>
+		</h2>
+		
+	</header>
+	<div class="content list__excerpt post__content clearfix">
+		使用 Rufus 制作启动 U 盘（Windows）
+制作 Linux 启动 U 盘的步骤如下：
+使用 Rufus 制作启动 U 盘（Windows） 下载 Rufus：
+访问 Rufus 官方网站（https://rufus.ie/）下载最新版本的 Rufus 工具。
+插入 U 盘：
+将 U 盘插入计算机的 USB 接口。请注意，插入 U 盘前备份其中的数据，因为制作启动 U 盘会格式化 U 盘。
+运行 Rufus：
+打开下载好的 Rufus 工具。
+选择镜像文件：
+在 Rufus 中，选择你下载好的 Linux ISO 镜像文件。
+选择 U 盘：
+在 “设备” 下拉菜单中选择你的 U 盘。
+启动类型：
+在 “启动选项” 中选择 “写入 dd” 模式（通常是默认选项）。
+开始制作：
+点击 “开始” 按钮开始制作启动 U 盘。制作过程可能需要一段时间，请耐心等待。
+	</div>
+	<div class="list__footer clearfix">
+		<a class="list__footer-readmore btn" href="/posts/285a8fb443a92c113eb992ed6c608810/">Read more…</a>
+	</div>
+</article><article class="list__item post">
+	
+	<header class="list__header">
+		<h2 class="list__title post__title">
+			<a href="/posts/5678fb2d33194f5c539f567d4f729939/" rel="bookmark">
+			k8s安装dashboard报错CrashLoopBackOff
+			</a>
+		</h2>
+		
+	</header>
+	<div class="content list__excerpt post__content clearfix">
+		报错信息 使用kubectl get pods -A查看集群，出现错误：
+kubernetes-dashboard kubernetes-dashboard-xxxxxxxxxx6-2qrst 0/1 CrashLoopBackOff 6 15m 查看日志后，发现原因：
+panic: Get "https://10.6.10.1:443/api/v1/namespaces/kubernetes-dashboard/secrets/kubernetes-dashboard-csrf": dial tcp 10.96.0.1:443: i/o timeout goroutine 1 [running]: github.com/kubernetes/dashboard/src/app/backend/client/csrf.(*csrfTokenManager).init(0xc00041ca20) /home/runner/work/dashboard/dashboard/src/app/backend/client/csrf/manager.go:41 +0x413 github.com/kubernetes/dashboard/src/app/backend/client/csrf.NewCsrfTokenManager(...) /home/runner/work/dashboard/dashboard/src/app/backend/client/csrf/manager.go:66 github.com/kubernetes/dashboard/src/app/backend/client.(*clientManager).initCSRFKey(0xc0004a0e00) /home/runner/work/dashboard/dashboard/src/app/backend/client/manager.go:502 +0xc6 github.com/kubernetes/dashboard/src/app/backend/client.(*clientManager).init(0xc0004a0e00) /home/runner/work/dashboard/dashboard/src/app/backend/client/manager.go:470 +0x47 github.com/kubernetes/dashboard/src/app/backend/client.NewClientManager(...) /home/runner/work/dashboard/dashboard/src/app/backend/client/manager.go:551 原因 dashboard的数据包直接被REJECT(拒绝)
+解决方案 方案一： 原理：修改防火墙规则
+方案弊端：虚拟机环境下创建的k8s可视化面板好像没有效果
+操作如下：
+保存现有的防火墙规则 iptables-save &gt; iptables.rules 修改规则策略为ACCEPT iptables -P INPUT ACCEPT iptables -P FORWARD ACCEPT iptables -P OUTPUT ACCEPT 执行下命令： iptables -F 方案二 原因：同样是网络问题，具体而言是在初始化k8s集群时，--pod-network-cidr=192.168.0.0/16网段与虚拟机IP网段冲突
+操作：重装k8s集群，具体参考：Ubuntu重装kubernetes集群-CSDN博客
+（下面步骤和参考链接有所不同，也是解决这个问题的关键）
+将原来--pod-network-cidr=192.168.0.0/16修改为与虚拟机IP不同的网段，比如--pod-network-cidr=192.170.0.0/16
+修改网络插件配置calico.yaml，修改IP
+	</div>
+	<div class="list__footer clearfix">
+		<a class="list__footer-readmore btn" href="/posts/5678fb2d33194f5c539f567d4f729939/">Read more…</a>
+	</div>
+</article><article class="list__item post">
+	
+	<header class="list__header">
+		<h2 class="list__title post__title">
+			<a href="/posts/c574a3320a3e3756992ad9008eecf733/" rel="bookmark">
+			基于STM32单片机车牌识别图像处理AI摄像头车位停车计费设计400
+			</a>
+		</h2>
+		
+	</header>
+	<div class="content list__excerpt post__content clearfix">
+		 STM32-400-车牌识别停车场计时计费 功能描述：
+本系统由STM32F103C8T6单片机核心板、1.44寸TFT彩屏、（无线蓝牙/无线WIFI/无线视频监控模块-可选）、PythonAi-V831图像识别摄像头、1.5寸图像识别显示屏、舵机驱动电路、蜂鸣器驱动电路及电源组成。
+【1】本设计图像识别摄像头实时采集图像信息，并将图像识别车牌号信息通过1.5寸识图像显示屏显示出来。经过分析识别，将相应的车牌信息进行记录显示到后台屏。后台能够查看停车车位、停车的车牌号、停车时间、停车费用。
+【2】按键能够直接控制舵机开关，能够设置停车收费的上限，每10秒计费1元，最多不超过上限收费额。
+【3】摄像头首次图像识别到车牌信息，蜂鸣器对应鸣叫提醒，舵机打开，认为车辆进入闸门停靠在对应车位。摄像头再次图像识别到该车牌号，蜂鸣器对应鸣叫提醒，舵机打开，认为车辆驶出闸门。
+【4】能够识别的车牌有如下："皖", "沪", "津", "渝", "冀", "晋", "蒙", "辽", "吉", "黑","苏", "浙", "京", "闽", "赣", "鲁", "豫", "鄂", "湘" , "粤","桂", "琼", "川", "贵", "云", "藏", "陕", "甘", "青" , "宁","新", "警", "学"。
+【5】设计中设置的阈值参数保存到单片机Flash中，具有掉电不丢失功能。
+【6】无线APP功能：
+APP能够连接板载无线模块，查看相应数据；APP能够操作上述存在的功能操作。
+APP能够发送指令/或者接收指令。
+/*******无线接收数据和液晶显示一致**************/
+/*******无线控制命令（一定要注意格式）如下：****/
+说明：*命令开始 #命令结束 数据长度要一直
+命令如下：
+*OPEN# //打开门禁开关*%# //个别的设计测试命令,无实际意义,请忽略 
+	</div>
+</article><article class="list__item post">
+	
+	<header class="list__header">
+		<h2 class="list__title post__title">
+			<a href="/posts/cf0974dcfc2104c729b489406670bb5f/" rel="bookmark">
+			uniapp顶部导航栏高度适配
+			</a>
+		</h2>
+		
+	</header>
+	<div class="content list__excerpt post__content clearfix">
+		为了实现好看又实用的顶部导航栏，不得不自己定义导航栏样式。而自己定义的导航栏高度会因为手机的型号不同所展示的效果也就不同，所以只能通过适配高度来达到预期的效果
+1.需要在page.json文件中对需要自定义导航栏文件进行配置 "navigationStyle":"custom" //取消默认的原生导航栏
+2.在页面中添加占位元素 &lt;!-- 状态栏高度 --&gt; &lt;view :style="{ height: `${statusBarHeight}px` }"&gt;&lt;/view&gt; &lt;!-- 自定义导航栏高度 --&gt; &lt;view :style="{ height: `${barHeight}px`, 'line-height': `${barHeight}px` }"&gt; &lt;text&gt;评价&lt;/text&gt; &lt;/view&gt; 3.借助钩子函数mounted完成逻辑处理 mounted() { this.statusBarHeight = uni.getSystemInfoSync().statusBarHeight; const { top, height } = wx.getMenuButtonBoundingClientRect(); // 自定义导航栏高度 = 胶囊高度 + 胶囊的padding*2, 如果获取不到设置为38 this.barHeight = height ? height + (top - this.statusBarHeight) * 2 : 38; }, 这样就行了，不同的设备导航栏高度就会自适应了
+	</div>
+</article><article class="list__item post">
+	
+	<header class="list__header">
+		<h2 class="list__title post__title">
+			<a href="/posts/b924d636d4ac949635082f1f7b5441e1/" rel="bookmark">
+			android 11 自定义Android device owner 接口
+			</a>
+		</h2>
+		
+	</header>
+	<div class="content list__excerpt post__content clearfix">
+		在设置里面自定义广播 去处理下面的事情
+ComponentName mComponent=new ComponentName(packageName,receiverName);
+DevicePolicyManager mDPM.setDeviceOwner(mComponent,"d_owner_"+mUserId);
+int mUserId = android.os.Process.myPid();
+int uid = android.os.Process.myUid();
+Settings.Global.putInt(context.getContentResolver(), "cw_dpw_userid", mUserId);
+然后在frameworks\base\services\devicepolicy\java\com\android\server\devicepolicy\DevicePolicyManagerService.java
+下面的方法修改下
+private boolean isAdb() {
+final int callingUid = mInjector.binderGetCallingUid();
+boolean isdpwuid = false;
+try {
+final int callingPid = mInjector.binderGetCallingPid();
+int cw_dpw= Settings.Global.getInt(mContext.getContentResolver(), "cw_dpw_userid",0);
+isdpwuid = (callingPid == cw_dpw ) ;
+Log.w(LOG_TAG, "sssssssssss 3 callingPid = " +callingPid + "........cw_dpw_userid = " +cw_dpw + "------isdpwuid= "+isdpwuid);
+} catch (Exception e) {
+	</div>
+	<div class="list__footer clearfix">
+		<a class="list__footer-readmore btn" href="/posts/b924d636d4ac949635082f1f7b5441e1/">Read more…</a>
+	</div>
+</article><article class="list__item post">
+	
+	<header class="list__header">
+		<h2 class="list__title post__title">
+			<a href="/posts/3fbb444f420f94dc6ad11e2178890de9/" rel="bookmark">
+			爱豆科技人事管理系统-计算机毕业设计源码48859
+			</a>
+		</h2>
+		
+	</header>
+	<div class="content list__excerpt post__content clearfix">
+		摘 要 随着互联网大趋势的到来，社会的方方面面，各行各业都在考虑利用互联网作为媒介将自己的信息更及时有效地推广出去，而其中最好的方式就是建立网络管理系统，并对其进行信息管理。由于现在网络的发达，爱豆科技人事管理系统 的信息通过网络进行信息管理掀起了热潮，所以针对爱豆科技人事管理系统 的用户需求开发出一套爱豆科技人事管理系统 。
+整个开发过程首先对软件系统进行需求分析，得出系统的主要功能。接着对系统进行总体设计和详细设计。总体设计主要包括系统功能设计、系统总体结构设计、系统数据结构设计和系统安全设计等；详细设计主要包括系统数据库访问的实现，主要功能模块的具体实现，模块实现关键代码等。最后对系统进行功能测试，并对测试结果进行分析总结，得出系统中存在的不足及需要改进的地方，为以后的系统维护提供了方便，同时也为今后开发类似系统提供了借鉴和帮助。
+本系统开发利用现有的成熟技术参考，以源代码为模板，分析功能调整与爱豆科技人事管理系统 的实际需求相结合，确定了Java开发爱豆科技人事管理系统 的使用。
+关键字：爱豆科技人事管理系统 Java语言，MySQL数据库、SSM框架 SSM Aidou Technology Personnel Management System
+Abstracts
+With the advent of the Internet trend, all walks of life are considering using the Internet as a medium to promote their information more timely and effectively, and the best way is to establish a network management system and manage its information. Due to the current development of the network, the information of the personnel management system of Aidou Technology has set off an upsurge of information management through the network, so a set of personnel management system of Aidou Technology has been developed according to the user needs of the personnel management system of Aidou Technology.
+	</div>
+	<div class="list__footer clearfix">
+		<a class="list__footer-readmore btn" href="/posts/3fbb444f420f94dc6ad11e2178890de9/">Read more…</a>
+	</div>
+</article><article class="list__item post">
+	
+	<header class="list__header">
+		<h2 class="list__title post__title">
+			<a href="/posts/e5e527fbf2fd9a7926360f64e9b28260/" rel="bookmark">
+			【Python绘图入门之plt.plot函数详解】
+			</a>
+		</h2>
+		
+	</header>
+	<div class="content list__excerpt post__content clearfix">
+		文章目录 plt.plot是什么？使用步骤1. 引入Matplotlib库2. 创建数据3. 使用plt.plot绘制图表 plt.plot函数的常用参数1. `x`和`y`2. `label`3. `color`和`linestyle`4. `marker`5. `linewidth`和`markersize` plt.plot是什么？ plt.plot用于绘制二维数据图表。它可以用于创建折线图、散点图、柱状图等多种类型的图形。
+使用步骤 1. 引入Matplotlib库 import matplotlib.pyplot as plt 2. 创建数据 x = [1, 2, 3, 4, 5] y = [2, 4, 6, 8, 10] 3. 使用plt.plot绘制图表 plt.plot(x, y) plt.show() plt.plot函数的常用参数 1. x和y x：表示数据点的x坐标。y：表示数据点的y坐标。 2. label 用于给图表添加标签，通常用于图例的生成。
+plt.plot(x, y, label='Line 1') plt.legend() 3. color和linestyle 用于设置线条的颜色和样式。
+plt.plot(x, y, color='r', linestyle='--') 4. marker 用于设置数据点的标记样式。
+plt.plot(x, y, marker='o') 5. linewidth和markersize 用于设置线条宽度和标记大小。
+	</div>
+	<div class="list__footer clearfix">
+		<a class="list__footer-readmore btn" href="/posts/e5e527fbf2fd9a7926360f64e9b28260/">Read more…</a>
+	</div>
+</article><article class="list__item post">
+	
+	<header class="list__header">
+		<h2 class="list__title post__title">
+			<a href="/posts/ffe362016acdc52c2477b806c82bfdc7/" rel="bookmark">
+			智慧食堂预点餐管理系统-计算机毕业设计源码48846
+			</a>
+		</h2>
+		
+	</header>
+	<div class="content list__excerpt post__content clearfix">
+		摘要
+随着科学技术的飞速发展，社会的方方面面、各行各业都在努力与现代的先进技术接轨，通过科技手段来提高自身的优势，餐饮业当然也不例外。智慧食堂预点餐管理系统小程序是以实际运用为开发背景，运用软件工程原理和开发方法，采用Java技术构建的一个管理系统。整个开发过程首先对软件系统进行需求分析，得出系统的主要功能。接着对系统进行总体设计和详细设计。总体设计主要包括系统功能设计、系统总体结构设计、系统数据结构设计和系统安全设计等；详细设计主要包括系统数据库访问的实现，主要功能模块的具体实现，模块实现关键代码等。最后对系统进行功能测试，并对测试结果进行分析总结，得出系统中存在的不足及需要改进的地方，为以后的系统维护提供了方便，同时也为今后开发类似系统提供了借鉴和帮助。
+本论文系统地描绘了整个智慧食堂预点餐管理系统小程序的设计与实现，主要实现的功能有以下几点：首页，轮播图，网站公告，资源管理（美食资讯，资讯分类），系统用户（管理员，注册用户），模块管理（运营状态，取餐点，菜品分类，菜品信息，菜品订单）等功能，其具有简单的接口，方便的应用，强大的互动，完全基于互联网的特点。
+关键词：点餐管理系统小程序；SpringBoot；Mysql数据库
+SpringBoot Smart Canteen
+Pre order Management System Mini Program
+Abstract With the rapid development of science and technology, all aspects of society and industries are striving to integrate with modern advanced technology and improve their own advantages through technological means, and the catering industry is no exception. The smart cafeteria pre order management system mini program is a management system built based on practical application, using software engineering principles and development methods, and Java technology.
+	</div>
+	<div class="list__footer clearfix">
+		<a class="list__footer-readmore btn" href="/posts/ffe362016acdc52c2477b806c82bfdc7/">Read more…</a>
+	</div>
+</article><article class="list__item post">
+	
+	<header class="list__header">
+		<h2 class="list__title post__title">
+			<a href="/posts/826bea12420a050fe25c6ceba71835a2/" rel="bookmark">
+			WiFi网络安全（非常详细）零基础入门到精通，收藏这一篇就够了
+			</a>
+		</h2>
+		
+	</header>
+	<div class="content list__excerpt post__content clearfix">
+		没有WIFI我活不下去 orz
+WIFI简介与发展历史 简介 如今现在几乎所有的智能手机、平板电脑和笔记本电脑都具备WiFi接入功能
+WiFi 全称 Wireless Fidelity，又称为802.11b标准。Wireless Fidelity翻译过来是无线保真，其中保真是指要求在无线网络中可靠地传输数据
+WiFi的定义：一种把有线上网的方式转变成无线上网方式的技术
+名词解释 在后续学习WiFi安全的过程中，有一些名词是我们现在需要了解的前置知识
+SSID(Service Set Identifier) 服务集标识符 通俗地说，SSID便是你给自己的无线网络所取的名字，用来标识某一无线局域网的唯一标识符，无线客户端用它入网后与接入点进行通信。 只有匹配成功的SSID名称和密码才能使无线客户端接入对应的无线网络。SSID信号由无线路由器或者AP进行向外发射。 SSID包括BSSID和ESSID两种类型
+AP(Access Point) 无线访问点或接入点 客户端需要链接AP才能获得登录互联网的能力，具备路由功能的AP就是一个无线路由器
+ESSID 对终端用户来说，搜索到的无线网络的名称就是ESSID，也就是通常我们所指的SSID
+BSSID 全称是 - Basic Service Set Identifier，BSSID通常不被终端用户感知，主要在管理维护无线网络、定位无线网络问题时使用，实际上就是每个无线接入点AP的MAC地址
+Station 站点 网络最基本的组成部分，通常指接入网络的无线客户端，例如手机、电脑等
+WEP 全称是 Wired Equivalent Privacy，有线等效保密，时802.11定义下的一种老式加密方式，是常见的一种无线网络的认证机制，它的特点是使用一个静态的密钥来加密所有的通信，并且其采用的加密算法具有可预测性，对于入侵者来说很容易截取和破解加密密钥，这种加密认证机制基本已经被淘汰
+WPA 全称是 WiFi Protected Access，WiFi访问保护，常用的无线网络认证机制之一，目前有WPA、WPA2、WPA3三个标准，并且分为个人和企业的WPA-Personal和WPA-Enterprise两种。它是为了完善WEP加密方式的安全性不足应运而生的一种加密方式
+WPS 全称是 WiFi Protected Setup，WiFi保护设置，是由WiFi联盟组织实施的认证项目，其主要目的是用来简化无线网络的安全加密配置 用户只需在每次连接无线路由器上的WPS按键（Push Button Condiguration，按钮模式）或者输入此时路由器的PIN码（Pin Input Configuration,个人识别码模式），就能将新设备加入无线网络中。
+发展历史 WiFi的发展历程，实际上是一个追求高带宽的过程
+追溯 WiFi发展的历史可以追溯到1971年的ALOHAnet，ALOHAnet是由诺曼·艾布拉姆森（Norman Manuel Abramson）带领团队在夏威夷大学构造的一个无线网络。由于岛屿之间不易布置有线链路，如果布置的话，其成本也会很高。故诺曼就希望采用相对成本比较低廉的无线设备，构造一个以Oahu岛为中心和其他夏威夷岛屿通信的无线链路。该项目于1968年9月启动，到1971年6月，第一个数据包以9600bps的速率发送成功。.该网络所设计出的通信协议，如今就被称为Aloha协议
+ALOHA协议成了IEEE 802.11协议的先驱，也是很多无线通信的理论基础
+802.11协议诞生 在1997年，IEEE首次制定和推出802.11协议，规定WLAN(无线局域网)运行在2.4GHz，最大速率伪2Mbps
+802.11b推出 1999年WiFi联盟成立，同年IEEE推出了频率更高的5GHz的802.11a，最高传输速率达到54Mbps；以及2.4GHz的802.11b，最高速率可达11Mbps
+第三代WiFi标准推出 2003 IEEE发布802.
+	</div>
+	<div class="list__footer clearfix">
+		<a class="list__footer-readmore btn" href="/posts/826bea12420a050fe25c6ceba71835a2/">Read more…</a>
+	</div>
+</article><article class="list__item post">
+	
+	<header class="list__header">
+		<h2 class="list__title post__title">
+			<a href="/posts/ba2426a8b2ccd000b584d52917ee6890/" rel="bookmark">
+			【EI会议征稿通知】第五届能源电力与自动化工程国际学术会议（ICEPAE 2024）
+			</a>
+		</h2>
+		
+	</header>
+	<div class="content list__excerpt post__content clearfix">
+		第五届能源电力与自动化工程国际学术会议（ICEPAE 2024）
+2024 5th International Conference on Energy Power and Automation Engineering
+第五届能源电力与自动化工程国际学术会议（ICEPAE 2024）将于2024年5月24日至26日在中国 ▪ 福州召开。会议主要围绕能源电力与自动化工程等研究领域展开讨论。会议旨在为从事能源电力与自动化工程研究的专家学者、工程技术人员、技术研发人员提供一个共享科研成果和前沿技术，了解学术发展趋势，拓宽研究思路，加强学术研究和探讨，促进学术成果产业化合作的平台。大会诚邀国内外高校、科研机构专家、学者，企业界人士及其他相关人员参会交流。
+期待您的参与！
+重要信息
+大会官网：www.icepae.org（点击参会/投稿/了解会议详情）
+大会地点：中国 ▪ 福州
+大会时间：2024年5月24-26日
+接受/拒稿通知：投稿后1周内
+收录检索：EI Compendex，Scopus
+征稿主题
+(一) 能源科学与工程 (二) 电力、电气工程(三) 自动化工程 可再生能源系统 太阳能
+生物质能
+风能
+波浪和潮汐能源
+地热能
+核能
+生物能源
+氢气和燃料电池
+能源材料 可再生能源的开发和利用
+能源存储技术
+节能技术
+储能技术
+能源化学工程
+能源效率系统
+能源和环境工程
+能源设备
+能源安全和清洁使用
+电机和驱动
+电力转换器
+电瓶和BMS 控制策略和算法
+人工智能
+设计和优化
+智能电网
+运输电气化
+新能源汽车、电动汽车
+电力系统和自动化
+高电压与绝缘技术
+电动机和电气
+电工理论与新技术
+电力电子与电力驱动
+输电和配电 可靠性和诊断 噪声、振动、EMI和EMC 电能质量 电力系统分析
+	</div>
+	<div class="list__footer clearfix">
+		<a class="list__footer-readmore btn" href="/posts/ba2426a8b2ccd000b584d52917ee6890/">Read more…</a>
+	</div>
+</article><article class="list__item post">
+	
+	<header class="list__header">
+		<h2 class="list__title post__title">
+			<a href="/posts/75b0c276cebdc926a70a1489f8bdd90e/" rel="bookmark">
+			JAVA项目日志管理（包含各种类型日志解决方案，超详细）
+			</a>
+		</h2>
+		
+	</header>
+	<div class="content list__excerpt post__content clearfix">
+		JAVA项目日志管理 1、作用：记录行为信息，记录错误过程，方便查找历史记录，线上问题排查。2、核心问题：记录信息过多会导致文件存储过大，打印过程消耗性能，查找问题难以快速定位；记录信息过少则在需要时无法找到问题根源，无法追踪问题。3、需根据需求在性能，存储，信息量，查询定位做出权衡。 ELK简介：这里贴一下我个人的github项目网址，[Springboot-dubbo-zookeeper](https://github.com/changlongmao/Springboot-dubbo-zookeeper)，里面有常规的logback日志打印配置文件，也有线程池打印日志使用，也有RabbitMq的实现，可以支持一下点个Star。总结：本文主要分析了各种类型的项目日志的解决方案，贴上了一些我个人学习过程中遇到的比较好的文章，主要做学习分享用，若违规可联系作者删除。 概述：
+1、作用：记录行为信息，记录错误过程，方便查找历史记录，线上问题排查。 2、核心问题：记录信息过多会导致文件存储过大，打印过程消耗性能，查找问题难以快速定位；记录信息过少则在需要时无法找到问题根源，无法追踪问题。 3、需根据需求在性能，存储，信息量，查询定位做出权衡。 输出方式：
+1、输出控制台打印，如log.info(),System.out.println();一般在开发环境使用。线上环境需关闭控制台打印日志。
+2、输出至文件存储，如使用log4j，logback输出至文件，JVM启动参数中配置打印GC日志。
+3、存储数据库表中，一般为项目定制日志，如数据新增，更新日志。
+4、输出志中间件中，如使用ELK存储在Elasticsearch中。
+各日志类型解决方案：
+1、常规堆栈日志：如项目启动过程打印的各种初始化实例，建立连接日志。一般使用Logback，log4j2实现，log4j性能较差，一般不推荐，而门面通常使用Slf4j显示输出日志，这里贴上，（slf4j log4j logback的关系）链接，具体可以自己查看。一般常规项目使用Slf4j结合Logback实现，SpringBoot项目可以结合 Spring Boot Actuator实现日志打印及动态修改日志。
+2、存储至数据库日志：最简单的实现就是接口内部直接往数据库中插入一条日志数据，这里贴一个常规建表sql语句。
+CREATE TABLE `system_log` ( `id` varchar(32) NOT NULL DEFAULT '' COMMENT 'id', `module` varchar(255) DEFAULT NULL COMMENT '模块', `user_name` varchar(32) DEFAULT NULL COMMENT '操作人昵称', `user_id` varchar(32) DEFAULT NULL COMMENT '操作人ID', `method` varchar(255) DEFAULT NULL COMMENT '方法', `operation` varchar(255) DEFAULT NULL COMMENT '操作', `args` varchar(5000) DEFAULT NULL COMMENT '参数', `time` int(11) unsigned DEFAULT '0' COMMENT '执行时长(毫秒)', `ip` varchar(32) DEFAULT NULL COMMENT 'IP', `create_time` timestamp NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间', PRIMARY KEY (`id`) USING BTREE ) ENGINE=InnoDB DEFAULT CHARSET=utf8 COMMENT='操作日志表'; 但是一般我们为了解耦，降低对代码的侵入，并且减少打印日志对用户请求时间的性能影响，可以使用Spring AOP自定义注解做日志打印，对Spring AOP不了解的可以看这篇文章：Spring AOP - 注解方式使用介绍（长文详解）。
+	</div>
+	<div class="list__footer clearfix">
+		<a class="list__footer-readmore btn" href="/posts/75b0c276cebdc926a70a1489f8bdd90e/">Read more…</a>
+	</div>
+</article><article class="list__item post">
+	
+	<header class="list__header">
+		<h2 class="list__title post__title">
+			<a href="/posts/6ad75e3e0b61417e0e600bea9be7f04c/" rel="bookmark">
+			Vue中webSocket&#43;webRtc实现多人会议，webRtc实现
+			</a>
+		</h2>
+		
+	</header>
+	<div class="content list__excerpt post__content clearfix">
+		前提 已经搭建好websocket双端通信（可以先模拟），用于实时交换双方信息。交换的信息也就是所谓的信令。实现webRtc进行多人会议，屏幕共享、摄像头共享。
+我这里定义的websocket信息格式如下
+发给某个人，下面会用【消息格式one】指代
+{ "body": {}, "code": "10003",//自定义标识（我自定义区分消息来源用的） "data": { "description": { "type": "answer", "sdp": "v=0\r\no=- 700908093190320106 2 IN IP4..." },//需要交换的信息 "meetId": "852229c8c454453da6e0b5e99a8407c8",//会议id "pageNum": 0, "pageSize": 0, "receiveId": "ed986a7b3dbb407e846f76fad909f07d",//接收人Id "sendId": "c0f1094a363949f88f618f5edb5ecaf8",//发送人Id "type": "answer"//信息分类 }, "msg": "meetingMessage", "success": true } 发给会议中所有人，下面会用【消息格式all】指代
+{ "body": {}, "code": "10003", "data": { "meetId": "852229c8c454453da6e0b5e99a8407c8",//会议id "pageNum": 0, "pageSize": 0, "sendId": "c0f1094a363949f88f618f5edb5ecaf8",//发送人Id "type": "new"//信息分类 }, "msg": "meetingMessage", "success": true } 简单说明逻辑 当用户A进入会议时，向所有人发送【消息格式all】,通知有人加入了会议，然后其他人（取一人B代指）将主动与A取得联系。
+B创建一个专门与A交流的webRtc连接（ new RTCPeerConnection(undefined)）。将打开的媒体流流加载到连接中B创建完这个webRtc连接后生成一个请求连接的信息通过【消息格式one】发给A，这里面有B的sdp信息，并且自己也存一份，发送建立连接请求webRtc中叫offer。然后A收到offer时，也创建一个专门与B交流的webRtc连接（ new RTCPeerConnection(undefined)）。然后将B的信息存下来，再生成自己的信息发给B，这里面有A的sdp信息，webRtc中这个过程叫应答answer。创建的webRtc连接的时候会使用一个监听器，能监听自己的candidate候选信息有没有制作完，这里面是ice的信息。A跟B都要监听，制作完后发给对方，对方再存到webRtc连接中，到此双方连接完成。当一方的媒体源改变时（关闭/打开 麦克风/摄像头/共享桌面），通知其他人连接过期，然后进行以上步骤进行重新连接（除了加入的媒体流不一样，其他一样） 代码参考 打开页面告诉其他人加入会议，这个调用的接口，后台用webSocket发给了其他人
+	</div>
+	<div class="list__footer clearfix">
+		<a class="list__footer-readmore btn" href="/posts/6ad75e3e0b61417e0e600bea9be7f04c/">Read more…</a>
+	</div>
+</article><article class="list__item post">
+	
+	<header class="list__header">
+		<h2 class="list__title post__title">
+			<a href="/posts/d8093cfce099dae9b5b060aa66d41397/" rel="bookmark">
+			python代码画动态烟花源码,烟花代码编程python复制
+			</a>
+		</h2>
+		
+	</header>
+	<div class="content list__excerpt post__content clearfix">
+		本篇文章给大家谈谈爱心代码编程python可复制，以及python代码画动态烟花源码，希望对各位有所帮助，不要忘了收藏本站喔。
+Source code download: 本文相关源码
+下面是一个简单的 Python 烟花代码，可以通过编写程序来模拟烟花的绽放过程：
+import turtle import random # 设置窗口大小和标题 screen = turtle.Screen() screen.setup(800, 600) screen.title("Python Fireworks") # 定义烟花的颜色和数量 colors = ["red", "orange", "yellow", "green", "blue", "purple", "white"] num_fireworks = 10 # 定义烟花的形状 firework_shape = turtle.Shape("compound") circle = turtle.Circle(10) trail = turtle.Turtle() trail.penup() trail.setposition(0, -10) trail.pendown() trail.pensize(3) trail.pencolor("white") trail.circle(10, 180) firework_shape.addcomponent(circle, "red") firework_shape.addcomponent(trail, "white") # 注册烟花的形状 turtle.register_shape("firework", firework_shape) # 定义烟花类 class Firework(turtle.Turtle): def __init__(self, x, y): turtle.
+	</div>
+	<div class="list__footer clearfix">
+		<a class="list__footer-readmore btn" href="/posts/d8093cfce099dae9b5b060aa66d41397/">Read more…</a>
+	</div>
+</article><article class="list__item post">
+	
+	<header class="list__header">
+		<h2 class="list__title post__title">
+			<a href="/posts/42e80b69a38aadf936fcdfd311bfb5a4/" rel="bookmark">
+			多功能电能表的四象限
+			</a>
+		</h2>
+		
+	</header>
+	<div class="content list__excerpt post__content clearfix">
+		根据《多功能电能表通信协议》DL/T645-2007的规定，我们将一个平面坐标系的横轴定义为无功功率，纵轴定义为有功功率，二个轴将一个平面划分为四个区域，右上角的为「Ⅰ象限」，顺时针依次为「Ⅱ象限」、「Ⅲ象限」和「Ⅳ象限」；「Ⅰ象限」和「Ⅱ象限」无功定义为正向无功，「Ⅲ象限」和「Ⅳ象限」无功定义为反向无功；
+注意：规定顺时针方向相角为正。与数学上的象限相反。
+按下面的要求定义实际功率的方向：
+正向有功功率：即输入有功功率，是电网向用户送电，是用户用电功率；
+反向有功功率：即输出有功功率，是用户向电网送电，是用户发电功率；
+正向无功功率：即输入无功功率，是电网向用户送无功，是用户用无功功率；
+反向无功功率：即输出无功功率，是用户向电网送无功，是用户发无功功率；
+Ⅰ象限无功：输入有功功率，输入无功功率，用户为感性（电流滞后电压）负载；
+Ⅱ象限无功：输出有功功率，输入无功功率，用户负荷相当于一台欠励磁发电机；
+Ⅲ象限无功：输出有功功率，输出无功功率，用户负荷相当于一台过励磁发电机；
+Ⅳ象限无功：输入有功功率，输出无功功率，用户为容性（电流超前电压）负载；
+Ⅰ象限：消耗有功功率，消耗感性无功功率。
+Ⅱ象限：输出有功功率，输出容性无功功率。
+Ⅲ象限：输出有功功率，输出感性无功功率。
+Ⅳ象限：消耗有功功率，消耗容性无功功率。
+	</div>
+</article><article class="list__item post">
+	
+	<header class="list__header">
+		<h2 class="list__title post__title">
+			<a href="/posts/24e674b50b9984a2ce797e6ae885da4c/" rel="bookmark">
+			idea推送代码时Mapper报错Error:(18, 38) @MapKey is required
+			</a>
+		</h2>
+		
+	</header>
+	<div class="content list__excerpt post__content clearfix">
+		报错信息：
+解决方法：
+方法上加 @MapKey("id")，指定一下key @MapKey("xx") 指定一个字段xx作为返回Map中的key
+输出时pianqu即作为Map中的key
+	</div>
+</article><article class="list__item post">
+	
+	<header class="list__header">
+		<h2 class="list__title post__title">
+			<a href="/posts/efcaecc4f6ebfefa6a9cffb6e97a979c/" rel="bookmark">
+			A*算法（超级详细讲解，附有举例的详细手写步骤）
+			</a>
+		</h2>
+		
+	</header>
+	<div class="content list__excerpt post__content clearfix">
+		背景：项目需要接触此算法，以下是一些自学成果，如有不足之处，欢迎指出，必虚心接受。做了一份PPT来汇报，此处直接使用自己PPT的截图。部分图片来源网络，如有侵权立马删除，以下博文仅作为学习笔记。后期又新增了完整PPT。
+A*算法完整PTT_dujuancao11的博客-CSDN博客
+A*算法入门 - Jacc.Kim - 博客园
+目录
+A*寻路算法 A*算法解决什么问题
+A*算法的基本原理
+A*算法的详细原理
+A*算法的详细原理之定义
+​A*算法的详细原理之初始设定 ​A*算法的详细原理之寻路原理
+A*算法的详细原理之结束条件
+A*算法的寻路详细步骤
+A*算法的举例说明 A*算法的伪代码
+A*算法的定义伪代码 (C++)
+A*算法的寻路伪代码(C++)
+Python+PyQt代码实现
+代码内容（可运行）
+运行结果 可执行文件
+拓展
+Dijkstra算法和A*算法的比较
+A*寻路算法 A*算法解决什么问题 A*算法的基本原理 A*算法的详细原理 A*算法的详细原理之定义 A*算法的详细原理之初始设定 A*算法的详细原理之寻路原理 A*算法的详细原理之结束条件 A*算法的寻路详细步骤 S（start）起点 E（End）终点
+A*算法的举例说明 如果还不懂的话，可以参考我手写的计算步骤，再不懂可以私信我。（手稿字有点丑） A*算法的伪代码 A*算法的定义伪代码 (C++) int open_list;//一个记录下所有被考虑来寻找最短路径的格子 int close_list; //一个记录下不会再被考虑的格子 typedef struct point{ bool Is_Wall; struct point* father;//父节点 int G;// 表示从起点 A 移动到网格上指定方格的移动耗费 (上下左右，还可沿斜方向移动) int old_G;//旧G 第一次：从起点 A 直接移动到 A 四周方格的移动耗费 ；上次更新得到的G int new_G; //新G 从起点 A 经过当前搜索中心点到其四周指定点的移动耗费 int H;//表示从指定的方格移动到终点 B 的预计耗费 (H 有很多计算方法, 这里我们设定只可以上下左右移动) int F=G+H;//表示该点的总耗费 }Point; point* start_point; point* end_point; point* min_point; point* now_point; A*算法的寻路伪代码(C++) //FindPath do{ //确定中心搜索点，上一个中心点关闭，新的中心点开启 查找：Find the minimumm "
+	</div>
+	<div class="list__footer clearfix">
+		<a class="list__footer-readmore btn" href="/posts/efcaecc4f6ebfefa6a9cffb6e97a979c/">Read more…</a>
+	</div>
+</article><article class="list__item post">
+	
+	<header class="list__header">
+		<h2 class="list__title post__title">
+			<a href="/posts/df39b27d68481fa98db808ca742cab82/" rel="bookmark">
+			springboot3整合支付宝沙箱网页版
+			</a>
+		</h2>
+		
+	</header>
+	<div class="content list__excerpt post__content clearfix">
+		1.maven依赖：
+&lt;dependency&gt; &lt;groupId&gt;org.springframework.boot&lt;/groupId&gt; &lt;artifactId&gt;spring-boot-starter-web&lt;/artifactId&gt; &lt;/dependency&gt; &lt;dependency&gt; &lt;groupId&gt;org.springframework.boot&lt;/groupId&gt; &lt;artifactId&gt;spring-boot-starter-test&lt;/artifactId&gt; &lt;scope&gt;test&lt;/scope&gt; &lt;/dependency&gt; &lt;dependency&gt; &lt;groupId&gt;com.alipay.sdk&lt;/groupId&gt; &lt;artifactId&gt;alipay-sdk-java&lt;/artifactId&gt; &lt;version&gt;4.35.79.ALL&lt;/version&gt; &lt;/dependency&gt; &lt;dependency&gt; &lt;groupId&gt;cn.hutool&lt;/groupId&gt; &lt;artifactId&gt;hutool-all&lt;/artifactId&gt; &lt;version&gt;5.8.0&lt;/version&gt; &lt;/dependency&gt; 2. application.yml 包括支付宝沙箱appid, 私钥，支付宝公钥等，因为需要回调，先要配置外网接口，这里使用了natapp, 配置如下：
+alipay: appId: appPrivateKey: alipayPublicKey: notifyUrl: http://vwe3ye.natappfree.cc/alipay/notify serverUrl: https://openapi-sandbox.dl.alipaydev.com/gateway.do format: json charset: UTF-8 signType: RSA2 returnUrl: http://localhost:8080/orders 3.config文件：
+@Component @ConfigurationProperties(prefix = "alipay") public class AliPayConfig { private String appId; private String appPrivateKey; private String alipayPublicKey; private String notifyUrl; private String serverUrl; private String format; private String charset; private String signType; private String returnUrl; .
+	</div>
+	<div class="list__footer clearfix">
+		<a class="list__footer-readmore btn" href="/posts/df39b27d68481fa98db808ca742cab82/">Read more…</a>
+	</div>
+</article><article class="list__item post">
+	
+	<header class="list__header">
+		<h2 class="list__title post__title">
+			<a href="/posts/4a89881784e72f69efc9452b7aaf14a9/" rel="bookmark">
+			解密数据清洗，SQL中的数据分析
+			</a>
+		</h2>
+		
+	</header>
+	<div class="content list__excerpt post__content clearfix">
+		大家好，数据库表中的数据经常会很杂乱。数据可能包含缺失值、重复记录、异常值、不一致的数据输入等，在使用SQL进行分析之前清洗数据是非常重要的。
+当学习SQL时，可以随意地创建数据库表，更改它们，根据需要更新和删除记录。但在实际操作中，几乎从不会这样，因为可能没有权限更改表、更新和删除记录。但如果有数据库的读取权限，可以运行大量的SELECT查询。
+本文将创建一个数据库表，在其中填充记录，并了解如何使用SQL清洗数据。
+创建一个名为employees的员工表，如下所示：
+-- 创建employees表 CREATE TABLE employees ( employee_id INT PRIMARY KEY, employee_name VARCHAR(50), salary DECIMAL(10, 2), hire_date VARCHAR(20), department VARCHAR(50) ); 接下来，向表中插入一些虚构的样本记录：
+-- 插入20个样本记录 INSERT INTO employees (employee_id, employee_name, salary, hire_date, department) VALUES (1, 'Amy West', 60000.00, '2021-01-15', 'HR'), (2, 'Ivy Lee', 75000.50, '2020-05-22', 'Sales'), (3, 'joe smith', 80000.75, '2019-08-10', 'Marketing'), (4, 'John White', 90000.00, '2020-11-05', 'Finance'), (5, 'Jane Hill', 55000.25, '2022-02-28', 'IT'), (6, 'Dave West', 72000.
+	</div>
+	<div class="list__footer clearfix">
+		<a class="list__footer-readmore btn" href="/posts/4a89881784e72f69efc9452b7aaf14a9/">Read more…</a>
+	</div>
+</article>
+</main>
+
+<div class="pagination">
+	<a class="pagination__item pagination__item--prev btn" href="/posts/page/67/">«</a>
+	<span class="pagination__item pagination__item--current">68/516</span>
+	<a class="pagination__item pagination__item--next btn" href="/posts/page/69/">»</a>
+</div>
+
+			</div>
+			
+
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

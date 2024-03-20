@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>CompletableFuture中的CompletionException异常真是坑到我了！ - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="CompletableFuture中的CompletionException异常真是坑到我了！" />
+<meta property="og:description" content="开发环境 JDK 17
+Idea 2022
+熟悉JDK 8版本的同学，大概率都使用过 java.util.concurrent.CompletableFuture 这个类，有时候在业务服务中你可能需要并行的去执行某些骚操作，那就少不了它的存在。
+我在业务中就有大量的需求场景，比如：我需要拉渠道方的订单和订单明细，落地到我司系统中。此时用到了两个接口：订单列表查询、订单明细查询，查询列表很简单，一页一页的翻页查询，因为它也只返回了订单号，我举个例子吧！
+这里是订单列表查询接口返回的数据结构（Mock数据），一堆的订单号 { &#34;data&#34;:[ &#34;125345345345&#34;, &#34;235894563423&#34;, &#34;345345345343&#34; ] } 接下来我肯定要根据订单号去查询订单明细的，千万不要下意识的进行for循环一个一个查，那要查到什么时候啊！
+这个时候CompletableFuture就派上用场了。
+CompletableFuture应用 前提条件，我为了方便使用，我是直接在业务的Base包中，封装了一个通用实现，当然只是适用于我们业务的，需要的同学自取。 注意：下面这段代码没有处理真实的异常，想直接用，再往下看！！！ /** * 偷个懒，线程池直接这样写了先，真实业务中不是这样搞的哈！ */ private final static ExecutorService executorService = Executors.newFixedThreadPool(4); /** * 创建并行任务并执行 * * @param list 数据源 * @param api API调用逻辑 * @param exceptionHandle 异常处理逻辑 * @param &lt;S&gt; 数据源类型 * @param &lt;T&gt; 程序返回类型 * @return 处理结果列表 */ public &lt;S, T&gt; List&lt;T&gt; parallelFutureJoin(Collection&lt;S&gt; list, Function&lt;S, T&gt; api, BiFunction&lt;Throwable, S, T&gt; exceptionHandle) { //规整所有任务 List&lt;CompletableFuture&lt;T&gt;&gt; collectFuture = list." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/759c3ab209056b1a8c34b707f2511463/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-03-09T22:03:00+08:00" />
+<meta property="article:modified_time" content="2023-03-09T22:03:00+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">CompletableFuture中的CompletionException异常真是坑到我了！</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <div class="kdocs-document"> 
+ <h4 style="text-align:left;">开发环境</h4> 
+ <ul><li style="margin-left:1.4em;list-style-type:disc;text-indent:0;"><p>JDK 17</p></li></ul> 
+ <ul><li style="margin-left:1.4em;list-style-type:disc;text-indent:0;"><p>Idea 2022</p></li></ul> 
+ <p style="">熟悉JDK 8版本的同学，大概率都使用过 <span class="kdocs-bold" style="font-weight:bold;">java.util.concurrent.CompletableFuture </span>这个类，有时候在业务服务中你可能需要并行的去执行某些骚操作，那就少不了它的存在。</p> 
+ <p style="">我在业务中就有大量的需求场景，比如：我需要拉渠道方的订单和订单明细，落地到我司系统中。此时用到了两个接口：订单列表查询、订单明细查询，查询列表很简单，一页一页的翻页查询，因为它也只返回了订单号，我举个例子吧！</p> 
+ <h5 style="text-align:left;">这里是订单列表查询接口返回的数据结构（Mock数据），一堆的订单号</h5> 
+ <pre class="kdocs-json"><code class="language-json">{
+    "data":[
+        "125345345345",
+        "235894563423",
+        "345345345343"
+    ]
+}</code></pre> 
+ <p style="">接下来我肯定要根据订单号去查询订单明细的，千万不要下意识的进行for循环一个一个查，那要查到什么时候啊！</p> 
+ <p style="">这个时候<span class="kdocs-bold" style="font-weight:bold;">CompletableFuture</span>就派上用场了。</p> 
+ <h4 style="text-align:left;">CompletableFuture应用</h4> 
+ <blockquote class="kdocs-blockquote" style="text-align:left;">
+   前提条件，我为了方便使用，我是直接在业务的Base包中，封装了一个通用实现，当然只是适用于我们业务的，需要的同学自取。 
+  <br>注意：下面这段代码没有处理真实的异常，想直接用，再往下看！！！ 
+ </blockquote> 
+ <pre class="kdocs-java"><code class="language-java">
+/**
+ * 偷个懒，线程池直接这样写了先，真实业务中不是这样搞的哈！
+ */
+private final static ExecutorService executorService = Executors.newFixedThreadPool(4);
+
+
+/**
+ * 创建并行任务并执行
+ *
+ * @param list            数据源
+ * @param api             API调用逻辑
+ * @param exceptionHandle 异常处理逻辑
+ * @param &lt;S&gt;             数据源类型
+ * @param &lt;T&gt;             程序返回类型
+ * @return 处理结果列表
+ */
+public &lt;S, T&gt; List&lt;T&gt; parallelFutureJoin(Collection&lt;S&gt; list, Function&lt;S, T&gt; api, BiFunction&lt;Throwable, S, T&gt; exceptionHandle) {
+    //规整所有任务
+    List&lt;CompletableFuture&lt;T&gt;&gt; collectFuture = list.stream()
+            .map(s -&gt; this.createFuture(() -&gt; api.apply(s), e -&gt; exceptionHandle.apply(e, s)))
+            .toList();
+    //汇总所有任务，并执行join，全部执行完成后，统一返回
+    return CompletableFuture.allOf(collectFuture.toArray(new CompletableFuture&lt;?&gt;[]{}))
+            .thenApply(f -&gt; collectFuture.stream()
+                    .map(CompletableFuture::join)
+                    .filter(Objects::nonNull)
+                    .collect(Collectors.toList()))
+            .join();
+}
+
+/**
+ * 创建单个CompletableFuture任务
+ *
+ * @param logic           任务逻辑
+ * @param exceptionHandle 异常处理
+ * @param &lt;T&gt;             类型
+ * @return 任务
+ */
+public &lt;T&gt; CompletableFuture&lt;T&gt; createFuture(Supplier&lt;T&gt; logic, Function&lt;Throwable, T&gt; exceptionHandle) {
+    return CompletableFuture.supplyAsync(logic, executorService).exceptionally(exceptionHandle);
+}</code></pre> 
+ <p style="">利用上面这块封装的代码，完全适用于我在公司的大部分并行业务场景，也确实提升了我Pod节点的CPU利用率。</p> 
+ <p style="">不过之后有个问题就坑了，你调用外部API的时候，偶尔会失败，那么失败就要重试，这个时候我就需要正确的判断异常并进行重试操作。</p> 
+ <h4 style="text-align:left;">先定义个业务异常类</h4> 
+ <pre class="kdocs-java"><code class="language-java">public static class BizApiException extends RuntimeException {
+    public BizApiException() {
+    }
+
+    public BizApiException(String message) {
+        super(message);
+    }
+}</code></pre> 
+ <h4 style="text-align:left;">示例代码</h4> 
+ <blockquote class="kdocs-blockquote" style="text-align:left;">
+   下面的代码只是模拟我在业务端的场景，大家乐呵乐呵就行。 
+ </blockquote> 
+ <pre class="kdocs-java"><code class="language-java">public static void main(String[] args) {
+    CompletableFutureDemo f = new CompletableFutureDemo();
+    List&lt;Integer&gt; numList = f.parallelFutureJoin(Arrays.asList(1, 2, 3), num -&gt; {
+        //模拟API调用
+        try {
+            Thread.sleep(1000);
+        } catch (InterruptedException e) {
+            //...
+        }
+        if (num &gt; 2) {
+            throw new BizApiException("心别太大");
+        }
+        return num;
+    }, (e, num) -&gt; {
+        //异常向你打开了大门
+        if (e instanceof BizApiException) {
+            System.out.println("业务异常，我在处理数字：" + num + "，异常原因：" + e);
+            return -1;
+        }
+        System.out.println("我异常了，老六，我刚才在处理数字：" + num + "，异常原因：" + e);
+        return -1;
+    });
+    System.out.println(numList);
+}</code></pre> 
+ <blockquote class="kdocs-blockquote" style="text-align:left;">
+   注意：我本来想通过返回的Exception判断是不是BizApiException业务异常的，可惜的是这里的异常类型永远都不会是BizApiException，我输出下内容到控制台，就懂了！ 
+ </blockquote> 
+ <h5 style="text-align:left;">执行代码后，我得到的控制台内容</h5> 
+ <blockquote class="kdocs-blockquote" style="text-align:left;">
+   这个时候其实可以看到拿到的真实异常类型了，一个名为 
+  <span class="kdocs-bold" style="font-weight:bold;">java.util.concurrent.CompletionException</span>的老六出现了。我看看它是个啥！ 
+ </blockquote> 
+ <pre class="kdocs-java"><code class="language-java">我异常了，老六，我刚才在处理数字：3，异常原因：java.util.concurrent.CompletionException: com.java.basic.CompletableFutureDemo$BizApiException: 心别太大
+[1, 2, -1]</code></pre> 
+ <h4 style="text-align:left;">CompletionException</h4> 
+ <blockquote class="kdocs-blockquote" style="text-align:left;">
+   这个类的注释说明了它的用途，简单理解是：它在完成结果或任务的过程中遇到错误或其他异常时会触发。那我懂了！任务异常之后它就会出现，然后还把我们自己的异常给包起来了！ 
+ </blockquote> 
+ <h5 style="text-align:left;">JDK源代码</h5> 
+ <pre class="kdocs-java"><code class="language-java">/**
+ * Exception thrown when an error or other exception is encountered
+ * in the course of completing a result or task.
+ *
+ * @since 1.8
+ * @author Doug Lea
+ */
+public class CompletionException extends RuntimeException {}</code></pre> 
+ <p style="">其实还有个异常类，我们也需要关注，它告诉了我们，真实的异常在哪里了！</p> 
+ <h4 style="text-align:left;">ExecutionException</h4> 
+ <blockquote class="kdocs-blockquote" style="text-align:left;">
+   这个类的注释就说的很清楚了，自己的异常都在getCause()中了，那就好办了. 
+ </blockquote> 
+ <pre class="kdocs-java"><code class="language-java">/**
+ * Exception thrown when attempting to retrieve the result of a task
+ * that aborted by throwing an exception. This exception can be
+ * inspected using the {@link #getCause()} method.
+ *
+ * @see Future
+ * @since 1.5
+ * @author Doug Lea
+ */
+public class ExecutionException extends Exception {}</code></pre> 
+ <h4 style="text-align:left;">改造我的并发工具类（完整版）</h4> 
+ <blockquote class="kdocs-blockquote" style="text-align:left;">
+   方法extractRealException就是我要获取的真实异常，同时parallelFutureJoin方法中引用一下，这个工具类就解决了需求。 
+ </blockquote> 
+ <pre class="kdocs-java"><code class="language-java">/**
+ * 创建并行任务并执行
+ *
+ * @param list            数据源
+ * @param api             API调用逻辑
+ * @param exceptionHandle 异常处理逻辑
+ * @param &lt;S&gt;             数据源类型
+ * @param &lt;T&gt;             程序返回类型
+ * @return 处理结果列表
+ */
+public &lt;S, T&gt; List&lt;T&gt; parallelFutureJoin(Collection&lt;S&gt; list, Function&lt;S, T&gt; api, BiFunction&lt;Throwable, S, T&gt; exceptionHandle) {
+    //规整所有任务
+    List&lt;CompletableFuture&lt;T&gt;&gt; collectFuture = list.stream()
+            .map(s -&gt; this.createFuture(() -&gt; api.apply(s), e -&gt; exceptionHandle.apply(
+this.extractRealException(e), s)))
+            .toList();
+    //汇总所有任务，并执行join，全部执行完成后，统一返回
+    return CompletableFuture.allOf(collectFuture.toArray(new CompletableFuture&lt;?&gt;[]{}))
+            .thenApply(f -&gt; collectFuture.stream()
+                    .map(CompletableFuture::join)
+                    .filter(Objects::nonNull)
+                    .collect(Collectors.toList()))
+            .join();
+}
+
+/**
+ * 创建CompletableFuture任务
+ *
+ * @param logic           任务逻辑
+ * @param exceptionHandle 异常处理
+ * @param &lt;T&gt;             类型
+ * @return 任务
+ */
+public &lt;T&gt; CompletableFuture&lt;T&gt; createFuture(Supplier&lt;T&gt; logic, Function&lt;Throwable, T&gt; exceptionHandle) {
+    return CompletableFuture.supplyAsync(logic, executorService).exceptionally(exceptionHandle);
+}
+
+/**
+ * 提取真正的异常
+ * &lt;p&gt;
+ * CompletableFuture抛出的往往不是真正的异常
+ *
+ * @param throwable 异常
+ * @return 真正的异常
+ */
+public Throwable extractRealException(Throwable throwable) {
+    if (throwable instanceof CompletionException || throwable instanceof ExecutionException) {
+        if (throwable.getCause() != null) {
+            return throwable.getCause();
+        }
+    }
+    return throwable;
+}</code></pre> 
+ <p style="">当然，这还只是个简易版的并行任务工具类，还有更多的可能，大家需要自己去探索了！</p> 
+ <h4 style="text-align:left;">参考文献</h4> 
+ <ul><li style="margin-left:1.4em;list-style-type:disc;text-indent:0;"><p><a class="kdocs-link" style="color:#0A6CFF;" href="https://docs.oracle.com/javase/8/docs/api/index.html" rel="nofollow noopener noreferrer" target="_blank">https://docs.oracle.com/javase/8/docs/api/index.html</a></p></li></ul> 
+</div>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/5381c3a942e44cc98adb407dcee0305e/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">C&#43;&#43;实现的二叉树创建和遍历，超入门邻家小女也懂了</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/ae52a0cfd9d462d1da1bdc3cd98d8a10/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">记录一次关于关闭DHCP服务器没网的修复过程</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

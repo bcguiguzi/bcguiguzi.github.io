@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>audio之mclk异常分析以及通道映射 - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="audio之mclk异常分析以及通道映射" />
+<meta property="og:description" content="1.mclk异常分析
+（以调试tlv320aic为例）当录音失败时，需要测量下i2s的信号，包括sclk，lrck，sdi以及mclk；常遇到mclk异常，也就是示波器测量到其频率的波形不稳定，频率大小对不上，电压和幅值也不对，例如下图所示：
+设备树上看到的频率为12288000，但实际测量为2.8M；那么在dts中配置上assigned-clock-rates = &lt;12288000&gt;；然后检查下TLV320aic驱动里面，在开启录音的时候，是否有调用到clk_prepare_enable(mclk); 有些codec驱动没有这个clk_prepare_enable，那就自己添加上去验证；驱动修改如下在aic31xx_codec_probe添加：dts和驱动修改后，编译升级固件，此时mclk的波形幅值都是正确的，并且能测量到是12.28MHz，波形也是稳定的
+2.mclk没有信号输出
+录音时，mclk没有信号输出；首先要确保mclk的引脚是复用正确的，可以通过该指令去查看cat /sys/kernel/debug/pinctrl/pinctrl-rockchip-pinctrl/pinmux-pins；下图可见是正常的，那么mclk这个引脚当作普通的gpio是否可以正常的拉高拉低，如果不行的话，那就是硬件上的问题了。
+当mclk的复用，电压之类的都正常，那么录音的时候还是没有波形信号输出，只能再去检查下dts的clock配置；
+clocks = &lt;&amp;cru I2S3_MCLKOUT&gt;; clock-names = &#34;mclk&#34;; assigned-clocks = &lt;&amp;cru I2S3_MCLKOUT&gt;, &lt;&amp;cru I2S3_MCLK_IOE&gt;; assigned-clock-rates = &lt;12288000&gt;; assigned-clock-parents = &lt;&amp;cru I2S3_MCLKOUT_TX&gt;, &lt;&amp;cru I2S3_MCLKOUT&gt;; #####该问题，mclk没有出来，主要是assigned-clock-parents当时配置为&lt;&amp;cru I2S3_MCLKOUT_TX&gt;， 少了一个 &lt;&amp;cru I2S3_MCLKOUT&gt;； 在驱动代码中可以看到，i2s3有两个clock-parent，如下，代码中找到关键词“CLK_SET_RATE_PARENT”，其对应的有两个 即I2S3_MCLKOUT_TX，I2S3_MCLKOUT； 而assigned-clocks就查找关键字“MUXGRF&#34;，其对应了I2S3_MCLKOUT和I2S3_MCLK_IOE；
+3.通道引脚的映射
+例如一个i2s下面挂载着2个tlv320aic芯片，使用SDO1和SDO2输出，那么此时需要进行通道映射，在i2s的节点下面添加配置rockchip,i2s-tx-route = &lt;2 1 0 3&gt;； 其实是&lt;SDO0 SDO1 SDO2 SDO3&gt;这样的顺序排列， 也就是说把SDO0这个寄存器写入2，也就是使能了path2（56通道），SDO1写入了1，使能了path1（34通道），SDO2写入了0，使能了path0（12通道），SDO3写入了3，使能了path3（78通道）；由于一个SDO是2通道，所以需要4通道的音源去播放才行。" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/468775dee68f955c98f7ee3a33095f92/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-09-28T17:21:42+08:00" />
+<meta property="article:modified_time" content="2023-09-28T17:21:42+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">audio之mclk异常分析以及通道映射</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p><strong>1.mclk异常分析</strong></p> 
+<p>        （以调试tlv320aic为例）当录音失败时，需要测量下i2s的信号，包括sclk，lrck，sdi以及mclk；常遇到mclk异常，也就是示波器测量到其频率的波形不稳定，频率大小对不上，电压和幅值也不对，例如下图所示：</p> 
+<p><img alt="" src="https://images2.imgbox.com/f7/9c/tPhTjUea_o.png"></p> 
+<p>        设备树上看到的频率为12288000，但实际测量为2.8M；那么在dts中配置上assigned-clock-rates = &lt;12288000&gt;；然后检查下TLV320aic驱动里面，在开启录音的时候，是否有调用到clk_prepare_enable(mclk); 有些codec驱动没有这个clk_prepare_enable，那就自己添加上去验证；驱动修改如下在aic31xx_codec_probe添加：dts和驱动修改后，编译升级固件，此时mclk的波形幅值都是正确的，并且能测量到是12.28MHz，波形也是稳定的</p> 
+<p style="text-align:center;"><img alt="" class="left" src="https://images2.imgbox.com/d5/d3/wadMID9x_o.png"></p> 
+<p><strong>2.mclk没有信号输出</strong></p> 
+<p>        录音时，mclk没有信号输出；首先要确保mclk的引脚是复用正确的，可以通过该指令去查看cat /sys/kernel/debug/pinctrl/pinctrl-rockchip-pinctrl/pinmux-pins；下图可见是正常的，那么mclk这个引脚当作普通的gpio是否可以正常的拉高拉低，如果不行的话，那就是硬件上的问题了。</p> 
+<p style="text-align:center;"><img alt="" src="https://images2.imgbox.com/eb/0b/Qe6MmEg4_o.png"></p> 
+<p>        当mclk的复用，电压之类的都正常，那么录音的时候还是没有波形信号输出，只能再去检查下dts的clock配置；</p> 
+<pre><code class="language-cpp">        clocks = &lt;&amp;cru I2S3_MCLKOUT&gt;; 
+        clock-names = "mclk";
+        assigned-clocks = &lt;&amp;cru I2S3_MCLKOUT&gt;, &lt;&amp;cru I2S3_MCLK_IOE&gt;;
+        assigned-clock-rates = &lt;12288000&gt;;
+        assigned-clock-parents = &lt;&amp;cru I2S3_MCLKOUT_TX&gt;, &lt;&amp;cru I2S3_MCLKOUT&gt;;     
+
+  #####该问题，mclk没有出来，主要是assigned-clock-parents当时配置为&lt;&amp;cru I2S3_MCLKOUT_TX&gt;，
+  少了一个 &lt;&amp;cru I2S3_MCLKOUT&gt;；</code></pre> 
+<p>        在驱动代码中可以看到，i2s3有两个clock-parent，如下，代码中找到关键词“CLK_SET_RATE_PARENT”，其对应的有两个 即I2S3_MCLKOUT_TX，I2S3_MCLKOUT； 而assigned-clocks就查找关键字“MUXGRF"，其对应了I2S3_MCLKOUT和I2S3_MCLK_IOE；</p> 
+<p style="text-align:center;"><img alt="" src="https://images2.imgbox.com/07/dd/VryL3BZP_o.png"></p> 
+<p><strong>3.通道引脚的映射</strong></p> 
+<p>        例如一个i2s下面挂载着2个tlv320aic芯片，使用SDO1和SDO2输出，那么此时需要进行通道映射，在i2s的节点下面添加配置rockchip,i2s-tx-route = &lt;2 1 0 3&gt;； 其实是&lt;SDO0 SDO1 SDO2 SDO3&gt;这样的顺序排列， 也就是说把SDO0这个寄存器写入2，也就是使能了path2（56通道），SDO1写入了1，使能了path1（34通道），SDO2写入了0，使能了path0（12通道），SDO3写入了3，使能了path3（78通道）；由于一个SDO是2通道，所以需要4通道的音源去播放才行。</p> 
+<p style="text-align:center;"><img alt="" src="https://images2.imgbox.com/63/12/Vf2LOXaS_o.png"></p> 
+<p></p> 
+<p></p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/156aaefbe1424b0fec2c0fc1db797aaa/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">服务器负载均衡配置——基于HTTPS流量的服务器负载均衡</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/effc1e2fc50029c72bca84454f5f2f43/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">基于树莓派实现的智能小车</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

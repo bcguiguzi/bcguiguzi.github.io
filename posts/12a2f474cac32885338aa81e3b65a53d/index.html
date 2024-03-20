@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>STP详解-STP、RSTP、MSTP - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="STP详解-STP、RSTP、MSTP" />
+<meta property="og:description" content="STP详解 冗余链路中存在的问题 如图所示LSW1和LSW2之间有两条线路相连，它们之间任何一条链路出现故障另外一条线路可以马上顶替出现故障的那条链路，这样可以很好的解决单链路故障引起的网络中断，但在此之前有下面三个问题需要考虑。
+广播风暴
+以太网交换机传送的第二层数据帧不像路由器传送的第三层数据包有TTL（Time To Live），如果有环路存在第二层帧不能被适当的终止，他们将在交换机之间永无止境的传递下去。结合交换机的工作原理，来看一下上面这张拓扑中广播风暴是如何形成的: 1、PC1发出一个广播帧（可能是一个ARP查询），LSW1收到这个广播帧，LSW1将这个广播帧从除接收端口的其他端口转发出去（即发往G0/0/2、G0/0/3、G0/0/4）。
+2、LSW2从自己的G0/0/1和G0/0/2都会收到SW1发过来的相同的广播帧，LSW2再将这个广播帧从除接收端口外的所有其他接口发送出去（LSW2将从G0/0/2接收的广播帧发往其他三个端口G0/0/1、G0/0/3、G0/0/4,从fa0/24接收到的也会发往其他三个端口G0/0/1、G0/0/3、G0/0/4）。
+3、这样这个广播帧又从G0/0/1以及G0/0/2传回了LSW1，LSW1再用相同的方法传回LSW2，除非物理线路被破坏，否则PC1-4将不停的接收到广播帧，最终造成网络的拥塞甚至瘫痪。
+MAC地址表不稳定
+广播风暴除了会产生大量的流量外，还会造成MAC地址表的不稳定，在广播风暴形成过程中:
+1、PC1发出的广播帧到达LSW1，LSW1将根据源MAC进行学习，LSW1将PC1的MAC和对应端口G0/0/1写入MAC缓存表中。
+2、LSW1将这个广播帧从除接收端口之外的其他端口转发出去，LSW2接收到两个来自LSW1的广播（从G0/0/1和G0/0/2），假设G0/0/2首先收到这个广播帧，LSW2根据源MAC进行学习，将PC1的MAC和接收端口G0/0/2存入自己的MAC缓存表，但是这时候又从G0/0/1收到了这个广播帧，LSW1将PC1的MAC和对应的G0/0/1接口存入自己的MAC缓存表。
+3、LSW2分别从自己的这两个接口再将这个广播帧发回给LSW1，这样PC1的MAC地址会不停的在两台交换机的G0/0/1和G0/0/2（G0/0/3、G0/0/4）之间波动，MAC地址缓存表也不断的被刷新，影响交换机的性能。
+重复帧拷贝
+冗余拓扑除了会带来广播风暴以及MAC地址的不稳定，还会造成重复的帧拷贝:
+1、假设PC1发送一个单播帧给PC3，这个单播帧到达LSW1，假设LSW1上还没有PC3的MAC地址，根据交换机的原理，对未知单播帧进行泛洪转发，即发往除接收端口外的所有其他端口(fa0/2、fa0/23、fa0/24)。
+2、LSW2分从自己的G0/0/1和G0/0/2接收到这个单播帧，LSW2知道PC3连接在自己的G0/0/4接口上，所以LSW1将这两个单播帧都转发给PC3。
+3、PC1只发送了一个单播帧，PC3却收到了两个单播帧，这会给某些网络环境比如流量统计带来不精确计算等问题。
+STP介绍 基于冗余链路中存在的这些问题STP被设计出来用来解决这些问题，下面介绍STP的工作原理。
+交换机上有默认的stp版本为mstp （多实例生成树）stp （生成树）rstp (快速生成树)
+1、工作原理 STP通过拥塞冗余路径上的一些端口，确保到达任何目标地址只有一条逻辑路径，STP借用交换BPDU（Bridge Protocol Data Unit，桥接数据单元）来阻止环路，BPDU中包含BID（Bridge ID，桥ID）用来识别是哪台计算机发出的BPDU。在STP运行的情况下，虽然逻辑上没有了环路，但是物理线上还是存在环路的，只是物理线路的一些端口被禁用以阻止环路的发生，如果正在使用的链路出现故障，STP重新计算，部分被禁用的端口重新启用来提供冗余
+STP使用STA（Spanning Tree Algorithm，生成树算法）来决定交换机上的哪些端口被堵塞用来阻止环路的发生，STA选择一台交换机作为根交换机，称作根桥（Root Bridge），以该交换机作为参考点计算所有路径。
+2、选举：根网桥、根端口、指定端口、非指定端口 1）根网桥（根交换机）—在一棵生成树实例中，有且仅有一台交换机为root
+选举：
+比较每台交换机的网桥id （优先级&#43;MAC地址） 越小越优先
+默认优先级：32768
+修改优先级的时候要改成4096的倍数
+[系统]stp mode stp 修改stp的模式
+Stp priority 4096 修改优先级
+2）根端口—在每台非根网桥上，有且仅有一个接口；本地离根网桥最近的接口（最短、星型），接收来自根网桥的BPDU，转发用户的流量（该接口不阻塞）
+选举：
+1 路径开销值：比较从根网桥发出后，通过该接口进入时最小的cost值；
+2 对端网桥id：入向cost值相同，比较该接口对端设备的BID，小优
+3 对端端口id：对端BID也相同，比较该接口对端设备的接口的PID
+4 本端端口id（hub）：小优
+端口ID 接口优先级（0-240，步长16，默认128）接口编号
+3）指定端口—在每一段存在STP的物理链路上，有且仅有一个；转发来自根网桥的BPDU，同时可以转发用户流量（不阻塞）；默认根网桥上所有接口为指定端口；
+选举：
+1 路径开销：比较从根网桥发出后，通过该接口进入这段链路时的cost值最小（出向）
+2 本端网桥id" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/12a2f474cac32885338aa81e3b65a53d/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2020-05-13T15:19:50+08:00" />
+<meta property="article:modified_time" content="2020-05-13T15:19:50+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">STP详解-STP、RSTP、MSTP</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <h3><a id="STP_0"></a>STP详解</h3> 
+<h5><a id="_2"></a>冗余链路中存在的问题</h5> 
+<p><img alt="4ubmV0L3dlaXhpbl80NDAyOTUwNA==,size_16,color_FFFFFF,t_70)" src="https://images2.imgbox.com/32/1b/EpA0W4br_o.png"><br> 如图所示LSW1和LSW2之间有两条线路相连，它们之间任何一条链路出现故障另外一条线路可以马上顶替出现故障的那条链路，这样可以很好的解决单链路故障引起的网络中断，但在此之前有下面三个问题需要考虑。</p> 
+<ul><li>广播风暴<br> 以太网交换机传送的第二层数据帧不像路由器传送的第三层数据包有TTL（Time To Live），如果有环路存在第二层帧不能被适当的终止，他们将在交换机之间永无止境的传递下去。结合交换机的工作原理，来看一下上面这张拓扑中广播风暴是如何形成的:</li></ul> 
+<p>1、PC1发出一个广播帧（可能是一个ARP查询），LSW1收到这个广播帧，LSW1将这个广播帧从除接收端口的其他端口转发出去（即发往G0/0/2、G0/0/3、G0/0/4）。<br> 2、LSW2从自己的G0/0/1和G0/0/2都会收到SW1发过来的相同的广播帧，LSW2再将这个广播帧从除接收端口外的所有其他接口发送出去（LSW2将从G0/0/2接收的广播帧发往其他三个端口G0/0/1、G0/0/3、G0/0/4,从fa0/24接收到的也会发往其他三个端口G0/0/1、G0/0/3、G0/0/4）。<br> 3、这样这个广播帧又从G0/0/1以及G0/0/2传回了LSW1，LSW1再用相同的方法传回LSW2，除非物理线路被破坏，否则PC1-4将不停的接收到广播帧，最终造成网络的拥塞甚至瘫痪。</p> 
+<ul><li> <p>MAC地址表不稳定<br> 广播风暴除了会产生大量的流量外，还会造成MAC地址表的不稳定，在广播风暴形成过程中:<br> 1、PC1发出的广播帧到达LSW1，LSW1将根据源MAC进行学习，LSW1将PC1的MAC和对应端口G0/0/1写入MAC缓存表中。<br> 2、LSW1将这个广播帧从除接收端口之外的其他端口转发出去，LSW2接收到两个来自LSW1的广播（从G0/0/1和G0/0/2），假设G0/0/2首先收到这个广播帧，LSW2根据源MAC进行学习，将PC1的MAC和接收端口G0/0/2存入自己的MAC缓存表，但是这时候又从G0/0/1收到了这个广播帧，LSW1将PC1的MAC和对应的G0/0/1接口存入自己的MAC缓存表。<br> 3、LSW2分别从自己的这两个接口再将这个广播帧发回给LSW1，这样PC1的MAC地址会不停的在两台交换机的G0/0/1和G0/0/2（G0/0/3、G0/0/4）之间波动，MAC地址缓存表也不断的被刷新，影响交换机的性能。</p> </li><li> <p>重复帧拷贝<br> 冗余拓扑除了会带来广播风暴以及MAC地址的不稳定，还会造成重复的帧拷贝:</p> </li></ul> 
+<p>1、假设PC1发送一个单播帧给PC3，这个单播帧到达LSW1，假设LSW1上还没有PC3的MAC地址，根据交换机的原理，对未知单播帧进行泛洪转发，即发往除接收端口外的所有其他端口(fa0/2、fa0/23、fa0/24)。<br> 2、LSW2分从自己的G0/0/1和G0/0/2接收到这个单播帧，LSW2知道PC3连接在自己的G0/0/4接口上，所以LSW1将这两个单播帧都转发给PC3。<br> 3、PC1只发送了一个单播帧，PC3却收到了两个单播帧，这会给某些网络环境比如流量统计带来不精确计算等问题。</p> 
+<h5><a id="STP_26"></a>STP介绍</h5> 
+<p>基于冗余链路中存在的这些问题STP被设计出来用来解决这些问题，下面介绍STP的工作原理。</p> 
+<p>交换机上有默认的stp版本为mstp （多实例生成树）stp （生成树）rstp (快速生成树)</p> 
+<h6><a id="1_31"></a>1、工作原理</h6> 
+<p>STP通过拥塞冗余路径上的一些端口，确保到达任何目标地址只有一条逻辑路径，STP借用交换BPDU（Bridge Protocol Data Unit，桥接数据单元）来阻止环路，BPDU中包含BID（Bridge ID，桥ID）用来识别是哪台计算机发出的BPDU。在STP运行的情况下，虽然逻辑上没有了环路，但是物理线上还是存在环路的，只是物理线路的一些端口被禁用以阻止环路的发生，如果正在使用的链路出现故障，STP重新计算，部分被禁用的端口重新启用来提供冗余</p> 
+<p>STP使用STA（Spanning Tree Algorithm，生成树算法）来决定交换机上的哪些端口被堵塞用来阻止环路的发生，STA选择一台交换机作为根交换机，称作根桥（Root Bridge），以该交换机作为参考点计算所有路径。</p> 
+<h6><a id="2_36"></a>2、选举：根网桥、根端口、指定端口、非指定端口</h6> 
+<p>1）根网桥（根交换机）—在一棵生成树实例中，有且仅有一台交换机为root<br> 选举：<br> 比较每台交换机的网桥id （优先级+MAC地址） 越小越优先<br> 默认优先级：32768<br> 修改优先级的时候要改成4096的倍数<br> [系统]stp mode stp 修改stp的模式<br> Stp priority 4096 修改优先级</p> 
+<p>2）根端口—在每台非根网桥上，有且仅有一个接口；本地离根网桥最近的接口（最短、星型），接收来自根网桥的BPDU，转发用户的流量（该接口不阻塞）<br> 选举：<br> 1 路径开销值：比较从根网桥发出后，通过该接口进入时最小的cost值；<br> 2 对端网桥id：入向cost值相同，比较该接口对端设备的BID，小优<br> 3 对端端口id：对端BID也相同，比较该接口对端设备的接口的PID<br> 4 本端端口id（hub）：小优<br> 端口ID 接口优先级（0-240，步长16，默认128）接口编号</p> 
+<p>3）指定端口—在每一段存在STP的物理链路上，有且仅有一个；转发来自根网桥的BPDU，同时可以转发用户流量（不阻塞）；默认根网桥上所有接口为指定端口；<br> 选举：<br> 1 路径开销：比较从根网桥发出后，通过该接口进入这段链路时的cost值最小（出向）<br> 2 本端网桥id<br> 3 本端端口id （端口优先级和端口编号）端口优先级默认是128 接口编号<br> 4 本地端口id，相同，直接阻塞该端口；</p> 
+<p>4）非指定端口— 剩下的端口就叫做阻塞端口 该接口逻辑阻塞，实际可以接收到信息，但不转发；</p> 
+<h6><a id="3STP_63"></a>3、STP中的报文交互</h6> 
+<p>BPDU 桥协议数据单元</p> 
+<p>两种BPDU：<br> 1 配置BPDU<br> 作用：用于角色（端口）选举<br> 维护网络拓扑 2秒1次 最多20秒 20秒没有根的回应，则认为根down掉</p> 
+<p>只有根网桥可以发送，在交换网络初始状态时，所有交换机均定义本地为根网桥，进行BPDU的发送；使得网络所有交换机均收到其他设备的BPDU，之后基于数据中的参数进行比对，选举出根网桥；再所有非根网桥不再发送BPDU，而是仅接收和转发根网桥的BPDU；周期2s发送，hold time 20s；</p> 
+<p>2 TCN BPDU—拓扑变化bpdu<br> 作用：当拓扑发生变化时，会发tcn bpdu</p> 
+<p>本地交换机链路故障后，STP重新收敛，为了快速刷新全网所有交换机的MAC表，将向本地所有STP接口发送TCN（标记位中的TCN位置1），邻居交换机收到TCN后，先标记为ACK位为回复，用于可靠传输消息；之后将TCN逐级转发到根网桥处，由根网桥回复TC消息来逐级回复到所有交换机；使所有交换机临时将MAC表的老换时间修改为15s（默认的，转发延时）<br> <img alt="在这里插入图片描述" src="https://images2.imgbox.com/4e/9d/8c6uUpy5_o.png"></p> 
+<h6><a id="4BPDU_78"></a>4、BPDU字段</h6> 
+<p><img alt="在这里插入图片描述" src="https://images2.imgbox.com/b5/31/jTVMXmXo_o.png"><br> 1 BPDU Flags 标识字段<br> Tca位 拓扑变化确认位<br> Tc位 拓扑变化位<br> 发生变化时置1<br> 2 root identifier 根网桥id （Root ID）<br> 3 cost of path 到达根的开销值<br> 4 Bridge ID 本交换机的网桥ID<br> 5 Port ID 端口ID<br> 0x8001 前面的80 代表优先级128 ， 01代表端口号<br> 6 message age 消息寿命 每经过一台交换机 message age+1<br> 7 max age 最大寿命 20秒<br> 8 hello time 2秒<br> 9 forward delay 转发延迟15秒</p> 
+<p>BPDU的时间有三种，Hello Time、Max Age、Forward Delay:</p> 
+<ol><li>Hello时间控制了发送配置BPDU的时间间隔，默认2秒。这是根交换机生成BPDU并向非根交换机发送的间隔。</li><li>非根交换机接收到根交换机发送来的BPDU，再从除接收端口以外的其他端口转发出去，如果在2-20秒里面由于网络故障没有新的BPDU从根交换机发送过来，非根交换机将停止向外发送从根交换机接收到的BPDU。如果这种情况持续20秒，也就是最大存活期，非根交换机就使原储存的BPDU无效，并开始寻找新的根端口。所谓最大存活期就是非根交换机丢弃BPDU前用来备份储存它的时间。</li><li>转发延时是交换机在侦听状态到学习状态所花的时间，默认是15秒。</li></ol> 
+<h6><a id="5_99"></a>5、端口的状态变化</h6> 
+<p>1 disable 开启stp时 特点：不进行stp计算<br> 2 blocking 阻塞端口直接进入blocking 状态<br> 3 listening 非阻塞端口才进入侦听状态 特点：加速mac地址表老化<br> 所有交换机进行BPDU收发，选举所有角色；接口角色为非指定端口直接进入阻塞状态；若为指定端口和根端口进入下一状态；<br> 中间有15秒的间隔时间，目的是为了加速mac地址表老化，mac地址表老化时间300秒<br> 4 learning 学习状态<br> 指定端口和根端口学习所有接口连接设备的MAC地址，生成MAC表；之后进入下一状态<br> 中间有相隔15秒的时间，加速mac地址表的学习<br> 5 forwarding 转发状态</p> 
+<p>注：只有到接口进入到转发状态后，才能为用户转发数据报文，之前的30s不能转发任何 数据；</p> 
+<p>收敛时间：<br> 初次收敛—30s = 15侦听+15s学习</p> 
+<p><strong>结构变化：</strong><br> 1 存在直连检测：<br> 本地存在阻塞端口，若其他端口断开，该阻塞端口马上进入15是侦听（选举）；结果若为启用，那么将再进入15s学习—总30s</p> 
+<p>当阻塞端口感觉到拓扑发生变化，发送tcn BPDU<br> 对端会回复一条tca=1拓扑变化确认<br> 当交换机收到根交换机范洪的网络变化tc=1的配置BPDU才能老化原来的路径，学习新的路径</p> 
+<p>2 没有直连检测：<br> 本地不存在阻塞端口，若某个端口断开，将发送次优BPDU（以本地为根）给其他邻居交换机，其他交换机无视该数据，进行20s hold time计时，到时时阻塞接口进入15s侦听，15s学习=总50s</p> 
+<p>由于线路故障，Sw2 20s后老化了源路径，认为自己是根，向sw3发送bpdu，sw3收到两条bpdu，因此会检测到链路变化，由于链接s1的路径最优，所以向s1发送tcnBPDU，s1回复一条tc=1的配置bpdu，交换机将原来的路径老化，并学习新的路径</p> 
+<h6><a id="6STP_129"></a>6、STP的缺点</h6> 
+<p>1 收敛慢<br> learning到forwarding需要15s学习mac地址 <br> Listening到learning需要15s 加速老化时间 <br> 无论上述用了多少秒，最大等待时间总是15s <br> 发送tcnBPDU的时间过长<br> 2 链路利用率低</p> 
+<h5><a id="RSTP__137"></a>RSTP 快速生成树</h5> 
+<p><img alt="在这里插入图片描述" src="https://images2.imgbox.com/05/8b/Tw2FbgE7_o.png"><br> 备份端口只在华为中提出<br> 备份端口备份成为指定端口<br> 预备端口将来预备成为根端口<br> 预备端口和备份端口的相同点，正常情况下都不进行数据转发</p> 
+<p>RSTP中端口状态变成了三种，将stp状态前三种合成一种，因为不学习mac也不转发数据<br> 三种状态：</p> 
+<ol><li>discarding 不学习mac也不转发数据</li><li>learning 不转发数据但是学习mac</li><li>forwarding 即学习mac也转发数据</li></ol> 
+<p>BPDU stp和rstp的区别： <br> stp： 配置BPDU TCN BPDU<br> rstp：RST BPDU（快速生成树bpdu）</p> 
+<p>标志位</p> 
+<ol><li>Tca 位（topology change acknowledgement） 拓扑变化确认位</li><li>同意位（agreement）</li><li>转发位（Forwarding）</li><li>学习状态（learning ） 中间有相隔15秒的时间，加速mac地址表的学习</li><li>端口角色（port role）端口角色是11，证明这个端口是指定端口，如果是10则代表是根端口，01代表预备端口或者备份端口，00代表保留</li><li>提议位（proposal）</li><li>拓扑变化位（topology change）</li></ol> 
+<p>RSTP快速生成树：<br> 收敛速度快：</p> 
+<ol><li>边缘端口：连接终端设备的端口 <br> 优点：不会进行端口角色计算，直接变成forwarding状态<br> 配置边缘端口<br> Interface g0/0/3<br> Stp edged-port enable</li><li>P/A机制 提议/同意机制<br> 前提条件：点到点链路（全双工链路）交换机先发送一个RST BPDU给根，根收到后作比较，将自己的发给交换机，交换机发现网桥id比自己小比自己优先，就会发一个同意位给根交换机，根交换机上的接口变为指定接口，并直接变为forwarding状态</li></ol> 
+<p>Sw3当网络发生变化，马上启动一个 TC while 计时器：2倍的hellp时间，直接发送tcBPDU 给s2，四秒内，老化原来的mac地址，形成新的地址，s2收到后重复上述动作直到发给根交换机。</p> 
+<h5><a id="MSTP_175"></a>MSTP多实例生成树</h5> 
+<p>多个rstp的集合就是mstp<br> Instance 实例：rstp</p> 
+<p>单个实例树的弊端：</p> 
+<ol><li>一部分vlan路径不同</li><li>无法使用流量分担</li><li>会产生次优的二层路径</li></ol> 
+<p><img alt="在这里插入图片描述" src="https://images2.imgbox.com/e7/1f/CeQTMwSU_o.png"><br> 建立两棵树，pc1发数据时，lsw4是根，pc2发数据时，lsw5是根从而解决单个实例树的弊端</p> 
+<p>配置步骤</p> 
+<ol><li>创建vlan基本操作</li><li>修改stp版本</li><li>Stp region-configuration 创建域的范围</li><li>Region-name Huawei 域的名字</li><li>Revision-level 1（保证都相同）</li><li>Instance 1 vlan 10</li><li>Instance 2 vlan 20</li><li>Active region-configuration激活mstp的配置</li><li>每台交换机上都要配置</li><li>只要修改就要重新激活</li><li>设置实例的根Stp instance 1 root primary/secondary（主根/备份根）</li></ol> 
+<p>默认交换机上有实例0<br> Mstp和arrp做联动时，mstp的主根一定是arrp的主</p> 
+<p>当网络中有mstp，stp rstp时，最后会以stp运行，他们的模式依旧是mstp和rstp，但是发的bpdu报文是stp</p> 
+<p>当mstp的交换机和stp的交换机相连时，发送的是stp的报文，当stp迁移走了，换了一个mstp的交换机时，不会自动回到mstp<br> 【swb】stp mcheck手动迁移回mstp</p> 
+<p>配置mstp最大跳数<br> 默认最大跳数20跳<br> Stu max-hops 30 修改最大跳数</p> 
+<p><strong>四个保护</strong></p> 
+<ol><li>边缘端口保护（BPDU保护）<br> 为什么会有BPDU保护-----从边缘端口收到bpdu，会直接将边缘端口阻塞掉</li></ol> 
+<p>【系统】Stp bpdu-protection（stp，bpdu保护开启）</p> 
+<ol start="2"><li> <p>指定端口保护（根的保护）<br> 从指定接口收到一个优先级比指定端口还低的端口pbdu，则交换机进入阻塞状态，保护自己永远为根<br> 【指定接口】Stp root-portection 在指定端口下开启根的保护</p> </li><li> <p>环路保护<br> 三个交换机之间使用光钎连接，由于光纤是由两条线路构成，一条收一条发，一旦收的根端口down掉，发的线路没有问题，此时阻塞端口启用，会形成环路。<br> <img alt="在这里插入图片描述" src="https://images2.imgbox.com/e0/14/7ByY73kh_o.png"><br> 解决方法，长时间收不到bpdu ，就把该端口阻塞掉</p> </li><li> <p>TC-BPDU保护 TC<br> 如果恶意用户一直发送tc-bpdu，那么链路中的路径就会一直老化，此时设置一个阈值，超过上限就会丢弃该bpdu<br> 默认接受tc上限为1<br> 修改命令：stp tc-portection threshold 2</p> </li></ol>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/7097c188dd492227ebed9ea2ae90f3b0/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">Elements in iteration expect to have &#39;v-bind:key&#39; directives. - Vue</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/17b57078568832c3b5b9ce280d96eedb/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">计算机网络【3】网络层</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

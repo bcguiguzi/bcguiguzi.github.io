@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>以太坊 EVM内交易执行分析（二） - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="以太坊 EVM内交易执行分析（二）" />
+<meta property="og:description" content="接着上次的分析，分析一下run方法是如何执行智能合约的。至于以太币的交易，在上一篇中，已经由分析的那两个函数完成了；
+合约的运行是从run开始的，go-ethereum/core/vm/evm.go 。可以分为两部分一部分是预编译，另外一部分是解释器。
+预编译合约
+// run runs the given contract and takes care of running precompiles with a fallback to the byte code interpreter. func run(evm *EVM, contract *Contract, input []byte) ([]byte, error) { if contract.CodeAddr != nil { precompiles := PrecompiledContractsHomestead if evm.ChainConfig().IsByzantium(evm.BlockNumber) { precompiles = PrecompiledContractsByzantium } if p := precompiles[*contract.CodeAddr]; p != nil { return RunPrecompiledContract(p, input, contract) } } return evm.interpreter.Run(contract, input) } 在以太坊中，go-ethereum/core/vm/contracts.go，事先编译好了一组合约，具体如下：
+var PrecompiledContractsByzantium = map[common." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/792123cc61e8b789f5236475e7eb81c8/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2024-03-06T16:50:45+08:00" />
+<meta property="article:modified_time" content="2024-03-06T16:50:45+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">以太坊 EVM内交易执行分析（二）</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p>     接着上次的分析，分析一下run方法是如何执行智能合约的。至于以太币的交易，在上一篇中，已经由分析的那两个函数完成了；</p> 
+<p>     合约的运行是从run开始的，go-ethereum/core/vm/<strong>evm.go</strong> 。可以分为两部分一部分是预编译，另外一部分是解释器。</p> 
+<p> <strong>   预编译合约</strong></p> 
+<pre class="has"><code>// run runs the given contract and takes care of running precompiles with a fallback to the byte code interpreter.
+func run(evm *EVM, contract *Contract, input []byte) ([]byte, error) {
+	if contract.CodeAddr != nil {
+		precompiles := PrecompiledContractsHomestead
+		if evm.ChainConfig().IsByzantium(evm.BlockNumber) {
+			precompiles = PrecompiledContractsByzantium
+		}
+		if p := precompiles[*contract.CodeAddr]; p != nil {
+			return RunPrecompiledContract(p, input, contract)
+		}
+	}
+	return evm.interpreter.Run(contract, input)
+}</code></pre> 
+<p>     在以太坊中，go-ethereum/core/vm/<strong>contracts.go，</strong>事先编译好了一组合约，具体如下：</p> 
+<pre class="has"><code>var PrecompiledContractsByzantium = map[common.Address]PrecompiledContract{
+	common.BytesToAddress([]byte{1}): &amp;ecrecover{},
+	common.BytesToAddress([]byte{2}): &amp;sha256hash{},
+	common.BytesToAddress([]byte{3}): &amp;ripemd160hash{},
+	common.BytesToAddress([]byte{4}): &amp;dataCopy{},
+	common.BytesToAddress([]byte{5}): &amp;bigModExp{},
+	common.BytesToAddress([]byte{6}): &amp;bn256Add{},
+	common.BytesToAddress([]byte{7}): &amp;bn256ScalarMul{},
+	common.BytesToAddress([]byte{8}): &amp;bn256Pairing{},
+}</code></pre> 
+<p>    如果要执行的contract恰好属于预编译的合约集合，那么它就可以直接运行；由于预编译的合约内容是固化在以太坊中的，所以我们输入参数即可（input），不需要输入合约内容（code）。</p> 
+<pre class="has"><code>type PrecompiledContract interface {
+	RequiredGas(input []byte) uint64  // RequiredPrice calculates the contract gas use
+	Run(input []byte) ([]byte, error) // Run runs the precompiled contract
+}</code></pre> 
+<p>    每个预编译的合约都有两个方法，第一个是计算需要花费gas，第二个是合约的具体实现。如果是基于evm开发的公链，我们完全可以自己开发出更多的预编译合约，这样运行速度会增加很多。</p> 
+<p><strong>解释器</strong></p> 
+<p>    不属于预编译的contract，则由Interpreter解释执行。 这里 我们需要看一下上一篇文章中的<a href="https://blog.csdn.net/xq723310/article/details/82879435" title="EVM框架图">EVM框架图</a>。</p> 
+<p>    EVMInterpreter中存在一个config结构体，其中包含一个JumpTable数组，这个数组包含了256个operation对象；每个operation对象是一个指令，指令由四个函数组成——execute、gascost、validatestack、memory size；而operation执行时，会用到stack、memory，statedb。</p> 
+<p>    execute：指令执行函数</p> 
+<p>    gascost：gas计算</p> 
+<p>    validatestack：栈深度检测</p> 
+<p>    memorysize：内存消耗</p> 
+<p>    contract则是智能合约对象，其中code则是合约代码，不过是已经转化为指令的代码，</p> 
+<p><img alt="" class="has" height="693" src="https://images2.imgbox.com/b7/95/klghRbfQ_o.png" width="982"></p> 
+<p>     从上图我可以看到，解释器的run（）函数执行过程很简单；就是contract的code中的指令，依次通过jumptable找到对应operation；然后由opertation中四个函数实现指令的执行。</p> 
+<p>           <img alt="" class="has" height="574" src="https://images2.imgbox.com/dc/f2/xrPjNJjG_o.png" width="764"></p> 
+<p>      这是run（）函数的主流程；由栈（stack）负责保存操作数，所有的操作都是运行在栈上的；内存（memory）数据结构是一个byte数组，用于一些内存操作（MLOAD,MSTORE,MSTORE8）及合约调用的参数拷贝（CALL，CALLCODE）。</p> 
+<p>     每个节点都有一个EVM，为了严重交易，每一笔交易都会在每个节点的EVM都会运行一遍，很明显这样会造成计算资源的浪费。而从安全性的方面考虑，在一个区块链系统中，一但系统中节点的状态出现不同的状态，各个节点的EVM运行智能合约时，会出现错误，导致系统无法到达一致，达成共识；这就要求整个系统必须再次达成一致性。</p> 
+<p></p> 
+<p></p> 
+<p></p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/425d7966304d3c490666c02103b64ce8/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">SOC设计：关于时钟门控的细节</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/905c272aef79428558a679bb3a0c347a/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">SOC设计：关于reset的细节</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

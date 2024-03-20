@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Mysql 行锁（记录锁、间隙锁、临键锁）研究，基于InnoDB - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="Mysql 行锁（记录锁、间隙锁、临键锁）研究，基于InnoDB" />
+<meta property="og:description" content="行锁简介
+通过上一章可以了解到，InnoDB下行锁可细分为记录锁（Record Lock）、间隙锁（Gap Lock)、临键锁（Next_Key Lock），是基于索引实现的，其本质上是三种加锁算法。ps：若不声明，默认采用RR隔离级别。
+注：有些把记录锁理解为行锁，RL，GL，NKL属于同一级别，都是排他锁的一种。 记录锁：锁精确加在某一行上。
+间隙锁：锁加在不存在的空闲空间，可以是两个索引记录之间，也可能是第一个索引记录之前（负无穷，first-key）或最后一个索引之后(last-key，正无穷）的无限空间，是一个双开空间。
+临键锁：间隙锁与记录锁与组合起来用就叫做Next-Key Lock，是一个左开右闭区间。
+利用Next-Key Lock可以阻止其它事务在锁定区间内插入数据，因此在一定程度上解决了幻读问题。
+eg:构建表test(id pk,num key)。
+idnum33557710714916102013 在该表中，针对键id：
+记录：3、5、7、10、14、16、20
+间隙：（负无穷,3）、（3,5）、(5,7)、… (16,20)、(20,正无穷)
+临键：（负无穷,3]、（3,5]、(5,7]、… (16,20]、(20,正无穷)
+在innodb的RR模式，innodb_locks_unsafe_for_binlog=0（即启用间隙锁算法）背景下：
+1）加锁的基本单位是 next-key lock，next-key lock 是前开后闭区间。
+2）查找过程中访问到的对象才会加锁。
+3）索引上的等值查询，给唯一索引加锁的时候，next-key lock 退化为行锁,比如id=7,只锁id=7。
+4）索引上的等值查询，给非唯一索引加锁的时候，当前next-key lock不变，向右遍历时且最后一个值不满足等值条件的时候，其next-key lock 退化为间隙锁,比如num=7,当前next-key lock（5,7],向右遍历得到的间隙锁（7,9）,最终锁定(5,9)。
+5）索引上的绝对范围查询(&gt;,&lt;)，给唯一索引加锁的时候，当前行不会加锁（比如id&gt;7,id=7这行不加锁，即临键锁（5,7]不生效），,最终锁定(7,正无穷)。
+6）索引上的绝对范围查询，给非唯一索引加锁的时候，next-key lock 退化为行锁（比如num&gt;7,即临键锁（5,7]退化为只锁num=7）,最终锁定[7,正无穷]。
+7）索引上的非绝对范围查询（&gt;=,&lt;=），将上面的等值和绝对范围查询综合起来即可。
+8）对于等值查询，记录不存在时,给唯一索引加锁的时候，next-key lock 退化为间隙锁，如id=18,最终锁定间隙（16,20）。
+9）对于等值查询，记录不存在时,给非唯一索引加锁的时候，next-key lock 退化为间隙锁。
+10）对于给非唯一索引加锁，边缘记录允许更新但不允许插入，如num=7，最终锁定(5,9)，此时可以更新num=5的行,但不能插入新的num=5的行。
+记录锁
+记录锁很好理解，一般要通过主键或唯一索引加锁，就可以较好的实现。
+select * from test where id=7 for update；//该句可以准确且只锁id=7这一行，注意id必须已存在，否则就变成间隙锁了 间隙锁
+间隙锁锁定的时一个开区间，而不是某个键，它是基于非唯一索引。需要注意的是用非唯一索引时，要explain下，确保sql走了索引（mysql查询优化器认为全表扫描比用索引更快时会锁表）。那么什么情况下出现间隙所呢？
+首先:InnoDB存储引擎，采用RR隔离级别，参数innodb_locks_unsafe_for_binlog=0（静态参数，默认为0，表示启动gap lock，如果设置为1，表示禁用gap lock，该参数最新版本已被弃用）。
+innodb默认使用了next-key lock算法，这种算法结合了record锁和gap锁。正因为这样的锁算法，innodb在可重复读这样的默认隔离级别上，可以避免幻读的产生。innodb_locks_unsafe_for_binlog最主要的作用就是控制innodb是否使用gap锁。
+1：唯一索引/主键&#43;范围查询
+锁住范围内的已存在的符合要求的行，还会加上范围内的gap，例子如下：
+select * from test where id between 6 and 16 for update；//该句锁id=7,10,14这三行， 还会锁id=8,9,11,12,13,15这几行， 此时另一个事务是插不进去id=8,9,11,12,13,15的数据的。 2：普通索引&#43;绝对范围（不存在等于的情况）查询" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/745fb52d744fa7845802ec581cd81415/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-07-03T23:41:20+08:00" />
+<meta property="article:modified_time" content="2023-07-03T23:41:20+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Mysql 行锁（记录锁、间隙锁、临键锁）研究，基于InnoDB</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p><strong>行锁简介</strong><br> 通过<a href="https://blog.csdn.net/weixin_38597669/article/details/89359876">上一章</a>可以了解到，InnoDB下行锁可细分为记录锁（Record Lock）、间隙锁（Gap Lock)、临键锁（Next_Key Lock），是基于索引实现的，其本质上是三种加锁算法。ps：若不声明，默认采用RR隔离级别。</p> 
+<pre><code>注：有些把记录锁理解为行锁，RL，GL，NKL属于同一级别，都是排他锁的一种。
+</code></pre> 
+<p>记录锁：锁精确加在某一行上。<br> 间隙锁：锁加在不存在的空闲空间，可以是两个索引记录之间，也可能是第一个索引记录之前（负无穷，first-key）或最后一个索引之后(last-key，正无穷）的无限空间，是一个双开空间。<br> 临键锁：间隙锁与记录锁与组合起来用就叫做Next-Key Lock，是一个左开右闭区间。<br> <strong>利用Next-Key Lock可以阻止其它事务在锁定区间内插入数据，因此在<em>一定程度上</em>解决了幻读问题。</strong><br> eg:构建表test(id pk,num key)。</p> 
+<table><thead><tr><th>id</th><th>num</th></tr></thead><tbody><tr><td>3</td><td>3</td></tr><tr><td>5</td><td>5</td></tr><tr><td>7</td><td>7</td></tr><tr><td>10</td><td>7</td></tr><tr><td>14</td><td>9</td></tr><tr><td>16</td><td>10</td></tr><tr><td>20</td><td>13</td></tr></tbody></table> 
+<p>在该表中，针对键id：<br> 记录：3、5、7、10、14、16、20<br> 间隙：（负无穷,3）、（3,5）、(5,7)、… (16,20)、(20,正无穷)<br> 临键：（负无穷,3]、（3,5]、(5,7]、… (16,20]、(20,正无穷)</p> 
+<p>在innodb的RR模式，innodb_locks_unsafe_for_binlog=0（即启用间隙锁算法）背景下：<br> 1）加锁的基本单位是 next-key lock，next-key lock 是前开后闭区间。<br> 2）查找过程中访问到的对象才会加锁。<br> 3）索引上的等值查询，给唯一索引加锁的时候，next-key lock 退化为行锁,比如id=7,只锁id=7。<br> 4）索引上的等值查询，给非唯一索引加锁的时候，当前next-key lock不变，向右遍历时且最后一个值不满足等值条件的时候，其next-key lock 退化为间隙锁,比如num=7,当前next-key lock（5,7],向右遍历得到的间隙锁（7,9）,最终锁定(5,9)。<br> 5）索引上的绝对范围查询(&gt;,&lt;)，给唯一索引加锁的时候，当前行不会加锁（比如id&gt;7,id=7这行不加锁，即临键锁（5,7]不生效），,最终锁定(7,正无穷)。<br> 6）索引上的绝对范围查询，给非唯一索引加锁的时候，next-key lock 退化为行锁（比如num&gt;7,即临键锁（5,7]退化为只锁num=7）,最终锁定[7,正无穷]。<br> 7）索引上的非绝对范围查询（&gt;=,&lt;=），将上面的等值和绝对范围查询综合起来即可。<br> 8）对于等值查询，记录不存在时,给唯一索引加锁的时候，next-key lock 退化为间隙锁，如id=18,最终锁定间隙（16,20）。<br> 9）对于等值查询，记录不存在时,给非唯一索引加锁的时候，next-key lock 退化为间隙锁。<br> 10）对于给非唯一索引加锁，边缘记录允许更新但不允许插入，如num=7，最终锁定(5,9)，此时可以更新num=5的行,但不能插入新的num=5的行。<br> <strong>记录锁</strong><br> 记录锁很好理解，一般要通过主键或唯一索引加锁，就可以较好的实现。</p> 
+<pre><code>  select * from test where id=7 for update；//该句可以准确且只锁id=7这一行，注意id必须已存在，否则就变成间隙锁了
+</code></pre> 
+<p><strong>间隙锁</strong><br> 间隙锁锁定的时一个开区间，而不是某个键，它是基于非唯一索引。需要注意的是用非唯一索引时，要explain下，确保sql走了索引（mysql查询优化器认为全表扫描比用索引更快时会锁表）。那么什么情况下出现间隙所呢？<br> 首先:InnoDB存储引擎，采用RR隔离级别，参数innodb_locks_unsafe_for_binlog=0（静态参数，默认为0，表示启动gap lock，如果设置为1，表示禁用gap lock，该参数最新版本已被弃用）。</p> 
+<blockquote> 
+ <p>innodb默认使用了next-key lock算法，这种算法结合了record锁和gap锁。正因为这样的锁算法，innodb在可重复读这样的默认隔离级别上，可以避免幻读的产生。innodb_locks_unsafe_for_binlog最主要的作用就是控制innodb是否使用gap锁。</p> 
+</blockquote> 
+<p>1：唯一索引/主键+范围查询<br> 锁住范围内的已存在的符合要求的行，还会加上范围内的gap，例子如下：</p> 
+<pre><code>select * from test where id between 6 and 16 for update；//该句锁id=7,10,14这三行，
+还会锁id=8,9,11,12,13,15这几行，  此时另一个事务是插不进去id=8,9,11,12,13,15的数据的。
+</code></pre> 
+<p>2：普通索引+绝对范围（不存在等于的情况）查询<br> 锁住范围内的已存在的符合要求的，还会加上范围内的gap，例子如下：</p> 
+<pre><code>事务A:
+select * from test where num&gt;10 for update；//该句锁定范围[10,正无穷)。
+
+事务B：
+insert into test (id,num)  values(15,10)//成功
+ update test set num=18 where id=16//成功 *
+  insert into test (id,num)  values(17,10)//失败*
+   insert into test (id,num)  values(17,9)//成功*
+</code></pre> 
+<p>ps:为什么会锁住num=10的行呢， 是因为加锁的基本单位是next-key锁，即（7，10],因为是条件是num&gt;10,即只需访问num=10的行，所以退化为record锁，即之锁num=10的行，再加上num&gt;10，所以最终会锁住[10,正无穷）。<br> 3：普通索引+等值查询<br> 除了锁定值外，还会加上左右两侧的gap，例子如下：</p> 
+<pre><code>事务A:
+select * from test where num = 7 for update；//该句锁定（5，9）  
+
+事务B：
+insert into test (id,num)  values(4,5)//成功
+ update test set num=18 where num=5//成功 *
+  insert into test (id,num)  values(6,5)//失败*
+   insert into test (id,num)  values(6,20)//成功*
+    insert into test (id,num)  values(6,8)//失败          
+</code></pre> 
+<p>对于普通索引需要注意的是，锁范围的边缘值可以更新，但不允许在锁定范围内插入与边缘值相等的行。如例子中加*的sql。</p> 
+<p>另外，对于2，如果是 select * from test where num&gt;=9；就会锁定范围（7，正无穷），而不是[9，正无穷）,但是select * from test where id&gt;=16；就会锁定范围[16，正无穷），而不是(14，正无穷）。</p> 
+<p>要想明白这个，首先要了解InoDB的索引，在InnoDB表就是一个索引组织表（IOT）,他的主键就是它的聚族索引（InnoDB默认对主键建立聚簇索引。如果你不指定主键，InnoDB会用一个具有唯一且非空值的索引来代替。如果没有主键也没有合适的唯一索引，那么innodb内部会生成一个隐藏的主键作为聚集索引，这个隐藏的主键是一个6个字节的列，该列的值会随着数据的插入自增），而普通索引作为非聚族索引，就会有一个普通索引值对多个主键值（如【7，7】，【10，7】），因此mysql对于二级索引和一级索引的间隙锁处理机制不同的，二级索引（辅助）允许插入相同的值，为了防止在锁定范围前插入边缘值，所以直接锁定范围外的第一个gap。</p> 
+<p><strong>临键锁</strong> <a href="http://www.cnblogs.com/crazylqy/p/7773492.html" rel="nofollow">参考链接</a><br> <a href="https://www.cnblogs.com/LoveShare/p/17023767.html" rel="nofollow">临键锁</a><br> 在默认情况下，mysql的事务隔离级别是RR，并且innodb_locks_unsafe_for_binlog=0（注意该参数在V5.6标记为废弃，V8.0彻底删除），这时默认采用next-key locks.所谓Next-Key Lock，就是Record lock和gap lock的结合。</p> 
+<p><strong>分析</strong><br> 下面我们针对大部分的SQL类型分析是如何加锁的，假设事务隔离级别为可重复读。<br> select … from<br> 不加任何类型的锁</p> 
+<p>select…from lock in share mode<br> 在扫描到的任何索引记录上加共享的（shared）next-key lock，对于主键/唯一索引加共享锁</p> 
+<p>select…from for update<br> 在扫描到的任何索引记录上加排它的next-key lock，对于扫描到的主键/唯一索引加记录锁 ，对于不存在的加间隙锁</p> 
+<p>update…where delete from…where<br> 在扫描到的任何索引记录上加next-key lock，对于扫描到的主键/唯一索引加记录锁 ，对于不存在的加间隙锁</p> 
+<p>insert into…<br> 简单的insert会在insert的行对应的索引记录上加一个排它锁，这是一个record lock，并没有gap，所以并不会阻塞其他session在gap间隙里插入记录。不过若insert操作在间隙锁范围内，就会加另一种锁，官方文档称它为insertion intention gap lock，<a href="https://www.jianshu.com/p/dca007208a58" rel="nofollow">参考插入意向间隙锁解析</a>，也就是意向的gap锁。这个意向gap锁的作用就是预示着当多事务并发插入相同的gap空隙时，只要插入的记录不是gap间隙中的相同位置，则无需等待其他session就可完成，<strong>这样就使得insert操作无须加真正的gap lock</strong>。<br> 这样的插入机制，会很大程度上提升并发性，如果一个表有一个唯一索引id，表中有记录1和8，那么当（1，8）不存在间隙锁，每个事务都可以在[2，7]之间插入任何记录，只会对当前插入的记录加record lock，并不会阻塞其他session插入与自己不同的记录，因为他们并没有任何冲突；当存在间隙锁，其他session就不能插入任何记录，直到间隙锁被释放，这样可以防止幻读。<br> <img src="https://images2.imgbox.com/56/1d/gbiCDzh0_o.png" alt=""><br> 可以看到T2时会话2对（1，8）加间隙锁，所以T3会话1会获得插入意向锁，被阻塞，而T4时会话2可以正常插入，并对id=6加记录锁。</p> 
+<p><strong>行锁的兼容矩阵</strong><br> <img src="https://images2.imgbox.com/dc/9f/DsoyTL4E_o.png" alt="行锁兼容矩阵"><br> 可以看到，Gap与Gap是互相兼容的 ，请求IIGL与当前Gap是冲突的，<a href="https://sq.163yun.com/blog/article/165933808891035648" rel="nofollow">参考文章</a>。</p> 
+<h5><a id="_112"></a>参考文章</h5> 
+<p>[1]:<a href="https://time.geekbang.org/column/article/75659" rel="nofollow">MySql 45讲</a><br> [2]:<a href="https://www.cnblogs.com/LoveShare/p/17023767.html" rel="nofollow">MySQL记录锁、间隙锁、临键锁</a><br> [3]:<a href="http://www.ppmy.cn/news/19077.html" rel="nofollow">MySQL间隙锁详细分析</a><br> [4]:<a href="https://blog.csdn.net/weixin_39406430/article/details/125464315">mysql记录锁、间隙锁、临键锁</a></p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/eeebf56f5d1f8163e40ce586694e1f99/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">2023最全自动化测试框架讲解，不会真不行！</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/a6fff18d405e8053782c14c545907df0/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">一篇文章彻底搞懂websocket协议的原理与应用（一）</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

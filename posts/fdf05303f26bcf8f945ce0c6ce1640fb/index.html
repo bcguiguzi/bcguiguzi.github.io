@@ -1,0 +1,524 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Redis底层数据结构之String - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="Redis底层数据结构之String" />
+<meta property="og:description" content="文章目录 1. 前提回顾2. RedisObject三大数据类型简介3. SDS字符串4. SDS字符串源码分析5. 总结 1. 前提回顾 前面我们说到redis的String数据结构在底层有多种编码方式。例如我们执行下面两条语句
+set k1 v1 set age 17 我们查看类型，发现这类型都是String类型
+我们现在查看底层的编码类型，发现编码类型一个是embstr一个是int类型，虽然都是String字符串，但redis根据value的不同类型设置了不同的编码方式
+redisObject内部对应3大物理编码：int、embstr和raw
+2. RedisObject三大数据类型简介 int 它保存long型（长整型）的64位（8个字节）有符号整数（9223372036854775807，最高19位）。
+只有整数才会使用int类型去编码，如果是浮点数，redis内部其实先将浮点数转化为字符串值，然后再保存。
+emstr 代表embstr格式的SDS（Simple Dynamic String 简单动态字符串），保存长度小于44字节的字符串，embstr即embedded String，表示嵌入式的String
+raw 保存长度大于44字节的字符串
+下面给演示一下各个类型的使用：
+首先长度小于19位的数字，类型为int
+浮点数底层为emstr
+长度超过19的数字，类型为emstr
+普通字符串是emstr
+长度超过44的字符串，为raw类型
+长度超过44的浮点数，为raw类型
+3. SDS字符串 我们知道c语言底层表示字符串本质上是用的一个char数组。但是redis没有直接复用C语言的字符串的底层实现，而是新建了属于自己的结构—SDS，在redis数据库里，包含字符串值的键值对都是由SDS实现的（redis中所有的键都是由字符串对象实现的即底层是由SDS实现，Redis所有的值对象中包含的字符串对象底层也是SDS实现的）
+我们看一下sds结构体的源码：
+typedef char *sds; /* Note: sdshdr5 is never used, we just access the flags byte directly. * However is here to document the layout of type 5 SDS strings." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/fdf05303f26bcf8f945ce0c6ce1640fb/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2024-03-12T13:01:59+08:00" />
+<meta property="article:modified_time" content="2024-03-12T13:01:59+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Redis底层数据结构之String</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p></p> 
+<div class="toc"> 
+ <h4>文章目录</h4> 
+ <ul><li><ul><li><ul><li><a href="#1__2" rel="nofollow">1. 前提回顾</a></li><li><a href="#2_RedisObject_20" rel="nofollow">2. RedisObject三大数据类型简介</a></li><li><a href="#3_SDS_65" rel="nofollow">3. SDS字符串</a></li><li><a href="#4_SDS_137" rel="nofollow">4. SDS字符串源码分析</a></li><li><a href="#5__375" rel="nofollow">5. 总结</a></li></ul> 
+  </li></ul> 
+ </li></ul> 
+</div> 
+<p></p> 
+<h4><a id="1__2"></a>1. 前提回顾</h4> 
+<p>前面我们说到redis的String数据结构在底层有多种编码方式。例如我们执行下面两条语句</p> 
+<pre><code class="prism language-sql"><span class="token keyword">set</span> k1 v1
+<span class="token keyword">set</span> age <span class="token number">17</span>
+</code></pre> 
+<p>我们查看类型，发现这类型都是String类型</p> 
+<p><img src="https://images2.imgbox.com/89/1d/fc9Nhloq_o.png" alt="在这里插入图片描述"><br> 我们现在查看底层的编码类型，发现编码类型一个是embstr一个是int类型，虽然都是String字符串，但redis根据value的不同类型设置了不同的编码方式</p> 
+<p><img src="https://images2.imgbox.com/49/6c/LFvE2fpl_o.png" alt="在这里插入图片描述"></p> 
+<p>redisObject内部对应3大物理编码：<code>int</code>、<code>embstr</code>和<code>raw</code></p> 
+<p><img src="https://images2.imgbox.com/07/1a/I2iQjNYQ_o.png" alt="在这里插入图片描述"></p> 
+<h4><a id="2_RedisObject_20"></a>2. RedisObject三大数据类型简介</h4> 
+<ul><li>int</li></ul> 
+<p>它保存long型（长整型）的64位（8个字节）有符号整数（9223372036854775807，最高19位）。</p> 
+<p><img src="https://images2.imgbox.com/fe/4e/oA0zAFL9_o.png" alt="在这里插入图片描述"><br> 只有整数才会使用int类型去编码，如果是浮点数，redis内部其实先将浮点数转化为字符串值，然后再保存。</p> 
+<p><img src="https://images2.imgbox.com/75/90/gJMOja1I_o.png" alt="在这里插入图片描述"></p> 
+<ul><li>emstr</li></ul> 
+<p>代表embstr格式的SDS（Simple Dynamic String 简单动态字符串），保存长度小于44字节的字符串，embstr即embedded String，表示嵌入式的String</p> 
+<ul><li>raw</li></ul> 
+<p>保存长度大于44字节的字符串</p> 
+<p>下面给演示一下各个类型的使用：</p> 
+<blockquote> 
+ <p>首先长度小于19位的数字，类型为int</p> 
+</blockquote> 
+<p><img src="https://images2.imgbox.com/c8/ad/QVFrf35b_o.png" alt="在这里插入图片描述"></p> 
+<blockquote> 
+ <p>浮点数底层为emstr</p> 
+</blockquote> 
+<p><img src="https://images2.imgbox.com/99/59/AVsRppY3_o.png" alt="在这里插入图片描述"></p> 
+<blockquote> 
+ <p>长度超过19的数字，类型为emstr</p> 
+</blockquote> 
+<p><img src="https://images2.imgbox.com/dd/bf/A6THgP1w_o.png" alt="在这里插入图片描述"></p> 
+<blockquote> 
+ <p>普通字符串是emstr</p> 
+</blockquote> 
+<p><img src="https://images2.imgbox.com/c3/03/uQghcpac_o.png" alt="在这里插入图片描述"></p> 
+<blockquote> 
+ <p>长度超过44的字符串，为raw类型</p> 
+</blockquote> 
+<p><img src="https://images2.imgbox.com/40/1f/ZKIloim1_o.png" alt="在这里插入图片描述"></p> 
+<blockquote> 
+ <p>长度超过44的浮点数，为raw类型</p> 
+</blockquote> 
+<p><img src="https://images2.imgbox.com/1f/77/Ywk57pMP_o.png" alt="在这里插入图片描述"></p> 
+<h4><a id="3_SDS_65"></a>3. SDS字符串</h4> 
+<p>我们知道c语言底层表示字符串本质上是用的一个char数组。但是redis没有直接复用C语言的字符串的底层实现，而是新建了属于自己的结构—<code>SDS</code>，在redis数据库里，包含字符串值的键值对都是由SDS实现的（redis中所有的键都是由字符串对象实现的即底层是由SDS实现，Redis所有的值对象中包含的字符串对象底层也是SDS实现的）</p> 
+<p><img src="https://images2.imgbox.com/ef/3f/6nWDzUaY_o.png" alt="在这里插入图片描述"><br> 我们看一下sds结构体的源码：</p> 
+<pre><code class="prism language-c"><span class="token keyword">typedef</span> <span class="token keyword">char</span> <span class="token operator">*</span>sds<span class="token punctuation">;</span>
+
+<span class="token comment">/* Note: sdshdr5 is never used, we just access the flags byte directly.
+ * However is here to document the layout of type 5 SDS strings. */</span>
+<span class="token keyword">struct</span> <span class="token keyword">__attribute__</span> <span class="token punctuation">(</span><span class="token punctuation">(</span>__packed__<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token class-name">sdshdr5</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">unsigned</span> <span class="token keyword">char</span> flags<span class="token punctuation">;</span> <span class="token comment">/* 3 lsb of type, and 5 msb of string length */</span>
+    <span class="token keyword">char</span> buf<span class="token punctuation">[</span><span class="token punctuation">]</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span><span class="token punctuation">;</span>
+<span class="token keyword">struct</span> <span class="token keyword">__attribute__</span> <span class="token punctuation">(</span><span class="token punctuation">(</span>__packed__<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token class-name">sdshdr8</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token class-name">uint8_t</span> len<span class="token punctuation">;</span> <span class="token comment">/* used */</span>
+    <span class="token class-name">uint8_t</span> alloc<span class="token punctuation">;</span> <span class="token comment">/* excluding the header and null terminator */</span>
+    <span class="token keyword">unsigned</span> <span class="token keyword">char</span> flags<span class="token punctuation">;</span> <span class="token comment">/* 3 lsb of type, 5 unused bits */</span>
+    <span class="token keyword">char</span> buf<span class="token punctuation">[</span><span class="token punctuation">]</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span><span class="token punctuation">;</span>
+<span class="token keyword">struct</span> <span class="token keyword">__attribute__</span> <span class="token punctuation">(</span><span class="token punctuation">(</span>__packed__<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token class-name">sdshdr16</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token class-name">uint16_t</span> len<span class="token punctuation">;</span> <span class="token comment">/* used */</span>
+    <span class="token class-name">uint16_t</span> alloc<span class="token punctuation">;</span> <span class="token comment">/* excluding the header and null terminator */</span>
+    <span class="token keyword">unsigned</span> <span class="token keyword">char</span> flags<span class="token punctuation">;</span> <span class="token comment">/* 3 lsb of type, 5 unused bits */</span>
+    <span class="token keyword">char</span> buf<span class="token punctuation">[</span><span class="token punctuation">]</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span><span class="token punctuation">;</span>
+<span class="token keyword">struct</span> <span class="token keyword">__attribute__</span> <span class="token punctuation">(</span><span class="token punctuation">(</span>__packed__<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token class-name">sdshdr32</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token class-name">uint32_t</span> len<span class="token punctuation">;</span> <span class="token comment">/* used */</span>
+    <span class="token class-name">uint32_t</span> alloc<span class="token punctuation">;</span> <span class="token comment">/* excluding the header and null terminator */</span>
+    <span class="token keyword">unsigned</span> <span class="token keyword">char</span> flags<span class="token punctuation">;</span> <span class="token comment">/* 3 lsb of type, 5 unused bits */</span>
+    <span class="token keyword">char</span> buf<span class="token punctuation">[</span><span class="token punctuation">]</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span><span class="token punctuation">;</span>
+<span class="token keyword">struct</span> <span class="token keyword">__attribute__</span> <span class="token punctuation">(</span><span class="token punctuation">(</span>__packed__<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token class-name">sdshdr64</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token class-name">uint64_t</span> len<span class="token punctuation">;</span> <span class="token comment">/* used */</span>
+    <span class="token class-name">uint64_t</span> alloc<span class="token punctuation">;</span> <span class="token comment">/* excluding the header and null terminator */</span>
+    <span class="token keyword">unsigned</span> <span class="token keyword">char</span> flags<span class="token punctuation">;</span> <span class="token comment">/* 3 lsb of type, 5 unused bits */</span>
+    <span class="token keyword">char</span> buf<span class="token punctuation">[</span><span class="token punctuation">]</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span><span class="token punctuation">;</span>
+</code></pre> 
+<p>可以看到redis底层工定义了五种sds字符串的结构，分别是：<code>sdshdr5</code>、<code>sdshdr8</code>、<code>sdshdr16</code>、<code>sdshdr32</code>和<code>sdshdr64</code>。那么各个字段是什么意思：</p> 
+<ul><li>len：代表存储的字符串的长度</li><li>alloc：存储了为字符串分配的内存空间的长度（即实际分配的空间大小，不包括结构体头部和字符串结束符 \0）</li><li>flags：代表SDS字符串的类型，上面介绍类型的五种之一</li><li>buf[]：真正存储字符串的char数组</li></ul> 
+<p>那上面五种类型有什么不同？</p> 
+<blockquote> 
+ <p>sdshdr5：表示<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+         
+         
+           2 
+          
+         
+           5 
+          
+         
+        
+       
+         2^5 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.8141em;"></span><span class="mord"><span class="mord">2</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.8141em;"><span class="" style="top: -3.063em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight">5</span></span></span></span></span></span></span></span></span></span></span></span>即共32个字节<br> sdshdr8：表示<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+         
+         
+           2 
+          
+         
+           8 
+          
+         
+        
+       
+         2^8 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.8141em;"></span><span class="mord"><span class="mord">2</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.8141em;"><span class="" style="top: -3.063em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight">8</span></span></span></span></span></span></span></span></span></span></span></span>即256个字节<br> sdshdr16：表示<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+         
+         
+           2 
+          
+         
+           16 
+          
+         
+        
+       
+         2^{16} 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.8141em;"></span><span class="mord"><span class="mord">2</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.8141em;"><span class="" style="top: -3.063em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mtight">16</span></span></span></span></span></span></span></span></span></span></span></span></span>即65536个字节，64KB<br> sdshdr32：表示<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+         
+         
+           2 
+          
+         
+           32 
+          
+         
+        
+       
+         2^{32} 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.8141em;"></span><span class="mord"><span class="mord">2</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.8141em;"><span class="" style="top: -3.063em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mtight">32</span></span></span></span></span></span></span></span></span></span></span></span></span>即4GB<br> sdshdr64：表示<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+         
+         
+           2 
+          
+         
+           64 
+          
+         
+        
+       
+         2^{64} 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.8141em;"></span><span class="mord"><span class="mord">2</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.8141em;"><span class="" style="top: -3.063em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mtight">64</span></span></span></span></span></span></span></span></span></span></span></span></span>即17179869184G个字节</p> 
+</blockquote> 
+<p>len表示SDS实际的长度，使我们在获取字符串的时候能够在O(1)时间复杂度情况下拿到，而不需要遍历一遍char数组</p> 
+<p>alloc：可以用来计算free就是字符串已经分配的未使用空间，这个值就可以引入预分配空间算法了，而不用去考虑内存分配问题</p> 
+<p>buf：字符串数组，真正存数据的</p> 
+<blockquote> 
+ <p>alloc 字段的作用是提供了对字符串进行动态增长的能力。当字符串需要扩容时，Redis 可以根据需要重新分配更大的内存空间，并将原有的内容复制到新的内存中，然后释放原来的内存。这样做的好处是可以减少频繁地进行内存分配和释放操作，提高了性能。举个例子，假设有一个 SDS 字符串，其实际长度为 10，但为了防止频繁的内存分配和释放操作，alloc 被设置为了 20。当这个字符串需要扩容时，Redis 可以直接在内存中分配一个长度为 20 的新空间，然后将原字符串内容复制到新的空间中，同时更新 len 和 alloc 字段。这样即使字符串长度增长，也不需要每次都重新分配内存，减少了系统的开销。</p> 
+</blockquote> 
+<p>现在思考一个问题：<code>Redis为什么不直接使用char数组，而是自己重写设计来一个SDS数据结构？</code></p> 
+<p>这是因为C语言没有Java里面的String类型，只能是靠自己的char[]来实现，字符串在C语言中的存储方式，如果现在我们想通过<code>strlen</code>命令获取value的长度，我们就需要从头开始遍历，知道遇到<code>\0</code>即可，这样操作的时间复杂度是<code>O(n)</code>，所以redis没有直接使用C语言传统的字符串标识，而是自己构建了一种名为简单动态字符串类型SDS，并作为redis的默认字符串类型。</p> 
+<p><img src="https://images2.imgbox.com/c5/7b/e1KWJa29_o.png" alt="在这里插入图片描述"></p> 
+<h4><a id="4_SDS_137"></a>4. SDS字符串源码分析</h4> 
+<blockquote> 
+ <p>当我们输入set k1 v1 底层到底发生了什么？这里我们详细分析一下</p> 
+</blockquote> 
+<p>首先看<code>t_string.c</code>文件</p> 
+<pre><code class="prism language-c"><span class="token comment">/* SET key value [NX] [XX] [KEEPTTL] [GET] [EX &lt;seconds&gt;] [PX &lt;milliseconds&gt;]
+ *     [EXAT &lt;seconds-timestamp&gt;][PXAT &lt;milliseconds-timestamp&gt;] */</span>
+<span class="token keyword">void</span> <span class="token function">setCommand</span><span class="token punctuation">(</span>client <span class="token operator">*</span>c<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+	<span class="token comment">//key的过期时间</span>
+    robj <span class="token operator">*</span>expire <span class="token operator">=</span> <span class="token constant">NULL</span><span class="token punctuation">;</span>
+    <span class="token comment">//时间的单位是s</span>
+    <span class="token keyword">int</span> unit <span class="token operator">=</span> UNIT_SECONDS<span class="token punctuation">;</span>
+    <span class="token keyword">int</span> flags <span class="token operator">=</span> OBJ_NO_FLAGS<span class="token punctuation">;</span>
+
+    <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">parseExtendedStringArgumentsOrReply</span><span class="token punctuation">(</span>c<span class="token punctuation">,</span><span class="token operator">&amp;</span>flags<span class="token punctuation">,</span><span class="token operator">&amp;</span>unit<span class="token punctuation">,</span><span class="token operator">&amp;</span>expire<span class="token punctuation">,</span>COMMAND_SET<span class="token punctuation">)</span> <span class="token operator">!=</span> C_OK<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">return</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+	<span class="token comment">//c-&gt;args[2]就是value，这里调用tryObjectEncoding就是尝试堆value值进行编码，编码后的结果再保存到c-&gt;args[2]中</span>
+    c<span class="token operator">-&gt;</span>argv<span class="token punctuation">[</span><span class="token number">2</span><span class="token punctuation">]</span> <span class="token operator">=</span> <span class="token function">tryObjectEncoding</span><span class="token punctuation">(</span>c<span class="token operator">-&gt;</span>argv<span class="token punctuation">[</span><span class="token number">2</span><span class="token punctuation">]</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token function">setGenericCommand</span><span class="token punctuation">(</span>c<span class="token punctuation">,</span>flags<span class="token punctuation">,</span>c<span class="token operator">-&gt;</span>argv<span class="token punctuation">[</span><span class="token number">1</span><span class="token punctuation">]</span><span class="token punctuation">,</span>c<span class="token operator">-&gt;</span>argv<span class="token punctuation">[</span><span class="token number">2</span><span class="token punctuation">]</span><span class="token punctuation">,</span>expire<span class="token punctuation">,</span>unit<span class="token punctuation">,</span><span class="token constant">NULL</span><span class="token punctuation">,</span><span class="token constant">NULL</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<blockquote> 
+ <p>当我们在cli写set k1 v1时，它底层本质上调用的是上面的<code>setCommand</code>命令</p> 
+</blockquote> 
+<p>从上面代码代码可以看出字符串的编码和<code>tryObjectEncoding</code>这个函数时紧密相关的，我们来分析一下底层是怎么做的</p> 
+<ul><li>int</li></ul> 
+<p>当字符串键值的内存可以用一个64位有符号整数表示时，Redis会将键值转化为long型来存储，此时即对于<code>OBJ_ENDOCDING_INT</code>编码类型。内存内存结构如下：</p> 
+<p><img src="https://images2.imgbox.com/51/4f/EIN5XxeE_o.png" alt="在这里插入图片描述"><br> <code>OBJECT_ENCODING_INT</code>这个时Redis定义的一个常量，我们可以在object.c文件中看到</p> 
+<pre><code class="prism language-c"><span class="token keyword">char</span> <span class="token operator">*</span><span class="token function">strEncoding</span><span class="token punctuation">(</span><span class="token keyword">int</span> encoding<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">switch</span><span class="token punctuation">(</span>encoding<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">case</span> OBJ_ENCODING_RAW<span class="token operator">:</span> <span class="token keyword">return</span> <span class="token string">"raw"</span><span class="token punctuation">;</span>
+    <span class="token keyword">case</span> OBJ_ENCODING_INT<span class="token operator">:</span> <span class="token keyword">return</span> <span class="token string">"int"</span><span class="token punctuation">;</span>
+    <span class="token keyword">case</span> OBJ_ENCODING_HT<span class="token operator">:</span> <span class="token keyword">return</span> <span class="token string">"hashtable"</span><span class="token punctuation">;</span>
+    <span class="token keyword">case</span> OBJ_ENCODING_QUICKLIST<span class="token operator">:</span> <span class="token keyword">return</span> <span class="token string">"quicklist"</span><span class="token punctuation">;</span>
+    <span class="token keyword">case</span> OBJ_ENCODING_LISTPACK<span class="token operator">:</span> <span class="token keyword">return</span> <span class="token string">"listpack"</span><span class="token punctuation">;</span>
+    <span class="token keyword">case</span> OBJ_ENCODING_INTSET<span class="token operator">:</span> <span class="token keyword">return</span> <span class="token string">"intset"</span><span class="token punctuation">;</span>
+    <span class="token keyword">case</span> OBJ_ENCODING_SKIPLIST<span class="token operator">:</span> <span class="token keyword">return</span> <span class="token string">"skiplist"</span><span class="token punctuation">;</span>
+    <span class="token keyword">case</span> OBJ_ENCODING_EMBSTR<span class="token operator">:</span> <span class="token keyword">return</span> <span class="token string">"embstr"</span><span class="token punctuation">;</span>
+    <span class="token keyword">case</span> OBJ_ENCODING_STREAM<span class="token operator">:</span> <span class="token keyword">return</span> <span class="token string">"stream"</span><span class="token punctuation">;</span>
+    <span class="token keyword">default</span><span class="token operator">:</span> <span class="token keyword">return</span> <span class="token string">"unknown"</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>Redis启动时会预先建立10000个分别存储0～9999的redisObject变量做为共享变量，这意味着如果set字符串的键值在0~10000之间的话，就可以直接指向功效变量，而不需要再建立新对象，此时键值不占内存。（这和java中有些包装类设置缓存的原理一样）。如下面两条命令：</p> 
+<pre><code class="prism language-sql"><span class="token keyword">set</span> k1 <span class="token number">100</span>
+<span class="token keyword">set</span> k2 <span class="token number">100</span>
+</code></pre> 
+<p><img src="https://images2.imgbox.com/14/d5/mPrEx0aS_o.png" alt="在这里插入图片描述"></p> 
+<p>上面的缓存可以再server.h中可以看到定义:</p> 
+<pre><code class="prism language-c"><span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name">OBJ_SHARED_INTEGERS</span> <span class="token expression"><span class="token number">10000</span> </span><span class="token comment">//缓存去大小</span></span>
+
+<span class="token keyword">struct</span> <span class="token class-name">sharedObjectsStruct</span> <span class="token punctuation">{<!-- --></span>
+    robj <span class="token operator">*</span>ok<span class="token punctuation">,</span> <span class="token operator">*</span>err<span class="token punctuation">,</span> <span class="token operator">*</span>emptybulk<span class="token punctuation">,</span> <span class="token operator">*</span>czero<span class="token punctuation">,</span> <span class="token operator">*</span>cone<span class="token punctuation">,</span> <span class="token operator">*</span>pong<span class="token punctuation">,</span> <span class="token operator">*</span>space<span class="token punctuation">,</span>
+    <span class="token operator">*</span>queued<span class="token punctuation">,</span> <span class="token operator">*</span>null<span class="token punctuation">[</span><span class="token number">4</span><span class="token punctuation">]</span><span class="token punctuation">,</span> <span class="token operator">*</span>nullarray<span class="token punctuation">[</span><span class="token number">4</span><span class="token punctuation">]</span><span class="token punctuation">,</span> <span class="token operator">*</span>emptymap<span class="token punctuation">[</span><span class="token number">4</span><span class="token punctuation">]</span><span class="token punctuation">,</span> <span class="token operator">*</span>emptyset<span class="token punctuation">[</span><span class="token number">4</span><span class="token punctuation">]</span><span class="token punctuation">,</span>
+    <span class="token operator">*</span>emptyarray<span class="token punctuation">,</span> <span class="token operator">*</span>wrongtypeerr<span class="token punctuation">,</span> <span class="token operator">*</span>nokeyerr<span class="token punctuation">,</span> <span class="token operator">*</span>syntaxerr<span class="token punctuation">,</span> <span class="token operator">*</span>sameobjecterr<span class="token punctuation">,</span>
+    <span class="token operator">*</span>outofrangeerr<span class="token punctuation">,</span> <span class="token operator">*</span>noscripterr<span class="token punctuation">,</span> <span class="token operator">*</span>loadingerr<span class="token punctuation">,</span>
+    <span class="token operator">*</span>slowevalerr<span class="token punctuation">,</span> <span class="token operator">*</span>slowscripterr<span class="token punctuation">,</span> <span class="token operator">*</span>slowmoduleerr<span class="token punctuation">,</span> <span class="token operator">*</span>bgsaveerr<span class="token punctuation">,</span>
+    <span class="token operator">*</span>masterdownerr<span class="token punctuation">,</span> <span class="token operator">*</span>roslaveerr<span class="token punctuation">,</span> <span class="token operator">*</span>execaborterr<span class="token punctuation">,</span> <span class="token operator">*</span>noautherr<span class="token punctuation">,</span> <span class="token operator">*</span>noreplicaserr<span class="token punctuation">,</span>
+    <span class="token operator">*</span>busykeyerr<span class="token punctuation">,</span> <span class="token operator">*</span>oomerr<span class="token punctuation">,</span> <span class="token operator">*</span>plus<span class="token punctuation">,</span> <span class="token operator">*</span>messagebulk<span class="token punctuation">,</span> <span class="token operator">*</span>pmessagebulk<span class="token punctuation">,</span> <span class="token operator">*</span>subscribebulk<span class="token punctuation">,</span>
+    <span class="token operator">*</span>unsubscribebulk<span class="token punctuation">,</span> <span class="token operator">*</span>psubscribebulk<span class="token punctuation">,</span> <span class="token operator">*</span>punsubscribebulk<span class="token punctuation">,</span> <span class="token operator">*</span>del<span class="token punctuation">,</span> <span class="token operator">*</span>unlink<span class="token punctuation">,</span>
+    <span class="token operator">*</span>rpop<span class="token punctuation">,</span> <span class="token operator">*</span>lpop<span class="token punctuation">,</span> <span class="token operator">*</span>lpush<span class="token punctuation">,</span> <span class="token operator">*</span>rpoplpush<span class="token punctuation">,</span> <span class="token operator">*</span>lmove<span class="token punctuation">,</span> <span class="token operator">*</span>blmove<span class="token punctuation">,</span> <span class="token operator">*</span>zpopmin<span class="token punctuation">,</span> <span class="token operator">*</span>zpopmax<span class="token punctuation">,</span>
+    <span class="token operator">*</span>emptyscan<span class="token punctuation">,</span> <span class="token operator">*</span>multi<span class="token punctuation">,</span> <span class="token operator">*</span>exec<span class="token punctuation">,</span> <span class="token operator">*</span>left<span class="token punctuation">,</span> <span class="token operator">*</span>right<span class="token punctuation">,</span> <span class="token operator">*</span>hset<span class="token punctuation">,</span> <span class="token operator">*</span>srem<span class="token punctuation">,</span> <span class="token operator">*</span>xgroup<span class="token punctuation">,</span> <span class="token operator">*</span>xclaim<span class="token punctuation">,</span>  
+    <span class="token operator">*</span>script<span class="token punctuation">,</span> <span class="token operator">*</span>replconf<span class="token punctuation">,</span> <span class="token operator">*</span>eval<span class="token punctuation">,</span> <span class="token operator">*</span>persist<span class="token punctuation">,</span> <span class="token operator">*</span>set<span class="token punctuation">,</span> <span class="token operator">*</span>pexpireat<span class="token punctuation">,</span> <span class="token operator">*</span>pexpire<span class="token punctuation">,</span> 
+    <span class="token operator">*</span>time<span class="token punctuation">,</span> <span class="token operator">*</span>pxat<span class="token punctuation">,</span> <span class="token operator">*</span>absttl<span class="token punctuation">,</span> <span class="token operator">*</span>retrycount<span class="token punctuation">,</span> <span class="token operator">*</span>force<span class="token punctuation">,</span> <span class="token operator">*</span>justid<span class="token punctuation">,</span> <span class="token operator">*</span>entriesread<span class="token punctuation">,</span>
+    <span class="token operator">*</span>lastid<span class="token punctuation">,</span> <span class="token operator">*</span>ping<span class="token punctuation">,</span> <span class="token operator">*</span>setid<span class="token punctuation">,</span> <span class="token operator">*</span>keepttl<span class="token punctuation">,</span> <span class="token operator">*</span>load<span class="token punctuation">,</span> <span class="token operator">*</span>createconsumer<span class="token punctuation">,</span>
+    <span class="token operator">*</span>getack<span class="token punctuation">,</span> <span class="token operator">*</span>special_asterick<span class="token punctuation">,</span> <span class="token operator">*</span>special_equals<span class="token punctuation">,</span> <span class="token operator">*</span>default_username<span class="token punctuation">,</span> <span class="token operator">*</span>redacted<span class="token punctuation">,</span>
+    <span class="token operator">*</span>ssubscribebulk<span class="token punctuation">,</span><span class="token operator">*</span>sunsubscribebulk<span class="token punctuation">,</span> <span class="token operator">*</span>smessagebulk<span class="token punctuation">,</span>
+    <span class="token operator">*</span>select<span class="token punctuation">[</span>PROTO_SHARED_SELECT_CMDS<span class="token punctuation">]</span><span class="token punctuation">,</span>
+    <span class="token operator">*</span>integers<span class="token punctuation">[</span>OBJ_SHARED_INTEGERS<span class="token punctuation">]</span><span class="token punctuation">,</span>
+    <span class="token operator">*</span>mbulkhdr<span class="token punctuation">[</span>OBJ_SHARED_BULKHDR_LEN<span class="token punctuation">]</span><span class="token punctuation">,</span> <span class="token comment">/* "*&lt;value&gt;\r\n" */</span>
+    <span class="token operator">*</span>bulkhdr<span class="token punctuation">[</span>OBJ_SHARED_BULKHDR_LEN<span class="token punctuation">]</span><span class="token punctuation">,</span>  <span class="token comment">/* "$&lt;value&gt;\r\n" */</span>
+    <span class="token operator">*</span>maphdr<span class="token punctuation">[</span>OBJ_SHARED_BULKHDR_LEN<span class="token punctuation">]</span><span class="token punctuation">,</span>   <span class="token comment">/* "%&lt;value&gt;\r\n" */</span>
+    <span class="token operator">*</span>sethdr<span class="token punctuation">[</span>OBJ_SHARED_BULKHDR_LEN<span class="token punctuation">]</span><span class="token punctuation">;</span>   <span class="token comment">/* "~&lt;value&gt;\r\n" */</span>
+    sds minstring<span class="token punctuation">,</span> maxstring<span class="token punctuation">;</span>
+<span class="token punctuation">}</span><span class="token punctuation">;</span>
+</code></pre> 
+<p>下面我们看看redis时如何利用这些缓存起来的对象的</p> 
+<pre><code class="prism language-c"><span class="token comment">/* Try to encode a string object in order to save space */</span>
+robj <span class="token operator">*</span><span class="token function">tryObjectEncodingEx</span><span class="token punctuation">(</span>robj <span class="token operator">*</span>o<span class="token punctuation">,</span> <span class="token keyword">int</span> try_trim<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">long</span> value<span class="token punctuation">;</span>
+    sds s <span class="token operator">=</span> o<span class="token operator">-&gt;</span>ptr<span class="token punctuation">;</span>
+    <span class="token class-name">size_t</span> len<span class="token punctuation">;</span>
+    <span class="token function">serverAssertWithInfo</span><span class="token punctuation">(</span><span class="token constant">NULL</span><span class="token punctuation">,</span>o<span class="token punctuation">,</span>o<span class="token operator">-&gt;</span>type <span class="token operator">==</span> OBJ_STRING<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span><span class="token function">sdsEncodedObject</span><span class="token punctuation">(</span>o<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token keyword">return</span> o<span class="token punctuation">;</span>
+     <span class="token keyword">if</span> <span class="token punctuation">(</span>o<span class="token operator">-&gt;</span>refcount <span class="token operator">&gt;</span> <span class="token number">1</span><span class="token punctuation">)</span> <span class="token keyword">return</span> o<span class="token punctuation">;</span>
+    len <span class="token operator">=</span> <span class="token function">sdslen</span><span class="token punctuation">(</span>s<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>len <span class="token operator">&lt;=</span> <span class="token number">20</span> <span class="token operator">&amp;&amp;</span> <span class="token function">string2l</span><span class="token punctuation">(</span>s<span class="token punctuation">,</span>len<span class="token punctuation">,</span><span class="token operator">&amp;</span>value<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token punctuation">(</span>server<span class="token punctuation">.</span>maxmemory <span class="token operator">==</span> <span class="token number">0</span> <span class="token operator">||</span>
+            <span class="token operator">!</span><span class="token punctuation">(</span>server<span class="token punctuation">.</span>maxmemory_policy <span class="token operator">&amp;</span> MAXMEMORY_FLAG_NO_SHARED_INTEGERS<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token operator">&amp;&amp;</span>
+            value <span class="token operator">&gt;=</span> <span class="token number">0</span> <span class="token operator">&amp;&amp;</span>
+            value <span class="token operator">&lt;</span> OBJ_SHARED_INTEGERS<span class="token punctuation">)</span>
+        <span class="token punctuation">{<!-- --></span>
+            <span class="token function">decrRefCount</span><span class="token punctuation">(</span>o<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token keyword">return</span> shared<span class="token punctuation">.</span>integers<span class="token punctuation">[</span>value<span class="token punctuation">]</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">if</span> <span class="token punctuation">(</span>o<span class="token operator">-&gt;</span>encoding <span class="token operator">==</span> OBJ_ENCODING_RAW<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                <span class="token function">sdsfree</span><span class="token punctuation">(</span>o<span class="token operator">-&gt;</span>ptr<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                o<span class="token operator">-&gt;</span>encoding <span class="token operator">=</span> OBJ_ENCODING_INT<span class="token punctuation">;</span>
+                o<span class="token operator">-&gt;</span>ptr <span class="token operator">=</span> <span class="token punctuation">(</span><span class="token keyword">void</span><span class="token operator">*</span><span class="token punctuation">)</span> value<span class="token punctuation">;</span>
+                <span class="token keyword">return</span> o<span class="token punctuation">;</span>
+            <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token keyword">if</span> <span class="token punctuation">(</span>o<span class="token operator">-&gt;</span>encoding <span class="token operator">==</span> OBJ_ENCODING_EMBSTR<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                <span class="token function">decrRefCount</span><span class="token punctuation">(</span>o<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                <span class="token keyword">return</span> <span class="token function">createStringObjectFromLongLongForValue</span><span class="token punctuation">(</span>value<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token punctuation">}</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token comment">/* If the string is small and is still RAW encoded,
+     * try the EMBSTR encoding which is more efficient.
+     * In this representation the object and the SDS string are allocated
+     * in the same chunk of memory to save space and cache misses. */</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>len <span class="token operator">&lt;=</span> OBJ_ENCODING_EMBSTR_SIZE_LIMIT<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        robj <span class="token operator">*</span>emb<span class="token punctuation">;</span>
+
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>o<span class="token operator">-&gt;</span>encoding <span class="token operator">==</span> OBJ_ENCODING_EMBSTR<span class="token punctuation">)</span> <span class="token keyword">return</span> o<span class="token punctuation">;</span>
+        emb <span class="token operator">=</span> <span class="token function">createEmbeddedStringObject</span><span class="token punctuation">(</span>s<span class="token punctuation">,</span><span class="token function">sdslen</span><span class="token punctuation">(</span>s<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token function">decrRefCount</span><span class="token punctuation">(</span>o<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">return</span> emb<span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token comment">/* We can't encode the object...
+     * Do the last try, and at least optimize the SDS string inside */</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>try_trim<span class="token punctuation">)</span>
+        <span class="token function">trimStringObjectIfNeeded</span><span class="token punctuation">(</span>o<span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token comment">/* Return the original object. */</span>
+    <span class="token keyword">return</span> o<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+robj <span class="token operator">*</span><span class="token function">tryObjectEncoding</span><span class="token punctuation">(</span>robj <span class="token operator">*</span>o<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">return</span> <span class="token function">tryObjectEncodingEx</span><span class="token punctuation">(</span>o<span class="token punctuation">,</span> <span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>关键是下面这几句代码</p> 
+<pre><code class="prism language-c"><span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token punctuation">(</span>server<span class="token punctuation">.</span>maxmemory <span class="token operator">==</span> <span class="token number">0</span> <span class="token operator">||</span>
+            <span class="token operator">!</span><span class="token punctuation">(</span>server<span class="token punctuation">.</span>maxmemory_policy <span class="token operator">&amp;</span> MAXMEMORY_FLAG_NO_SHARED_INTEGERS<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token operator">&amp;&amp;</span>
+            value <span class="token operator">&gt;=</span> <span class="token number">0</span> <span class="token operator">&amp;&amp;</span>
+            value <span class="token operator">&lt;</span> OBJ_SHARED_INTEGERS<span class="token punctuation">)</span>
+        <span class="token punctuation">{<!-- --></span>
+            <span class="token function">decrRefCount</span><span class="token punctuation">(</span>o<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token keyword">return</span> shared<span class="token punctuation">.</span>integers<span class="token punctuation">[</span>value<span class="token punctuation">]</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">if</span> <span class="token punctuation">(</span>o<span class="token operator">-&gt;</span>encoding <span class="token operator">==</span> OBJ_ENCODING_RAW<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                <span class="token function">sdsfree</span><span class="token punctuation">(</span>o<span class="token operator">-&gt;</span>ptr<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                o<span class="token operator">-&gt;</span>encoding <span class="token operator">=</span> OBJ_ENCODING_INT<span class="token punctuation">;</span>
+                o<span class="token operator">-&gt;</span>ptr <span class="token operator">=</span> <span class="token punctuation">(</span><span class="token keyword">void</span><span class="token operator">*</span><span class="token punctuation">)</span> value<span class="token punctuation">;</span>
+                <span class="token keyword">return</span> o<span class="token punctuation">;</span>
+            <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token keyword">if</span> <span class="token punctuation">(</span>o<span class="token operator">-&gt;</span>encoding <span class="token operator">==</span> OBJ_ENCODING_EMBSTR<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                <span class="token function">decrRefCount</span><span class="token punctuation">(</span>o<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                <span class="token keyword">return</span> <span class="token function">createStringObjectFromLongLongForValue</span><span class="token punctuation">(</span>value<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token punctuation">}</span>
+        <span class="token punctuation">}</span>
+</code></pre> 
+<p><code> value &lt; OBJ_SHARED_INTEGERS</code>判断当前值是否小于10000，如何小于<code>shared.integers[value]</code>中直接拿值，上面也是对INT类型编码的核心源码</p> 
+<ul><li>embstr</li></ul> 
+<p>上面我们分析了int类型是如何编码的，下面我们看看embstr类型是如何编码的</p> 
+<pre><code class="prism language-c"><span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name">OBJ_ENCODING_EMBSTR_SIZE_LIMIT</span> <span class="token expression"><span class="token number">44</span></span></span>
+robj <span class="token operator">*</span><span class="token function">createStringObject</span><span class="token punctuation">(</span><span class="token keyword">const</span> <span class="token keyword">char</span> <span class="token operator">*</span>ptr<span class="token punctuation">,</span> <span class="token class-name">size_t</span> len<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>len <span class="token operator">&lt;=</span> OBJ_ENCODING_EMBSTR_SIZE_LIMIT<span class="token punctuation">)</span>
+        <span class="token keyword">return</span> <span class="token function">createEmbeddedStringObject</span><span class="token punctuation">(</span>ptr<span class="token punctuation">,</span>len<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">else</span>
+        <span class="token keyword">return</span> <span class="token function">createRawStringObject</span><span class="token punctuation">(</span>ptr<span class="token punctuation">,</span>len<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+robj <span class="token operator">*</span><span class="token function">createEmbeddedStringObject</span><span class="token punctuation">(</span><span class="token keyword">const</span> <span class="token keyword">char</span> <span class="token operator">*</span>ptr<span class="token punctuation">,</span> <span class="token class-name">size_t</span> len<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+	<span class="token comment">//创建redisObject对象并分配内存，使用 zmalloc 函数分配了一块内存，用于存储字符串对象。这块内存的大小包括了字符串对象结构体 robj 的大小、sdshdr8 结构体的大小以及字符串的长度 len 加上一个字节用于字符串的结束符 \0。</span>
+    robj <span class="token operator">*</span>o <span class="token operator">=</span> <span class="token function">zmalloc</span><span class="token punctuation">(</span><span class="token keyword">sizeof</span><span class="token punctuation">(</span>robj<span class="token punctuation">)</span><span class="token operator">+</span><span class="token keyword">sizeof</span><span class="token punctuation">(</span><span class="token keyword">struct</span> <span class="token class-name">sdshdr8</span><span class="token punctuation">)</span><span class="token operator">+</span>len<span class="token operator">+</span><span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token comment">//定义了一个 sdshdr8 结构体指针 sh，它指向了 robj 结构体之后的内存地址。这是因为 robj 结构体之后的内存空间被用来存储字符串数据的头信息。</span>
+    <span class="token keyword">struct</span> <span class="token class-name">sdshdr8</span> <span class="token operator">*</span>sh <span class="token operator">=</span> <span class="token punctuation">(</span><span class="token keyword">void</span><span class="token operator">*</span><span class="token punctuation">)</span><span class="token punctuation">(</span>o<span class="token operator">+</span><span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token comment">//类型表示为String类型</span>
+    o<span class="token operator">-&gt;</span>type <span class="token operator">=</span> OBJ_STRING<span class="token punctuation">;</span>
+    <span class="token comment">//编码为embstr编码</span>
+    o<span class="token operator">-&gt;</span>encoding <span class="token operator">=</span> OBJ_ENCODING_EMBSTR<span class="token punctuation">;</span>
+    <span class="token comment">//设置了 robj 结构体中的 ptr 字段为指向 sdshdr8 结构体之后的内存地址，即指向字符串的实际内容。</span>
+    o<span class="token operator">-&gt;</span>ptr <span class="token operator">=</span> sh<span class="token operator">+</span><span class="token number">1</span><span class="token punctuation">;</span>
+    <span class="token comment">//引用计数为1</span>
+    o<span class="token operator">-&gt;</span>refcount <span class="token operator">=</span> <span class="token number">1</span><span class="token punctuation">;</span>
+    <span class="token comment">//使用次数0</span>
+    o<span class="token operator">-&gt;</span>lru <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+
+    sh<span class="token operator">-&gt;</span>len <span class="token operator">=</span> len<span class="token punctuation">;</span>
+    sh<span class="token operator">-&gt;</span>alloc <span class="token operator">=</span> len<span class="token punctuation">;</span>
+    sh<span class="token operator">-&gt;</span>flags <span class="token operator">=</span> SDS_TYPE_8<span class="token punctuation">;</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>ptr <span class="token operator">==</span> SDS_NOINIT<span class="token punctuation">)</span>
+        sh<span class="token operator">-&gt;</span>buf<span class="token punctuation">[</span>len<span class="token punctuation">]</span> <span class="token operator">=</span> <span class="token char">'\0'</span><span class="token punctuation">;</span>
+    <span class="token keyword">else</span> <span class="token keyword">if</span> <span class="token punctuation">(</span>ptr<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token function">memcpy</span><span class="token punctuation">(</span>sh<span class="token operator">-&gt;</span>buf<span class="token punctuation">,</span>ptr<span class="token punctuation">,</span>len<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        sh<span class="token operator">-&gt;</span>buf<span class="token punctuation">[</span>len<span class="token punctuation">]</span> <span class="token operator">=</span> <span class="token char">'\0'</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token function">memset</span><span class="token punctuation">(</span>sh<span class="token operator">-&gt;</span>buf<span class="token punctuation">,</span><span class="token number">0</span><span class="token punctuation">,</span>len<span class="token operator">+</span><span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+    <span class="token keyword">return</span> o<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+</code></pre> 
+<p>首先<code>len &lt;= OBJ_ENCODING_EMBSTR_SIZE_LIMIT</code>判断当前字符串的长度是否小于44，这前面也讲过为什么是44，如果小于则符合<code>emstr</code>类型，则调用<code>createEmbeddedStringObject</code>方法。我们看到ptr指针指向的位置为sh+1。我们从源码可以看出sh是robj 结构体位置，这就说明一个现象，即字符串SDS结构体和其对应的redisObject对象分配在同一连续内存空间，就像讲sds嵌入到redisObject中。</p> 
+<blockquote> 
+ <p>简单来说redisObject和对应的sdshdr8是在内存汇总紧挨着的，使用 embstr 编码时，字符串的内容直接存储在 robj 结构体之后的内存空间中，而不需要额外分配存储空间。这样做的好处是减少了内存分配和内存碎片，提高了内存使用效率。</p> 
+</blockquote> 
+<ul><li>raw</li></ul> 
+<p>我们继续回到<code>tryEncodingEx</code>方法，如果我们对象的字节数大于44，我们此时就是创建raw类型</p> 
+<pre><code class="prism language-c">obj <span class="token operator">*</span><span class="token function">createObject</span><span class="token punctuation">(</span><span class="token keyword">int</span> type<span class="token punctuation">,</span> <span class="token keyword">void</span> <span class="token operator">*</span>ptr<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    robj <span class="token operator">*</span>o <span class="token operator">=</span> <span class="token function">zmalloc</span><span class="token punctuation">(</span><span class="token keyword">sizeof</span><span class="token punctuation">(</span><span class="token operator">*</span>o<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    o<span class="token operator">-&gt;</span>type <span class="token operator">=</span> type<span class="token punctuation">;</span>
+    o<span class="token operator">-&gt;</span>encoding <span class="token operator">=</span> OBJ_ENCODING_RAW<span class="token punctuation">;</span>
+    o<span class="token operator">-&gt;</span>ptr <span class="token operator">=</span> ptr<span class="token punctuation">;</span>
+    o<span class="token operator">-&gt;</span>refcount <span class="token operator">=</span> <span class="token number">1</span><span class="token punctuation">;</span>
+    o<span class="token operator">-&gt;</span>lru <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+    <span class="token keyword">return</span> o<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>当字符串长度大于44的超长字符串时，Redis则将键值的内部编码方式改为<code>OBJ_ENCODING_RAW</code>格式，这与<code>OBJ_ENCODING_EMBSTR</code>的编码方式不同，此时动态字符串sds的内存与其依赖的redisObject内存不再连续。</p> 
+<p><img src="https://images2.imgbox.com/3e/30/KbsWyFBb_o.png" alt="在这里插入图片描述"><br> 下面看一种特殊情况：<br> <img src="https://images2.imgbox.com/17/e0/dv6jthfb_o.png" alt="在这里插入图片描述"></p> 
+<h4><a id="5__375"></a>5. 总结</h4> 
+<p><img src="https://images2.imgbox.com/21/15/O2Wn8UQC_o.png" alt="在这里插入图片描述"><br> <img src="https://images2.imgbox.com/6c/9e/3ze7U917_o.png" alt="在这里插入图片描述"><br> <strong>redis底层会根据用户给的键值使用不同的编码格式，自适应地选择较优化的内存编码格式，而这一切对用户完全透明！</strong></p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/3cae41e0c1b16f0affbcd5be92562379/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">145.【JWT&#43;SpringSecurity】</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/9c1c5907d8f283632540ad24d04e3542/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">Pandas教程17：关于json数据转化成DataFrame数据，消除警告提示的方法。</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

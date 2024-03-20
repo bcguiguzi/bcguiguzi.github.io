@@ -1,0 +1,1553 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Quantization｜A White Paper on Neural Network Quantization (谷歌量化白皮书) - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="Quantization｜A White Paper on Neural Network Quantization (谷歌量化白皮书)" />
+<meta property="og:description" content="记一下谷歌量化白皮书的理解。
+1 Introducation 本文介绍两种主要的category：
+PTQ: post-training quantization: 只需要在正常训练后的参数上调超参数QAT: quantization-aware-training: 需要在训练网络的时候量化 2 Quantization fundanmentals 2.1 Hardware background 硬件如何计算一个矩阵乘法 y = W x &#43; b y = Wx &#43; b y=Wx&#43;b? 如图，NN 加速器主要需要两组成部分：processing elements C n , m C_{n,m} Cn,m​ 和accumulators A n A_n An​ .计算的流程：
+load bias value b n b_n bn​,
+load weight values W n , m W_{n,m} Wn,m​ 以及 这层的输入 x m x_m xm​, 计算 C n , m = W n , m x m C_{n,m} = W_{n,m}x_m Cn,m​=Wn,m​xm​" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/a149d185a5cb07d8eb9e27de5508ec58/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2022-06-17T16:07:47+08:00" />
+<meta property="article:modified_time" content="2022-06-17T16:07:47+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Quantization｜A White Paper on Neural Network Quantization (谷歌量化白皮书)</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p>记一下谷歌量化白皮书的理解。</p> 
+<h3><a id="1_Introducation_4"></a>1 Introducation</h3> 
+<p>本文介绍两种主要的category：</p> 
+<ul><li>PTQ: post-training quantization: 只需要在正常训练后的参数上调超参数</li><li>QAT: quantization-aware-training: 需要在训练网络的时候量化</li></ul> 
+<h3><a id="2_Quantization_fundanmentals_10"></a>2 Quantization fundanmentals</h3> 
+<h4><a id="21_Hardware_background_11"></a>2.1 Hardware background</h4> 
+<p>硬件如何计算一个矩阵乘法<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         y 
+        
+       
+         = 
+        
+       
+         W 
+        
+       
+         x 
+        
+       
+         + 
+        
+       
+         b 
+        
+       
+      
+        y = Wx + b 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.625em; vertical-align: -0.19444em;"></span><span class="mord mathdefault" style="margin-right: 0.03588em;">y</span><span class="mspace" style="margin-right: 0.277778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.277778em;"></span></span><span class="base"><span class="strut" style="height: 0.76666em; vertical-align: -0.08333em;"></span><span class="mord mathdefault" style="margin-right: 0.13889em;">W</span><span class="mord mathdefault">x</span><span class="mspace" style="margin-right: 0.222222em;"></span><span class="mbin">+</span><span class="mspace" style="margin-right: 0.222222em;"></span></span><span class="base"><span class="strut" style="height: 0.69444em; vertical-align: 0em;"></span><span class="mord mathdefault">b</span></span></span></span></span>? 如图，NN 加速器主要需要两组成部分：processing elements <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          C 
+         
+         
+         
+           n 
+          
+         
+           , 
+          
+         
+           m 
+          
+         
+        
+       
+      
+        C_{n,m} 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.969438em; vertical-align: -0.286108em;"></span><span class="mord"><span class="mord mathdefault" style="margin-right: 0.07153em;">C</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.151392em;"><span class="" style="top: -2.55em; margin-left: -0.07153em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathdefault mtight">n</span><span class="mpunct mtight">,</span><span class="mord mathdefault mtight">m</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.286108em;"><span class=""></span></span></span></span></span></span></span></span></span></span> 和accumulators <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          A 
+         
+        
+          n 
+         
+        
+       
+      
+        A_n 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.83333em; vertical-align: -0.15em;"></span><span class="mord"><span class="mord mathdefault">A</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.151392em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight">n</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span></span></span></span></span> .计算的流程：</p> 
+<ol><li> <p>load bias value <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+       
+        
+         
+          
+          
+            b 
+           
+          
+            n 
+           
+          
+         
+        
+          b_n 
+         
+        
+      </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.84444em; vertical-align: -0.15em;"></span><span class="mord"><span class="mord mathdefault">b</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.151392em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight">n</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span></span></span></span></span>,</p> </li><li> <p>load weight values <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+       
+        
+         
+          
+          
+            W 
+           
+           
+           
+             n 
+            
+           
+             , 
+            
+           
+             m 
+            
+           
+          
+         
+        
+          W_{n,m} 
+         
+        
+      </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.969438em; vertical-align: -0.286108em;"></span><span class="mord"><span class="mord mathdefault" style="margin-right: 0.13889em;">W</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.151392em;"><span class="" style="top: -2.55em; margin-left: -0.13889em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathdefault mtight">n</span><span class="mpunct mtight">,</span><span class="mord mathdefault mtight">m</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.286108em;"><span class=""></span></span></span></span></span></span></span></span></span></span> 以及 这层的输入<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+       
+        
+         
+          
+          
+            x 
+           
+          
+            m 
+           
+          
+         
+        
+          x_m 
+         
+        
+      </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.58056em; vertical-align: -0.15em;"></span><span class="mord"><span class="mord mathdefault">x</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.151392em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight">m</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span></span></span></span></span>, 计算<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+       
+        
+         
+          
+          
+            C 
+           
+           
+           
+             n 
+            
+           
+             , 
+            
+           
+             m 
+            
+           
+          
+         
+           = 
+          
+          
+          
+            W 
+           
+           
+           
+             n 
+            
+           
+             , 
+            
+           
+             m 
+            
+           
+          
+          
+          
+            x 
+           
+          
+            m 
+           
+          
+         
+        
+          C_{n,m} = W_{n,m}x_m 
+         
+        
+      </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.969438em; vertical-align: -0.286108em;"></span><span class="mord"><span class="mord mathdefault" style="margin-right: 0.07153em;">C</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.151392em;"><span class="" style="top: -2.55em; margin-left: -0.07153em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathdefault mtight">n</span><span class="mpunct mtight">,</span><span class="mord mathdefault mtight">m</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.286108em;"><span class=""></span></span></span></span></span></span><span class="mspace" style="margin-right: 0.277778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.277778em;"></span></span><span class="base"><span class="strut" style="height: 0.969438em; vertical-align: -0.286108em;"></span><span class="mord"><span class="mord mathdefault" style="margin-right: 0.13889em;">W</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.151392em;"><span class="" style="top: -2.55em; margin-left: -0.13889em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathdefault mtight">n</span><span class="mpunct mtight">,</span><span class="mord mathdefault mtight">m</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.286108em;"><span class=""></span></span></span></span></span></span><span class="mord"><span class="mord mathdefault">x</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.151392em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight">m</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span></span></span></span></span></p> </li><li> <p>把计算结果放进accumulator：<br> <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+       
+        
+         
+          
+          
+            A 
+           
+          
+            n 
+           
+          
+         
+           = 
+          
+          
+          
+            b 
+           
+          
+            n 
+           
+          
+         
+           + 
+          
+         
+           ∑ 
+          
+          
+          
+            C 
+           
+           
+           
+             n 
+            
+           
+             , 
+            
+           
+             m 
+            
+           
+          
+         
+        
+          A_n = b_n+ \sum{C_{n,m}} 
+         
+        
+      </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.83333em; vertical-align: -0.15em;"></span><span class="mord"><span class="mord mathdefault">A</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.151392em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight">n</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mspace" style="margin-right: 0.277778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.277778em;"></span></span><span class="base"><span class="strut" style="height: 0.84444em; vertical-align: -0.15em;"></span><span class="mord"><span class="mord mathdefault">b</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.151392em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight">n</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mspace" style="margin-right: 0.222222em;"></span><span class="mbin">+</span><span class="mspace" style="margin-right: 0.222222em;"></span></span><span class="base"><span class="strut" style="height: 1.03611em; vertical-align: -0.286108em;"></span><span class="mop op-symbol small-op" style="position: relative; top: -5e-06em;">∑</span><span class="mspace" style="margin-right: 0.166667em;"></span><span class="mord"><span class="mord"><span class="mord mathdefault" style="margin-right: 0.07153em;">C</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.151392em;"><span class="" style="top: -2.55em; margin-left: -0.07153em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathdefault mtight">n</span><span class="mpunct mtight">,</span><span class="mord mathdefault mtight">m</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.286108em;"><span class=""></span></span></span></span></span></span></span></span></span></span></span></p> </li></ol> 
+<p>上面的步骤就叫 MAC(Multiply-accumulate). 对于较大的矩阵乘法，该步骤重复很多次。在所有cycle结束以后，accumulator里的值被放回memory，供下一层神经网络使用。</p> 
+<p><img src="https://images2.imgbox.com/f0/e8/GOLXFfhG_o.png" alt="在这里插入图片描述"></p> 
+<p>一般NN用的都是FP32，MAC操作和数据传输需要能量消耗，因此我们需要量化。一个浮点数可以被表示为：</p> 
+<p><span class="katex--display"><span class="katex-display"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+         
+         
+           X 
+          
+         
+           ^ 
+          
+         
+        
+          = 
+         
+         
+         
+           s 
+          
+         
+           X 
+          
+         
+        
+          ⋅ 
+         
+         
+         
+           x 
+          
+          
+          
+            i 
+           
+          
+            n 
+           
+          
+            t 
+           
+          
+         
+        
+          ≈ 
+         
+        
+          x 
+         
+        
+       
+         \hat{X} = s_X·x_{int} \approx x 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.94677em; vertical-align: 0em;"></span><span class="mord accent"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.94677em;"><span class="" style="top: -3em;"><span class="pstrut" style="height: 3em;"></span><span class="mord"><span class="mord mathdefault" style="margin-right: 0.07847em;">X</span></span></span><span class="" style="top: -3.25233em;"><span class="pstrut" style="height: 3em;"></span><span class="accent-body" style="left: -0.16666em;">^</span></span></span></span></span></span><span class="mspace" style="margin-right: 0.277778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.277778em;"></span></span><span class="base"><span class="strut" style="height: 0.63312em; vertical-align: -0.15em;"></span><span class="mord"><span class="mord mathdefault">s</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.328331em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight" style="margin-right: 0.07847em;">X</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mpunct">⋅</span><span class="mspace" style="margin-right: 0.166667em;"></span><span class="mord"><span class="mord mathdefault">x</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.311664em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathdefault mtight">i</span><span class="mord mathdefault mtight">n</span><span class="mord mathdefault mtight">t</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mspace" style="margin-right: 0.277778em;"></span><span class="mrel">≈</span><span class="mspace" style="margin-right: 0.277778em;"></span></span><span class="base"><span class="strut" style="height: 0.43056em; vertical-align: 0em;"></span><span class="mord mathdefault">x</span></span></span></span></span></span></p> 
+<p>其中<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          s 
+         
+        
+          x 
+         
+        
+       
+      
+        s_x 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.58056em; vertical-align: -0.15em;"></span><span class="mord"><span class="mord mathdefault">s</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.151392em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight">x</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span></span></span></span></span>是一个浮点数scale factor，<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          x 
+         
+        
+          i 
+         
+        
+       
+         n 
+        
+       
+         t 
+        
+       
+      
+        x_int 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.76508em; vertical-align: -0.15em;"></span><span class="mord"><span class="mord mathdefault">x</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.311664em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight">i</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mord mathdefault">n</span><span class="mord mathdefault">t</span></span></span></span></span>是一个integer vector。我们用<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          X 
+         
+        
+          ^ 
+         
+        
+       
+      
+        \hat{X} 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.94677em; vertical-align: 0em;"></span><span class="mord accent"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.94677em;"><span class="" style="top: -3em;"><span class="pstrut" style="height: 3em;"></span><span class="mord"><span class="mord mathdefault" style="margin-right: 0.07847em;">X</span></span></span><span class="" style="top: -3.25233em;"><span class="pstrut" style="height: 3em;"></span><span class="accent-body" style="left: -0.16666em;">^</span></span></span></span></span></span></span></span></span></span>来表示量化后的vector。量化weights和activation之后，我们重写accumulation equation。</p> 
+<p><img src="https://images2.imgbox.com/7f/ce/wEvMT4ok_o.png" alt="在这里插入图片描述"></p> 
+<p>注意这里有两个scale vector，<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          s 
+         
+        
+          w 
+         
+        
+       
+      
+        s_w 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.58056em; vertical-align: -0.15em;"></span><span class="mord"><span class="mord mathdefault">s</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.151392em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight" style="margin-right: 0.02691em;">w</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span></span></span></span></span> for weights，<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          s 
+         
+        
+          x 
+         
+        
+       
+      
+        s_x 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.58056em; vertical-align: -0.15em;"></span><span class="mord"><span class="mord mathdefault">s</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.151392em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight">x</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span></span></span></span></span> for activations（这里不是activation激活函数，是这层的输入）. 这里暂时不量化bias。下图展示了加入量化过后的accumulators。requantization的步骤是为了在把数据写入memory的时候减少传输代价，所以这里重新量化成INT8.</p> 
+<p><img src="https://images2.imgbox.com/11/b7/4tXzJvIS_o.png" alt="在这里插入图片描述"></p> 
+<h4><a id="22_Uniform_affine_quantization_44"></a>2.2 Uniform affine quantization</h4> 
+<p>uniform affine quantization（asymmetric quantization）均匀映射量化是最常用的量化方式，因为它能让浮点数运算的实现变得高效。它有三个参数：<strong>步长scale factor <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          s 
+         
+        
+       
+         s 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.43056em; vertical-align: 0em;"></span><span class="mord mathdefault">s</span></span></span></span></span></strong>, <strong>零点zero-point <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          z 
+         
+        
+       
+         z 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.43056em; vertical-align: 0em;"></span><span class="mord mathdefault" style="margin-right: 0.04398em;">z</span></span></span></span></span>, 位宽bit-width <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          b 
+         
+        
+       
+         b 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.69444em; vertical-align: 0em;"></span><span class="mord mathdefault">b</span></span></span></span></span></strong>。 <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         s 
+        
+       
+      
+        s 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.43056em; vertical-align: 0em;"></span><span class="mord mathdefault">s</span></span></span></span></span> 和<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         z 
+        
+       
+      
+        z 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.43056em; vertical-align: 0em;"></span><span class="mord mathdefault" style="margin-right: 0.04398em;">z</span></span></span></span></span> 用来把浮点数映射到整数网格，而整数网格的大小由<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         b 
+        
+       
+      
+        b 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.69444em; vertical-align: 0em;"></span><span class="mord mathdefault">b</span></span></span></span></span> 决定。步长通常是浮点数。零点通常是整数，用来保证真实的0被正确量化。下面的式子把x映射到整数网格<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         { 
+        
+       
+         0 
+        
+       
+         , 
+        
+       
+         . 
+        
+       
+         . 
+        
+       
+         . 
+        
+        
+        
+          2 
+         
+        
+          b 
+         
+        
+       
+         − 
+        
+       
+         1 
+        
+       
+         } 
+        
+       
+      
+        \{0,...2^b-1\} 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 1.09911em; vertical-align: -0.25em;"></span><span class="mopen">{<!-- --></span><span class="mord">0</span><span class="mpunct">,</span><span class="mspace" style="margin-right: 0.166667em;"></span><span class="mord">.</span><span class="mord">.</span><span class="mord">.</span><span class="mord"><span class="mord">2</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.849108em;"><span class="" style="top: -3.063em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight">b</span></span></span></span></span></span></span></span><span class="mspace" style="margin-right: 0.222222em;"></span><span class="mbin">−</span><span class="mspace" style="margin-right: 0.222222em;"></span></span><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mord">1</span><span class="mclose">}</span></span></span></span></span></p> 
+<p><img src="https://images2.imgbox.com/e7/19/FMdDjYLN_o.png" alt="在这里插入图片描述"></p> 
+<p>即先计算<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         [ 
+        
+        
+        
+          s 
+         
+        
+          x 
+         
+        
+       
+         + 
+        
+       
+         z 
+        
+       
+         ] 
+        
+       
+      
+        [\frac{s}{x}+z] 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 1.095em; vertical-align: -0.345em;"></span><span class="mopen">[</span><span class="mord"><span class="mopen nulldelimiter"></span><span class="mfrac"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.695392em;"><span class="" style="top: -2.655em;"><span class="pstrut" style="height: 3em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathdefault mtight">x</span></span></span></span><span class="" style="top: -3.23em;"><span class="pstrut" style="height: 3em;"></span><span class="frac-line" style="border-bottom-width: 0.04em;"></span></span><span class="" style="top: -3.394em;"><span class="pstrut" style="height: 3em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathdefault mtight">s</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.345em;"><span class=""></span></span></span></span></span><span class="mclose nulldelimiter"></span></span><span class="mspace" style="margin-right: 0.222222em;"></span><span class="mbin">+</span><span class="mspace" style="margin-right: 0.222222em;"></span></span><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mord mathdefault" style="margin-right: 0.04398em;">z</span><span class="mclose">]</span></span></span></span></span>,负数全都变成0，溢出的变成最大值。如果要计算近似的真实值，则<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         x 
+        
+       
+         ≈ 
+        
+        
+        
+          x 
+         
+        
+          ^ 
+         
+        
+       
+         = 
+        
+       
+         s 
+        
+       
+         ( 
+        
+        
+        
+          x 
+         
+         
+         
+           i 
+          
+         
+           n 
+          
+         
+           t 
+          
+         
+        
+       
+         − 
+        
+       
+         z 
+        
+       
+         ) 
+        
+       
+      
+        x \approx \hat{x} = s(x_{int} -z) 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.48312em; vertical-align: 0em;"></span><span class="mord mathdefault">x</span><span class="mspace" style="margin-right: 0.277778em;"></span><span class="mrel">≈</span><span class="mspace" style="margin-right: 0.277778em;"></span></span><span class="base"><span class="strut" style="height: 0.69444em; vertical-align: 0em;"></span><span class="mord accent"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.69444em;"><span class="" style="top: -3em;"><span class="pstrut" style="height: 3em;"></span><span class="mord"><span class="mord mathdefault">x</span></span></span><span class="" style="top: -3em;"><span class="pstrut" style="height: 3em;"></span><span class="accent-body" style="left: -0.22222em;">^</span></span></span></span></span></span><span class="mspace" style="margin-right: 0.277778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.277778em;"></span></span><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mord mathdefault">s</span><span class="mopen">(</span><span class="mord"><span class="mord mathdefault">x</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.311664em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathdefault mtight">i</span><span class="mord mathdefault mtight">n</span><span class="mord mathdefault mtight">t</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mspace" style="margin-right: 0.222222em;"></span><span class="mbin">−</span><span class="mspace" style="margin-right: 0.222222em;"></span></span><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mord mathdefault" style="margin-right: 0.04398em;">z</span><span class="mclose">)</span></span></span></span></span></p> 
+<p>这种方法有个问题，对于极端的单边分布，可能clip了大部分的数值，产生clipping error。如何减少clipping error？范围(<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         { 
+        
+        
+        
+          q 
+         
+         
+         
+           m 
+          
+         
+           i 
+          
+         
+           n 
+          
+         
+        
+       
+         , 
+        
+        
+        
+          q 
+         
+         
+         
+           m 
+          
+         
+           a 
+          
+         
+           x 
+          
+         
+        
+       
+         } 
+        
+       
+      
+        \{q_{min},q_{max}\} 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mopen">{<!-- --></span><span class="mord"><span class="mord mathdefault" style="margin-right: 0.03588em;">q</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.311664em;"><span class="" style="top: -2.55em; margin-left: -0.03588em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathdefault mtight">m</span><span class="mord mathdefault mtight">i</span><span class="mord mathdefault mtight">n</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mpunct">,</span><span class="mspace" style="margin-right: 0.166667em;"></span><span class="mord"><span class="mord mathdefault" style="margin-right: 0.03588em;">q</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.151392em;"><span class="" style="top: -2.55em; margin-left: -0.03588em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathdefault mtight">m</span><span class="mord mathdefault mtight">a</span><span class="mord mathdefault mtight">x</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mclose">}</span></span></span></span></span>)需要更宽来包含零点,即增加步长<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         s 
+        
+       
+      
+        s 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.43056em; vertical-align: 0em;"></span><span class="mord mathdefault">s</span></span></span></span></span>。但是这会导致在[<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         − 
+        
+        
+        
+          s 
+         
+        
+          2 
+         
+        
+       
+         , 
+        
+        
+        
+          s 
+         
+        
+          2 
+         
+        
+       
+      
+        -\frac{s}{2},\frac{s}{2} 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 1.04039em; vertical-align: -0.345em;"></span><span class="mord">−</span><span class="mord"><span class="mopen nulldelimiter"></span><span class="mfrac"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.695392em;"><span class="" style="top: -2.655em;"><span class="pstrut" style="height: 3em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mtight">2</span></span></span></span><span class="" style="top: -3.23em;"><span class="pstrut" style="height: 3em;"></span><span class="frac-line" style="border-bottom-width: 0.04em;"></span></span><span class="" style="top: -3.394em;"><span class="pstrut" style="height: 3em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathdefault mtight">s</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.345em;"><span class=""></span></span></span></span></span><span class="mclose nulldelimiter"></span></span><span class="mpunct">,</span><span class="mspace" style="margin-right: 0.166667em;"></span><span class="mord"><span class="mopen nulldelimiter"></span><span class="mfrac"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.695392em;"><span class="" style="top: -2.655em;"><span class="pstrut" style="height: 3em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mtight">2</span></span></span></span><span class="" style="top: -3.23em;"><span class="pstrut" style="height: 3em;"></span><span class="frac-line" style="border-bottom-width: 0.04em;"></span></span><span class="" style="top: -3.394em;"><span class="pstrut" style="height: 3em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathdefault mtight">s</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.345em;"><span class=""></span></span></span></span></span><span class="mclose nulldelimiter"></span></span></span></span></span></span>]范围里的rounding error增加，所以这里有个trade-off。</p> 
+<h5><a id="221_Symmetric_uniform_quantization_57"></a>2.2.1 Symmetric uniform quantization</h5> 
+<p>是general asymmetric case的简单版（asymmetric的零点是个整数，symmetric零点就是0）。限制zero-point为0.降低处理zero-point的计算overhead。但是这个时候signed 和unsigned int的情况要分开讨论。</p> 
+<p><img src="https://images2.imgbox.com/b7/e0/dSyCjXqn_o.png" alt="在这里插入图片描述"></p> 
+<h5><a id="222_Poweroftwo_quantizer_66"></a>2.2.2 Power-of-two quantizer</h5> 
+<p>是symmetric quantization的特殊情况。即步长<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         s 
+        
+       
+      
+        s 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.43056em; vertical-align: 0em;"></span><span class="mord mathdefault">s</span></span></span></span></span>必须是2的次方<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         s 
+        
+       
+         = 
+        
+        
+        
+          2 
+         
+         
+         
+           − 
+          
+         
+           k 
+          
+         
+        
+       
+      
+        s=2^{-k} 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.43056em; vertical-align: 0em;"></span><span class="mord mathdefault">s</span><span class="mspace" style="margin-right: 0.277778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.277778em;"></span></span><span class="base"><span class="strut" style="height: 0.849108em; vertical-align: 0em;"></span><span class="mord"><span class="mord">2</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.849108em;"><span class="" style="top: -3.063em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mtight">−</span><span class="mord mathdefault mtight" style="margin-right: 0.03148em;">k</span></span></span></span></span></span></span></span></span></span></span></span></span>.原因：hardware efficiency，scale with <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         s 
+        
+       
+      
+        s 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.43056em; vertical-align: 0em;"></span><span class="mord mathdefault">s</span></span></span></span></span> 可以直接 bit shift</p> 
+<h5><a id="223_Quantization_granularity_72"></a>2.2.3 Quantization granularity</h5> 
+<p>目前的量化为per-tensor quantization， 因为我们只定义了两组量化参数，一组给weight用，一组给activation用。我们还能定义更细粒度的量化参数，比如per-channel quantization，细粒度能提升精度但是增加overhead。</p> 
+<h4><a id="23_Quantization_simulation_78"></a>2.3 Quantization simulation</h4> 
+<p>量化模拟就是在通用硬件上模拟量化行为。比如卷积，需要在conv之前和activation之后进行量化。</p> 
+<p><img src="https://images2.imgbox.com/03/a6/4574rMOr_o.png" alt="在这里插入图片描述"></p> 
+<h5><a id="231_batch_normalization_folding_85"></a>2.3.1 batch normalization folding</h5> 
+<p>原本batch normalization 是在linear layer之后，我们把batch normalization 和 linear layer fuse在一起，则可以得到</p> 
+<p><img src="https://images2.imgbox.com/44/8c/v4ed4A66_o.png" alt="在这里插入图片描述"></p> 
+<p>其中<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         σ 
+        
+       
+      
+        \sigma 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.43056em; vertical-align: 0em;"></span><span class="mord mathdefault" style="margin-right: 0.03588em;">σ</span></span></span></span></span> 和$ \mu<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         是 
+        
+       
+         v 
+        
+       
+         a 
+        
+       
+         r 
+        
+       
+         i 
+        
+       
+         a 
+        
+       
+         n 
+        
+       
+         c 
+        
+       
+         e 
+        
+       
+         和 
+        
+       
+         m 
+        
+       
+         e 
+        
+       
+         a 
+        
+       
+         n 
+        
+       
+         是 
+        
+       
+         训 
+        
+       
+         练 
+        
+       
+         期 
+        
+       
+         间 
+        
+       
+         计 
+        
+       
+         算 
+        
+       
+         的 
+        
+       
+         均 
+        
+       
+         值 
+        
+       
+         和 
+        
+       
+         方 
+        
+       
+         差 
+        
+       
+         ， 
+        
+       
+      
+        是variance 和 mean是训练期间计算的均值和方差， 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.65952em; vertical-align: 0em;"></span><span class="mord cjk_fallback">是</span><span class="mord mathdefault" style="margin-right: 0.03588em;">v</span><span class="mord mathdefault">a</span><span class="mord mathdefault" style="margin-right: 0.02778em;">r</span><span class="mord mathdefault">i</span><span class="mord mathdefault">a</span><span class="mord mathdefault">n</span><span class="mord mathdefault">c</span><span class="mord mathdefault">e</span><span class="mord cjk_fallback">和</span><span class="mord mathdefault">m</span><span class="mord mathdefault">e</span><span class="mord mathdefault">a</span><span class="mord mathdefault">n</span><span class="mord cjk_fallback">是</span><span class="mord cjk_fallback">训</span><span class="mord cjk_fallback">练</span><span class="mord cjk_fallback">期</span><span class="mord cjk_fallback">间</span><span class="mord cjk_fallback">计</span><span class="mord cjk_fallback">算</span><span class="mord cjk_fallback">的</span><span class="mord cjk_fallback">均</span><span class="mord cjk_fallback">值</span><span class="mord cjk_fallback">和</span><span class="mord cjk_fallback">方</span><span class="mord cjk_fallback">差</span><span class="mord cjk_fallback">，</span></span></span></span></span>\gamma$ 和<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         β 
+        
+       
+      
+        \beta 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.88888em; vertical-align: -0.19444em;"></span><span class="mord mathdefault" style="margin-right: 0.05278em;">β</span></span></span></span></span>是每个通道学习到的affine hyper-parameter 。</p> 
+<h5><a id="232_Activation_function_folding_94"></a>2.3.2 Activation function folding</h5> 
+<p>一般linear function后面都有non-linearity, 所以我们可以直接在non-linearity后面应用量化。</p> 
+<h5><a id="233_Other_layers_and_quantization_98"></a>2.3.3 Other layers and quantization</h5> 
+<p><strong>maxpooling</strong>: 不需要quantization，因为input和output在same integer grid</p> 
+<p><strong>avgpooling</strong>: 因为均值不一定是integer，所以avgpool之后还需要量化。但是input和output的grid基本相同，所以用同一个quantizer。</p> 
+<p><strong>element-wise addition</strong>: 要求两个input的quantization range精准匹配。目前没有可用的solution，但是可以在操作后加一个requantization. 另一种方法是根据input调整量化grids，这种方法不需要requantization，但是需要调参。</p> 
+<p>**concatenation: ** 一般concatenation的两个input不在同一个quantization grids里，所以一般都需要requantization。和上面一种一样，可能可以让神经网络学习同一组量化参数。</p> 
+<h4><a id="24_Practical_considerations_108"></a>2.4 Practical considerations</h4> 
+<p>注意这一节只考虑homogenous bit-width，这意味着为weights或activation选择的位宽在所有层中保持不变。</p> 
+<h5><a id="241_Symmetric_vs_asymmetric_quantization_112"></a>2.4.1 Symmetric vs. asymmetric quantization</h5> 
+<p>一般会使用asymmetric activation quantization, 以及symmetric weight quantization.</p> 
+<h5><a id="242_Pertensor_and_perchannel_quantization_116"></a>2.4.2 Per-tensor and per-channel quantization</h5> 
+<p>细粒度的区别，per-channel更细，但是更难implement</p> 
+<h3><a id="3_Posttraining_quantization_120"></a>3 Post-training quantization</h3> 
+<p>不需要在训练过程中量化，而是把训练好的模型直接量化。一般需要一个小的calibration set(数据集)。</p> 
+<p>fundamental step：finding good quantization ranges for each quantizer.</p> 
+<h4><a id="31_Quantization_range_setting_126"></a>3.1 Quantization range setting</h4> 
+<p>key trade-off: clipping error &amp; rounding error （in section2.2）</p> 
+<p>这里的方法都optimize local cost function, 而不是task loss.</p> 
+<p>weight quantization不需要calibration，而activation quantization需要calibration data。</p> 
+<p><strong>Min-max</strong> <img src="https://images2.imgbox.com/a8/bd/s3rurpjf_o.png" alt="在这里插入图片描述"></p> 
+<p>​ V是input tensor。这种方法没有clipping error，但是sensitive to outliers.</p> 
+<p><strong>Mean-square error(MSE)</strong></p> 
+<p><img src="https://images2.imgbox.com/10/d5/eQXiUX54_o.png" alt="在这里插入图片描述"></p> 
+<p>minimize MSE.</p> 
+<p><strong>Cross-entropy</strong>[外链图片转存失败,源站可能有防盗链机制,建议将图片保存下来直接上传(img-uY9hKucn-1655452386971)(quantization.assets/截屏2022-06-06 14.29.22.png)]</p> 
+<p><strong>BN based range setting</strong></p> 
+<p><img src="https://images2.imgbox.com/11/7b/WEus89jV_o.png" alt="在这里插入图片描述"></p> 
+<h4><a id="32_Crosslayer_equalization_155"></a>3.2 Cross-layer equalization</h4> 
+<p>Per-tensor quantization会面临问题：当一个tensor里元素差距太大，很难balance clipping error &amp; rounding error. 所以要在不同layer里寻找量化的可能性。一个observation：很多激活函数满足<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         f 
+        
+       
+         ( 
+        
+       
+         s 
+        
+       
+         x 
+        
+       
+         ) 
+        
+       
+         = 
+        
+       
+         s 
+        
+       
+         f 
+        
+       
+         ( 
+        
+       
+         x 
+        
+       
+         ) 
+        
+       
+      
+        f(sx) = sf(x) 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mord mathdefault" style="margin-right: 0.10764em;">f</span><span class="mopen">(</span><span class="mord mathdefault">s</span><span class="mord mathdefault">x</span><span class="mclose">)</span><span class="mspace" style="margin-right: 0.277778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.277778em;"></span></span><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mord mathdefault">s</span><span class="mord mathdefault" style="margin-right: 0.10764em;">f</span><span class="mopen">(</span><span class="mord mathdefault">x</span><span class="mclose">)</span></span></span></span></span> . 这叫scaling equivalence。</p> 
+<p><img src="https://images2.imgbox.com/48/4d/LocoqPzy_o.png" alt="在这里插入图片描述"></p> 
+<p>我们可以找到一个quantization factor <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         s 
+        
+       
+      
+        s 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.43056em; vertical-align: 0em;"></span><span class="mord mathdefault">s</span></span></span></span></span>, 让rescaled layer里的量化噪声最小。这叫cross-layer equalization(CLE). Optimal 的<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         s 
+        
+       
+      
+        s 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.43056em; vertical-align: 0em;"></span><span class="mord mathdefault">s</span></span></span></span></span> :</p> 
+<p><img src="https://images2.imgbox.com/5b/f7/XLuRxM7p_o.png" alt="在这里插入图片描述"></p> 
+<p>这里的<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         s 
+        
+       
+      
+        s 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.43056em; vertical-align: 0em;"></span><span class="mord mathdefault">s</span></span></span></span></span> 只考虑了weight。 同时有人也考虑了activation, 但是没有被证明optimal。</p> 
+<p><strong>absorbing high bias</strong></p> 
+<p>Nagel <em>et al.</em> 发现，有的时候CLE会导不同的activation的范围，所以他们提出一种能够让high bias被下一层layer吸收的方法。下面的式子说明，如何把第一层的c吸收到第二层。（第一层后面接了ReLu activation function <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         f 
+        
+       
+      
+        f 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.88888em; vertical-align: -0.19444em;"></span><span class="mord mathdefault" style="margin-right: 0.10764em;">f</span></span></span></span></span>.</p> 
+<p><img src="https://images2.imgbox.com/e3/dc/kGiHudBU_o.png" alt="在这里插入图片描述"></p> 
+<p><img src="https://images2.imgbox.com/00/bc/z8Gp3vYY_o.png" alt="在这里插入图片描述"></p> 
+<p>第一行到第二行是因为对于ReLU,存在一个非负vector <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         c 
+        
+       
+      
+        c 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.43056em; vertical-align: 0em;"></span><span class="mord mathdefault">c</span></span></span></span></span>满足:</p> 
+<p>​ <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         r 
+        
+       
+         ( 
+        
+       
+         W 
+        
+       
+         x 
+        
+       
+         + 
+        
+       
+         b 
+        
+       
+         − 
+        
+       
+         c 
+        
+       
+         ) 
+        
+       
+         = 
+        
+       
+         r 
+        
+       
+         ( 
+        
+       
+         W 
+        
+       
+         x 
+        
+       
+         + 
+        
+       
+         b 
+        
+       
+         ) 
+        
+       
+         − 
+        
+       
+         c 
+        
+       
+      
+        r(Wx +b-c) = r(Wx+b)-c 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mord mathdefault" style="margin-right: 0.02778em;">r</span><span class="mopen">(</span><span class="mord mathdefault" style="margin-right: 0.13889em;">W</span><span class="mord mathdefault">x</span><span class="mspace" style="margin-right: 0.222222em;"></span><span class="mbin">+</span><span class="mspace" style="margin-right: 0.222222em;"></span></span><span class="base"><span class="strut" style="height: 0.77777em; vertical-align: -0.08333em;"></span><span class="mord mathdefault">b</span><span class="mspace" style="margin-right: 0.222222em;"></span><span class="mbin">−</span><span class="mspace" style="margin-right: 0.222222em;"></span></span><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mord mathdefault">c</span><span class="mclose">)</span><span class="mspace" style="margin-right: 0.277778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.277778em;"></span></span><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mord mathdefault" style="margin-right: 0.02778em;">r</span><span class="mopen">(</span><span class="mord mathdefault" style="margin-right: 0.13889em;">W</span><span class="mord mathdefault">x</span><span class="mspace" style="margin-right: 0.222222em;"></span><span class="mbin">+</span><span class="mspace" style="margin-right: 0.222222em;"></span></span><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mord mathdefault">b</span><span class="mclose">)</span><span class="mspace" style="margin-right: 0.222222em;"></span><span class="mbin">−</span><span class="mspace" style="margin-right: 0.222222em;"></span></span><span class="base"><span class="strut" style="height: 0.43056em; vertical-align: 0em;"></span><span class="mord mathdefault">c</span></span></span></span></span></p> 
+<p>什么情况下上面这个式子能成立呢？首先，这是一个正常ReLU：</p> 
+<p><img src="https://images2.imgbox.com/2c/86/5ZBfhVCB_o.png" alt="在这里插入图片描述"></p> 
+<p>对于等式左边和右边，分别表示为下面两张图。这里我们假设<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         c 
+        
+       
+         = 
+        
+       
+         1 
+        
+       
+      
+        c=1 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.43056em; vertical-align: 0em;"></span><span class="mord mathdefault">c</span><span class="mspace" style="margin-right: 0.277778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.277778em;"></span></span><span class="base"><span class="strut" style="height: 0.64444em; vertical-align: 0em;"></span><span class="mord">1</span></span></span></span></span></p> 
+<p><img src="https://images2.imgbox.com/28/ac/G7nph72J_o.png" alt="在这里插入图片描述"><br> <img src="https://images2.imgbox.com/12/1f/AQDaXWIb_o.png" alt="在这里插入图片描述"></p> 
+<p>可以看出，当<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         x 
+        
+       
+         &gt; 
+        
+       
+         c 
+        
+       
+      
+        x&gt;c 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.5782em; vertical-align: -0.0391em;"></span><span class="mord mathdefault">x</span><span class="mspace" style="margin-right: 0.277778em;"></span><span class="mrel">&gt;</span><span class="mspace" style="margin-right: 0.277778em;"></span></span><span class="base"><span class="strut" style="height: 0.43056em; vertical-align: 0em;"></span><span class="mord mathdefault">c</span></span></span></span></span>的时候，等式才完全成立。所以我们想找一个<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         c 
+        
+       
+      
+        c 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.43056em; vertical-align: 0em;"></span><span class="mord mathdefault">c</span></span></span></span></span>,尽量让大部分<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         x 
+        
+       
+         &gt; 
+        
+       
+         c 
+        
+       
+      
+        x&gt;c 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.5782em; vertical-align: -0.0391em;"></span><span class="mord mathdefault">x</span><span class="mspace" style="margin-right: 0.277778em;"></span><span class="mrel">&gt;</span><span class="mspace" style="margin-right: 0.277778em;"></span></span><span class="base"><span class="strut" style="height: 0.43056em; vertical-align: 0em;"></span><span class="mord mathdefault">c</span></span></span></span></span>。所以<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         c 
+        
+       
+      
+        c 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.43056em; vertical-align: 0em;"></span><span class="mord mathdefault">c</span></span></span></span></span>是这么来的:</p> 
+<p><img src="https://images2.imgbox.com/68/ca/atsprSuP_o.png" alt="在这里插入图片描述"></p> 
+<p>这里的<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         m 
+        
+       
+         i 
+        
+        
+        
+          n 
+         
+        
+          x 
+         
+        
+       
+      
+        min_x 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.80952em; vertical-align: -0.15em;"></span><span class="mord mathdefault">m</span><span class="mord mathdefault">i</span><span class="mord"><span class="mord mathdefault">n</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.151392em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathdefault mtight">x</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span></span></span></span></span> 是在校准集上算出来的。对于测试集，并不能保证量化后无误差，因此这里还是有量化误差。</p> 
+<h4><a id="33_Bias_correction_208"></a>3.3 Bias correction</h4> 
+<p>量化误差通常是biased的。比如没有量化的参数是<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         W 
+        
+       
+      
+        W 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.68333em; vertical-align: 0em;"></span><span class="mord mathdefault" style="margin-right: 0.13889em;">W</span></span></span></span></span>,量化后是<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          W 
+         
+        
+          ^ 
+         
+        
+       
+      
+        \hat{W} 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.94677em; vertical-align: 0em;"></span><span class="mord accent"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.94677em;"><span class="" style="top: -3em;"><span class="pstrut" style="height: 3em;"></span><span class="mord"><span class="mord mathdefault" style="margin-right: 0.13889em;">W</span></span></span><span class="" style="top: -3.25233em;"><span class="pstrut" style="height: 3em;"></span><span class="accent-body" style="left: -0.25em;">^</span></span></span></span></span></span></span></span></span></span>,则对于<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         W 
+        
+       
+      
+        W 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.68333em; vertical-align: 0em;"></span><span class="mord mathdefault" style="margin-right: 0.13889em;">W</span></span></span></span></span>的量化误差是<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         Δ 
+        
+       
+         W 
+        
+       
+         = 
+        
+        
+        
+          W 
+         
+        
+          ^ 
+         
+        
+       
+         − 
+        
+       
+         W 
+        
+       
+      
+        \Delta W = \hat{W}-W 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.68333em; vertical-align: 0em;"></span><span class="mord">Δ</span><span class="mord mathdefault" style="margin-right: 0.13889em;">W</span><span class="mspace" style="margin-right: 0.277778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.277778em;"></span></span><span class="base"><span class="strut" style="height: 1.0301em; vertical-align: -0.08333em;"></span><span class="mord accent"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.94677em;"><span class="" style="top: -3em;"><span class="pstrut" style="height: 3em;"></span><span class="mord"><span class="mord mathdefault" style="margin-right: 0.13889em;">W</span></span></span><span class="" style="top: -3.25233em;"><span class="pstrut" style="height: 3em;"></span><span class="accent-body" style="left: -0.25em;">^</span></span></span></span></span></span><span class="mspace" style="margin-right: 0.222222em;"></span><span class="mbin">−</span><span class="mspace" style="margin-right: 0.222222em;"></span></span><span class="base"><span class="strut" style="height: 0.68333em; vertical-align: 0em;"></span><span class="mord mathdefault" style="margin-right: 0.13889em;">W</span></span></span></span></span>， 那么该层的output误差是</p> 
+<p><img src="https://images2.imgbox.com/12/1a/vy4qGK0C_o.png" alt="在这里插入图片描述"></p> 
+<p>所以biased error是<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         E 
+        
+       
+         [ 
+        
+       
+         Δ 
+        
+       
+         W 
+        
+       
+         x 
+        
+       
+         ] 
+        
+       
+      
+        E[\Delta Wx] 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mord mathdefault" style="margin-right: 0.05764em;">E</span><span class="mopen">[</span><span class="mord">Δ</span><span class="mord mathdefault" style="margin-right: 0.13889em;">W</span><span class="mord mathdefault">x</span><span class="mclose">]</span></span></span></span></span> . 又因为<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         Δ 
+        
+       
+         W 
+        
+       
+      
+        \Delta W 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.68333em; vertical-align: 0em;"></span><span class="mord">Δ</span><span class="mord mathdefault" style="margin-right: 0.13889em;">W</span></span></span></span></span> 是常数，所以<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         E 
+        
+       
+         [ 
+        
+       
+         Δ 
+        
+       
+         W 
+        
+       
+         x 
+        
+       
+         ] 
+        
+       
+         = 
+        
+       
+         Δ 
+        
+       
+         W 
+        
+       
+         E 
+        
+       
+         [ 
+        
+       
+         x 
+        
+       
+         ] 
+        
+       
+      
+        E[\Delta Wx] = \Delta WE[x] 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mord mathdefault" style="margin-right: 0.05764em;">E</span><span class="mopen">[</span><span class="mord">Δ</span><span class="mord mathdefault" style="margin-right: 0.13889em;">W</span><span class="mord mathdefault">x</span><span class="mclose">]</span><span class="mspace" style="margin-right: 0.277778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.277778em;"></span></span><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mord">Δ</span><span class="mord mathdefault" style="margin-right: 0.13889em;">W</span><span class="mord mathdefault" style="margin-right: 0.05764em;">E</span><span class="mopen">[</span><span class="mord mathdefault">x</span><span class="mclose">]</span></span></span></span></span>. 即最终我们的biased error是<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         Δ 
+        
+       
+         W 
+        
+       
+         E 
+        
+       
+         [ 
+        
+       
+         x 
+        
+       
+         ] 
+        
+       
+      
+        \Delta WE[x] 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mord">Δ</span><span class="mord mathdefault" style="margin-right: 0.13889em;">W</span><span class="mord mathdefault" style="margin-right: 0.05764em;">E</span><span class="mopen">[</span><span class="mord mathdefault">x</span><span class="mclose">]</span></span></span></span></span></p> 
+<p>所以为了消除误差，我们只需要在output里减掉这一项。</p> 
+<p><img src="https://images2.imgbox.com/8e/7a/qYbxvvAr_o.png" alt="在这里插入图片描述"></p> 
+<p>这个correction项和bias的张量大小完全相同，所以在推断的时候我们可以直接把它吸收到bias里，不需要额外的推断开销。</p> 
+<p>那么怎么计算biased error? 通常有两种方法，分别叫 <em>empirical bias correction</em> 和 <em>analytic bias correction</em>.</p> 
+<p><strong>Empirical bias correction</strong></p> 
+<p>如果我们能拿到校准集，就可以直接通过比较全精度和量化后的output:</p> 
+<p><img src="https://images2.imgbox.com/fa/1d/gyre0nYe_o.png" alt="在这里插入图片描述"></p> 
+<p><strong>Analytic bias correction</strong></p> 
+<p>如果没有校准集，可以用analytic bias correction.</p> 
+<h4><a id="34_AdaRound_239"></a>3.4 AdaRound</h4> 
+<p>一般把FP32量化为整数，是直接四舍五入到最邻近的整数，这叫rounding-to-nearest. 但这其实不是最optimal的方法。所以我们要用adaptive round. 首先我们用下面的式子定义loss：</p> 
+<p><img src="https://images2.imgbox.com/89/68/g56vRfCN_o.png" alt="在这里插入图片描述"></p> 
+<p><span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         Δ 
+        
+       
+         w 
+        
+       
+      
+        \Delta w 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.68333em; vertical-align: 0em;"></span><span class="mord">Δ</span><span class="mord mathdefault" style="margin-right: 0.02691em;">w</span></span></span></span></span>是因为量化引起的扰动，它可以有两个值，一个是round up weight，一个是round down。</p> 
+<p>。。。。。看不太明白</p> 
+<p>总之最后转化成了一个优化问题。</p> 
+<h4><a id="35_Standard_PTQ_pipline_252"></a>3.5 Standard PTQ pipline</h4> 
+<p><strong>cross-layer equalization</strong></p> 
+<p><strong>add quantizers</strong></p> 
+<p><strong>weight range setting</strong></p> 
+<p><strong>AdaRound</strong> (这里用于calibration的数据一般500-1000就够了)</p> 
+<p><strong>Bias correction</strong></p> 
+<p><strong>Activation range setting</strong></p> 
+<h3><a id="4_Quantizationaware_training_266"></a>4 Quantization-aware training</h3> 
+<h4><a id="41_Simulating_quantization_for_backward_path_268"></a>4.1 Simulating quantization for backward path</h4> 
+<p>训练的时候量化，问题在于如何进行梯度反向传播， 因为round-to-nearest的梯度通常是0或者undefined。一种方法是STE(straight-through estimator)。这种方法把rounding operation 的gradient设为1,然后我们就可以把gradient equation求出来。我们用<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         n 
+        
+       
+         , 
+        
+       
+         p 
+        
+       
+      
+        n,p 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.625em; vertical-align: -0.19444em;"></span><span class="mord mathdefault">n</span><span class="mpunct">,</span><span class="mspace" style="margin-right: 0.166667em;"></span><span class="mord mathdefault">p</span></span></span></span></span>来表示整数grid limits，所以$n=q_{min}/s,p =q_{max}/s $</p> 
+<p><img src="https://images2.imgbox.com/a2/b5/yJh9r3pO_o.png" alt="在这里插入图片描述"></p> 
+<p>所以在bp的时候，直接跳过quantizer就行了。</p> 
+<h4><a id="42_Batch_normalization_folding_and_QAT_279"></a>4.2 Batch normalization folding and QAT</h4> 
+<p>如何model BN folding? 一种方法是statistically fold, 在2.3.1节讲过了。</p> 
+<p>另一种是同时update running statistics并应用batch-statistics.</p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/06f052a958dd009717e7bc5342831563/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">hbase shell命令</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/ca82142168ff2ca319cfc1b0ce27fa17/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">HFSS 3D LAOUT PCB 裁剪，差分线，过孔仿真和优化</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

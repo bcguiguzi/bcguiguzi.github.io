@@ -1,0 +1,401 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>SpringBoot异步任务及并行事务实现 - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="SpringBoot异步任务及并行事务实现" />
+<meta property="og:description" content="上一篇介绍了原生Java如何实现串行/并行任务，主要使用了线程池 &#43; Future &#43; CountDownLatch，让主线程等待子线程返回后再向下进行。而在SpringBoot中，利用@Async和AOP对异步任务提供了更加便捷的支持，下面就针对SpringBoot使用异步任务需要注意的细节做一些分析。
+1 SpringBoot异步任务基础实现 使用起来很简单，在启动类或配置类上加上@EnableAsync启动异步任务，并在需要异步调用的方法上加@Async，在注册Bean时就会生成该类的Proxy子类，也就是动态代理类，AOP会在代理类中重写并增强该异步方法。
+1.1 配置异步任务线程池 SpringBoot自然也选择了线程复用，想要实现就需要使用线程池，可以先来看看默认线程池的配置。
+ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor(); //配置核心线程数 executor.setCorePoolSize(8); //配置最大线程数 executor.setMaxPoolSize(Integer.MAX_VALUE); //配置空闲线程保留时间 executor.setKeepAliveSeconds(60); //配置队列大小 executor.setQueueCapacity(Integer.MAX_VALUE); //设置饱和策略：当pool已经达到max size的时候，如何处理新任务 executor.setRejectedExecutionHandler(new ThreadPoolExecutor.AbortPolicy()); 配置过线程池参数的小伙伴，一眼就能看到几个很不合理的点：
+最大线程数为Integer.MAX_VALUE，创建线程过多会导致“oom:unable to create new native thread”。最长队列数为Integer.MAX_VALUE，队列堆积任务过多也会导致oom。饱和策略为AbortPolicy，队列满了直接抛异常，如果不catch程序直接爆炸。 综上，我们应该给SpringBoot指定一个线程池，并让异步任务执行时使用他，配置就不赘述直接放在下面。
+//自定义Spring默认线程池 //ThreadPoolTaskExecutor vs ThreadPoolExecutor ： //ThreadPoolTaskExecutor是对ThreadPoolExecutor的进一步封装 //ThreadPoolTaskExecutor来源于Spring，ThreadPoolExecutor属于JUC //ThreadPoolTaskExecutor需要声明initialize，ThreadPoolExecutor不需要 @Bean(&#34;common&#34;) public Executor commonExecutorBuild() { log.info(&#34;Common Executor Building Start!&#34;); //ThreadPoolExecutor executor = new ThreadPoolExecutor(CORE_POOL_SIZE, MAXIMUM_POOL_SIZE, KEEP_ALIVE_TIME, // UNIT, LINKED_BLOCKING_QUEUE, new ThreadPoolExecutor.CallerRunsPolicy()); ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor(); //配置核心线程数 executor." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/573153847419b2301f5a7ac6e5b070c1/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-04-14T13:48:37+08:00" />
+<meta property="article:modified_time" content="2023-04-14T13:48:37+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">SpringBoot异步任务及并行事务实现</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p>        上一篇介绍了原生Java如何实现串行/并行任务，主要使用了线程池 + Future + CountDownLatch，让主线程等待子线程返回后再向下进行。而在SpringBoot中，利用@Async和AOP对异步任务提供了更加便捷的支持，下面就针对SpringBoot使用异步任务需要注意的细节做一些分析。</p> 
+<h2>1 SpringBoot异步任务基础实现</h2> 
+<p>        使用起来很简单，在启动类或配置类上加上@EnableAsync启动异步任务，并在需要异步调用的方法上加@Async，在注册Bean时就会生成该类的Proxy子类，也就是动态代理类，AOP会在代理类中重写并增强该异步方法。</p> 
+<h3>1.1 配置异步任务线程池</h3> 
+<p>        SpringBoot自然也选择了线程复用，想要实现就需要使用线程池，可以先来看看默认线程池的配置。</p> 
+<pre><code class="language-XML">ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
+//配置核心线程数
+executor.setCorePoolSize(8);
+//配置最大线程数
+executor.setMaxPoolSize(Integer.MAX_VALUE);
+//配置空闲线程保留时间
+executor.setKeepAliveSeconds(60);
+//配置队列大小
+executor.setQueueCapacity(Integer.MAX_VALUE);
+//设置饱和策略：当pool已经达到max size的时候，如何处理新任务
+executor.setRejectedExecutionHandler(new ThreadPoolExecutor.AbortPolicy());</code></pre> 
+<p>        配置过线程池参数的小伙伴，一眼就能看到几个很不合理的点：</p> 
+<ul><li>最大线程数为Integer.MAX_VALUE，创建线程过多会导致“oom:unable to create new native thread”。</li><li>最长队列数为Integer.MAX_VALUE，队列堆积任务过多也会导致oom。</li><li>饱和策略为AbortPolicy，队列满了直接抛异常，如果不catch程序直接爆炸。</li></ul> 
+<p>        综上，我们应该给SpringBoot指定一个线程池，并让异步任务执行时使用他，配置就不赘述直接放在下面。</p> 
+<pre><code class="language-java">//自定义Spring默认线程池
+//ThreadPoolTaskExecutor vs ThreadPoolExecutor ：
+//ThreadPoolTaskExecutor是对ThreadPoolExecutor的进一步封装
+//ThreadPoolTaskExecutor来源于Spring，ThreadPoolExecutor属于JUC
+//ThreadPoolTaskExecutor需要声明initialize，ThreadPoolExecutor不需要
+@Bean("common")
+public Executor commonExecutorBuild() {
+    log.info("Common Executor Building Start!");
+
+    //ThreadPoolExecutor executor = new ThreadPoolExecutor(CORE_POOL_SIZE, MAXIMUM_POOL_SIZE, KEEP_ALIVE_TIME,
+    //                                                     UNIT, LINKED_BLOCKING_QUEUE, new ThreadPoolExecutor.CallerRunsPolicy());
+
+    ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
+    //配置核心线程数
+    executor.setCorePoolSize(2);
+    //配置最大线程数
+    executor.setMaxPoolSize(5);
+    //配置队列大小
+    executor.setQueueCapacity(10240);
+    //配置空闲线程保留时间
+    executor.setKeepAliveSeconds(60);
+    //配置线程池中的线程的名称前缀
+    executor.setThreadNamePrefix("AsyncCommonThread-");
+    //设置饱和策略：当pool已经达到max size的时候，如何处理新任务
+    //CALLER_RUNS：不在新线程中执行任务，而是有调用者所在的线程来执行
+    executor.setRejectedExecutionHandler(new ThreadPoolExecutor.CallerRunsPolicy());
+    //执行初始化
+    executor.initialize();
+
+    return executor;
+}</code></pre> 
+<h3>1.2 异步方法逻辑编写</h3> 
+<p>        应用场景还是如上篇所说 <a class="link-info" href="https://blog.csdn.net/m0_62375467/article/details/128814628?spm=1001.2014.3001.5501" title="Java串行/并行任务实现">Java串行/并行任务实现</a>，这次就使程序逻辑更加完善且贴近现实。与Java原生实现大体类似，只是将子任务编写在单独的类与方法中，并标注@Async让其异步调用。</p> 
+<p><img alt="" src="https://images2.imgbox.com/0b/5f/Gjhj9L7p_o.png"></p> 
+<p>         入参为带有所有用户信息的VO实体类，在Service中将所有属性赋值到对应实体类，然后在主线程中办理银行卡，银行卡办理成功后调用两个子线程分别办理会员/申请信用卡，全部完成后根据SQL语句执行结果判断是否注册成功。先来编写一下子线程的逻辑。</p> 
+<pre><code class="language-java">    @Override
+    @Async("common")
+    public CompletableFuture&lt;Integer&gt; registerUser(BankUserInfo bankUserInfo) {
+        Integer insert = bankUserMapper.registerUser(bankUserInfo);
+        try {
+            log.info(Thread.currentThread().getName() + "running!");
+            //模拟阻塞3秒
+            Thread.sleep(3000);
+        } catch (InterruptedException e) {
+            e.printStackTrace();
+        }
+        return CompletableFuture.completedFuture(insert);
+
+        //return new AsyncResult&lt;Integer&gt;(insert);
+    }</code></pre> 
+<p>        只需要一步数据库操作，将用户信息插入到库中，为了模拟阻塞操作延时了3秒，信用卡申请的逻辑与其相同。有几点值得注意的地方：</p> 
+<ul><li>在@Async中指定了使用“common”线程池，也就是我们自行定义的线程池。</li><li>异步方法的返回值只能为void或Future的子类，一般会指定返回值为“new AsyncResult&lt;T&gt;(result)”，AsyncResult实现了ListenableFuture，ListenableFuture是Future的子类。</li><li>这里将异步方法的返回值设置为了CompletableFuture，可以将其理解为增强版的Future。在上篇文章中，我们采用了两种方式来等待两个子线程完成，其中用Future时使用了自旋锁循环判断线程是否有返回值。而CompletableFuture提供了操作Future执行的各种情况的API，就比如CompletableFuture.allOf(Thread1, Thread2, ...)，该方法可以在传入的子线程执行完前，阻塞当前线程，下面我们就就会用到。还有其他很强大的API，以后用到了再介绍。</li></ul> 
+<p>        下面是主方法逻辑，分别实现3个逻辑，CompletableFuture.allOf(future, future1)在子线程执行完毕前阻塞主线程。最后其实应该加上根据子线程执行结果，给用户展示是否办理成功的，偷了个懒没写，懂意思就行。</p> 
+<pre><code class="language-java">    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public Integer applyBankCard(BankRegisterVo bankRegisterVo) throws InterruptedException {
+        String UUID = IdWorker.get32UUID().substring(16);
+        bankRegisterVo.setBankCardNum(UUID);
+
+        BankCardInfo bankCardInfo = new BankCardInfo();
+        BankUserInfo bankUserInfo = new BankUserInfo();
+        CreditCardInfo creditCardInfo = new CreditCardInfo();
+        BeanUtils.copyProperties(bankRegisterVo, bankCardInfo);
+        BeanUtils.copyProperties(bankRegisterVo, bankUserInfo);
+        BeanUtils.copyProperties(bankRegisterVo, creditCardInfo);
+        creditCardInfo.setMoneyLimit(10000.00);
+
+        //主线程执行，办理银行卡
+        Thread.sleep(5000);
+        int insert = bankCardMapper.applyBankCard(bankCardInfo);
+
+        //会导致死锁!!!
+        //Thread.currentThread().join();
+
+        //子线程执行，申请会员 + 信用卡办理
+        CompletableFuture&lt;Integer&gt; future = asyncBankService.registerUser(bankUserInfo);
+        CompletableFuture&lt;Integer&gt; future1 = asyncBankService.applyCreditCard(creditCardInfo);
+        CompletableFuture.allOf(future, future1);
+        //Integer insert1 = future.join();
+        //Integer insert2 = future1.join();
+        //HashMap&lt;String, Object&gt; objectObjectHashMap = Maps.newHashMapWithExpectedSize(6);
+
+        return insert;
+    }</code></pre> 
+<h3>1.3 @Async与@Transactional失效</h3> 
+<p>       这两个问题的出现其实是由于一个原因，Spring中的注解基本都是靠AOP来增强，实现原理就是在调用@Async的方法时，实际是在调用该方法的代理类，代理类中将该方法的执行逻辑提交给了线程池。出错的情景一般都如下面这段伪代码。</p> 
+<pre><code class="language-java">{
+
+    Method1() {
+        AsyncMethod1();
+        AsyncMethod2();
+    }    
+
+    @Async
+    @Transactional
+    AsyncMethod1() {
+        //Todo...
+    }  
+
+    @Async
+    @Transactional
+    AsyncMethod2() {
+        //Todo...
+    }  
+
+}</code></pre> 
+<p>        在同一个类中调用异步方法，等于调用this本类的方法，没有走Spring生成的代理类，也就不会让他异步执行，@Transactional的原理也类似。</p> 
+<h2>2 异步事务管理</h2> 
+<p>         尝试思考这样一个问题，现在有1个主线程事务 + 2个子线程事务，我们现在要保证他们仨的强原子性——即3个事务有任何一个报错，都会回滚所有事务。最简单的想法可能就是给1主2子都加上@Transactional注解，但这样实际是行不通的，子线程的异常只会回滚他自身事务。</p> 
+<p>        举个例子，子线程办理会员报错回滚，并不会影响没有报错的主线程银行卡办理和另一个子线程申请信用卡。事实也确实如此，在实际测试中，用户信息表插入失败回滚，银行卡信息表与信用卡信息表仍然会正常插入记录。</p> 
+<p>        如果有这样的强原子性场景存在，我们可以将代码逻辑改为串行，放在一个方法体中，这样具有天然原子性了。但这明显与预期不符，有些舍本逐末了。</p> 
+<p>        终极诉求就是灵活管理多个线程的事务，这时就要用到编程式事务。</p> 
+<h3>2.1 编程式事务的基本使用</h3> 
+<p>        需要注入两个Bean：</p> 
+<ol><li>TransactionDefinition，其中规定了一些事务的相关属性，例如事务的传播行为和隔离等级等。</li><li>DataSourceTransactionManager，JDBC对应的事务管理器。</li></ol> 
+<p>        将TransactionDefinition传入DataSourceTransactionManager中，就可以手动进行事务管理了，主要用到commit()和rollback()来对应提交和回滚。与声明式事务不同，在catch到异常后我们要手动进行回滚，如果全部正常执行，也需要自行提交事务。</p> 
+<h3>2.2 多线程手动事务管理</h3> 
+<p>        回到我们的需求，实际上是一个多线程手动事务管理的问题，经过分析后我们得到一个程序运行流程图，主要的难点在于如何让3个线程彼此等待，并根据一个统一的标志位判断是否回滚。</p> 
+<p class="img-center"><img alt="" height="594" src="https://images2.imgbox.com/1a/c2/GQmN28kl_o.png" width="562"></p> 
+<p>        既然是多线程，那就要在JUC里好好挖掘一下。</p> 
+<p>        首先是标志位，可以用AtomicInteger原子类，保证多线程下的数据一致。我们在主线程中初始化一个值为0的AtomicInteger并传给子线程，任何线程捕获到异常时就给AtomicInteger自增，全部线程执行完成后统一判断标志位是否大于0，如果大于0则全部回滚。</p> 
+<p>        之后是线程同步判断结果，由于主线程和子线程数量是已知的，可以用计数器CountDownLatch来实现，主线程计数器设为1，子线程计数器设为2。主计数器用于控制整个程序的运行，在所有线程执行完毕前，将程序阻塞在统一判断执行结果的前一步；子计数器用于告知主线程，各子线程是否执行完毕，未执行完毕就阻塞主线程。</p> 
+<p>        打个比方，现在有一个老大和两个小弟，老大坐在办公室等着小弟汇报工作结果，等两个小弟都告诉他“我干完了哈”之后，老大根据大家的工作成果判断“OK了，大伙可以去吃饭了”或者是“干得是啥啊，全部重做”；这时小弟再根据老大的回应，决定吃饭还是重做。</p> 
+<p>        首先将主计数器和子计数器都传入子线程中，主线程调用子计数器的await()，在子线程SQL执行结束、并调用countDown()以前会一直阻塞主线程。在子线程中调用主计数器的await()，在所有子线程SQL执行完毕后，主线程向下执行，并对主计数器调用countDown()。这样就实现了所有子线程SQL执行完以前，子线程会阻塞（因为主线程还在阻塞，主计数器未清零）；所有线程子线程SQL执行完毕后，主线程、子线程都向下执行，统一判断事务执行标志位。下面用伪代码实现一下。</p> 
+<pre><code class="language-java">ThreadMain() {
+    //主计数器和子计数器
+    latchMain = countDownLatch(1);
+    latchSlave = countDownLatch(2);
+    
+    //Todo:主线程SQL执行...
+    //启动子线程
+    ThreadSlave1(latchMain, latchSlave);
+    ThreadSlave2(latchMain, latchSlave);
+
+    //等待所有子线程SQL执行完毕
+    latchSlave.await();
+    //所有子线程SQL执行完毕后，主线程执行计数器-1，此时计数器清零，所有线程同步向下进行
+    latchMain.countDown();
+    latchMain.await();
+
+    //Todo:AtomicInteger判断逻辑，决定所有事务提交/回滚
+}
+
+@Async
+ThreadSlave1(latchMain, latchSlave) {
+    //Todo:子线程SQL执行...
+    //子线程SQL逻辑执行完后，子计数器-1
+    latchSlave.countDown();
+    //等待其他线程执行结果
+    latchMain.await();
+    
+    //Todo:AtomicInteger判断逻辑，决定所有事务提交/回滚
+}
+
+@Asycn
+ThreadSlave2(latchMain, latchSlave) {
+    //Todo:子线程SQL执行...
+    //子线程SQL逻辑执行完后，子计数器-1
+    latchSlave.countDown();
+    //等待其他线程执行结果
+    latchMain.await();
+    
+    //Todo:AtomicInteger判断逻辑，决定所有事务提交/回滚
+}</code></pre> 
+<p>        如上面伪代码所示，子计数器清零后，主计数器也会清零，此时所有线程会同步进行事务的判断环节。当然还需要完善一下，当任意线程catch到SQL执行异常后，也需要处理对应的计数器，否则会导致线程永久阻塞。</p> 
+<p>        下面是主Service代码，有完整的手动事务管理、标志位使用、统一判断逻辑。</p> 
+<pre><code class="language-java">@Override
+//手动管理事务
+//@Transactional(rollbackFor = Exception.class)
+public Integer applyBankCard(BankRegisterVo bankRegisterVo) {
+    TransactionStatus transaction = transactionManager.getTransaction(transactionDefinition);
+    AtomicInteger atomicInteger = new AtomicInteger(0);
+    CountDownLatch latchMain = new CountDownLatch(1);
+    CountDownLatch latch = new CountDownLatch(2);
+    Integer result = null;
+
+    try {
+        String UUID = IdWorker.get32UUID().substring(16);
+        bankRegisterVo.setBankCardNum(UUID);
+        BankCardInfo bankCardInfo = new BankCardInfo();
+        BankUserInfo bankUserInfo = new BankUserInfo();
+        CreditCardInfo creditCardInfo = new CreditCardInfo();
+        BeanUtils.copyProperties(bankRegisterVo, bankCardInfo);
+        BeanUtils.copyProperties(bankRegisterVo, bankUserInfo);
+        BeanUtils.copyProperties(bankRegisterVo, creditCardInfo);
+        creditCardInfo.setMoneyLimit(10000.00);
+
+        //主线程执行，办理银行卡
+        int insert = bankCardMapper.applyBankCard(bankCardInfo);
+        //子线程执行，申请会员 + 信用卡办理
+        CompletableFuture&lt;Integer&gt; future = asyncBankService.registerUser(bankUserInfo, latchMain, latch, atomicInteger);
+        CompletableFuture&lt;Integer&gt; future1 = asyncBankService.applyCreditCard(creditCardInfo, latchMain, latch, atomicInteger);
+
+        latch.await();
+        latchMain.countDown();
+        latchMain.await();
+        if (atomicInteger.get() &gt; 0) {
+            log.info("子线程事务报错，开始回滚");
+            transactionManager.rollback(transaction);
+            result = AppHttpCodeEnum.BANK_REGISTER_FAILED.getCode();
+        } else {
+            //手动提交
+            transactionManager.commit(transaction);
+            result = AppHttpCodeEnum.BANK_REGISTER_SUCCESS.getCode();
+        }
+
+    } catch (Exception e) {
+        log.info("主线程事务报错，开始回滚");
+        //手动回滚
+        transactionManager.rollback(transaction);
+        atomicInteger.getAndIncrement();
+        latchMain.countDown();
+        result = AppHttpCodeEnum.BANK_REGISTER_FAILED.getCode();
+    }
+
+    return result;
+}</code></pre> 
+<p>         异步方法逻辑如下。</p> 
+<pre><code class="language-java">@Override
+@Async("common")
+public CompletableFuture&lt;Integer&gt; registerUser(BankUserInfo bankUserInfo, CountDownLatch latchMain, CountDownLatch latch, AtomicInteger atomicInteger) {
+    TransactionStatus transaction = transactionManager.getTransaction(transactionDefinition);
+    Integer insert = null;
+    try {
+        log.info(Thread.currentThread().getName() + "running!");
+        insert = bankUserMapper.registerUser(bankUserInfo);
+        //模拟阻塞3秒
+        Thread.sleep(3000);
+
+        latch.countDown();
+        latchMain.await();
+        if (atomicInteger.get() &gt; 0) {
+            transactionManager.rollback(transaction);
+            log.info("子线程事务报错，开始回滚");
+        } else {
+            //手动提交
+            transactionManager.commit(transaction);
+        }
+
+    } catch (Exception e) {
+        log.info("子线程事务报错，开始回滚");
+        atomicInteger.getAndIncrement();
+        //手动回滚
+        transactionManager.rollback(transaction);
+        latch.countDown();
+    }
+
+    return CompletableFuture.completedFuture(insert);
+
+    //return new AsyncResult&lt;Integer&gt;(insert);
+}</code></pre> 
+<p>        主线程SQL如果报错，子线程方法也就不会开启，直接回滚事务并返回结果。子线程报错，标志位 + 1并回滚事务，其他线程发现标志位不为0，也会主动回滚事务。</p> 
+<h3>2.3 程序执行</h3> 
+<p>        下面来分别测试一下主线程、子线程异常的执行情况。</p> 
+<h4>2.3.1 正常执行</h4> 
+<p>        给接口传入正常的入参，日志正常打印了异步方法中调用的线程名。接口耗时3.29s，异步方法中手动阻塞了3秒，全部正常。</p> 
+<pre><code class="language-java">2023-02-09 15:43:59.469  INFO 16660 --- [cCommonThread-1] c.b.service.impl.AsyncBankServiceImpl    : AsyncCommonThread-1running!
+2023-02-09 15:43:59.481  INFO 16660 --- [cCommonThread-2] c.b.service.impl.AsyncBankServiceImpl    : AsyncCommonThread-2running!</code></pre> 
+<h4>2.3.2 主线程异常</h4> 
+<p>        先将实体类的Validator注释掉，入参的password不传，数据库的password字段约束不为null，这样就会执行失败。下面看一下日志。</p> 
+<pre><code class="language-java">==&gt;  Preparing: INSERT INTO bank_card_info (bank_card_num, password, bank_name, create_by, create_time) VALUES (?, ?, ?, ?, ?)
+==&gt; Parameters: 950499ea8b2dc968(String), null, XianBank(String), -1(Long), 2023-02-09 15:51:12.478(Timestamp)
+Releasing transactional SqlSession 
+
+[org.apache.ibatis.session.defaults.DefaultSqlSession@222673da]
+2023-02-09 15:51:12.577  INFO 428 --- [nio-6666-exec-6] c.b.s.impl.BankRegisterServiceImpl       : 主线程事务报错，开始回滚</code></pre> 
+<p>        与预期相符，异步方法还没有调用，主线程直接异常回滚了事务。 </p> 
+<h4>2.3.3 子线程异常</h4> 
+<p>         数据库的username字段约束为不能重复，因此我们传入一个重复的username，让异步线程异常，再来看看结果。</p> 
+<pre><code class="language-java">2023-02-09 15:53:01.477  INFO 428 --- [cCommonThread-1] c.b.service.impl.AsyncBankServiceImpl    : AsyncCommonThread-1running!
+2023-02-09 15:53:01.482  INFO 428 --- [cCommonThread-1] c.b.service.impl.AsyncBankServiceImpl    : 子线程事务报错，开始回滚
+2023-02-09 15:53:01.484  INFO 428 --- [cCommonThread-2] c.b.service.impl.AsyncBankServiceImpl    : AsyncCommonThread-2running!
+2023-02-09 15:53:04.490  INFO 428 --- [nio-6666-exec-8] c.b.s.impl.BankRegisterServiceImpl       : 子线程事务报错，开始回滚
+2023-02-09 15:53:04.493  INFO 428 --- [cCommonThread-2] c.b.service.impl.AsyncBankServiceImpl    : 子线程事务报错，开始回滚</code></pre> 
+<p>        通过线程名可以看出，子线程1异常后直接回滚，子线程2和主线程得知有线程异常后，也开始回滚。</p> 
+<p></p> 
+<p>        SpringBoot的异步基础实现，以及多线程事务控制到这里就介绍完了，下一篇再见哈。</p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/0844f6a6dcdcec4a76bd6495aa7daddf/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">求素数的方法（实现）</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/0b0a9fe2f81fb20df6dceae642b7dc73/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">flink任务处理下线流水数据，数据遗漏不全（三）</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

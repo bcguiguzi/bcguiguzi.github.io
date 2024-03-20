@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Autoware实车测试记录（二）-- 实车NDT定位 - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="Autoware实车测试记录（二）-- 实车NDT定位" />
+<meta property="og:description" content="进入小车测试前非常需要吐槽几句，由于我使用的Autolabor小车底盘非常矮，调车过程需要在点云地图中定位完成才可以进行接下来的规划等步骤，所以不得不在室外蹲在地上抱着键鼠特别别扭的测试，所以建议各位提前准备好马扎还有穿的厚实点（冬天）或者多带点花露水（夏天）。
+言归正传，由于是实车测试，需要在搞清楚自己的硬件设备的情况下进行，由于我前期进行了许多杂七杂八的测试导致每个硬件驱动都在独立的工作空间下，每次实车测试前都要开多个终端独立启动四五个launch文件。在这里简单介绍下我所需要在测试前启动的部分：
+1、小车底盘的launch，启动后可以通过/cmd_vel话题给小车下发控制指令，同时随launch启动的还有一个键盘控制节点，该节点将键盘消息转化为小车控制指令发送给底盘，是小车自带的程序部分。
+2、激光雷达的launch文件，在这里我使用过VLP16以及RS-Helios-16P两款雷达。在测试前均需要对其进行修改，至于如何修改后文详谈。
+3、启动Autoware主程序。
+4、启动话题信息格式转换节点。
+上面的操作流程每个人每种硬件平台各不相同，总而言之流程是相似的：
+按照上述的流程来记录我的测试流程，首先需要将小车移动到指定位置，Autolabor小车底盘因为是一个比较完整的底盘，工控机中包含了直接启动底盘的launch文件，该文件可以完成小车状态发布、数据接收以及按键盘控制和rviz显示小车状况的四个节点。由于不需要rviz的显示功能，故在launch中注释掉了这段代码。运行小车launch后就可以用键盘遥控小车到处走了。（成品底盘的优点也就是这方面省心）。 到达测试地点后，首先需要将传感器全部启动，这里主要指的是激光雷达，雷达部分是需要提前设置的，首先是VLP-16雷达，雷达默认的话题名为/velodyne_points，但是Autoware默认接收的激光雷达传感器话题为/points_raw。在这里需要修改velodyne雷达的驱动来将发布话题进行修改。或许有人发现Autoware内置了VLP16的启动launch，但是我测试的时候发现从Autoware中内置的启动方法会报错，无论添不添加yaml文件都会报错。所以，考虑到不确定排错时间成本上不如多开一个终端来的简单方便。
+此外当时寻找velodyne的话题发布程序位置花了一段时间，在这里把代码位置放出来，使用同款雷达的可以参考修改话题。位置在velodyne功能包下面的velodyne_pointcloud/src/conversions/transform.cc文件内，程序内有一行：
+output_=node.advertise&lt;sensor_msgs::PointCloud2&gt;(“velodyne_points”,10); 可以在这里修改雷达的话题名。
+同时还测试了一款RS-Helios-16P雷达，这款雷达设置起来稍微麻烦一些，因为前期建图使用的Lio-sam，算法要求激光雷达要用ring等信息，所以为了程序都可以适配起来，干脆直接将雷达的信息完全改成VLP16的雷达信息格式，同时修改雷达发布的话题名。
+rs2velodyne转换功能包从网上下载，具体出处忘记了，这里放一个百度网盘的链接吧。
+链接: https://pan.baidu.com/s/1D-TnyMDwOf7AU9D2S9wq-w?pwd=9bjn 提取码: 9bjn。
+具体使用方法可以参考功能包中的README，至于输出话题名可以直接在该功能包最后面几行的代码处修改。
+pubRobosensePC=node.advertise&lt;sensor_msgs::PointCloud2&gt;(“velodyne_points”,1); 雷达设置完毕后可以简单测试一下定位功能了。将车行驶到测试位置，启动好雷达，然后进入Autoware程序界面，实车测试并不需要像之前一样加载rosbag，可以直接进入setup界面启动tf，按照实际的tf设置即可，设置好后点击左边tf按钮，按钮变蓝表示启动成功。至于下方的vehicle model车辆模型可启动也可以不启动，加载空模型会直接载入默认模型（一辆车）。
+接下来进入map选项卡，这里需要加载point cloud、vector map、tf三个部分。首先选择右侧ref按钮，在弹出菜单选中提前准备好的pcd点云图。注意这里需要注意使用Lio-sam建立的点云地图时，只需要加载GlobalMap.pcd一个文件，不要加载CornerMap.pcd，这两个地图在ndt定位环节表现GlobalMap表现要好一些。如果是其他形式的点云地图请根据情况自行选择加载。矢量地图便是将之前使用Unity插件生成的一系列文件全部载入。然后载入tf，tf位置在autoware.ai/src/autoware/documentation/autoware_quickstart_examples/launch/tf_local.launch
+接下来进入sensing选项卡，由于雷达已经通过launch启动了，所以这个选项卡只启动两个滤波相关功能。
+voxel_grid_filter是体素网格滤波，点击右侧app后打开的窗口有三个参数设置，分别是设置点云话题（points topic）、体素滤波尺寸（voxel Leaf size）以及测量范围（measurement range），在这里三个参数默认即可无需修改。
+ring_ground_filter也是一个滤波功能，主要是与上面的滤波结合起来滤去地面的雷达点云数据，同样最上面也是输入的点云话题。Sensor Model表示激光雷达的线数，根据自己的雷达选择对应线数。Sensor Height为雷达相对于地面的安装高度，Max Slope为最大坡度，Vertical Thres为障碍物与地面的差异度阈值。这两个选项共同决定了地面滤波效果。除非路面环境比较特殊，这里的参数默认即可。 地图载入和传感器滤波操作完成后，这个时候就可以打开Autoware人机交互界面右下角的rviz按钮启动rviz了，这里如果之前没有跑过历程，还没加载过rviz的配置文件的话，需要加载autoware.ai/src/autoware/documentation/autoware_quickstart_examples/launch/rosbag_demo/default.rviz
+加载完成后的rviz应该是显示有点云地图和矢量地图，如果不显示的话，回到map选项卡重新载入点云地图和矢量地图，如果发现rviz中没有点云地图而且重新加载后也没有点云地图，可以修改rviz左侧的Global Options-fixed frame的参数，将默认的world修改为velodyne和map查看下是否有画面。因为在前期测试历程时发现Autoware给定的world2map的tf中设置了非常大的值，导致world坐标系和map坐标系相去甚远，可以检查下之前加载的tf文件有没有这样的情况，有的话可以将x、y值改为0让两个坐标重合。
+接下来进入Computing选项卡，打开lidar_localizar下ndt_matching的参数设置，由于没有GPS，所以不选择GNSS，选择Initial Pos参数默认000即可。下方Method Type根据自己的设备，没有GPU选择pcl_generic。反之选择pcl_anh_gpu。
+参数设置完毕后勾选ndt_matching，顺带勾选autoware_connector下的vel_pose_connect，勾选前打开看一下参数里面只要没有勾选Simulation Mode即可。
+正常情况下传感器传来的点云数据（红黄色）会马上出现在rviz中的初始位置。同时左上角会实时显示NDT匹配的毫秒数。此时选中 rviz上面的2D Pose Estimate，然后在地图中给定一个带方向的初始值以用于定位（箭头指向方向代表车辆前进方向）。
+​​​​​​​
+到这里没有问题的话应该是可以定位成功，如果定位失败可以再尝试给新的初值。" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/e11a29f72b266aa1bb1d9f07baaa6676/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-03-24T10:48:26+08:00" />
+<meta property="article:modified_time" content="2023-03-24T10:48:26+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Autoware实车测试记录（二）-- 实车NDT定位</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p style="margin-left:.0001pt;text-align:justify;"><span style="color:#000000;">进入小车测试前非常需要吐槽几句，由于我使用的Autolabor小车底盘非常矮，调车过程需要在点云地图中定位完成才可以进行接下来的规划等步骤，所以不得不在室外蹲在地上抱着键鼠特别别扭的测试，所以建议各位提前准备好马扎还有穿的厚实点（冬天）或者多带点花露水（夏天）。</span></p> 
+<p style="margin-left:.0001pt;text-align:justify;"><span style="color:#000000;">言归正传，由于是实车测试，需要在搞清楚自己的硬件设备的情况下进行，由于我前期进行了许多杂七杂八的测试导致每个硬件驱动都在独立的工作空间下，每次实车测试前都要开多个终端独立启动四五个launch文件。在这里简单介绍下我所需要在测试前启动的部分：</span></p> 
+<p style="margin-left:.0001pt;text-align:justify;"><span style="color:#000000;">1、小车底盘的launch，启动后可以通过/cmd_vel话题给小车下发控制指令，同时随launch启动的还有一个键盘控制节点，该节点将键盘消息转化为小车控制指令发送给底盘，是小车自带的程序部分。</span></p> 
+<p style="margin-left:.0001pt;text-align:justify;"><span style="color:#000000;">2、激光雷达的launch文件，在这里我使用过VLP16以及RS-Helios-16P两款雷达。在测试前均需要对其进行修改，至于如何修改后文详谈。</span></p> 
+<p style="margin-left:.0001pt;text-align:justify;"><span style="color:#000000;">3、启动Autoware主程序。</span></p> 
+<p style="margin-left:.0001pt;text-align:justify;"><span style="color:#000000;">4、启动话题信息格式转换节点。</span></p> 
+<p style="margin-left:.0001pt;text-align:justify;"><span style="color:#000000;">上面的操作流程每个人每种硬件平台各不相同，总而言之流程是相似的：</span></p> 
+<p style="margin-left:.0001pt;text-align:justify;"><img alt="" height="256" src="https://images2.imgbox.com/2d/4a/J5VIKeh3_o.gif" width="1200"></p> 
+<p><span style="color:#000000;">按照上述的流程来记录我的测试流程，首先需要将小车移动到指定位置，Autolabor小车底盘因为是一个比较完整的底盘，工控机中包含了直接启动底盘的launch文件，该文件可以完成小车状态发布、数据接收以及按键盘控制和rviz显示小车状况的四个节点。由于不需要rviz的显示功能，故在launch中注释掉了这段代码。运行小车launch后就可以用键盘遥控小车到处走了。（成品底盘的优点也就是这方面省心）。</span> </p> 
+<p style="margin-left:.0001pt;text-align:justify;"><span style="color:#000000;">到达测试地点后，首先需要将传感器全部启动，这里主要指的是激光雷达，雷达部分是需要提前设置的，首先是VLP-16雷达，雷达默认的话题名为/velodyne_points，但是Autoware默认接收的激光雷达传感器话题为/points_raw。在这里需要修改velodyne雷达的驱动来将发布话题进行修改。或许有人发现Autoware内置了VLP16的启动launch，但是我测试的时候发现从Autoware中内置的启动方法会报错，无论添不添加yaml文件都会报错。所以，考虑到不确定排错时间成本上不如多开一个终端来的简单方便。</span></p> 
+<p style="margin-left:.0001pt;text-align:justify;"><span style="color:#000000;">此外当时寻找velodyne的话题发布程序位置花了一段时间，在这里把代码位置放出来，使用同款雷达的可以参考修改话题。位置在velodyne功能包下面的</span><span style="color:#ad720d;">velodyne_pointcloud/src/conversions/transform.cc</span><span style="color:#000000;">文件内，程序内有一行：</span></p> 
+<pre><code class="language-cpp">output_=node.advertise&lt;sensor_msgs::PointCloud2&gt;(“velodyne_points”,10);</code></pre> 
+<p style="margin-left:.0001pt;text-align:justify;"><span style="color:#000000;">可以在这里修改雷达的话题名。</span></p> 
+<p style="margin-left:.0001pt;text-align:justify;"><span style="color:#000000;">同时还测试了一款RS-Helios-16P雷达，这款雷达设置起来稍微麻烦一些，因为前期建图使用的Lio-sam，算法要求激光雷达要用ring等信息，所以为了程序都可以适配起来，干脆直接将雷达的信息完全改成VLP16的雷达信息格式，同时修改雷达发布的话题名。</span></p> 
+<p style="margin-left:.0001pt;text-align:justify;"><span style="color:#000000;">rs2velodyne转换功能包从网上下载，具体出处忘记了，这里放一个百度网盘的链接吧。</span></p> 
+<p style="margin-left:.0001pt;text-align:justify;"><span style="color:#000000;">链接: https://pan.baidu.com/s/1D-TnyMDwOf7AU9D2S9wq-w?pwd=9bjn 提取码: 9bjn。</span></p> 
+<p style="margin-left:.0001pt;text-align:justify;"><span style="color:#000000;">具体使用方法可以参考功能包中的README，至于输出话题名可以直接在该功能包最后面几行的代码处修改。</span></p> 
+<pre><code class="language-cpp">pubRobosensePC=node.advertise&lt;sensor_msgs::PointCloud2&gt;(“velodyne_points”,1);</code></pre> 
+<p style="margin-left:.0001pt;text-align:justify;"><span style="color:#000000;">雷达设置完毕后可以简单测试一下定位功能了。将车行驶到测试位置，启动好雷达，然后进入Autoware程序界面，实车测试并不需要像之前一样加载rosbag，可以直接进入setup界面启动tf，按照实际的tf设置即可，设置好后点击左边tf按钮，按钮变蓝表示启动成功。至于下方的vehicle model车辆模型可启动也可以不启动，加载空模型会直接载入默认模型（一辆车）。</span></p> 
+<p style="margin-left:.0001pt;text-align:center;"><img alt="" height="363" src="https://images2.imgbox.com/60/fa/sKxylWSy_o.png" width="428"></p> 
+<p> <span style="color:#000000;">接下来进入map选项卡，这里需要加载point cloud、vector map、tf三个部分。首先选择右侧ref按钮，在弹出菜单选中提前准备好的pcd点云图。注意这里需要注意使用Lio-sam建立的点云地图时，只需要加载GlobalMap.pcd一个文件，不要加载CornerMap.pcd，这两个地图在ndt定位环节表现GlobalMap表现要好一些。如果是其他形式的点云地图请根据情况自行选择加载。矢量地图便是将之前使用Unity插件生成的一系列文件全部载入。然后载入tf，tf位置在</span><span style="color:#ad720d;">autoware.ai/src/autoware/documentation/autoware_quickstart_examples/launch/tf_local.launch</span></p> 
+<p style="text-align:center;"><img alt="" height="356" src="https://images2.imgbox.com/87/24/FNRRmEq3_o.png" width="420"></p> 
+<p> <span style="color:#000000;">接下来进入sensing选项卡，由于雷达已经通过launch启动了，所以这个选项卡只启动两个滤波相关功能。</span></p> 
+<p style="text-align:center;"><span style="color:#000000;"><img alt="" height="372" src="https://images2.imgbox.com/4e/1e/jRXZ2ogx_o.png" width="438"></span></p> 
+<p> <span style="color:#000000;">voxel_grid_filter是体素网格滤波，点击右侧app后打开的窗口有三个参数设置，分别是设置点云话题（points topic）、体素滤波尺寸（voxel Leaf size）以及测量范围（measurement range），在这里三个参数默认即可无需修改。</span></p> 
+<p style="text-align:center;"><span style="color:#000000;"><img alt="" src="https://images2.imgbox.com/e1/73/mtaxrd3g_o.png"></span></p> 
+<p><span style="color:#000000;">ring_ground_filter也是一个滤波功能，主要是与上面的滤波结合起来滤去地面的雷达点云数据，同样最上面也是输入的点云话题。Sensor Model表示激光雷达的线数，根据自己的雷达选择对应线数。Sensor Height为雷达相对于地面的安装高度，Max Slope为最大坡度，Vertical Thres为障碍物与地面的差异度阈值。这两个选项共同决定了地面滤波效果。除非路面环境比较特殊，这里的参数默认即可。</span> </p> 
+<p>地图载入和传感器滤波操作完成后，这个时候就可以打开Autoware人机交互界面右下角的rviz按钮启动rviz了，这里如果之前没有跑过历程，还没加载过rviz的配置文件的话，需要加载<span style="color:#ad720d;">autoware.ai/src/autoware/documentation/autoware_quickstart_examples/launch/rosbag_demo/default.rviz</span></p> 
+<p><span style="color:#0d0016;">加载完成后的rviz应该是显示有点云地图和矢量地图，如果不显示的话，回到map选项卡重新载入点云地图和矢量地图，如果发现rviz中没有点云地图而且重新加载后也没有点云地图，可以修改rviz左侧的Global Options-fixed frame的参数，将默认的world修改为velodyne和map查看下是否有画面。因为在前期测试历程时发现Autoware给定的world2map的tf中设置了非常大的值，导致world坐标系和map坐标系相去甚远，可以检查下之前加载的tf文件有没有这样的情况，有的话可以将x、y值改为0让两个坐标重合。</span></p> 
+<p>接下来进入Computing选项卡，打开lidar_localizar下ndt_matching的参数设置，由于没有GPS，所以不选择GNSS，选择Initial Pos参数默认000即可。下方Method Type根据自己的设备，没有GPU选择pcl_generic。反之选择pcl_anh_gpu。</p> 
+<p style="text-align:center;"><img alt="" src="https://images2.imgbox.com/90/7f/GAvILXGs_o.png"></p> 
+<p>参数设置完毕后勾选ndt_matching，顺带勾选autoware_connector下的vel_pose_connect，勾选前打开看一下参数里面只要没有勾选Simulation Mode即可。</p> 
+<p style="text-align:center;"><img alt="" src="https://images2.imgbox.com/90/33/3xJKr9Yb_o.jpg"></p> 
+<p>正常情况下传感器传来的点云数据（红黄色）会马上出现在rviz中的初始位置。同时左上角会实时显示NDT匹配的毫秒数。此时选中 rviz上面的2D Pose Estimate，然后在地图中给定一个带方向的初始值以用于定位（箭头指向方向代表车辆前进方向）。</p> 
+<p style="text-align:center;"><img alt="" src="https://images2.imgbox.com/8d/6c/SK5rL7Uv_o.png"></p> 
+<p style="text-align:center;"> <img alt="" src="https://images2.imgbox.com/ce/80/ENrsU8rJ_o.png">​​​​​​​</p> 
+<p>到这里没有问题的话应该是可以定位成功，如果定位失败可以再尝试给新的初值。</p> 
+<p></p> 
+<p></p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/8aac405d792a0b48964e3080738a0e99/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">腾讯面经及准备</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/ceeb2c3fbbacd1923d81ef3d576ed357/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">UE4如何调用打开系统消息对话窗口</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Linux内核-时间子系统（时钟中断）专题汇总 - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="Linux内核-时间子系统（时钟中断）专题汇总" />
+<meta property="og:description" content="文章目录 概要一、专题汇总1.1、优秀系列博文1.2、时间子系统1.3、高精度定时器hrtimer1.4、RTC硬件芯片驱动 概要 中断机制是计算机系统的重要组成部分，在Linux中也不例外，中断按照来源分为硬中断和软中断，而硬中断根据硬件范围分为外中断和内中断。时钟中断就是内中断的一种。
+之所以要提到时钟中断，是因为时钟是操作系统进行调度工作的重要工具，如维护系统的绝对日期和时间、让分时进程按时间片轮转、让实时进程定时发送换接收控制信号、系统定时唤醒或阻塞进程、对用户进程记账、测量系统性能等，利用定时器能够确保操作系统在必要的时候获得控制权，陷入死循环的进程最终会因时间片耗尽而被迫让出CPU。
+Linux下的时钟中断也称为时间子系统，其架构示意图如下：
+可见Linux下的时间由硬件时钟芯片和软件时钟框架共同作用实现。
+Linux 2.6.16之前，内核只支持低精度时钟，内核定时器的工作方式：
+系统启动后，会读取时钟源设备(RTC, HPET，PIT…),初始化当前系统时间；内核会根据HZ(系统定时器频率，节拍率)参数值，设置时钟事件设备，启动tick(节拍)中断。HZ表示1秒种产生多少个时钟硬件中断，tick就表示连续两个中断的间隔时间。在我电脑上，HZ=250， 一个tick = 1/HZ, 所以默认一个tick为4ms。设置时钟事件设备后，时钟事件设备会定时产生一个tick中断，触发时钟中断处理函数，更新系统时钟,并检测timer wheel，进行超时事件的处理。
+在上面工作方式下，Linux 2.6.16 之前，内核软件定时器采用timer wheel多级时间轮的机制，维护操作系统的所有定时事件。timer wheel的触发是基于系统tick的周期性中断。
+所以说在这之前，Linux只能支持ms级别的时钟，随着时钟源硬件设备的精度提高和软件高精度计时的需求，有了高精度时钟高精度时钟的内核设计。从Linux 2.6.16开始 ，内核支持了高精度的时钟，即新的定时器hrtimer，其实现逻辑和Linux 2.6.16 之前定时器逻辑区别： 采用红黑树进行高精度定时器的管理，而不是时间轮；高精度时钟定时器不在依赖系统的tick中断，而是基于事件触发。 旧内核的定时器实现依赖于系统定时器硬件定期的tick，基于该tick，内核会扫描timer wheel进而处理超时事件，更新jiffies，wall time(墙上时间），real time（现实时间)，process的使用时间等等工作。
+新的内核不再会直接支持周期性的tick，新内核定时器框架采用了基于事件触发，而不是以前的周期性触发。新内核实现了hrtimer(high resolution timer)，hrtimer的设计目的，就是为了解决旧定时器的缺点：
+低精度，旧定时器只能支持ms级别的精度，hrtimer可以支持ns级别；旧定时器与内核其它模块的高耦合； 新内核的hrtimer的触发和设置不像之前在定期的tick中断中进行，而是动态调整的，即基于事件触发，hrtimer的工作原理：
+通过将高精度时钟硬件的下次中断触发时间设置为红黑树中最早到期的 Timer 的时间，时钟到期后从红黑树中得到下一个 Timer 的到期时间，并设置硬件，如此循环反复。
+在高精度时钟模式下，操作系统内核仍然需要周期性的tick中断，以便刷新内核的一些任务。前面可以知道，hrtimer是基于事件的，不会周期性出发tick中断，所以为了实现周期性的tick中断(dynamic tick)：系统创建了一个模拟 tick 时钟的特殊 hrtimer，将其超时时间设置为一个tick时长，在超时回来后，完成对应的工作，然后再次设置下一个tick的超时时间，以此达到周期性tick中断的需求。引入了dynamic tick,是为了能够在使用高精度时钟的同时节约能源,，这样会产生tickless 情况下，会跳过一些 tick。这里只是简单介绍，有兴趣可以读kernel源码。
+新内核对相关的时间硬件设备进行了统一的封装，定义了主要有下面两个结构：
+时钟源设备(closk source device)：抽象那些能够提供计时功能的系统硬件，比如 RTC(Real Time Clock)、TSC(Time Stamp Counter)，HPET，ACPI PM-Timer，PIT等。不同时钟源提供的精度不一样，现在pc大都是支持高精度模式(high-resolution mode)也支持低精度模式(low-resolution mode）。时钟事件设备(clock event device)：系统中可以触发 one-shot（单次）或者周期性中断的设备都可以作为时钟事件设备。 当前内核同时存在旧timer wheel 和新hrtimer两套timer的实现，内核启动后会进行从低精度模式到高精度时钟模式的切换，hrtimer模拟的tick中断将驱动传统的低精度定时器系统（基于时间轮）和内核进程调度。
+一、专题汇总 主要是汇总个人觉得精彩的Linux时间子系统相关的博文。" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/c339dfce9c8c7eeacdcf934d11f9026c/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2024-02-15T19:04:08+08:00" />
+<meta property="article:modified_time" content="2024-02-15T19:04:08+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Linux内核-时间子系统（时钟中断）专题汇总</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p></p> 
+<div class="toc"> 
+ <h4>文章目录</h4> 
+ <ul><li><ul><li><a href="#_1" rel="nofollow">概要</a></li><li><a href="#_44" rel="nofollow">一、专题汇总</a></li><li><ul><li><ul><li><a href="#11_46" rel="nofollow">1.1、优秀系列博文</a></li><li><a href="#12_50" rel="nofollow">1.2、时间子系统</a></li><li><a href="#13hrtimer_64" rel="nofollow">1.3、高精度定时器hrtimer</a></li><li><a href="#14RTC_67" rel="nofollow">1.4、RTC硬件芯片驱动</a></li></ul> 
+   </li></ul> 
+  </li></ul> 
+ </li></ul> 
+</div> 
+<p></p> 
+<h3><a id="_1"></a>概要</h3> 
+<p>中断机制是计算机系统的重要组成部分，在Linux中也不例外，中断按照来源分为硬中断和软中断，而硬中断根据硬件范围分为外中断和内中断。时钟中断就是内中断的一种。</p> 
+<blockquote> 
+ <p>之所以要提到时钟中断，是因为时钟是操作系统进行调度工作的重要工具，如维护系统的绝对日期和时间、让分时进程按时间片轮转、让实时进程定时发送换接收控制信号、系统定时唤醒或阻塞进程、对用户进程记账、测量系统性能等，利用定时器能够确保操作系统在必要的时候获得控制权，陷入死循环的进程最终会因时间片耗尽而被迫让出CPU。</p> 
+</blockquote> 
+<p>Linux下的时钟中断也称为时间子系统，其架构示意图如下：</p> 
+<p><img src="https://images2.imgbox.com/ea/95/opJ1bRrh_o.png" alt="Linux时间子系统架构图"><br> 可见Linux下的时间由硬件时钟芯片和软件时钟框架共同作用实现。</p> 
+<p>Linux 2.6.16之前，内核只支持低精度时钟，内核定时器的工作方式：</p> 
+<ol><li>系统启动后，会读取时钟源设备(RTC, HPET，PIT…),初始化当前系统时间；</li><li>内核会根据HZ(系统定时器频率，节拍率)参数值，设置时钟事件设备，启动tick(节拍)中断。HZ表示1秒种产生多少个时钟硬件中断，tick就表示连续两个中断的间隔时间。在我电脑上，HZ=250， 一个tick = 1/HZ, 所以默认一个tick为4ms。</li><li>设置时钟事件设备后，时钟事件设备会定时产生一个tick中断，触发时钟中断处理函数，更新系统时钟,并检测timer wheel，进行超时事件的处理。<br> 在上面工作方式下，Linux 2.6.16 之前，内核软件定时器采用timer wheel多级时间轮的机制，维护操作系统的所有定时事件。timer wheel的触发是基于系统tick的周期性中断。<br> 所以说在这之前，Linux只能支持ms级别的时钟，随着时钟源硬件设备的精度提高和软件高精度计时的需求，有了高精度时钟高精度时钟的内核设计。从Linux 2.6.16开始 ，内核支持了高精度的时钟，即新的定时器hrtimer，其实现逻辑和Linux 2.6.16 之前定时器逻辑区别：</li></ol> 
+<ul><li>采用红黑树进行高精度定时器的管理，而不是时间轮；</li><li>高精度时钟定时器不在依赖系统的tick中断，而是基于事件触发。</li></ul> 
+<p>旧内核的定时器实现依赖于系统定时器硬件定期的tick，基于该tick，内核会扫描timer wheel进而处理超时事件，更新jiffies，wall time(墙上时间），real time（现实时间)，process的使用时间等等工作。</p> 
+<p>新的内核不再会直接支持周期性的tick，新内核定时器框架采用了基于事件触发，而不是以前的周期性触发。新内核实现了hrtimer(high resolution timer)，hrtimer的设计目的，就是为了解决旧定时器的缺点：</p> 
+<ul><li>低精度，旧定时器只能支持ms级别的精度，hrtimer可以支持ns级别；</li><li>旧定时器与内核其它模块的高耦合；</li></ul> 
+<p>新内核的hrtimer的触发和设置不像之前在定期的tick中断中进行，而是动态调整的，即基于事件触发，hrtimer的工作原理：</p> 
+<blockquote> 
+ <p>通过将高精度时钟硬件的下次中断触发时间设置为红黑树中最早到期的 Timer 的时间，时钟到期后从红黑树中得到下一个 Timer 的到期时间，并设置硬件，如此循环反复。</p> 
+</blockquote> 
+<p>在高精度时钟模式下，操作系统内核仍然需要周期性的tick中断，以便刷新内核的一些任务。前面可以知道，hrtimer是基于事件的，不会周期性出发tick中断，所以为了实现周期性的tick中断(dynamic tick)：系统创建了一个模拟 tick 时钟的特殊 hrtimer，将其超时时间设置为一个tick时长，在超时回来后，完成对应的工作，然后再次设置下一个tick的超时时间，以此达到周期性tick中断的需求。引入了dynamic tick,是为了能够在使用高精度时钟的同时节约能源,，这样会产生tickless 情况下，会跳过一些 tick。这里只是简单介绍，有兴趣可以读kernel源码。</p> 
+<p><img src="https://images2.imgbox.com/74/16/P4McfDo5_o.png" alt="Linux 时间架构示意图"></p> 
+<p>新内核对相关的时间硬件设备进行了统一的封装，定义了主要有下面两个结构：</p> 
+<ul><li>时钟源设备(closk source device)：抽象那些能够提供计时功能的系统硬件，比如 RTC(Real Time Clock)、TSC(Time Stamp Counter)，HPET，ACPI PM-Timer，PIT等。不同时钟源提供的精度不一样，现在pc大都是支持高精度模式(high-resolution mode)也支持低精度模式(low-resolution mode）。</li><li>时钟事件设备(clock event device)：系统中可以触发 one-shot（单次）或者周期性中断的设备都可以作为时钟事件设备。</li></ul> 
+<p>当前内核同时存在旧timer wheel 和新hrtimer两套timer的实现，内核启动后会进行从低精度模式到高精度时钟模式的切换，hrtimer模拟的tick中断将驱动传统的低精度定时器系统（基于时间轮）和内核进程调度。</p> 
+<h3><a id="_44"></a>一、专题汇总</h3> 
+<p>主要是汇总个人觉得精彩的Linux时间子系统相关的博文。</p> 
+<h5><a id="11_46"></a>1.1、优秀系列博文</h5> 
+<p>1]：<a href="https://rootw.github.io/archive/" rel="nofollow">吴斌大佬</a><br> 2]：<a href="https://blog.csdn.net/droidphone/category_1263459.html">DroidPhone大佬</a><br> 3]：<a href="http://www.wowotech.net/sort/timer_subsystem" rel="nofollow">蜗窝科技</a></p> 
+<h5><a id="12_50"></a>1.2、时间子系统</h5> 
+<p>1]：<a href="https://zhuanlan.zhihu.com/p/650943020" rel="nofollow">Linux的时间子系统</a><br> 1.1]：<a href="https://cloud.tencent.com/developer/article/1955903" rel="nofollow">一文搞懂 | Linux 时间子系统</a><br> 1.2]：<a href="https://kernel.meizu.com/2018/07/12//linux-time.html/" rel="nofollow">Linux时钟框架</a><br> 1.3]：<a href="https://www.cnblogs.com/edver/p/16016521.html" rel="nofollow">Linux时钟子系统分析</a><br> 1.4]：<a href="https://www.cnblogs.com/yungyu16/p/12992374.html" rel="nofollow">Linux之时钟中断</a><br> 2]：<a href="https://blog.csdn.net/u014001096/article/details/130030653">Linux时间子系统（一）简介</a><br> 3]：<a href="https://blog.csdn.net/qq_23327993/article/details/105074628">Linux内核设计与实现-定时器和时间管理</a><br> 4]：<a href="https://zhuanlan.zhihu.com/p/399441638" rel="nofollow">Linux内核时钟系统和定时器实现</a><br> 5]：<a href="http://news.eeworld.com.cn/mp/rrgeek/a355005.jspx" rel="nofollow">Linux 时间子系统全栈解析</a><br> 6]：<a href="https://www.cnblogs.com/zyly/p/16597019.html" rel="nofollow">Linux驱动移植-通用时钟框架子系统</a><br> 7]：<a href="https://blog.csdn.net/orangeboyye/article/details/125744132">深入理解Linux时间子系统</a><br> 8]：<a href="https://www.linuxgod.net/582.html" rel="nofollow">Linux内核启动注册中断内核中断源如何实现多个定时器</a><br> 9]：<a href="https://blog.csdn.net/heliangbin87/article/details/79208326">Linux内核之时间子系统</a></p> 
+<h5><a id="13hrtimer_64"></a>1.3、高精度定时器hrtimer</h5> 
+<p>1]：<a href="https://zhuanlan.zhihu.com/p/450089796" rel="nofollow">一文入门linux内核高精度定时器hrtimer机制</a></p> 
+<h5><a id="14RTC_67"></a>1.4、RTC硬件芯片驱动</h5> 
+<p>1]：<a href="https://www.cnblogs.com/zyly/p/17208082.html" rel="nofollow">linux驱动移植-RTC驱动</a><br> 2]：<a href="https://cloud.tencent.com/developer/article/1933097" rel="nofollow"> Linux下RTC实时时钟驱动</a><br> 3]：<a href="https://blog.csdn.net/OnlyLove_/article/details/122285864">Linux 驱动开发 三十五：Linux 内核时钟管理</a></p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/8c60d1a8de7f1c8abef141d60654a09d/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">学生宿舍管理小程序|基于微信小程序的学生宿舍管理系统设计与实现(源码&#43;数据库&#43;文档)</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/fa1fbf22eb89e48237540cbf36e44bc8/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">蒙特卡罗模拟 python Monte Carlo Simulation</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

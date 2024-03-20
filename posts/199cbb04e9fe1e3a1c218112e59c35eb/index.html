@@ -1,0 +1,745 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Android- IP LOST_PROVISIONING 的机制 - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="Android- IP LOST_PROVISIONING 的机制" />
+<meta property="og:description" content="当log中出现以下信息的时候，说明周围的AP设备出现了一个问题。
+(standard input):1269530:12-20 06:53:39.325 578 622 D WifiStateMachine: FAILURE: LOST_PROVISIONING, NeighborEvent{elapsedMs=61927860, 10.10.100.11, [(null)], RTM_NEWNEIGH, NUD_FAILED}
+下面是对这个机制的说明：
+本文主要基于Android 7.0 介绍IP LOST_PROVISIONING 的情况的处理逻辑；
+通过Android-IpReachabilityMonitor文章可知对于处于IpWatchlist中neighbor网络，Android 会定期持续地去Probe相应的neighbor状态，如果得不到任何响应response, 则可能将该neighbor的状态置为NUD_FAILED，进一步发出neighbor 配置丢失的消息LOST_PROVISIONING。 IpReachabilityMonitor 1、声明一个IpReachabilityMonitor Callback接口： public interface Callback { // This callback function must execute as quickly as possible as it is
+// run on the same thread that listens to kernel neighbor updates.
+// TODO: refactor to something like notifyProvisioningLost(String msg).
+public void notifyLost(InetAddress ip, String logMsg);" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/199cbb04e9fe1e3a1c218112e59c35eb/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2017-12-20T10:13:31+08:00" />
+<meta property="article:modified_time" content="2017-12-20T10:13:31+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Android- IP LOST_PROVISIONING 的机制</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p>当log中出现以下信息的时候，说明周围的AP设备出现了一个问题。</p> 
+<p>(standard input):1269530:12-20 06:53:39.325   578   622 D WifiStateMachine: FAILURE: LOST_PROVISIONING, NeighborEvent{elapsedMs=61927860, 10.10.100.11, [(null)], RTM_NEWNEIGH, NUD_FAILED}<br> </p> 
+<p><br> </p> 
+<p>下面是对这个机制的说明：</p> 
+<p><br> </p> 
+<p></p> 
+<pre> 
+ <div>
+  
+  <p>本文主要基于Android 7.0 介绍IP LOST_PROVISIONING 的情况的处理逻辑；</p>
+  
+  <p>通过Android-IpReachabilityMonitor文章可知对于处于IpWatchlist中neighbor网络，Android 会定期持续地去Probe相应的neighbor状态，如果得不到任何响应response, 则可能将该neighbor的状态置为NUD_FAILED，进一步发出neighbor 配置丢失的消息LOST_PROVISIONING。
+</p>
+  
+  <hr>
+  
+  <h2>IpReachabilityMonitor</h2>
+  
+  <hr>
+  
+  <h4>1、声明一个IpReachabilityMonitor  Callback接口： 
+
+</h4>
+  
+  <blockquote>
+
+   
+   <p>public interface Callback {
+</p>
+
+   
+   <p>// This callback function must execute as quickly as possible as it is</p>
+
+   
+   <p>// run on the same thread that listens to kernel neighbor updates.</p>
+
+   
+   <p>// TODO: refactor to something like notifyProvisioningLost(String msg).</p>
+
+   
+   <p>public void notifyLost(InetAddress ip, String logMsg);</p>
+
+   
+   <p>}</p>
+
+  
+  </blockquote>
+  
+  <h4>2、IpReachabilityMonitor  Callback接口调用</h4>
+  
+  <p>//在IpReachabilityMonitor构造函数中初始化
+</p>
+  
+  <blockquote>
+
+   
+   <p>public IpReachabilityMonitor(Context context, String ifName, <strong>Callback callback</strong>,
+</p>
+
+   
+   <p>AvoidBadWifiTracker tracker) throws IllegalArgumentException {
+</p>
+
+   
+   <p>....</p>
+
+   
+   <p>mCallback = callback;
+</p>
+
+   
+   <p>....</p>
+
+   
+   <p>}</p>
+
+  
+  </blockquote>
+  
+  <p>//在IpReachiabilityMonitor的handleNeighborLost中，当neighbor的配置为LOST_PROVISIONING时调用回调函数
+</p>
+  
+  <blockquote>
+
+   
+   <p>private void handleNeighborLost(String msg) {<!-- --></p>
+
+   
+   <p>......</p>
+
+   
+   <p>         if (delta == ProvisioningChange.LOST_PROVISIONING) {
+</p>
+
+   
+   <p>              if (mCallback != null) {<!-- --></p>
+
+   
+   <p>          // TODO: remove |ip| when the callback signature no longer has an InetAddress argument.</p>
+
+   
+   <p>                       <strong>mCallback.notifyLost(ip, logMsg);</strong></p>
+
+   
+   <p>             }</p>
+
+   
+   <p>         }</p>
+
+   
+   <p>......
+</p>
+
+   
+   <p>}
+</p>
+
+  
+  </blockquote>
+  
+  <h4>3、IpReachabilityMonitor  Callback接口的实现</h4>
+  
+  <p>IpReachabilityMonitor类的Callback Interface的实现是在IpManager类中。</p>
+  
+  <p>在IpManager的RunningState状态的enter函数中，在启动Ipv6 和 Ipv4后，就会创建一个IpReachabilityMonitor的实例（在IpReachabilityMonitor的构造函数中就会启懂NetlinkSocketObserver子线程，用于接收Kernel 消息并解析，详见Android-IpReachabilityMonitor文章），同时对IpReachabilityMonitor的Callback进行赋值。</p>
+  
+  <blockquote>
+
+   
+   <p>class RunningState extends State {
+</p>
+
+   
+   <p>@Override</p>
+
+   
+   <p>public void enter() {<!-- --></p>
+
+   
+   <p>.......</p>
+
+   
+   <p>         //启动IPv6
+</p>
+
+   
+   <p>         if (mConfiguration.mEnableIPv6) {<!-- --></p>
+
+   
+   <p>                startIPv6();</p>
+
+   
+   <p>         }</p>
+
+   
+   <p>         //启动IPv4
+</p>
+
+   
+   <p>         if (mConfiguration.mEnableIPv4) {<!-- --></p>
+
+   
+   <p>               if (!startIPv4()) {<!-- --></p>
+
+   
+   <p>                      transitionTo(mStoppingState);</p>
+
+   
+   <p>                      return;</p>
+
+   
+   <p>               }</p>
+
+   
+   <p>          }</p>
+
+   
+   <p>          //使能IpReachabilityMonitor机制功能
+</p>
+
+   
+   <p>          if (mConfiguration.mUsingIpReachabilityMonitor) {
+</p>
+
+   
+   <p>                try {<!-- --></p>
+
+   
+   <p>                       <strong>mIpReachabilityMonitor </strong>= <strong>new IpReachabilityMonitor</strong>(</p>
+
+   
+   <p>                       mContext,mInterfaceName,</p>
+
+   
+   <p>                       <strong>new IpReachabilityMonitor.<em>Callback</em>() {<!-- --></strong></p>
+
+   
+   <p><strong>                               @Override</strong></p>
+
+   
+   <p><strong>                               public void <em>notifyLost</em>(InetAddress ip, String logMsg) {<!-- --></strong></p>
+
+   
+   <p><strong>                                       //回调IpManager类中mCallback对象
+</strong></p>
+
+   
+   <p><strong>                                         <em>mCallback.onReachabilityLost(logMsg);</em></strong></p>
+
+   
+   <p><strong>                               }</strong></p>
+
+   
+   <p><strong>                         },</strong></p>
+
+   
+   <p>                         mAvoidBadWifiTracker);</p>
+
+   
+   <p>                   } catch (IllegalArgumentException e) {<!-- --></p>
+
+   
+   <p>                         Log.e(mTag, "star IRM fail: " + e);</p>
+
+   
+   <p>                         transitionTo(mStoppingState);</p>
+
+   
+   <p>                  }</p>
+
+   
+   <p>          }</p>
+
+   
+   <p>}</p>
+
+  
+  </blockquote>
+  
+  <p>上面的分析可知IpReachabilityMonitor  Callback接口的<em><strong>notifyLost(InetAddress ip, String logMsg)</strong> </em>调用IpManager Callback类的<em><strong>onReachabilityLost(logMsg)</strong></em>。</p>
+  
+  <p>下面分析IpManager Callback类。<em>
+</em></p>
+  
+  <hr>
+  
+  <h2>IpManager</h2>
+  
+  <hr>
+  
+  <h4>1、IpManager Callback类的声明和初始化</h4>
+  
+  <blockquote>
+
+   
+   <p>public IpManager(Context context, String ifName, <em><strong>Callback callback</strong></em>,
+</p>
+
+   
+   <p>INetworkManagementService nwService) throws IllegalArgumentException {<!-- --></p>
+
+   
+   <p>.....</p>
+
+   
+   <p><em><strong>mCallback = callback</strong></em>;
+</p>
+
+   
+   <p>....</p>
+
+   
+   <p>}</p>
+
+  
+  </blockquote>
+  
+  <blockquote>
+
+   
+   <p>/** Callbacks for handling IpManager events.*/</p>
+
+   
+   <p>public static class Callback {<!-- --></p>
+
+   
+   <p>       ......
+</p>
+
+   
+   <p>        // Called when the internal IpReachabilityMonitor (if enabled) hasdetected the loss of a critical number of required neighbors.</p>
+
+   
+   <p>     //当内部IpReachabilityMonitor（如果使能了）已经检测到需要的邻居neighbor网络达到一个临界数量丢失时，就会调用。
+</p>
+
+   
+   <p>        public void onReachabilityLost(String logMsg) {}</p>
+
+   
+   <p>      ......
+</p>
+
+   
+   <p>}
+</p>
+
+  
+  </blockquote>
+  
+  <h4>2、IpManager 子类Callback类的实现（主要针对onReachabilityLost 函数）</h4>
+  
+  <p>IpManager 子类Callback类的实现是在WifiStateMachine中实现的。</p>
+  
+  <blockquote>
+
+   
+   <p>class <strong>IpManagerCallback </strong>extends <strong>IpManager.Callback</strong> {
+.......</p>
+
+   
+   <p>@Override
+</p>
+
+   
+   <p>public void <strong>onReachabilityLost<em>(String logMsg) </em></strong>{<!-- --></p>
+
+   
+   <p>sendMessage(<em><strong>CMD_IP_REACHABILITY_LOST</strong></em>, logMsg);</p>
+
+   
+   <p>}</p>
+
+   
+   <p>.......
+</p>
+
+   
+   <p>}
+</p>
+
+  
+  </blockquote>
+  
+  <p>上面的分析的LOST_PROVISIONING 处理逻辑如下：</p>
+  
+  <p><strong>IpReachabilityMonitor：<em> LOST_PROVISIONING  -&gt; mCallback.notifyLost(ip, logMsg);</em></strong></p>
+  
+  <p><strong>IpManager: <em>mCallback.<strong>onReachabilityLost(String logMsg)</strong></em></strong></p>
+  
+  <p><strong><strong>WifiStateMachine:<em> sendMessage(<em><strong>CMD_IP_REACHABILITY_LOST</strong></em>, logMsg);</em></strong></strong>
+</p>
+
+  
+  <hr>
+  
+  <h2>WifiStateMachine</h2>
+  
+  <hr>
+  
+  <p>此处主要关注WifiStateMachine中对<em><strong>CMD_IP_REACHABILITY_LOST</strong></em>命令的处理。</p>
+  
+  <h4>1、状态机对<em>CMD_IP_REACHABILITY_LOST</em>命令的处理
+
+</h4>
+  
+  <p>该消息的处理仅在WifiStateMachine的状态机中，有两个状态会处理DefaultState和L2ConnectedState。</p>
+  
+  <p>在DefaultState中，接收到<em><strong>CMD_IP_REACHABILITY_LOST</strong></em>命令直接丢弃不处理：</p>
+  
+  <blockquote>
+
+   
+   <p>class <strong>DefaultState </strong>extends State {
+</p>
+
+   
+   <p>@Override</p>
+
+   
+   <p>public boolean processMessage(Message message) {<!-- --></p>
+
+   
+   <p>....</p>
+
+   
+   <p>         case <strong>CMD_IP_REACHABILITY_LOST</strong>:
+</p>
+
+   
+   <p>              messageHandlingStatus = <strong>MESSAGE_HANDLING_STATUS_DISCARD</strong>;</p>
+
+   
+   <p>              break;</p>
+
+   
+   <p>....</p>
+
+   
+   <p>}</p>
+
+  
+  </blockquote>
+  
+  <p>在L2ConnectedState状态中，接收到CMD_IP_REACHABILITY_LOST命令处理：</p>
+  
+  <blockquote>
+
+   
+   <p>class L2ConnectedState extends State {
+
+</p>
+
+   
+   <p>.....</p>
+
+   
+   <p>     @Override
+</p>
+
+   
+   <p>    public boolean processMessage(Message message) {<!-- --></p>
+
+   
+   <p>    switch (message.what) {<!-- --></p>
+
+   
+   <p>     ......
+</p>
+
+   
+   <p>          case CMD_IP_REACHABILITY_LOST:
+</p>
+
+   
+   <p>                 ///M: ALPS02475594 Ignore ip reachability lost for improving performance</p>
+
+   
+   <p>                 //由于一些特殊使用场景，比如使用Wi-Fi Display时为了提高Wi-Fi Tput ，可能需要临时暂停Wi-Fi 一段时间的Scan和重连动作。此时就会忽视ignore CMD_IP_REACHABILITY_LOST命令，不做任何处理。
+</p>
+
+   
+   <p>                 if (isTemporarilyDontReconnectWifi()) { 
+</p>
+
+   
+   <p>                   //如果临时暂定Wi-Fi的扫描和重连功能，直接丢弃CMD_IP_REACHABILITY_LOST命令不做任何处理
+</p>
+
+   
+   <p>                      log("isTemporarilyDontReconnectWifi is true, " +"ignore CMD_IP_REACHABILITY_LOST");</p>
+
+   
+   <p>                } else if (enableIpReachabilityMonitor()) {<!-- --></p>
+
+   
+   <p>                   //如果已经使能了IpReachabilityMonitor机制功能，系统默认使能
+</p>
+
+   
+   <p>                   if (<strong>!enableIpReachabilityMonitorEnhancement() </strong>||   <strong>mIsListeningIpReachabilityLost</strong></p>
+
+   
+   <p>                      || ((mIpManager != null) &amp;&amp;<strong><em> (mIpManager.getLostCount() &gt;= 3)</em></strong>))  {<!-- --></p>
+
+   
+   <p>                      <em> //这里满足三个条件任何一个就执行下面的操作</em>
+</p>
+
+   
+   <p>                        <strong><em>  handleIpReachabilityLost();</em></strong></p>
+
+   
+   <p>                          transitionTo(mDisconnectingState);</p>
+
+   
+   <p>                     }<del> else {<!-- --></del></p>
+
+   
+   <p>           <em>            ///如下这段MTK添加的patch, 由于在上一个if条件中已经有了<del>mIsListeningIpReachabilityLost为true的情况，所以此段代码永远不会执行，为无效代码。</del></em></p>
+
+   
+   <p><del>                                 ///M: ALPS02550356 Avoid frequently disconnect caused by ip                                    //   reachability lost @{<!-- --></del></p>
+
+   
+   <p><del>                          Log.d(TAG, "mIsListeningIpReachabilityLost: "+ mIsListeningIpReachabilityLost);</del></p>
+
+   
+   <p><del>                                  if (mIsListeningIpReachabilityLost) {<!-- --></del></p>
+
+   
+   <p><del>                                              handleIpReachabilityLost();</del></p>
+
+   
+   <p><del>                                              transitionTo(mDisconnectingState);</del></p>
+
+   
+   <p><del>                                  } else {<!-- --></del></p>
+
+   
+   <p><del>                                      Log.d(TAG, "Ignore CMD_IP_REACHABILITY_LOST");</del></p>
+
+   
+   <p><del>                                 }</del></p>
+
+   
+   <p><del>                       }</del></p>
+
+   
+   <p><del>              } </del>else { 
+</p>
+
+   
+   <p>                  //如果没有使能 IpReachabilityMonitor机制功能，直接丢弃CMD_IP_REACHABILITY_LOST命令不做任何处理
+</p>
+
+   
+   <p>                    Log.d(TAG, "Ignore CMD_IP_REACHABILITY_LOST " +"due to enableIpReachabilityMonitor is off");</p>
+
+   
+   <p>             }</p>
+
+   
+   <p>           break;</p>
+
+   
+   <p>.....</p>
+
+   
+   <p>}</p>
+
+  
+  </blockquote>
+  
+  <p>从上面的代码可以看出，WifiStateMachine 中的消息CMD_IP_REACHABILITY_LOST在使能IpReachabilityMonitor的情况下，只要满足三个条件中一个，就执行<strong><em>handleIpReachabilityLost()，并且状态机由L2ConnectedState进入DisconnectingState.</em></strong></p>
+  
+  <p><em><strong>这三个条件分别解释如下：</strong></em></p>
+  
+  <p><strong><em>!enableIpReachabilityMonitorEnhancement() </em> //这个由系统属性persist.wifi.IRM.enhancement和com.mediatek.internal.R.bool.</strong>config_enable_ip_reachability_monitor_enhancement 两个值控制，其实这个条件就是MTK自己基于Google Android原生添加的，该条件为True的意思是系统属性和MTK的配置变量均置为了False了。</p>
+  
+  <p><strong><em>mIsListeningIpReachabilityLost  </em>//这个也是MTK自己基于Google Android 原生添加的，跟上面的一样。为True的意思是已经启动开始监听IpReachabilityLost的功能。</strong></p>
+  
+  <p><em><strong>((mIpManager != null) &amp;&amp;(mIpManager.getLostCount() &gt;= 3)) </strong>//这个也是基于Android 原生自己新增的控制条件，主要用于控制出现3次IP LOST_PROVISIONING（CMD_IP_REACHABILITY_LOST）时，才执行<strong><em>handleIpReachabilityLost(); 主要是为了避免由于芯片级不稳定，驱动频繁发出<em>IP LOST_PROVISIONING， 从而带来上层频繁断线，用户体验很差。当然这个仅算是一个避归方案。真正的问题出现在芯片驱动上。</em></em></strong></em></p>
+  
+  <h4>2、handleIpReachabilityLost()操作<em>
+</em>
+</h4>
+  
+  <blockquote>
+
+   
+   <p><em><strong><em></em></strong></em>// TODO: De-duplicated this and handleIpConfigurationLost().
+</p>
+
+   
+   <p>private void handleIpReachabilityLost() {<!-- --></p>
+
+   
+   <p>             //清空当前网络的mIpAddress
+</p>
+
+   
+   <p>             mWifiInfo.setInetAddress(null);</p>
+
+   
+   <p>            //将WifiInfo中mMeteredHint置为false。该变量表示相应的网络的上游连接被计量了（该网络需要按流量收费的意思），对于大数据传输很敏感。
+</p>
+
+   
+   <p>             mWifiInfo.setMeteredHint(false);</p>
+
+   
+   <p>             //发送一个广播出去，应用层获取广播后，友善提示用户当前网络已经断开
+</p>
+
+   
+   <p>              sendBroadcastForErrorNetwork();</p>
+
+   
+   <p>            // Disconnect via supplicant, and let autojoin retry connecting to the network.</p>
+
+   
+   <p>            //将Supplicant连接也断开，即完全断开网络，让其执行重连动作。
+</p>
+
+   
+   <p>            mWifiNative.disconnect();</p>
+
+   
+   <p>}</p>
+
+  
+  </blockquote>
+  
+  <hr>
+  
+  <h2>总结
+
+</h2>
+  
+  <p>至此，Android 中由于IpReachabilityMonitor 监视到Kernel上报当前网络配置丢失（LOST_PROVISIONING）的处理完整流程介绍完毕，总结如下：</p>
+  
+  <blockquote>
+
+   
+   <p><strong>IpReachabilityMonitor：<em>LOST_PROVISIONING  -&gt; mCallback.notifyLost(ip, logMsg); 
+</em></strong></p>
+
+   
+   <p><strong><em>                           |</em></strong></p>
+
+   
+   <p><strong>IpManager:<em>mCallback.<strong>onReachabilityLost(String logMsg)</strong></em></strong></p>
+
+   
+   <p><strong><em>                           |
+</em></strong></p>
+
+   
+   <p><strong><strong>WifiStateMachine:<em>sendMessage(<em><strong>CMD_IP_REACHABILITY_LOST</strong></em>, logMsg);</em></strong></strong></p>
+
+   
+   <p><strong><strong><em>                           | </em></strong></strong></p>
+
+   
+   <p><strong><strong><em>WifiStateMachine：handleIpReachabilityLost()</em></strong></strong></p>
+
+  
+  </blockquote>
+  
+  <p>最终从清除当前网路在WifiInfo中Ip地址信息，并置其mMeteredHint属性为false，然后下发Supplicant断开当前网络。</p>
+  
+  <p>
+</p>
+ 
+ </div></pre> 
+<br> 
+<p></p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/67a1f486253d2b1b0554e78c0c7349d4/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">三子棋</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/2f2a276ecb6dec52e33c6da534d7c4cd/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">网络端口号汇总</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

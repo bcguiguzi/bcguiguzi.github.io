@@ -1,0 +1,379 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>以太坊虚拟机EVM - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="以太坊虚拟机EVM" />
+<meta property="og:description" content="概述： 以太坊虚拟机EVM是智能合约的运行环境，它不仅是沙盒封装的，而且是完全隔离的，也就是说在EVM中运行代码是无法访问网络，文件系统和其他进程的。甚至智能合约之间的访问也是受限的。 账户：
+以太坊中有两类账户，它们共用一个地址空间:外部账户由公钥-私钥对控制，也就是由人控制；合约账户由与账户一起存储的代码控制。 外部账户地址由公钥决定，而合约账户地址是在创建合约时确定，该地址通过合约创建者的地址和从该地址发出过的交易数量（也就是所谓的nonce值）计算得到的。 无论账户是否存储代码，对EVM来说这两类账户都是一样的。 每个账户都有一个键值对形式的持久化存储，它的key和value长度都是256位，这里称之为存储storage。 此外，每个账户都有一个以太币余额balance，单位为Wei，这个余额会因发送包含以太币的交易而改变。 交易：
+交易是从一个账户发送到另一个账户的消息，它能包含二进制数据和以太币。这里的账户，可能是相同或特殊的零账户。二进制数据为合约负载。 若目标账户包含代码，则此代码会被执行，同时以payload作为入参。 若目标账户是零账户，也就是账户地址为0，则此交易将创建一个新合约。如前面所说，合约的地址不是令地址，而是通过合约创建者的地址和从该地址发出过的交易数量（也就是nonce值）计算得到的。这个用来创建合约的交易的payload会被转换为EVM字节码并执行。执行的输出将作为合约代码被永久存储。这意味着若要创建一个合约，不必向合约发送真正的合约代码，而只发送能够产生合约代码的代码即可。 注意：当合约正在创建时，它的代码仍然是空的。鉴于此，不应该在构造函数还未完全执行成功就去回调合约。 gas： 一旦创建交易，每笔交易都要收取一定数量的gas，其目的是限制执行交易所需要的工作量和未交易支付手续费，当EVM执行交易时，gas会按照特定规则逐渐耗尽。 gas price是由交易发送者设置的一个值，发送者账户需要预付手续费等于gas_price*gas。若交易执行后还有剩余，则gas会原路返回。 无论执行到什么位置，一旦gas耗尽，比如降为负值了，就会触发一个out-of-gas异常。当前调用帧current call fram所做的所有状态修改都将被回滚。 调用帧表示EVM运行栈(stack)中当前操作所需要的若干元素。 存储storage,内存memory和栈stack: 每个账户有一块持久化内存区称为存储。存储是将256位字映射到256位字的键值存储区。在合约中枚举存储是不可能的，且读存储相对开销很高，修改存储的开销甚至更高，合约只能读写存储区内属于自己的部分。 第二个内存区域称为内存，合约会为每一次消息调用获取一块全新的被擦除过的内存实例。内存是线性的，可按字节寻址，但是读长度限制为256位宽，而写长度可为8位也可为256位宽。当读写之前从未读写过的内存字(word)时，比如偏移到该字内的任何位置时，内存都将按字进行扩展，这里每个字是256位。扩容也将消耗一定量的gas，随着内存使用量的增长，其费用也会增高，以平方级。 EVM是基于栈的，而不是基于寄存器，因此所有的计算都是在一个被称为栈stack的区域执行的。栈的最大尺寸为1024个元素，每个包含256个位。栈访问只限制访问栈顶端，限制方式为：允许拷贝最顶端16个元素之一到栈顶或者交换栈顶元素和下面16个元素之一。所有其他操作都只能取得最顶端的两个元素，或一个或更多，这取决于具体操作，运算后，把结果压入栈顶。这里当然可以把栈上的元素放到存储或内存中，但无法只访问栈上指定深度的那个元素，除非先从栈顶移除其他元素。 指令集： EVM的指令集要保证最小，以避免引起共识问题的错误实现。所有指令操作都是针对256位字这个基本数据类型来进行的，还具备常用的算术，位，逻辑和比较操作，也由条件和无条件跳转操作。此外合约还可以访问当前区块的相关属性，比如区块号和时间戳。 消息调用： 合约可通过消息调用的方式来调用其他合约或发送以太币到非合约账户，消息调用与交易很相似，它们都有一个源，目标，数据，以太币，gas和返回值。实际上每个交易都由一个顶层消息调用构成，这个消息调用反过来又可创建更多的消息调用。 合约可决定在其内部消息调用中，对其剩余的gas，应该发送多少和保留多少。若在内部消息调用时发生了out-of-gas异常或其他任何异常，这将会被一个压入栈顶的错误值所指示。这种情况下，只消耗掉与该内部消息调用一起发送的gas。在Solidity中，在这种情况下，发起调用的合约会默认引起一个人工异常，以便异常在调用栈中冒泡。 若前面所说，被调用的合约，也可以和调用者时同一个合约，会获得一块全新的擦除过的内存实例，并可访问调用的payload，这个payload数据是由一个称为calldata的独立区域提供的。调用执行结束后，返回数据将被存放在调用方预先分配好的一块内存中。调用深度被限制为1024，也就是意味着对于更加复杂的操作，应该使用循环而不是递归调用。 委托调用delegatecall/代码调用callcode和库： 有一种特殊类型的消息调用，被称为委托调用，它与一般消息调用的区别在于，目标地址的代码将在发起掉用的合约的上下文中执行，同时msg.sender和msg.value的值不会改变。 这意味着合约在运行时可以从另一个地址动态地加载代码。存储，当前地址和余额都仍然指向发起调用的合约，只有代码是从被调用地址获取的。 这使得在solidity内可实现库:可复用的库代码可放在合约的存储上，比如，用于实现一个复杂数据结构。 日志： 在一个特殊可索引的数据结构内存储数据，该结构可一路向上被映射到区块级别。这个特性在solidity内为实现事件被使用到，也被称为日志。合约在创建后就无法再访问log数据，但是可以在区块外高效地访问这些数据。由于部分日志数据是被保存在布隆过滤器中的，因此可以高效且加密安全地搜索这些日志，所以即使网络节点没有下载整个区块链（轻客户端）也仍然能够找到这些日志。 创建： 合约甚至可以通过使用一个特殊指令来创建其他合约，并不是简单的调用零地址。这些创建调用create calls和一般的消息调用唯一的不同点就是: payload数据被执行及其结果以合约代码形式存储，同时调用者或创建者在栈上获得新合约的地址。 自毁： 从区块链上删除合约代码的唯一方式就是在合约在合约地址上执行selfdestruct自毁操作，该合约地址上剩余的以太币会被发送到指定目标地址，随即其存储和代码从状态中删除。 注意：
+1.即使合约的代码不包含对selfdestruct的调用，它仍然可以通过delegatecall或者callcode执行自毁操作。
+2.旧合约的删减有可能或不可能由以太坊客户端实现，另外，归档节点可能选择无限期地保存合约存储和代码。
+3.当前的外部账户不可能从状态中删除。 什么是布隆过滤器？ 布隆过滤器是1970年由布隆提出的，实际上是一个很长的二进制向量和一系列随机映射函数，布隆过滤器可用于检索一个元素是否在一个集合中，它的优点是空间效率和查询时间都远远 超过一般的算法，缺点是有一定的误识别率和删除困难。
+参考网址
+===========================================&gt;20180504
+go-ethereum v1.8.7
+每个交易都带有两部分内容需要执行:
+1.转账，由转出方地址向转入方地址转一笔以太币
+2.携带[]byte类型成员变量payload，其每一个byte都对应一个单独虚拟机指令，这些内容都是由EVM对象来完成的，EVM结构体是以太坊虚拟机机制的核心，它与协同类的UML关系图如下所示：
+1.Context结构体包含交易Transaction的信息GasPrice，GasLimit;区块Block的信息BlockNumber,Time,Difficulty以及转账函数等，这些信息都是提供给EVM的。
+2.StateDB接口是针对state.StateDB结构体设计的本地行为接口，可以为EVM提供statedb的相关操作。
+3.Interpreter结构体为解释器，用来解释执行EVM中合约的指令。
+对EVM结构中定义的成员变量Context，仅声明变量而无类型，而变量名又是其类型名时，在Go语言中，这里意味着主结构体EVM可直接调用成员变量Context的所有方法和成员变量，比如EVM直接调用Context中的Transfer()
+完成转账：
+交易转账操作由Context对象中的TransferFunc类型函数实现，类似函数类型还有CanTransferFunc和GetHashFunc:
+go-ethereum\core\vm:
+type ( CanTransferFunc func(StateDB, common.Address, *big." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/bdda3847d72156431f04b380ad00569b/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2018-04-28T14:01:08+08:00" />
+<meta property="article:modified_time" content="2018-04-28T14:01:08+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">以太坊虚拟机EVM</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <strong>概述</strong>： 
+<br>以太坊虚拟机EVM是智能合约的运行环境，它不仅是沙盒封装的，而且是完全隔离的，也就是说在EVM中运行代码是无法访问网络，文件系统和其他进程的。甚至智能合约之间的访问也是受限的。 
+<br> 
+<p><strong><br></strong></p> 
+<p><strong>账户</strong>：</p>以太坊中有两类账户，它们共用一个地址空间:外部账户由公钥-私钥对控制，也就是由人控制；合约账户由与账户一起存储的代码控制。 
+<br>外部账户地址由公钥决定，而合约账户地址是在创建合约时确定，该地址通过合约创建者的地址和从该地址发出过的交易数量（也就是所谓的nonce值）计算得到的。 
+<br>无论账户是否存储代码，对EVM来说这两类账户都是一样的。 
+<br>每个账户都有一个键值对形式的持久化存储，它的key和value长度都是256位，这里称之为存储storage。 
+<br>此外，每个账户都有一个以太币余额balance，单位为Wei，这个余额会因发送包含以太币的交易而改变。 
+<br> 
+<p><strong><br></strong></p> 
+<p><strong>交易</strong>：</p>交易是从一个账户发送到另一个账户的消息，它能包含二进制数据和以太币。这里的账户，可能是相同或特殊的零账户。二进制数据为合约负载。 
+<br>若目标账户包含代码，则此代码会被执行，同时以payload作为入参。 
+<br>若目标账户是零账户，也就是账户地址为0，则此交易将创建一个新合约。如前面所说，合约的地址不是令地址，而是通过合约创建者的地址和从该地址发出过的交易数量（也就是nonce值）计算得到的。这个用来创建合约的交易的payload会被转换为EVM字节码并执行。执行的输出将作为合约代码被永久存储。这意味着若要创建一个合约，不必向合约发送真正的合约代码，而只发送能够产生合约代码的代码即可。 
+<br>注意：当合约正在创建时，它的代码仍然是空的。鉴于此，不应该在构造函数还未完全执行成功就去回调合约。 
+<br> 
+<br> 
+<strong>gas</strong>： 
+<br>一旦创建交易，每笔交易都要收取一定数量的gas，其目的是限制执行交易所需要的工作量和未交易支付手续费，当EVM执行交易时，gas会按照特定规则逐渐耗尽。 
+<br>gas price是由交易发送者设置的一个值，发送者账户需要预付手续费等于gas_price*gas。若交易执行后还有剩余，则gas会原路返回。 
+<br>无论执行到什么位置，一旦gas耗尽，比如降为负值了，就会触发一个out-of-gas异常。当前调用帧current call fram所做的所有状态修改都将被回滚。 
+<br>调用帧表示EVM运行栈(stack)中当前操作所需要的若干元素。 
+<br> 
+<br> 
+<strong>存储storage,内存memory和栈stack</strong>: 
+<br>每个账户有一块持久化内存区称为存储。存储是将256位字映射到256位字的键值存储区。在合约中枚举存储是不可能的，且读存储相对开销很高，修改存储的开销甚至更高，合约只能读写存储区内属于自己的部分。 
+<br>第二个内存区域称为内存，合约会为每一次消息调用获取一块全新的被擦除过的内存实例。内存是线性的，可按字节寻址，但是读长度限制为256位宽，而写长度可为8位也可为256位宽。当读写之前从未读写过的内存字(word)时，比如偏移到该字内的任何位置时，内存都将按字进行扩展，这里每个字是256位。扩容也将消耗一定量的gas，随着内存使用量的增长，其费用也会增高，以平方级。 
+<br>EVM是基于栈的，而不是基于寄存器，因此所有的计算都是在一个被称为栈stack的区域执行的。栈的最大尺寸为1024个元素，每个包含256个位。栈访问只限制访问栈顶端，限制方式为：允许拷贝最顶端16个元素之一到栈顶或者交换栈顶元素和下面16个元素之一。所有其他操作都只能取得最顶端的两个元素，或一个或更多，这取决于具体操作，运算后，把结果压入栈顶。这里当然可以把栈上的元素放到存储或内存中，但无法只访问栈上指定深度的那个元素，除非先从栈顶移除其他元素。 
+<br> 
+<br> 
+<strong>指令集</strong>： 
+<br>EVM的指令集要保证最小，以避免引起共识问题的错误实现。所有指令操作都是针对256位字这个基本数据类型来进行的，还具备常用的算术，位，逻辑和比较操作，也由条件和无条件跳转操作。此外合约还可以访问当前区块的相关属性，比如区块号和时间戳。 
+<br> 
+<br> 
+<strong>消息调用</strong>： 
+<br>合约可通过消息调用的方式来调用其他合约或发送以太币到非合约账户，消息调用与交易很相似，它们都有一个源，目标，数据，以太币，gas和返回值。实际上每个交易都由一个顶层消息调用构成，这个消息调用反过来又可创建更多的消息调用。 
+<br>合约可决定在其内部消息调用中，对其剩余的gas，应该发送多少和保留多少。若在内部消息调用时发生了out-of-gas异常或其他任何异常，这将会被一个压入栈顶的错误值所指示。这种情况下，只消耗掉与该内部消息调用一起发送的gas。在Solidity中，在这种情况下，发起调用的合约会默认引起一个人工异常，以便异常在调用栈中冒泡。 
+<br>若前面所说，被调用的合约，也可以和调用者时同一个合约，会获得一块全新的擦除过的内存实例，并可访问调用的payload，这个payload数据是由一个称为calldata的独立区域提供的。调用执行结束后，返回数据将被存放在调用方预先分配好的一块内存中。调用深度被限制为1024，也就是意味着对于更加复杂的操作，应该使用循环而不是递归调用。 
+<br> 
+<br> 
+<strong>委托调用delegatecall/代码调用callcode和库</strong>： 
+<br>有一种特殊类型的消息调用，被称为委托调用，它与一般消息调用的区别在于，目标地址的代码将在发起掉用的合约的上下文中执行，同时msg.sender和msg.value的值不会改变。 
+<br>这意味着合约在运行时可以从另一个地址动态地加载代码。存储，当前地址和余额都仍然指向发起调用的合约，只有代码是从被调用地址获取的。 
+<br>这使得在solidity内可实现库:可复用的库代码可放在合约的存储上，比如，用于实现一个复杂数据结构。 
+<br> 
+<br> 
+<strong>日志</strong>： 
+<br>在一个特殊可索引的数据结构内存储数据，该结构可一路向上被映射到区块级别。这个特性在solidity内为实现事件被使用到，也被称为日志。合约在创建后就无法再访问log数据，但是可以在区块外高效地访问这些数据。由于部分日志数据是被保存在布隆过滤器中的，因此可以高效且加密安全地搜索这些日志，所以即使网络节点没有下载整个区块链（轻客户端）也仍然能够找到这些日志。 
+<br> 
+<br> 
+<strong>创建</strong>： 
+<br>合约甚至可以通过使用一个特殊指令来创建其他合约，并不是简单的调用零地址。这些创建调用create calls和一般的消息调用唯一的不同点就是: payload数据被执行及其结果以合约代码形式存储，同时调用者或创建者在栈上获得新合约的地址。 
+<br> 
+<br> 
+<strong>自毁</strong>： 
+<br>从区块链上删除合约代码的唯一方式就是在合约在合约地址上执行selfdestruct自毁操作，该合约地址上剩余的以太币会被发送到指定目标地址，随即其存储和代码从状态中删除。 
+<br> 
+<p>注意：</p> 
+<p>1.即使合约的代码不包含对selfdestruct的调用，它仍然可以通过delegatecall或者callcode执行自毁操作。</p> 
+<p>2.旧合约的删减有可能或不可能由以太坊客户端实现，另外，归档节点可能选择无限期地保存合约存储和代码。</p>3.当前的外部账户不可能从状态中删除。 
+<br> 
+<br> 
+<br> 
+<br>什么是布隆过滤器？ 
+<br>布隆过滤器是1970年由布隆提出的，实际上是一个很长的二进制向量和一系列随机映射函数，布隆过滤器可用于检索一个元素是否在一个集合中，它的优点是空间效率和查询时间都远远 
+<br> 
+<p>超过一般的算法，缺点是有一定的误识别率和删除困难。</p> 
+<p><br></p> 
+<p>参考<a href="https://solidity.readthedocs.io/en/v0.4.23/introduction-to-smart-contracts.html#index-6" rel="nofollow">网址</a></p> 
+<p><br></p> 
+<p><br></p> 
+<p>===========================================&gt;20180504</p> 
+<p>go-ethereum v1.8.7<br></p> 
+<p>每个交易都带有两部分内容需要执行:</p> 
+<p>1.转账，由转出方地址向转入方地址转一笔以太币</p> 
+<p>2.携带[]byte类型成员变量payload，其每一个byte都对应一个单独虚拟机指令，这些内容都是由EVM对象来完成的，EVM结构体是以太坊虚拟机机制的核心，它与协同类的UML关系图如下所示：</p> 
+<p><img src="https://images2.imgbox.com/c9/6f/18pW5Y0K_o.png" alt=""><br></p> 
+<p>1.Context结构体包含交易Transaction的信息GasPrice，GasLimit;区块Block的信息BlockNumber,Time,Difficulty以及转账函数等，这些信息都是提供给EVM的。</p> 
+<p>2.StateDB接口是针对state.StateDB结构体设计的本地行为接口，可以为EVM提供statedb的相关操作。</p> 
+<p>3.Interpreter结构体为解释器，用来解释执行EVM中合约的指令。</p> 
+<p>对EVM结构中定义的成员变量Context，仅声明变量而无类型，而变量名又是其类型名时，在Go语言中，这里意味着主结构体EVM可直接调用成员变量Context的所有方法和成员变量，比如EVM直接调用Context中的Transfer()</p> 
+<p>完成转账：</p> 
+<p>交易转账操作由Context对象中的TransferFunc类型函数实现，类似函数类型还有CanTransferFunc和GetHashFunc:</p> 
+<p>go-ethereum\core\vm:<br></p> 
+<pre><code class="language-html">type (
+	CanTransferFunc func(StateDB, common.Address, *big.Int) bool
+	TransferFunc    func(StateDB, common.Address, common.Address, *big.Int)
+	// GetHashFunc returns the nth block hash in the blockchain
+	// and is used by the BLOCKHASH EVM op code.
+	GetHashFunc func(uint64) common.Hash
+)</code></pre> 
+<p>go-ethereum\core\evm.go:</p> 
+<pre><code class="language-html">// NewEVMContext creates a new context for use in the EVM.
+func NewEVMContext(msg Message, header *types.Header, chain ChainContext, author *common.Address) vm.Context {
+	// If we don't have an explicit author (i.e. not mining), extract from the header
+	var beneficiary common.Address
+	if author == nil {
+		beneficiary, _ = chain.Engine().Author(header) // Ignore error, we're past header validation
+	} else {
+		beneficiary = *author
+	}
+	return vm.Context{
+		CanTransfer: CanTransfer,
+		Transfer:    Transfer,
+		GetHash:     GetHashFn(header, chain),
+		Origin:      msg.From(),
+		Coinbase:    beneficiary,
+		BlockNumber: new(big.Int).Set(header.Number),
+		Time:        new(big.Int).Set(header.Time),
+		Difficulty:  new(big.Int).Set(header.Difficulty),
+		GasLimit:    header.GasLimit,
+		GasPrice:    new(big.Int).Set(msg.GasPrice()),
+	}
+}
+
+// GetHashFn returns a GetHashFunc which retrieves header hashes by number
+func GetHashFn(ref *types.Header, chain ChainContext) func(n uint64) common.Hash {
+	var cache map[uint64]common.Hash
+
+	return func(n uint64) common.Hash {
+		// If there's no hash cache yet, make one
+		if cache == nil {
+			cache = map[uint64]common.Hash{
+				ref.Number.Uint64() - 1: ref.ParentHash,
+			}
+		}
+		// Try to fulfill the request from the cache
+		if hash, ok := cache[n]; ok {
+			return hash
+		}
+		// Not cached, iterate the blocks and cache the hashes
+		for header := chain.GetHeader(ref.ParentHash, ref.Number.Uint64()-1); header != nil; header = chain.GetHeader(header.ParentHash, header.Number.Uint64()-1) {
+			cache[header.Number.Uint64()-1] = header.ParentHash
+			if n == header.Number.Uint64()-1 {
+				return header.ParentHash
+			}
+		}
+		return common.Hash{}
+	}
+}
+
+// CanTransfer checks wether there are enough funds in the address' account to make a transfer.
+// This does not take the necessary gas in to account to make the transfer valid.
+func CanTransfer(db vm.StateDB, addr common.Address, amount *big.Int) bool {
+	return db.GetBalance(addr).Cmp(amount) &gt;= 0
+}
+
+// Transfer subtracts amount from sender and adds amount to recipient using the given Db
+func Transfer(db vm.StateDB, sender, recipient common.Address, amount *big.Int) {
+	db.SubBalance(sender, amount)
+	db.AddBalance(recipient, amount)
+}</code></pre> 
+<p>这三个类型的函数变量CanTransfer,Transfer，GetHash，在Context初始化时从外部传入，目前使用的均是本地实现。</p> 
+<p>转账函数Transfer逻辑很简单，转出账户减去一笔以太币，转入账户加上一笔以太币。</p> 
+<p>由于EVM调用的Transfer函数是由Context提供的，因此假设基于以太坊平台开发， 需要设计一种全新的转账模式，那么只需要写一个新的Transfer()函数实现，在Context初始化时赋值即可。</p> 
+<p>这里转出和转入账户操作不会立即生效，StateDB不是真正的数据库，只是一个行为类似数据库的结构体，它在内部以Trie的数据结构来管理各个基于地址的账户，可理解为一个Cache。当该账户信息有变化时，先将变化存储在Trie中，仅当整个Block区块被插入到区块链中时，StateDB内缓存的所有账户的所有改动，才会被提交到真实的底层数据库。</p> 
+<p><br></p> 
+<p>合约的创建和赋值：</p> 
+<p>EVM是通过合约这个结构体来执行指令的，以下是合约的定义：</p> 
+<p>go-ethereum\core\vm\contract.go:<br></p> 
+<pre><code class="language-html">// ContractRef is a reference to the contract's backing object
+type ContractRef interface {
+	Address() common.Address
+}
+
+// Contract represents an ethereum contract in the state database. It contains
+// the the contract code, calling arguments. Contract implements ContractRef
+type Contract struct {
+	// CallerAddress is the result of the caller which initialised this
+	// contract. However when the "call method" is delegated this value
+	// needs to be initialised to that of the caller's caller.
+	CallerAddress common.Address 
+	caller        ContractRef // 转账的转出方地址账户
+	self          ContractRef // 转账的转入方地址账户
+
+	jumpdests destinations // result of JUMPDEST analysis.
+
+	Code     []byte // 指令数组，每一个byte都对应一个预定义的虚拟机指令
+	CodeHash common.Hash // Code的RLP哈希值
+	CodeAddr *common.Address
+	Input    []byte // 数据数组，是指令所操作的数据集合
+
+	Gas   uint64
+	value *big.Int
+
+	Args []byte // 参数
+
+	DelegateCall bool
+}
+</code></pre> 
+<br> 
+<p>这里转入放地址被命名为self的原因，是Contract实现了ContractRef接口，返回的就是这个地址self：</p> 
+<pre><code class="language-html">// Address returns the contracts address
+func (c *Contract) Address() common.Address {
+	return c.self.Address()
+}</code></pre> 
+<p>因此，当Contract对象以ContractRef接口出现时，它返回的地址就是它的self地址，在一个Contract A调用另一个Contract B时，A就会作为B的caller成员变量出现，此时Contract会被类型转换为ContractRef。</p> 
+<p>创建一个Contract对象时，重点关注对self的初始化，以及对Code,CodeAddr和Input的赋值。</p> 
+<p>另外StateDB提供方法SetCode可将指令数组Code存储在某个StateObject对象中；提供方法GetCode将从某个StateObject对象中读取已有的指令数组Code。</p> 
+<p>go-ethereum\core\state\Statedb.go:<br></p> 
+<pre><code class="language-html">func (self *StateDB) SetCode(addr common.Address, code []byte) {
+	stateObject := self.GetOrNewStateObject(addr)
+	if stateObject != nil {
+		stateObject.SetCode(crypto.Keccak256Hash(code), code)
+	}
+}
+func (self *StateDB) GetCode(addr common.Address) []byte {
+	stateObject := self.getStateObject(addr)
+	if stateObject != nil {
+		return stateObject.Code(self.db)
+	}
+	return nil
+}</code></pre> 
+<p>stateObject时以太坊内用来管理一个账户所有信息修改的结构体，它的唯一标识就是一个Address类型变量。</p> 
+<p>StateDB内部用一个巨大的map结构来管理这些stateObject对象，所有账户信息（包括以太币余额，指令数组Code，该账户发起合约次数nonce值等）发生的所有变化，都会首先缓存到StateDB内的某个stateObject中，而后在合适的时间内，被StateDB一起提交到底层数据库。一个Contract所对应的stateObject的地址就是Contract的self地址，也是转账的转入方地址。</p> 
+<pre><code class="language-html">// StateDBs within the ethereum protocol are used to store anything
+// within the merkle trie. StateDBs take care of caching and storing
+// nested states. It's the general query interface to retrieve:
+// * Contracts
+// * Accounts
+type StateDB struct {
+	db   Database
+	trie Trie
+
+	// This map holds 'live' objects, which will get modified while processing a state transition.
+	stateObjects      map[common.Address]*stateObject
+	stateObjectsDirty map[common.Address]struct{}
+
+	// DB error.
+	// State objects are used by the consensus core and VM which are
+	// unable to deal with database-level errors. Any error that occurs
+	// during a database read is memoized here and will eventually be returned
+	// by StateDB.Commit.
+	dbErr error
+
+	// The refund counter, also used by state transitioning.
+	refund uint64
+
+	thash, bhash common.Hash
+	txIndex      int
+	logs         map[common.Hash][]*types.Log
+	logSize      uint
+
+	preimages map[common.Hash][]byte
+
+	// Journal of state modifications. This is the backbone of
+	// Snapshot and RevertToSnapshot.
+	journal        *journal
+	validRevisions []revision
+	nextRevisionId int
+
+	lock sync.Mutex
+}</code></pre> 
+<br> 
+<p><br></p> 
+<p>11</p> 
+<p>参考<a href="https://blog.csdn.net/teaspring/article/details/75389151">网页</a></p> 
+<p><br></p> 
+<p><br></p> 
+<p><br></p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/c40ecc4af647aae3d7623215fce4247f/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">用户空间和内核空间通过虚拟地址获取物理地址</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/856f4a77825b6166722d4fb6e9fe6b97/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">Linux中使用Docker部署Odoo开发环境</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

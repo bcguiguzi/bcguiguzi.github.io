@@ -1,0 +1,319 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>RedisBloom 插件布隆过滤器，布谷鸟过滤器，Count-Min Sketch，TOPK使用详解 - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="RedisBloom 插件布隆过滤器，布谷鸟过滤器，Count-Min Sketch，TOPK使用详解" />
+<meta property="og:description" content="文章目录 前言一、如何安装二、布隆过滤器1. 使用介绍2. 命令详解 三、布谷鸟过滤器1. 使用介绍2. 命令详解 三、Count-Min Sketch1. 使用介绍2. 命令详解 四、TopK1. 使用介绍2. 命令详解 总结 前言 RedisBloom 是一款由 RedisLabs 提供的 redis 插件，提供了布隆过滤器、布谷鸟过滤器、Count-Min Sketch、TopK功能实现。通过 BitMap 这样的数据结构，以牺牲部分精度换取更高的内存效率和读写效率，适用于海量数据场景。该博客以下将对 RedisBloom 各个功能以及命令做详解。首先，先简单介绍这些功能的作用：布隆过滤器和布谷鸟过滤器主要用于判断海量元素是否存在的情况，通常可用于防止缓存击穿导致的雪崩问题；Count-Min Sketch 主要用于元素的使用计数，可用于 ip 限流，元素流量查询等场景；TopK 可以帮助我们对元素进行计数，与 Count-Min Sketch 相比，它提供了在O(n)复杂度下查询排名前 n 个元素的命令，可用于海量元素的排名（但在实际测试中，并不能达到预计效果）。以下内容均基于 RedisBloom 2.1.0 版本。 一、如何安装 这里仅介绍 docker 下的安装步骤，同样的分享了官网的安装介绍。
+docker run -p 6379:6379 --name redis-redisbloom redislabs/rebloom:latest 官网各环节安装介绍：地址
+二、布隆过滤器 1. 使用介绍 该模块主要用于判断某个元素是否存在，利用 BitMap 这样的数据结构，在牺牲可接受范围的精度下极大提高了内存使用率和性能，查询复杂度约为 O(hash fun number)，和 redis 原有的 set 结构（非 zip set int）相比，内存仅占用其 1/10 甚至不到。以下为 redis 中和 set 的测试内存结果对比：" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/8d77cc8cb1233a38edc568f0c82d1588/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2021-03-27T22:19:58+08:00" />
+<meta property="article:modified_time" content="2021-03-27T22:19:58+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">RedisBloom 插件布隆过滤器，布谷鸟过滤器，Count-Min Sketch，TOPK使用详解</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p></p> 
+<div class="toc"> 
+ <h4>文章目录</h4> 
+ <ul><li><a href="#_3" rel="nofollow">前言</a></li><li><a href="#_9" rel="nofollow">一、如何安装</a></li><li><a href="#_16" rel="nofollow">二、布隆过滤器</a></li><li><ul><li><a href="#1__17" rel="nofollow">1. 使用介绍</a></li><li><a href="#2__33" rel="nofollow">2. 命令详解</a></li></ul> 
+  </li><li><a href="#_100" rel="nofollow">三、布谷鸟过滤器</a></li><li><ul><li><a href="#1__101" rel="nofollow">1. 使用介绍</a></li><li><a href="#2__117" rel="nofollow">2. 命令详解</a></li></ul> 
+  </li><li><a href="#CountMin_Sketch_183" rel="nofollow">三、Count-Min Sketch</a></li><li><ul><li><a href="#1__184" rel="nofollow">1. 使用介绍</a></li><li><a href="#2__199" rel="nofollow">2. 命令详解</a></li></ul> 
+  </li><li><a href="#TopK_242" rel="nofollow">四、TopK</a></li><li><ul><li><a href="#1__243" rel="nofollow">1. 使用介绍</a></li><li><a href="#2__259" rel="nofollow">2. 命令详解</a></li></ul> 
+  </li><li><a href="#_304" rel="nofollow">总结</a></li></ul> 
+</div> 
+<p></p> 
+<hr color="#000000" size='1"'> 
+<h2><a id="_3"></a>前言</h2> 
+<font color="#999AAA"> RedisBloom 是一款由 RedisLabs 提供的 redis 插件，提供了布隆过滤器、布谷鸟过滤器、Count-Min Sketch、TopK功能实现。通过 BitMap 这样的数据结构，以牺牲部分精度换取更高的内存效率和读写效率，适用于海量数据场景。该博客以下将对 RedisBloom 各个功能以及命令做详解。首先，先简单介绍这些功能的作用：布隆过滤器和布谷鸟过滤器主要用于判断海量元素是否存在的情况，通常可用于防止缓存击穿导致的雪崩问题；Count-Min Sketch 主要用于元素的使用计数，可用于 ip 限流，元素流量查询等场景；TopK 可以帮助我们对元素进行计数，与 Count-Min Sketch 相比，它提供了在O(n)复杂度下查询排名前 n 个元素的命令，可用于海量元素的排名（但在实际测试中，并不能达到预计效果）。以下内容均基于 RedisBloom 2.1.0 版本。 </font> 
+<hr color="#000000" size='1"'> 
+<h2><a id="_9"></a>一、如何安装</h2> 
+<p>这里仅介绍 docker 下的安装步骤，同样的分享了官网的安装介绍。</p> 
+<pre><code>docker run -p 6379:6379 --name redis-redisbloom redislabs/rebloom:latest
+</code></pre> 
+<p>官网各环节安装介绍：<a href="https://oss.redislabs.com/redisbloom/Quick_Start/" rel="nofollow">地址</a></p> 
+<h2><a id="_16"></a>二、布隆过滤器</h2> 
+<h3><a id="1__17"></a>1. 使用介绍</h3> 
+<p>该模块主要用于判断某个元素是否存在，利用 BitMap 这样的数据结构，在牺牲可接受范围的精度下极大提高了内存使用率和性能，查询复杂度约为 O(hash fun number)，和 redis 原有的 set 结构（非 zip set int）相比，内存仅占用其 1/10 甚至不到。以下为 redis 中和 set 的测试内存结果对比：<br> 测试元素 100w ，元素大小 32 个字节</p> 
+<pre><code># 布隆过滤器
+# Memory
+used_memory:4714576
+used_memory_human:4.50M
+
+# set
+# Memory
+used_memory:73434368
+used_memory_human:70.03M
+</code></pre> 
+<p>根据以上结果，似乎布隆过滤器十分优秀，但由于原理的限制，布隆过滤器无法进行元素删除。<br> 布隆过滤器原理：<a href="https://blog.csdn.net/DamonRush/article/details/104653952">引用文章地址</a></p> 
+<h3><a id="2__33"></a>2. 命令详解</h3> 
+<pre><code>BF.RESERVE {key} {error_rate} {capacity} [EXPANSION {expansion}] [NONSCALING]
+</code></pre> 
+<p>命令用于创建自定义布隆过滤器，时间复杂度：O(1)。其中参数介绍如下：</p> 
+<ul><li>key：布隆过滤器的键。</li><li>error_rate：错误率，例如：0.01，则代表在 100 个数据中允许存在 1 个误判。</li><li>capacity：容量，该参数和 EXPANSION 、NONSCALING 参数相关联。</li><li>EXPANSION：当容量不足时，扩容的倍率（这里的扩容用词不准，实际上是建立了子过滤器进行实现，根据这个原理，需要注意的是当子过滤器过多时，会成倍数的影响性能），不填默认为 1。例如：1，则当容量 100 满时，自动扩容为 100 + 100。</li><li>NONSCALING：当容量不足时，返回一个异常，禁止写入。</li></ul> 
+<pre><code>BF.ADD {key} {item}
+</code></pre> 
+<p>命令用于向布隆过滤器中添加元素。时间复杂度：O(hash fun number)。其中参数介绍如下：</p> 
+<ul><li>key：布隆过滤器的键，当键不存在时创建一个容量为 100 的默认过滤器。</li><li>item：写入的元素。</li></ul> 
+<pre><code>BF.MADD {key} {item ...}
+</code></pre> 
+<p>命令用于向布隆过滤器中批量添加元素。时间复杂度：O(n * hash fun number)。其中参数介绍如下：</p> 
+<ul><li>key：布隆过滤器的键，当键不存在时创建一个容量为 100 的默认过滤器。</li><li>item：写入的元素集合。</li></ul> 
+<pre><code>BF.INSERT {key} [CAPACITY {cap}] [ERROR {error}] [EXPANSION {expansion}] [NOCREATE]
+[NONSCALING] ITEMS {item ...}
+</code></pre> 
+<p>命令为 BF.RESERVE 和 BF.MADD 的混合命令，时间复杂度：O(n * hash fun number)。其中参数介绍如下：</p> 
+<ul><li>key：布隆过滤器的键。</li><li>ERROR：错误率，例如：0.01，则代表在 100 个数据中允许存在 1 个误判。</li><li>CAPACITY：容量，该参数和 EXPANSION 、NONSCALING 参数相关联。</li><li>EXPANSION：当容量不足时，扩容的倍率（这里的扩容用词不准，实际上是建立了子过滤器进行实现，根据这个原理，需要注意的是当子过滤器过多时，会成倍数的影响性能），不填默认为 1。例如：1，则当容量 100 满时，自动扩容为 100 + 100。</li><li>NONSCALING：当容量不足时，返回一个异常，禁止写入。</li><li>NOCREATE：当容器不存在时不进行创建，返回一个异常，禁止插入。</li><li>item：写入的元素集合。</li></ul> 
+<pre><code>BF.EXISTS {key} {item}
+</code></pre> 
+<p>命令用于判断某个元素是否存在于过滤器中，时间复杂度：O(hash fun number * 子过滤器数)，其中参数介绍如下：</p> 
+<ul><li>key：布隆过滤器的键。</li><li>item：判断是否存在的元素。</li></ul> 
+<pre><code>BF.MEXISTS {key} {item ...}
+</code></pre> 
+<p>命令用于批量判断某个元素是否存在于过滤器中，时间复杂度：O(n * hash fun number * 子过滤器数)，其中参数介绍如下：</p> 
+<ul><li>key：布隆过滤器的键。</li><li>item：判断是否存在的元素集合。</li></ul> 
+<pre><code>BF.SCANDUMP {key} {iter}
+</code></pre> 
+<p>命令用于将一个布隆过滤器以分片的方式读出，返回两个子段分别为分片总数和分片字节，当返回分配总数为 0，且字节为空时代表读取结束，时间复杂度：O(n)，其中参数介绍如下：</p> 
+<ul><li>key：布隆过滤的键。</li><li>iter：返回的分片下标，首个下标从 0 开始。<br> <img src="https://images2.imgbox.com/3f/c6/06xh8cFA_o.png" alt="在这里插入图片描述"></li></ul> 
+<pre><code>BF.LOADCHUNK {key} {iter} {data}
+</code></pre> 
+<p>命令用于将一个布隆过滤器以分片的方式写入，存在则覆盖。时间复杂度：O(n)，其中参数介绍如下：</p> 
+<ul><li>key：布隆过滤器的键。</li><li>iter：返回的分片下标，首个下标从 0 开始。</li><li>data：写入的字节。</li></ul> 
+<pre><code>BF.INFO {key}
+</code></pre> 
+<p>命令用于查看布隆过滤器详情，时间复杂度：O(1)，其中参数介绍如下：</p> 
+<ul><li>key：布隆过滤器的键。</li></ul> 
+<hr color="#000000" size='1"'> 
+<h2><a id="_100"></a>三、布谷鸟过滤器</h2> 
+<h3><a id="1__101"></a>1. 使用介绍</h3> 
+<p>该模块主要用于判断某个元素是否存在，相比于布隆过滤器，布谷鸟过滤器支持数据删除，同时由于布谷鸟算法，其占用内存在理论情况下比布隆过滤器更小，查询复杂度约为 O(2)，以下为 redis 中和 set 的测试内存结果对比：<br> 测试元素 100w ，元素大小 32 个字节</p> 
+<pre><code># 布谷鸟过滤器
+# Memory
+used_memory:2114792
+used_memory_human:2.02M
+
+# set
+# Memory
+used_memory:73434368
+used_memory_human:70.03M
+</code></pre> 
+<p>根据以上结果，看上去似乎布谷鸟过滤器在查询和内存的使用效率上会高于布隆过滤器，但在实际情况中为了减少互踢问题，需要扩容，实际使用内存甚至会高于布隆过滤器，同样，由于互踢问题的存在，在实际的写入效率上也比布隆过滤器要差一些。但在实际使用场景中，常常存在需要进行数据擦除的情况，相比于布隆过滤器，布谷鸟过滤器在不是极端的使用场景则更为灵活。<br> 布谷鸟过滤原理：<a href="https://zhuanlan.zhihu.com/p/68418134" rel="nofollow">引用文章地址</a></p> 
+<h3><a id="2__117"></a>2. 命令详解</h3> 
+<pre><code>CF.RESERVE {key} {capacity} [BUCKETSIZE {bucketsize}] [MAXITERATIONS {maxiterations}]
+[EXPANSION {expansion}]
+</code></pre> 
+<p>命令用于创建布谷鸟过滤器，时间复杂度：O(1)，其中参数介绍如下：</p> 
+<ul><li>key：布谷鸟过滤器的键。</li><li>capacity：布谷鸟过滤器的容量。根据布谷鸟过滤器原理，写入时则可能未满，但由于互踢而被判定为满，需要扩容，故设置时，如果不考虑子过滤器扩容，则需要预设多于实际使用容量的 30%。</li><li>bucketsize：存储桶中的元素数，相比于原始的布谷鸟算法，redisbloom 中引入了存储桶的改进方式，以降低互踢次数，提高内存使用效率，但同时也会导致误判提高和写入性能的下降的问题（由于桶的存在，互踢需要将数组桶的内容交换，故性能下降），默认值为 2。</li><li>maxiterations：最大互踢次数。</li><li>EXPANSION：当容量不足时，扩容的倍率（这里的扩容用词不准，实际上是建立了子过滤器进行实现，根据这个原理，需要注意的是当子过滤器过多时，会成倍数的影响性能），不填默认为 1。例如：1，则当容量 100 满时，自动扩容为 100 + 100。</li></ul> 
+<pre><code>CF.ADD {key} {item}
+</code></pre> 
+<p>命令用于布谷鸟过滤器中添加元素。时间复杂度：O(sub filter number + maxiterations)。其中参数介绍如下：</p> 
+<ul><li>key：布谷鸟过滤器的键，当键不存在时创建一个容量为 1080 的默认过滤器。</li><li>item：写入的元素。</li></ul> 
+<pre><code>CF.ADDNX {key} {item}
+</code></pre> 
+<p>命令用于布谷鸟过滤器中添加元素，当元素不存在时则插入，之所以需要提供这样的命令，源于布谷鸟的占位踢出算法，如果连续的插入相同的元素，则会导致内存使用率降低，同时会导致删除后数据依然存在，故写入前应当判断元素是否存在。时间复杂度：O(sub filter number + maxiterations)。其中参数介绍如下：</p> 
+<ul><li>key：布谷鸟过滤器的键，当键不存在时创建一个容量为 1080 的默认过滤器。</li><li>item：写入的元素。</li></ul> 
+<pre><code>CF.INSERT {key} [CAPACITY {capacity}] [NOCREATE] ITEMS {item ...}
+CF.INSERTNX {key} [CAPACITY {capacity}] [NOCREATE] ITEMS {item ...}
+</code></pre> 
+<p>这两个命令为 CF.RESERVE 和 CF.ADD，CF.ADDNX 的复合体，这里不在重复介绍。</p> 
+<pre><code>CF.EXISTS {key} {item}
+</code></pre> 
+<p>命令用于布谷鸟过滤器中判断元素是否存在，时间复杂度：O(sub filter number)。其中参数介绍如下：</p> 
+<ul><li>key：布谷鸟过滤器的键。</li><li>item：要判断的元素。</li></ul> 
+<pre><code>CF.DEL {key} {item}
+</code></pre> 
+<p>命令用于布谷鸟过滤器中删除元素，这里需要注意的是，如果同一个元素添加多次，则同样需要删除多次，时间复杂度：O(sub filter number)。其中参数介绍如下：</p> 
+<ul><li>key：布谷鸟过滤器的键。</li><li>item：移除的元素。</li></ul> 
+<pre><code>CF.COUNT {key} {item}
+</code></pre> 
+<p>命令用于布谷鸟过滤器中查询元素存在的数量，这里需要注意的是返回的不是一个准确值，时间复杂度：O(sub filter number)。其中参数介绍如下：</p> 
+<ul><li>key：布谷鸟过滤器的键。</li><li>item：查询数量元素。</li></ul> 
+<pre><code>CF.SCANDUMP {key} {iter}
+</code></pre> 
+<p>命令用于将一个布谷鸟过滤器以分片的方式读出，返回两个子段分别为分片总数和分片字节，当返回分配总数为 0，且字节为空时代表读取结束，时间复杂度：O(n)，其中参数介绍如下：</p> 
+<ul><li>key：布谷鸟的键。</li><li>iter：返回的分片下标，首个下标从 0 开始。</li></ul> 
+<pre><code>CF.LOADCHUNK {key} {iter} {data}
+</code></pre> 
+<p>命令用于将一个布谷鸟过滤器以分片的方式写入，存在则覆盖。时间复杂度：O(n)，其中参数介绍如下：</p> 
+<ul><li>key：布谷鸟过滤器的键。</li><li>iter：返回的分片下标，首个下标从 0 开始。</li><li>data：写入的字节。</li></ul> 
+<pre><code>CF.INFO {key}
+</code></pre> 
+<p>命令用于查看布谷鸟过滤器详情，时间复杂度：O(1)，其中参数介绍如下：</p> 
+<ul><li>key：布谷鸟过滤器的键。</li></ul> 
+<hr color="#000000" size='1"'> 
+<h2><a id="CountMin_Sketch_183"></a>三、Count-Min Sketch</h2> 
+<h3><a id="1__184"></a>1. 使用介绍</h3> 
+<p>该模块主要用于元素的计数统计，属于布隆过滤器的变种，利用 int 数组桶这样的数据结构降低内存使用，提高查询效率。但同样的，由于移除了 key 的存储并限制了哈希冲突数量，当超出哈希冲突限制数时，则会导致误判，但误判的值只会偏大而不会偏小，也就是牺牲了精度。查询复杂度为 O(1)。以下为 redis 中和 hashtable 的测试内存结果对比：<br> 测试元素 100w ，元素大小 32 个字节</p> 
+<pre><code># Count-Min Sketch
+# Memory
+used_memory:9525832
+used_memory_human:9.08M
+
+# hashtable
+# Memory
+used_memory:81505704
+used_memory_human:77.73M
+</code></pre> 
+<p>Count-Min Sketch 算法如果已经理解了布隆过滤器则较为简单，这里不做过多解释，详见<a href="https://blog.csdn.net/pipisorry/article/details/64126199">引用文档</a>。</p> 
+<h3><a id="2__199"></a>2. 命令详解</h3> 
+<pre><code>CMS.INITBYDIM {key} {width} {depth}
+</code></pre> 
+<p>该命令用于创建一个计数器，时间复杂度：O(1)。其中参数介绍如下：</p> 
+<ul><li>key：计数器的键。</li><li>width ：数组长度，可以简单认为是容量，但实际上正真的容量应为 width * depth，然而由于哈希冲突将使用数组桶，建议 width 作为容量，从而降低误判。</li><li>depth ：计数器数组的数量。</li></ul> 
+<pre><code>CMS.INITBYPROB {key} {error} {probability}
+</code></pre> 
+<p>该命令用于以错误率的形式创建一个计数器，时间复杂度：O(1)。其中参数介绍如下：</p> 
+<ul><li>key：计数器的键。</li><li>error ：元素错误率，影响数组长度。</li><li>probability ：元素虚增概率，影响数组的深度。</li></ul> 
+<pre><code>CMS.INCRBY {key} {item} {increment} [{item} {increment} ...]
+</code></pre> 
+<p>该命令用于计数器元素加法运算，支持批量操作，允许加上负整数，但运算结果如果小于0则换算为最大数，时间复杂度：O(1)。其中参数介绍如下：</p> 
+<ul><li>key：计数器的键。</li><li>item ：元素。</li><li>increment ：加上的整数。</li></ul> 
+<pre><code>CMS.QUERY {key} {item ...}
+</code></pre> 
+<p>该命令用于计数器元素运算结果查询，时间复杂度：O(1)。其中参数介绍如下：</p> 
+<ul><li>key：计数器的键。</li><li>item ：要查询的元素。</li></ul> 
+<pre><code>CMS.MERGE {dest} {numKeys} {src ...} [WEIGHTS {weight ...}]
+</code></pre> 
+<p>该命令用于多个计数器的运算结果相加，但需要注意的是计数器必须拥有相同的创建参数配置（宽度和深度），时间复杂度：O(n)。其中参数介绍如下：</p> 
+<ul><li>dest：运算结果写入的目标计数器，该计数器必须存在。</li><li>numKeys：合并的计数器数量。</li><li>src：要合并的计数器 key 集合。</li><li>WEIGHTS：运算权重（乘积），默认为 1。</li></ul> 
+<pre><code>CMS.INFO {key}
+</code></pre> 
+<p>命令用于查看计数器详情，时间复杂度：O(1)，其中参数介绍如下：</p> 
+<ul><li>key：计数器的键。</li></ul> 
+<hr color="#000000" size='1"'> 
+<h2><a id="TopK_242"></a>四、TopK</h2> 
+<h3><a id="1__243"></a>1. 使用介绍</h3> 
+<p>该模块相比于 Count-Min Sketch 增加了存储前 k 个的元素，通过 HeavyKeeper 算法进行了实现，但目前 2.1.0 插件版本其表现并不理想。以下为 redis 中和 zset 的测试内存结果对比：<br> 测试元素 100w ，元素大小 32 个字节</p> 
+<pre><code># 布隆过滤器
+# Memory
+used_memory:68275112
+used_memory_human:65.11M
+
+# zset
+# Memory
+used_memory:119351264
+used_memory_human:113.82M
+</code></pre> 
+<p>根据以上对比，似乎 TopK 在内存表现上，和 Count-Min Sketch 相比并不理想。这里使用 Count-Min Sketch 配和 zset 进行实现也许是一个更好的选择。<br> <a href="https://www.usenix.org/system/files/conference/atc18/atc18-gong.pdf" rel="nofollow">HeavyKeeper 算法论文引用地址</a></p> 
+<h3><a id="2__259"></a>2. 命令详解</h3> 
+<pre><code>TOPK.RESERVE {key} {topk} [{width} {depth} {decay}]
+</code></pre> 
+<p>命令用于创建计数器，时间复杂度：O(1)，其中参数介绍如下：</p> 
+<ul><li>key：计数器的键。</li><li>topk：要保留的前 n 个元素。</li><li>width：数组宽度。</li><li>depth：数组桶深度。</li><li>decay：计数器结果降低率。</li></ul> 
+<pre><code>TOPK.ADD {key} {item ...}
+</code></pre> 
+<p>命令用于计数器中添加元素，时间复杂度：O(k + depth)，其中参数介绍如下：</p> 
+<ul><li>key：计数器的键。</li><li>item：添加的元素。</li></ul> 
+<pre><code>TOPK.INCRBY {key} {item} {increment} [{item} {increment} ...]
+</code></pre> 
+<p>命令用于计数器中的元素加上一个整数，时间复杂度：O(k + n * depth)，其中参数介绍如下：</p> 
+<ul><li>key：计数器的键。</li><li>item：要计算的元素。</li><li>increment：加上的整数值。</li></ul> 
+<pre><code>TOPK.QUERY {key} {item ...}
+</code></pre> 
+<p>命令用于计数器中的元素查询是否处于前 n 个，时间复杂度：O(n)，其中参数介绍如下：</p> 
+<ul><li>key：计数器的键。</li><li>item：查询的元素。</li></ul> 
+<pre><code>TOPK.COUNT {key} {item ...}
+</code></pre> 
+<p>命令用于计数器中的元素的运算结果，时间复杂度：O(k * depth)，其中参数介绍如下：</p> 
+<ul><li>key：计数器的键。</li><li>item：查询的元素。</li></ul> 
+<pre><code>TOPK.LIST {key}
+</code></pre> 
+<p>命令用于计数器中的前 n 个元素，不足则补充为 nil，时间复杂度：O(n)，其中参数介绍如下：</p> 
+<ul><li>key：计数器的键。</li></ul> 
+<pre><code>TOPK.INFO {key}
+</code></pre> 
+<p>命令用于查看计数器详情，时间复杂度：O(1)，其中参数介绍如下：</p> 
+<ul><li>key：计数器的键。</li></ul> 
+<h2><a id="_304"></a>总结</h2> 
+<font color="#999AAA"> 以上就是 RedisBloom 中插件各个模块的使用详解。 </font>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/91c5d32485b6081cae725f602b07ac40/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">线段覆盖 java,南邮 OJ 1407 线段覆盖</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/651b904c026b06ae6c80ca241972fb9b/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">tcping : ping ip地址&#43;端口号</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

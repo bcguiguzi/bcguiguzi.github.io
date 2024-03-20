@@ -1,0 +1,368 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>nodejs missing script: dev_nodejs深入学习系列之v8基础篇 - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="nodejs missing script: dev_nodejs深入学习系列之v8基础篇" />
+<meta property="og:description" content="V8这个概念大家都不陌生了，那么你动手编译过V8源码吗？编译后有尝试去了解V8背后的一些概念吗？如果没有，那么也不用心慌，下文将跟大家一一解释这些东西。在编译V8之前我们先要了解一个东西-构建系统
+1、构建系统 1.1、构建系统是啥？ 写惯前端的童鞋可能不是很明白这个东西是干啥用的？但是其实平时你都会接触到，只是概念不同而已。前端我们一般称其为打包构建，类似工具诸如webpack、parcel做的事情。其实最后的目标都是想得到一些目标性的文件。这里可以简单地提及一下软件工程中的构建系统的历史。
+构建系统的需求是随着软件规模的增大而提出的。如果只是做简单的demo，通常代码量比较小，编写的源代码只有几个文件。比如你编写了一段代码放入helloworld.cpp文件中，要编译这段代码，只需要执行以下命令：
+g&#43;&#43; helloworld.c -o helloworld 当软件规模逐渐增加，这时可能有几十个源代码文件，而且有了模块划分，有的要编译成静态库，有的要编译成动态库，最后链接成可执行代码，这时命令行方式就捉襟见肘，需要一个构建系统。常见的构建系统有GNU Make。需要注意的是，构建系统并不是取代gcc这样的工具链，而是定义编译规则，最终还是会调用工具链编译代码。
+当软件规模进一步扩大，特别是有多平台支持需求的时候，编写GNU Makefile将是一件繁琐和乏味的事情，而且极容易出错。这时就出现了生成Makefile的工具，比如Cmake、AutoMake等等，这种构建系统称作元构建系统（meta build system）。在Linux上软件仓库的概念还没有普及的时候，通常我们安装软件的步骤是：
+./configure make make install 第一步就是调用一些自动化工具，根据系统环境（系统的版本众多，软件安装情况也不一样），生成GNU Makefile。然后第二步才使用gcc或者g&#43;&#43;命令去编译所有文件，最后一步便是将所有文件链接起来成可执行命令并安装到系统的某个指定目录。
+一般后两个步骤都是比较固化的，能提高工作效率的也就是在第一步了。于是V8团队针对自己的项目特点，撸了一个叫做GYP(Generate Your Projects)的构建系统，后面你要是看到node-gyp其实就是基于这个做的js版本。不过后面GYP被v8团队废弃掉，改用GN(Generate Ninja)构建系统。二者的区别不是本文重点，有兴趣的童鞋可以查看这篇文章： chromium中的GN构建系统。
+有意思的是尽管v8彻底废弃掉了GYP，但是nodejs仍然在使用GYP，这个R大在创建deno项目的时候有提及到：Design Mistakes in Node。
+1.1.1、GN构建系统简介 GN(Generate Ninja)是chromium project用来取代GYP的新工具，由于GN是用C&#43;&#43;编写，比起用 python写的GYP快了很多，GN新的DSL的语法也被认为是比较好写以及维护的。
+在v8项目的根目录下有个.gn文件，内容如下（去掉所有注释了）：
+import(&#34;//build/dotfile_settings.gni&#34;) buildconfig = &#34;//build/config/BUILDCONFIG.gn&#34; check_targets = [] exec_script_whitelist = build_dotfile_settings.exec_script_whitelist &#43; [] 我们关注buildconfig这个配置。.gn所在的目录会被GN工具认定是项目的根目录，.gn的内容基本就是用buildconfig来指定build config的位置，其中//build//config/BUILDCONFIG.gn是相对于项目根目录下路径的配置文件。
+但是你会发现现在v8源码目录下并没有叫做build的目录，这个目录要咋生成呢？这些知识我们会在稍后的编译v8代码中提及。
+假设现在你有build目录了，我们找到BUILDCONFIG.gn文件，文件里面会根据系统和平台设置对应的编译工具链：
+... ... if (custom_toolchain != &#34;&#34;) { set_default_toolchain(custom_toolchain) } else if (_default_toolchain != &#34;&#34;) { set_default_toolchain(_default_toolchain) } ." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/a063d4fc89e3abd6e0056cae6c8db532/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2020-11-20T05:35:35+08:00" />
+<meta property="article:modified_time" content="2020-11-20T05:35:35+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">nodejs missing script: dev_nodejs深入学习系列之v8基础篇</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <div> 
+ <p>V8这个概念大家都不陌生了，那么你动手编译过V8源码吗？编译后有尝试去了解V8背后的一些概念吗？如果没有，那么也不用心慌，下文将跟大家一一解释这些东西。在编译V8之前我们先要了解一个东西-<b>构建系统</b></p> 
+ <h3><b>1、构建系统</b></h3> 
+ <h4><b>1.1、构建系统是啥？</b></h4> 
+ <p>写惯前端的童鞋可能不是很明白这个东西是干啥用的？但是其实平时你都会接触到，只是概念不同而已。前端我们一般称其为打包构建，类似工具诸如webpack、parcel做的事情。其实最后的目标都是想得到一些目标性的文件。这里可以简单地提及一下软件工程中的构建系统的历史。</p> 
+ <p>构建系统的需求是随着软件规模的增大而提出的。如果只是做简单的demo，通常代码量比较小，编写的源代码只有几个文件。比如你编写了一段代码放入helloworld.cpp文件中，要编译这段代码，只需要执行以下命令：</p> 
+ <div class="has"> 
+  <pre class="has"><code>g++ helloworld.c -o helloworld
+</code></pre> 
+ </div> 
+ <p>当软件规模逐渐增加，这时可能有几十个源代码文件，而且有了模块划分，有的要编译成静态库，有的要编译成动态库，最后链接成可执行代码，这时命令行方式就捉襟见肘，需要一个构建系统。常见的构建系统有GNU Make。<b>需要注意的是，构建系统并不是取代gcc这样的工具链，而是定义编译规则，最终还是会调用工具链编译代码。</b></p> 
+ <p>当软件规模进一步扩大，特别是有多平台支持需求的时候，编写GNU Makefile将是一件繁琐和乏味的事情，而且极容易出错。这时就出现了生成Makefile的工具，比如<code>Cmake</code>、<code>AutoMake</code>等等，这种构建系统称作元构建系统（meta build system）。在Linux上软件仓库的概念还没有普及的时候，通常我们安装软件的步骤是：</p> 
+ <div class="has"> 
+  <pre class="has"><code>./configure
+make
+make install
+</code></pre> 
+ </div> 
+ <p>第一步就是调用一些自动化工具，根据系统环境（系统的版本众多，软件安装情况也不一样），生成GNU Makefile。然后第二步才使用gcc或者g++命令去编译所有文件，最后一步便是将所有文件链接起来成可执行命令并安装到系统的某个指定目录。</p> 
+ <p>一般后两个步骤都是比较固化的，能提高工作效率的也就是在第一步了。于是V8团队针对自己的项目特点，撸了一个叫做GYP(Generate Your Projects)的构建系统，后面你要是看到<code>node-gyp</code>其实就是基于这个做的js版本。不过后面GYP被v8团队废弃掉，改用GN(Generate Ninja)构建系统。二者的区别不是本文重点，有兴趣的童鞋可以查看这篇文章： chromium中的GN构建系统。</p> 
+ <p>有意思的是尽管v8彻底废弃掉了GYP，但是nodejs仍然在使用GYP，这个R大在创建deno项目的时候有提及到：Design Mistakes in Node。</p> 
+ <p></p> 
+ <div style="text-align:center;"> 
+  <img src="https://images2.imgbox.com/ac/ac/32eExSAN_o.png" alt="acda9eaf9b2a8fb607424a59d7b159b8.png"> 
+ </div> 
+ <h4><b>1.1.1、GN构建系统简介</b></h4> 
+ <p>GN(Generate Ninja)是chromium project用来取代GYP的新工具，由于GN是用C++编写，比起用 python写的GYP快了很多，GN新的DSL的语法也被认为是比较好写以及维护的。</p> 
+ <p>在v8项目的根目录下有个<code>.gn</code>文件，内容如下（去掉所有注释了）：</p> 
+ <div class="has"> 
+  <pre class="has"><code>import("//build/dotfile_settings.gni")
+buildconfig = "//build/config/BUILDCONFIG.gn"
+check_targets = []
+exec_script_whitelist = build_dotfile_settings.exec_script_whitelist + []
+</code></pre> 
+ </div> 
+ <p>我们关注<code>buildconfig</code>这个配置。<code>.gn</code>所在的目录会被GN工具认定是项目的根目录，<code>.gn</code>的内容基本就是用<code>buildconfig</code>来指定build config的位置，其中<code>//build//config/BUILDCONFIG.gn</code>是相对于项目根目录下路径的配置文件。</p> 
+ <p>但是你会发现现在v8源码目录下并没有叫做build的目录，这个目录要咋生成呢？这些知识我们会在稍后的编译v8代码中提及。</p> 
+ <p>假设现在你有build目录了，我们找到<code>BUILDCONFIG.gn</code>文件，文件里面会根据系统和平台设置对应的编译工具链：</p> 
+ <div class="has"> 
+  <pre class="has"><code>... ...
+
+if (custom_toolchain != "") {
+  set_default_toolchain(custom_toolchain)
+} else if (_default_toolchain != "") {
+  set_default_toolchain(_default_toolchain)
+}
+
+... ...
+</code></pre> 
+ </div> 
+ <p>比如得到的<code>_default_toolchain</code>值为：<code>_default_toolchain = "//build/toolchain/linux:clang_x86</code>，那么你在<code>build/toolchain/linux</code>目录下的<code>BUILD.gn</code>可以找到这么一个配置：</p> 
+ <div class="has"> 
+  <pre class="has"><code>clang_toolchain("clang_x86") {
+  # Output linker map files for binary size analysis.
+  enable_linker_map = true
+
+  toolchain_args = {
+    current_cpu = "x86"
+    current_os = "linux"
+  }
+}
+</code></pre> 
+ </div> 
+ <p>因为GN没有内建的<code>toolchain</code>规则，<code>toolchain</code>里的各种<code>tool</code>例如 cc,cxx,link等必须自己指定，指定的文件是<code>build/toolchain/gcc_toolchain.gni</code>文件，在文件中我们可以看到GN给定义的一些动作：</p> 
+ <div class="has"> 
+  <pre class="has"><code>tool("cc") {
+  depfile = "{<!-- -->{output}}.d"
+  precompiled_header_type = "gcc"
+  command = "$cc -MMD -MF $depfile ${rebuild_string}{<!-- -->{defines}} {<!-- -->{include_dirs}} {<!-- -->{cflags}} {<!-- -->{cflags_c}}${extra_cppflags}${extra_cflags} -c {<!-- -->{source}} -o {<!-- -->{output}}"
+  depsformat = "gcc"
+  description = "CC {<!-- -->{output}}"
+  outputs = [
+    "$object_subdir/{<!-- -->{source_name_part}}.o",
+  ]
+}
+</code></pre> 
+ </div> 
+ <p>最后项目根目录下会有一个<code>BUILD.gn</code>的文件，指定生成可执行文件的指令，比如：</p> 
+ <div class="has"> 
+  <pre class="has"><code>v8_executable("v8_hello_world") {
+  sources = [
+    "samples/hello-world.cc",
+  ]
+
+  configs = [
+    # Note: don't use :internal_config here because this target will get
+    # the :external_config applied to it by virtue of depending on :v8, and
+    # you can't have both applied to the same target.
+    ":internal_config_base",
+  ]
+
+  deps = [
+    ":v8",
+    ":v8_libbase",
+    ":v8_libplatform",
+    "//build/win:default_exe_manifest",
+  ]
+}
+</code></pre> 
+ </div> 
+ <p>这样一套完整的GN构建系统便完成了。</p> 
+ <h4><b>1.1.2、Ninja构建系统</b></h4> 
+ <p>有了GN，为啥还要Ninja呢？刚才我们知道GN的英文意思是Generator Ninja，可见GN生成的东西并不是我们最终GNU Makefile形式。而Ninja才是最后生成Makefile的终极法器。Ninja 作为一个新型的编译工具，小巧而又高效，据谷歌官方的说法是速度有了好几倍的提升。</p> 
+ <p>这个时候我们还没有生成任何的Ninja文件，需要我们使用GN命令去生成：</p> 
+ <p><code>gn args out/foo</code></p> 
+ <p>这下子你在<code>out/foo</code>下就可以看到好多ninja文件：</p> 
+ <p></p> 
+ <div style="text-align:center;"> 
+  <img src="https://images2.imgbox.com/6e/00/jFkNUMrK_o.png" alt="527b623e944539007c70d35d96804117.png"> 
+ </div> 
+ <p>Ninja使用<code>build.ninja</code>文件来定义构建规则，和<code>Makefile</code>里的元编程不同，<code>build.ninja</code>几乎是完全静态的，动态生成依赖其他工具，如gn或者CMake。</p> 
+ <h4><b>build.ninja</b></h4> 
+ <p>build.niinja相当于ninja的makefile，一个简单的build.ninja文件如下，分为rule和dependency两部分。</p> 
+ <p></p> 
+ <div style="text-align:center;"> 
+  <img src="https://images2.imgbox.com/a8/8b/ltlQMj2N_o.png" alt="b89a2602c8f108680bdc9a3d391880d4.png"> 
+ </div> 
+ <p>phony: 可以创建其他target的别名。</p> 
+ <p>default: 如果没有在命令行中指定target，可以使用default来指定默认的target。</p> 
+ <p>pools: 为了支持并发作业，Ninja还支持pool的机制，和用-j并行模式一样。</p> 
+ <p>Make vs Ninja Performance Comparison将Ninja和Make进行了测试对比。</p> 
+ <h3><b>2、编译并测试V8代码</b></h3> 
+ <p>接下来我们开始进行v8代码的编译操作。官网的文档给的已经很齐全了，这里只是再简单说一下，并提及一些官网没有给出的基本知识。</p> 
+ <h4><b>2.1、下载v8代码</b></h4> 
+ <p>这一步注意了，<b>不要直接从v8仓库使用git clone命令下载代码，这样下载下来的代码是无效的，会缺失很多东西，要使用官方提供的工具depot_tools</b></p> 
+ <p>整个步骤汇总如下：</p> 
+ <div class="has"> 
+  <pre class="has"><code>git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git
+export PATH=$PATH:/path/to/depot_tools
+gclient config https://chromium.googlesource.com/v8/v8
+gclient sync
+mkdir ~/v8
+cd ~/v8
+fetch v8
+cd v8
+</code></pre> 
+ </div> 
+ <h4><b>2.2、编译v8代码</b></h4> 
+ <p>编译v8代码官网同样给的很详细：传送门，这里总结一下而已，有两种编译方式</p> 
+ <h4><b>2.2.1、超便捷方式</b></h4> 
+ <p>使用<code>gm</code>这个集成所有为一体的python脚本可以几个命令就搞定：</p> 
+ <div class="has"> 
+  <pre class="has"><code>alias gm=/path/to/v8/tools/dev/gm.py
+gm x64.release
+gm x64.release.check
+</code></pre> 
+ </div> 
+ <h4><b>2.2.2、手动编译方式</b></h4> 
+ <p>按照我们之前说的流程，我们需要使用GN去生成ninja文件，再生成makefile，最后才是编译，因此：</p> 
+ <p>可以使用<code>gn args out/foo</code>或者<code>gn gen out/foo --args='is_debug=false target_cpu="x64" v8_target_cpu="arm64" use_goma=true'</code>来生成ninja文件。</p> 
+ <p>这一行命令官网没有详细解释，我在这里解释一下：</p> 
+ <div class="has"> 
+  <pre class="has"><code>gn args out/foo =&gt; 通过参数形式指定输出目录，这个命令会弹出文本让你配置参数
+gn gen out/foo =&gt; 指定GN构建输出的目录, 可以指定参数： --args='is_debug=false target_cpu="x64" v8_target_cpu="arm64" use_goma=true'，这个命令不会弹出文本窗让你配置
+gn args out/foo --list =&gt; 查看这个构建输出目录当时配置的参数
+</code></pre> 
+ </div> 
+ <p>如果嫌上面的方式麻烦，那么v8还提供了另外一个脚本来集成这些步骤：<code>v8gen</code>，命令如下：</p> 
+ <div class="has"> 
+  <pre class="has"><code>alias v8gen=/path/to/v8/tools/dev/v8gen.py
+v8gen -b 'V8 Linux64 - debug builder' -m client.v8 foo
+</code></pre> 
+ </div> 
+ <p>v8gen的原理是借助<code>mb_config.pyl</code>文件。根据master配置(<code>-m</code>)和builder配置(<code>-b</code>)来生成编译文件，我们在<code>mb_config.pyl</code>找到对应的配置：</p> 
+ <p></p> 
+ <div style="text-align:center;"> 
+  <img src="https://images2.imgbox.com/04/6e/s013CyW9_o.png" alt="3f033908a4bc0179b133df481380cf33.png"> 
+ </div> 
+ <p>最后一个参数<code>foo</code>是指定生成的二级目录，默认一级目录是<code>out.gn</code>，如下：</p> 
+ <p></p> 
+ <div style="text-align:center;"> 
+  <img src="https://images2.imgbox.com/c0/c8/HH3UUzfL_o.png" alt="d4f6ceb624584211cf2ad7d38e8fad6d.png"> 
+ </div> 
+ <p>你也可以使用默认配置，直接<code>v8gen foo</code></p> 
+ <p>接下去使用ninja来编译：</p> 
+ <p><code>ninja -C out/foo</code></p> 
+ <p>如果想要指定生成指定目标则：</p> 
+ <p><code>ninja -C out/foo d8</code></p> 
+ <p>上述编译正常会报错：<code>goma/gomacc: No such file or directory</code>。因为我们本地没有安装goma，所以想要正常编译下去，还需要安装一下goma，goma是什么东西呢？从官网上看，它是一个辅助编译加速的工具，详细可以参考：goma</p> 
+ <h3><b>3、编译单个引用到v8库的C++文件</b></h3> 
+ <p>除了上述整体v8工程编译，如果你想利用v8编译单个文件的话，比如在官网提到的编译<code>Hello.cc</code>中使用到了<code>g++</code>命令，对于<code>g++</code>命令有些参数是你必须了解的，这里整理了一份，请参考：</p> 
+ <p><code>g++ -I. -Iinclude samples/hello-world.cc -o hello_world -lv8_monolith -Lout.gn/x64.release.sample/obj/ -pthread -std=c++0x</code></p> 
+ <p>G++命令解释如下：</p> 
+ <div class="has"> 
+  <pre class="has"><code>-std=
+    决定使用的语言标准，当编译C和C++的时候该选择支持配置。
+
+  上述命令中的`c++0x`表示：
+    语言标准使用即将发布的ISO c++ 0x标准的工作草案。此选项支持可能包含在c++ 0x中的实验性特性。工作草案在不断地变化，如果GCC的未来版本不属于c++ 0x标准，那么由这个标志启用的任何特性都可能被删除。
+
+  更多标准请参考：[g++](https://linux.die.net/man/1/g++)
+
+-pthread
+  使用POSIX线程库添加对多线程的支持。此选项为预处理器和链接器设置标志。它不影响编译器生成的目标代码的线程安全性，也不影响与其提供的库的线程安全性。这些是特定于HP-UX的标志。
+
+-I dir
+  将目录dir添加到要搜索头文件的目录列表中。在系统标准包含目录之前，搜索由**-I**指定的目录。如果目录*dir*是标准的系统包含目录，则忽略该选项，以确保不会破坏系统目录的默认搜索顺序和对系统头文件的特殊处理。如果*dir*以"="开头，则"="将被sysroot前缀替换。
+
+-o file
+指定输出文件。这与将file指定为cpp的第二个非选项参数相同。gcc 对第二个非选项参数的有另一种解释，因此必须使用-o指定输出文件
+
+-llibrary
+-l library
+  链接时搜索名为library的库。(第二种指定库文件的方式仅适用于POSIX遵从性，不建议使用。)
+  在命令中编写这个选项的位置会有所不同;链接器按照指定的顺序搜索和处理库和目标文件。因此,`foo.o -lz bar.o`是在文件foo.o之后搜索库z。但在bar.o之前。如果bar.o是引用到了z库中的函数，这些函数是不能被加载。
+  链接器搜索库的标准目录列表，实际上是一个名为`liblibrary.a`的文件。然后链接器使用这个文件，就好像它是通过名称精确指定的一样。
+
+  搜索的目录包括几个标准系统目录，以及您使用-L指定的任何目录。
+  通常以这种方式找到的文件是库文件——其成员是目标文件的归档文件。链接器通过扫描成员来处理存档文件，这些成员定义了到目前为止已经引用但尚未定义的符号。但是，如果找到的文件是一个普通的对象文件，则以通常的方式链接它。
+-Ldir
+  添加`dir`目录到搜索目录列表中去供`-l`使用
+</code></pre> 
+ </div> 
+ <p>这样上述命令想必一目了然了吧</p> 
+ <h3><b>4、v8引擎基本概念简述</b></h3> 
+ <p>在[译文]V8学习的高级进阶完整详细地介绍了很多概念，这里只是再把这些概念简化掉，让大家的记忆更加深刻。</p> 
+ <h4><b>4.1、isolate</b></h4> 
+ <p>这个概念在[译文]V8学习的高级进阶没有提及到，它表示的一个独立的V8虚拟机，拥有自己的堆栈。所以才取名isolate，意为“隔离”。在v8中使用以下语法进行初始化：</p> 
+ <div class="has"> 
+  <pre class="has"><code>Isolate* isolate = Isolate::New(create_params);
+</code></pre> 
+ </div> 
+ <h4><b>4.2、handle</b></h4> 
+ <p>handle是指向对象的指针，在V8中，所有的对象都通过handle来引用，handle主要用于V8的垃圾回收机制。在 V8 中，handle 分为两种：持久化 (Persistent)handle 和本地 (Local)handle，持久化 handle 存放在堆上，而本地 handle 存放在栈上。比如我要使用本地句柄，句柄指向的内容是一个string，那么你要这么定义：</p> 
+ <p><code>Local&lt;String&gt; source = String::NewFromUtf8(isolate, "'Hello' + ', World'", NewStringType::kNormal).ToLocalChecked();</code></p> 
+ <p>鉴于一个个释放Handle比较麻烦，v8又提供了<code>HandleScope</code>来批量处理，你可以在handle之前声明好：</p> 
+ <p><code>HandleScope handle_scope(isolate);</code></p> 
+ <h4><b>4.3、context</b></h4> 
+ <p>context 是一个执行器环境，使用 context 可以将相互分离的 JavaScript 脚本在同一个 V8 实例中运行，而互不干涉。在运行 JavaScript 脚本是，需要显式的指定 context 对象。创建上下文，需要这样：</p> 
+ <div class="has"> 
+  <pre class="has"><code>// 创建一个上下文
+Local&lt;Context&gt; context = Context::New(isolate);
+
+// 进入上下文编译和运行脚本
+Context::Scope context_scope(context);
+</code></pre> 
+ </div> 
+ <h4><b>4.4、V8的数据类型</b></h4> 
+ <p>由于 C++ 原生数据类型与 JavaScript 中数据类型有很大差异，因此 V8 提供了 Data 类，从 JavaScript 到 C++，从 C++ 到 JavaScrpt 都会用到这个类及其子类，比如：</p> 
+ <div class="has"> 
+  <pre class="has"><code>String::NewFromUtf8(info.GetIsolate(), "version").ToLocalChecked()
+</code></pre> 
+ </div> 
+ <p>这里的String便是V8的数据类型。再比如：</p> 
+ <div class="has"> 
+  <pre class="has"><code>v8::Integer::New(info.GetIsolate(), 10);
+</code></pre> 
+ </div> 
+ <h4><b>4.5、对象模板和函数模板</b></h4> 
+ <p>这两个模板类用以定义 JavaScript 对象和 JavaScript 函数。我们在后续的小节部分将会接触到模板类的实例。通过使用 ObjectTemplate，可以将 C++ 中的对象暴露给脚本环境，类似的，FunctionTemplate 用以将 C++ 函数暴露给脚本环境，以供脚本使用。</p> 
+ <h3><b>最后</b></h3> 
+ <p>就此，对于v8的了解应该有了一定的雏形了，v8里面有很多重要的概念，想要继续深入的可以参考另外一篇v8的实际应用文章了：如何正确地使用v8嵌入到我们的C++应用中</p> 
+ <h3><b>参考</b></h3> 
+ <ol><li>chromium中的GN构建系统</li><li>GYP，GN和Ninja</li><li>depot_tools_tutorial(7) Manual Page</li><li>GN Reference</li></ol> 
+</div>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/d95793689abc9c77f4b822201a3be5a9/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">OpenFeign和Consul爱恨交织的两天</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/57408eec401a973ad05d262385ef088c/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">记录一次从vue2到vue3的踩坑过程</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

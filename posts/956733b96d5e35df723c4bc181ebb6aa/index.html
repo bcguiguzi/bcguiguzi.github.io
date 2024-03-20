@@ -1,0 +1,467 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Cesium 之实现房屋模型拆解 - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="Cesium 之实现房屋模型拆解" />
+<meta property="og:description" content="本文按照mars3d提供的在线例子，自己实现了类似功能。
+模型的拆解其实是将模型组装的各个部分模块以延迟动画方式进行位置重置，从而能够单独浏览，更直观的看到内部结构。
+实现思路很简单
+1、模型的加载
+使用primitives 加载模型
+2、通过modelMatrix控制位置
+直接上代码，可根据实际需求自行扩展。
+JS
+/* * @Descripttion: * @version: * @Author: xiongz * @Date: 2022-05-12 11:31:46 * @LastEditors: Please set LastEditors * @LastEditTime: 2022-05-12 19:37:04 */ /// // 模块描述:房屋模型移动拆分 /// define([ &#34;dojo/_base/declare&#34;, &#34;dojo/_base/lang&#34;, &#39;dojo/_base/html&#39;, &#34;dojo/_base/fx&#34;, &#39;jimu/BaseWidget&#39;, ], function ( declare, lang, html, fx, BaseWidget ) { return declare(&#34;jimu.widget.ModelSplit&#34;, [BaseWidget], { baseClass: &#34;jimu-widget-ModelSplit&#34;, name: &#39;ModelSplit&#39;, models: [], point: null, timers: [], floorCount: 6, floorScale: 1, floorHeight: 3, // 不缩放情况下楼层高度 point: { lng: 115." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/956733b96d5e35df723c4bc181ebb6aa/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2022-05-22T16:09:35+08:00" />
+<meta property="article:modified_time" content="2022-05-22T16:09:35+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Cesium 之实现房屋模型拆解</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p>本文按照mars3d提供的在线例子，自己实现了类似功能。</p> 
+<p>模型的拆解其实是将模型组装的各个部分模块以延迟动画方式进行位置重置，从而能够单独浏览，更直观的看到内部结构。</p> 
+<p>实现思路很简单</p> 
+<p>1、模型的加载</p> 
+<p>使用primitives 加载模型</p> 
+<p>2、通过modelMatrix控制位置</p> 
+<p>直接上代码，可根据实际需求自行扩展。</p> 
+<p>JS</p> 
+<pre><code class="language-javascript">/*
+ * @Descripttion: 
+ * @version: 
+ * @Author: xiongz
+ * @Date: 2022-05-12 11:31:46
+ * @LastEditors: Please set LastEditors
+ * @LastEditTime: 2022-05-12 19:37:04
+ */
+///
+// 模块描述:房屋模型移动拆分
+/// 
+define([
+    "dojo/_base/declare",
+    "dojo/_base/lang",
+    'dojo/_base/html',
+    "dojo/_base/fx",
+    'jimu/BaseWidget',
+], function (
+    declare,
+    lang,
+    html,
+    fx,
+    BaseWidget
+) {
+    return declare("jimu.widget.ModelSplit", [BaseWidget], {
+        baseClass: "jimu-widget-ModelSplit",
+        name: 'ModelSplit',
+        models: [],
+        point: null,
+        timers: [],
+        floorCount: 6,
+        floorScale: 1,
+        floorHeight: 3, // 不缩放情况下楼层高度
+        point: {
+            lng: 115.91455928461914,
+            lat: 28.665192693562243,
+            height: 0
+        },
+        postCreate: function () {
+            this.inherited(arguments);
+
+        },
+        destroy: function () {
+
+            this.inherited(arguments);
+        },
+
+        startup: function () {
+            this.inherited(arguments);
+            topic.subscribe("runMap3DWidget", lang.hitch(this, function (name) {
+                if (name == this.name) {
+                    this.initModel();
+                    $(`.${this.baseClass}`).show()
+                }
+            }));
+            topic.subscribe("clearMap3DWidget", lang.hitch(this, function(name){
+                if(name!=this.name){
+                    this.clearAll()
+                }
+            }));
+
+            let that = this;
+            $('.floorWhole &gt;button').on('click', function () {
+                let index = $(this).index();
+                // 全部展开
+                if (index == 0) {
+                    that.opeAll(4, 3000, 100)
+                }
+                // 全部合并
+                else if (index == 1) {
+                    that.unionAll(4, 3000, 100)
+                }
+                // 全部还原
+                else if (index == 2) {
+                    that.resetAll()
+                }
+            })
+            $('.floorSingle &gt;button').on('click', function () {
+                let index = $(this).index();
+                let maxHeight = that.point.height + (that.floorCount + 1) * that.floorScale
+                // 楼层查看
+                that.openFloorModel(maxHeight, index + 1)
+            })
+            $('.modelfile-th .xx').on('click',function(){
+                that.clearAll();
+            })
+        },
+        initModel:function(){
+            let model = null;
+            let floorCount = this.floorCount; // 房屋总楼层数，不含楼顶
+            let floorScale = this.floorScale; // 房屋缩放比例，默认一般1
+            let floorHeight = this.floorHeight; // 每层的高度
+            let point = this.point;
+            for (let i = 0; i &lt;= floorCount; i++) {
+                if (i &lt; floorCount) {
+                    // 底楼
+                    let height = point.height + i * floorHeight * floorScale;
+                    model = this.addModePrimitive({
+                        position: [point.lng, point.lat, height],
+                        url: './widgets/ModelSplit/data/floor.glb',
+                        name: 'fw',
+                        scale: floorScale
+                    })
+                    model.option = {
+                        oriHeight: height,
+                        scale: floorScale,
+                        currentHeight:height
+                    }
+                    this.models.push(model)
+                } else {
+                    // 顶楼
+                    let height = point.height + i * floorHeight * floorScale;
+                    model = this.addModePrimitive({
+                        position: [point.lng, point.lat, height],
+                        url: './widgets/ModelSplit/data/top.glb',
+                        name: 'fw',
+                        scale: floorScale
+                    })
+                    model.option = {
+                        oriHeight: height,
+                        scale: floorScale,
+                        currentHeight:height
+                    }
+                    this.models.push(model)
+                }
+            }
+            window.viewer.camera.flyTo({
+                destination : Cesium.Cartesian3.fromDegrees(115.91326536913103, 28.66495725572756, 55.24826616710503,),
+                orientation : {
+                    heading : Cesium.Math.toRadians(78.06653423571397),
+                    pitch : Cesium.Math.toRadians(-15.156766587402164),
+                    roll : 0
+                }
+            });
+        },
+        clearAll:function(){
+            if(this.models.length&gt;0){
+                this.models.forEach(m=&gt;{
+                    window.viewer.scene.primitives.remove(m)
+                })
+            }
+            $('.jimu-widget-ModelSplit').hide()
+        },
+        opeAll: function (height, time = 4000, interval = 100) {
+            this.resetAll();
+            let point = this.point; //楼栋位置
+            this.clearFloorTimers()
+            for (let i = 0; i &lt; this.models.length; i++) {
+                let model = this.models[i]
+                let changeRate = Number((i * height * model.option.scale)) * (interval / time)
+                // let alt = i * height * model.option.scale + model.option.oriHeight;
+                if (i != 0) {
+                    // model.position = new Cesium.CallbackProperty(function () {
+                    //     let height = model.option.oriHeight + (i * height * model.option.scale) / time
+                    //     if (height &lt; alt) {
+                    //         return Cesium.Cartesian3(model.position[0], model.position[1], height)
+                    //     } else {
+                    //         return Cesium.Cartesian3(model.position[0], model.position[1], alt)
+                    //     }
+                    // }, false)
+                    let count = 1;
+                    let timer = setInterval(function () {
+                        let add = model.option.oriHeight + changeRate * (count++)
+                        var origin = Cesium.Cartesian3.fromDegrees(point.lng, point.lat, add);
+                        var modelMatrix = Cesium.Transforms.eastNorthUpToFixedFrame(origin);
+                        model.modelMatrix = modelMatrix;
+                        if (count &gt;= (time / interval)) {
+                            model.option.currentHeight=add;
+                            clearInterval(timer)
+                            timer = null;
+                        }
+                        // console.log(count)
+                    }, interval)
+                    this.timers.push(timer)
+                }
+            }
+        },
+        unionAll: function (height, time = 4000, interval = 100) {
+            let point = this.point; //楼栋位置
+            this.clearFloorTimers()
+            for (let i = 0; i &lt; this.models.length; i++) {
+                let model = this.models[i];
+                // 如果是初始位置，代表已经为合并状态。
+                if(model.option.currentHeight==model.option.oriHeight){
+                    continue;
+                }
+                let currentHeight = model.option.oriHeight + (i * height * model.option.scale);
+                let changeRate = Number((i * height * model.option.scale)) * (interval / time)
+                model.show = true;
+                let count = 1;
+                let timer = setInterval(function () {
+                    let add = currentHeight - changeRate * (count++)
+                    var origin = Cesium.Cartesian3.fromDegrees(point.lng, point.lat, add);
+                    var modelMatrix = Cesium.Transforms.eastNorthUpToFixedFrame(origin);
+                    model.modelMatrix = modelMatrix;
+                    if (count &gt;= (time / interval)) {
+                        var origin = Cesium.Cartesian3.fromDegrees(point.lng, point.lat, model.option.oriHeight);
+                        var modelMatrix = Cesium.Transforms.eastNorthUpToFixedFrame(origin);
+                        model.modelMatrix = modelMatrix;
+                        model.option.currentHeight=model.option.oriHeight
+                        clearInterval(timer)
+                    }
+                }, interval)
+                this.timers.push(timer)
+            }
+        },
+        resetAll: function () {
+            this.clearFloorTimers()
+            let point = this.point; //楼栋位置
+            for (let i = 0; i &lt; this.models.length; i++) {
+                let model = this.models[i];
+                var origin = Cesium.Cartesian3.fromDegrees(point.lng, point.lat, model.option.oriHeight);
+                var modelMatrix = Cesium.Transforms.eastNorthUpToFixedFrame(origin);
+                model.option.currentHeight=model.option.oriHeight
+                model.modelMatrix = modelMatrix;
+                model.show = true;
+            }
+        },
+        /**
+         * 显示指定楼层
+         *
+         * @param {Number} maxHeight 指定从顶部落下的高度
+         * @param {Number} floorNum 指定显示的楼层，第1层开始
+         * @param {Number} [time=1000] 楼层下落需要时间,单位:毫秒
+         * @param {Number} [interval=100] 楼层下落触发间隔时间,单位:毫秒
+         * @return {void}  无
+         */
+        openFloorModel: function (maxHeight = 120, floorNum, time = 1000, interval = 100) {
+            this.clearFloorTimers();
+            floorNum--;
+            let point = this.point; //楼栋位置
+            for (let i = floorNum; i &lt; this.models.length; i++) {
+                let model = this.models[i];
+                var origin = Cesium.Cartesian3.fromDegrees(point.lng, point.lat, model.option.oriHeight + maxHeight);
+                var modelMatrix = Cesium.Transforms.eastNorthUpToFixedFrame(origin);
+                model.modelMatrix = modelMatrix;
+                model.show = false;
+                model.option.currentHeight=model.option.oriHeight + maxHeight
+            }
+            for (let j = 0; j &lt;= floorNum; j++) {
+                let model = this.models[j];
+                 // 如果是初始位置，代表已经为合并状态。
+                 model.show = true;
+                 if(model.option.currentHeight==model.option.oriHeight&amp;&amp;j!=floorNum){
+                    continue;
+                }
+                
+                let currentHeight = model.option.oriHeight + maxHeight;
+                let changeRate = maxHeight * (interval / time)
+                let count = 1;
+                let timer = setInterval(function () {
+                    let add = currentHeight - changeRate * (count++)
+                    var origin = Cesium.Cartesian3.fromDegrees(point.lng, point.lat, add);
+                    var modelMatrix = Cesium.Transforms.eastNorthUpToFixedFrame(origin);
+                    model.modelMatrix = modelMatrix;
+                    if (count &gt;= (time / interval)) {
+                        var origin = Cesium.Cartesian3.fromDegrees(point.lng, point.lat, model.option.oriHeight);
+                        var modelMatrix = Cesium.Transforms.eastNorthUpToFixedFrame(origin);
+                        model.modelMatrix = modelMatrix;
+                        model.option.currentHeight=model.option.oriHeight
+                        clearInterval(timer)
+                    }
+                }, interval)
+                this.timers.push(timer)
+            }
+
+        },
+        clearFloorTimers: function () {
+            if (this.timers.length &gt; 0) {
+                this.timers.forEach(t =&gt; {
+                    if (t) {
+                        clearInterval(t)
+                    }
+                })
+            }
+            this.timers = [];
+        },
+        // 3d模型
+        addModePrimitive: function (option) {
+            var origin = Cesium.Cartesian3.fromDegrees(option.position[0], option.position[1], option.position[2]);
+            var modelMatrix = Cesium.Transforms.eastNorthUpToFixedFrame(origin);
+            var modelPrimitive = null;
+            modelPrimitive = window.viewer.scene.primitives.add(Cesium.Model.fromGltf({
+                url: option.url,
+                modelMatrix: modelMatrix,
+                show: true, // default
+                scale: option.scale || 1, // double size
+                // minimumPixelSize : 128,          // never smaller than 128 pixels
+                maximumScale: 20000, // never larger than 20000 * model size (overrides minimumPixelSize)
+                allowPicking: true,
+                // heightReference: Cesium.HeightReference.RELATIVE_TO_GROUND,
+                scene: viewer.scene
+            }));
+            modelPrimitive.name = option.name;
+            modelPrimitive.type = "model"
+            if (option.rotationz) {
+                var mz = Cesium.Matrix3.fromRotationZ(Cesium.Math.toRadians(option.rotationz));
+                var rotationz = Cesium.Matrix4.fromRotationTranslation(mz);
+                //旋转、平移矩阵相乘
+                Cesium.Matrix4.multiply(modelMatrix, rotationz, modelMatrix);
+                modelPrimitive.modelMatrix = modelMatrix
+            }
+
+
+            modelPrimitive.readyPromise.then(function (model) {
+                // Play all animations when the model is ready to render
+                model.activeAnimations.addAll({
+                    speedup: 0.5,
+                    loop: Cesium.ModelAnimationLoop.REPEAT
+                });
+            });
+            return modelPrimitive;
+        }
+    });
+});</code></pre> 
+<p>html</p> 
+<pre><code class="language-html">&lt;div&gt;
+    &lt;div class="model-Split"&gt;
+        &lt;div class="modelfile-th"&gt;
+            &lt;!--&lt;i class="i"&gt;&lt;/i&gt;--&gt;
+            &lt;span class="tsls"&gt;房屋拆解&lt;/span&gt;
+            &lt;span class="xx"&gt;
+                &lt;i class="layui-icon"&gt;&amp;#x1006;&lt;/i&gt;
+            &lt;/span&gt;
+        &lt;/div&gt;
+        &lt;div class="modelfile-td"&gt;
+            &lt;div class="infoview"&gt;
+                &lt;div class="floorWhole"&gt;
+                    整体控制：
+                    &lt;button class="btn btn-primary"&gt;展开&lt;/button&gt;
+                    &lt;button class="btn btn-primary"&gt;合并&lt;/button&gt;
+                    &lt;button class="btn btn-primary"&gt;还原&lt;/button&gt;
+                &lt;/div&gt;
+                &lt;div class="floorSingle"&gt;
+                    显示指定：
+                    &lt;button class="btn btn-primary"&gt;一楼&lt;/button&gt;
+                    &lt;button class="btn btn-primary"&gt;二楼&lt;/button&gt;
+                    &lt;button class="btn btn-primary"&gt;三楼&lt;/button&gt;
+                    &lt;button class="btn btn-primary"&gt;四楼&lt;/button&gt;
+                    &lt;button class="btn btn-primary"&gt;五楼&lt;/button&gt;
+                    &lt;button class="btn btn-primary"&gt;六楼&lt;/button&gt;
+                    &lt;button class="btn btn-primary"&gt;顶楼&lt;/button&gt;
+                &lt;/div&gt;
+            &lt;/div&gt;
+        &lt;/div&gt;
+    &lt;/div&gt;
+&lt;/div&gt;</code></pre> 
+<p>结果展示：</p> 
+<p><img alt="" height="716" src="https://images2.imgbox.com/29/6b/tgSIqvpP_o.png" width="1200"></p> 
+<p> </p> 
+<p><a href="https://live.csdn.net/v/210549" rel="nofollow" title="https://live.csdn.net/v/210549">https://live.csdn.net/v/210549</a></p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/334828895d59ab4393ed74ad5d2e2252/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">数据结构之二叉树的练习题</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/6c7d069f69e3ac6516f5b5c9094d2ecc/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">VTK绘制三维图像</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

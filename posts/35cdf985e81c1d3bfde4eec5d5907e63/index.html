@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>ARM如何利用PMU（Performance Monitor Unit）量化L3 cache的cache eviction（估算cache eviction的概率） - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="ARM如何利用PMU（Performance Monitor Unit）量化L3 cache的cache eviction（估算cache eviction的概率）" />
+<meta property="og:description" content="本文将介绍如何利用DSU（DynamIQ™ Shared Unit）中的PMU，来监控L3 cache的 一些事件，通过对事件的分析，估算出L3 cache中的cache line conflict（eviction）概率。
+一，PMU 都位于哪里 ？ 在一个 DynamIQ™ cluster 里，集成了一个甚至多个core，以及一个DSU。如下图所示，为一个标准的DynamIQ微架构，里面实现了四个小核以及两个大核，每个核里实现了L1和L2两级cache。并且它们共用一个DSU，DSU里有L3 cache、SCU、内存接口、Debug接口、ACP以及外设接口等等。
+回到我们的主题，PMU位于哪里？从下图可以看出，每个Core有自己独立的PMU，可以用于监控每个core私有的L1以及L2 cache的事件。
+不仅如此，在DSU内部，也有一个PMU，可以用来监控L3 cache以及cluster内存操作的相关事件。
+下面我将介绍一些与L3 cache相关的PMU event。
+二，PMU events- 0x0029，L3D_CACHE_ALLOCATE L3D_CACHE_ALLOCATE事件的event number为0x29，它会把除了L3D_CACHE_REFILL事件以外的，所有写入一整个cache line到L3 cache的事件发生的次数记录下来。它不会记录从L3 cache 以外的地方（下一级内存）拿数据写入L3的操作，比如，L3D_CACHE_ALLOCATE事件包括如下操作：
+从L2 cache 将整个cache line 写回到L3 cache的动作。从write buffer对整个cache line写入到L3 cache。使用 DC ZVA操作对L3 cache 清零的操作。 三，PMU events-0x002A， L3D_CACHE_REFILL L3D_CACHE_REFILL事件主要包括cache line 填充事件，不管是填充的L1 cache 、L2 cache还是L3 cache，只要发生了从这些cache 外部获取数据，填充到cache line中，就包含在L3D_CACHE_REFILL事件中。
+换句话说，只要从L1、L2以及L3以外的地方拿数据，并发生了cache line的填充，就算该数据没有被分配到L3cache 中，也属于L3D_CACHE_REFILL事件。
+比如从cache外部获取的数据直接被放在了buffer中，而不是被分配到cache中，就算buffer里的数据随即被丢弃，这也算在L3D_CACHE_REFILL事件中，因为处理器里的各种buffer也被PMU当作是cache的一部分。
+再举些例子，以下操作都算在L3D_CACHE_REFILL事件中：
+访问L3 cache数据时，该操作导致从外部内存、下一级cache或者其他处理器的L3中获取数据进行cache line填充。由于对L1或者L2cache的填充或者由L1、L2写回到L3的操作，导致发生了从当前处理器的L1、L2或者L3 之外的地方获取数据，填充到当前处理器的cache。访问L3 cache的数据时，导致了L2 cache的cache 填充，该数据来自当前处理器L1、L2以及L3之外的地方，就算没有填充到L3，也会被记录。 四，PMU events- 0x002C，L3D_CACHE_WB L3D_CACHE_WB事件主要就是L3 cache上的数据写回到下一级内存中的事件。比如：" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/35cdf985e81c1d3bfde4eec5d5907e63/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2024-03-06T22:09:45+08:00" />
+<meta property="article:modified_time" content="2024-03-06T22:09:45+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">ARM如何利用PMU（Performance Monitor Unit）量化L3 cache的cache eviction（估算cache eviction的概率）</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p>本文将介绍如何利用DSU（DynamIQ™ Shared Unit）中的PMU，来监控L3 cache的 一些事件，通过对事件的分析，估算出L3 cache中的cache line conflict（eviction）概率。</p> 
+<h2><a id="PMU___2"></a>一，PMU 都位于哪里 ？</h2> 
+<p>在一个 DynamIQ™ cluster 里，集成了一个甚至多个core，以及一个DSU。如下图所示，为一个标准的DynamIQ微架构，里面实现了四个小核以及两个大核，每个核里实现了L1和L2两级cache。并且它们共用一个DSU，DSU里有L3 cache、SCU、内存接口、Debug接口、ACP以及外设接口等等。<br> <img src="https://images2.imgbox.com/80/eb/GXk4C7Dg_o.png" alt="在这里插入图片描述"><br> <img src="https://images2.imgbox.com/da/01/rFCIvB3N_o.png" alt="在这里插入图片描述"><br> 回到我们的主题，PMU位于哪里？从下图可以看出，<strong>每个Core有自己独立的PMU</strong>，可以用于监控每个core私有的L1以及L2 cache的事件。<br> 不仅如此，<strong>在DSU内部，也有一个PMU</strong>，可以用来监控L3 cache以及cluster内存操作的相关事件。<br> <img src="https://images2.imgbox.com/bb/57/u0BiL0SW_o.png" alt="在这里插入图片描述"><br> 下面我将介绍一些与L3 cache相关的PMU event。</p> 
+<h2><a id="PMU_events_0x0029L3D_CACHE_ALLOCATE_10"></a>二，PMU events- 0x0029，L3D_CACHE_ALLOCATE</h2> 
+<p>L3D_CACHE_ALLOCATE事件的event number为0x29，它会把除了L3D_CACHE_REFILL事件以外的，所有写入一整个cache line到L3 cache的事件发生的次数记录下来。它不会记录从L3 cache 以外的地方（下一级内存）拿数据写入L3的操作，比如，L3D_CACHE_ALLOCATE事件包括如下操作：</p> 
+<ul><li>从L2 cache 将整个cache line 写回到L3 cache的动作。</li><li>从write buffer对整个cache line写入到L3 cache。</li><li>使用 DC ZVA操作对L3 cache 清零的操作。</li></ul> 
+<h2><a id="PMU_events0x002A_L3D_CACHE_REFILL_17"></a>三，PMU events-0x002A， L3D_CACHE_REFILL</h2> 
+<p>L3D_CACHE_REFILL事件主要包括cache line 填充事件，不管是填充的L1 cache 、L2 cache还是L3 cache，只要发生了从这些cache 外部获取数据，填充到cache line中，就包含在L3D_CACHE_REFILL事件中。<br> 换句话说，只要从L1、L2以及L3以外的地方拿数据，并发生了cache line的填充，就算该数据没有被分配到L3cache 中，也属于L3D_CACHE_REFILL事件。<br> 比如从cache外部获取的数据直接被放在了buffer中，而不是被分配到cache中，就算buffer里的数据随即被丢弃，这也算在L3D_CACHE_REFILL事件中，因为处理器里的各种buffer也被PMU当作是cache的一部分。</p> 
+<p>再举些例子，以下操作都算在L3D_CACHE_REFILL事件中：</p> 
+<ul><li>访问L3 cache数据时，该操作导致从外部内存、下一级cache或者其他处理器的L3中获取数据进行cache line填充。</li><li>由于对L1或者L2cache的填充或者由L1、L2写回到L3的操作，导致发生了从当前处理器的L1、L2或者L3 之外的地方获取数据，填充到当前处理器的cache。</li><li>访问L3 cache的数据时，导致了L2 cache的cache 填充，该数据来自当前处理器L1、L2以及L3之外的地方，就算没有填充到L3，也会被记录。</li></ul> 
+<h2><a id="PMU_events_0x002CL3D_CACHE_WB_28"></a>四，PMU events- 0x002C，L3D_CACHE_WB</h2> 
+<p>L3D_CACHE_WB事件主要就是L3 cache上的数据写回到下一级内存中的事件。比如：</p> 
+<ul><li>将dirty的cache line写回到下一级内存。</li><li>就算cache line没有被分配到L3 cache中，该cache line的write back也会被记录。</li></ul> 
+<p>就算需要多次的数据访问才能完成一个写回操作，每个写回操作也只会被记录一次。<br> 还有一些写回事件是否会算在L3D_CACHE_WB里，这取决于具体的架构实现：</p> 
+<ul><li>由于 cache coherency的请求，将一个L3上的dirty cache line 转移L1至L3 cache 以外的地方。</li><li>由于缓存维护指令（clean &amp; invalidate）导致cache line被写回的操作。</li></ul> 
+<p>并且，有以下事件不算在L3D_CACHE_WB中：</p> 
+<ul><li>仅仅是cache liine的invalidation，没有造成任何的写回操作到L1至L3以外的内存。</li><li>通过写通（write through ）的方式，将L3的数据写到L1至L3以外的内存。</li><li>将L3的数据转移到L1或者L2 cache中。</li></ul> 
+<p>关于L3D_CACHE_WB事件，还有如下注意事项：</p> 
+<blockquote> 
+ <p>A write-back is attributable to the agent that generated the request<br> that caused the write-back. This might not be the same agent that<br> caused the data being written back to be allocated into the cache. An<br> Unattributable write-back event occurs when a requestor outside of the<br> PE makes a coherency request that results in write-back. If the cache<br> is shared, then an Unattributable write-back event is not counted. If<br> the cache is not shared, then the event is counted. It is<br> IMPLEMENTATION DEFINED whether a write of a whole cache line that is<br> not the result of the eviction of a line from the cache, is counted.<br> For example, this applies when the PE determines software is<br> streaming writes to memory and does not allocate lines to the cache,<br> or by a DC ZVA operation.</p> 
+</blockquote> 
+<h2><a id="L3_cachecache_evictioncache_eviction_60"></a>五，如何量化L3 cache的cache eviction（估算cache eviction的概率）</h2> 
+<p>从上文中我们可以知道，L3D_CACHE_REFILL事件里基本包含了写入cache（L1、L2或者L3）的操作，而L3D_CACHE_WB事件则是将cache line从cache 中写回到下一级内存中的操作。换句话说，通过L3D_CACHE_REFILL事件，PMU可以统计出从cache获取数据，进行cache line填充的次数。通过L3D_CACHE_WB可以知道从cache（L1、L2或者L3）中的dirty cache line写回到L3的下一级内存的次数。<br> L3 cache的cache eviction（cache conflict）会导致被驱逐的cache line写回到下一级缓存。所以<strong>L3 cache的cache eviction概率可以用PMU的L3D_CACHE_WB事件发生的次数（出）与L3D_CACHE_REFILL事件发生的次数（进）的比值来量化。</strong>:<br> <span class="katex--display"><span class="katex-display"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+         
+          
+          
+            L 
+           
+          
+            3 
+           
+          
+            D 
+           
+          
+            − 
+           
+          
+            C 
+           
+          
+            A 
+           
+          
+            C 
+           
+          
+            H 
+           
+          
+            E 
+           
+          
+            − 
+           
+          
+            W 
+           
+          
+            B 
+           
+          
+          
+          
+            L 
+           
+          
+            3 
+           
+          
+            D 
+           
+          
+            − 
+           
+          
+            C 
+           
+          
+            A 
+           
+          
+            C 
+           
+          
+            H 
+           
+          
+            E 
+           
+          
+            − 
+           
+          
+            R 
+           
+          
+            E 
+           
+          
+            F 
+           
+          
+            I 
+           
+          
+            L 
+           
+          
+            L 
+           
+          
+         
+        
+       
+         \frac{L3D-CACHE-WB}{L3D-CACHE-REFILL} 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 2.1297em; vertical-align: -0.7693em;"></span><span class="mord"><span class="mopen nulldelimiter"></span><span class="mfrac"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 1.3603em;"><span class="" style="top: -2.314em;"><span class="pstrut" style="height: 3em;"></span><span class="mord"><span class="mord mathnormal">L</span><span class="mord">3</span><span class="mord mathnormal" style="margin-right: 0.0278em;">D</span><span class="mspace" style="margin-right: 0.2222em;"></span><span class="mbin">−</span><span class="mspace" style="margin-right: 0.2222em;"></span><span class="mord mathnormal" style="margin-right: 0.0715em;">C</span><span class="mord mathnormal">A</span><span class="mord mathnormal" style="margin-right: 0.0715em;">C</span><span class="mord mathnormal" style="margin-right: 0.0813em;">H</span><span class="mord mathnormal" style="margin-right: 0.0576em;">E</span><span class="mspace" style="margin-right: 0.2222em;"></span><span class="mbin">−</span><span class="mspace" style="margin-right: 0.2222em;"></span><span class="mord mathnormal" style="margin-right: 0.1389em;">REF</span><span class="mord mathnormal" style="margin-right: 0.0785em;">I</span><span class="mord mathnormal">LL</span></span></span><span class="" style="top: -3.23em;"><span class="pstrut" style="height: 3em;"></span><span class="frac-line" style="border-bottom-width: 0.04em;"></span></span><span class="" style="top: -3.677em;"><span class="pstrut" style="height: 3em;"></span><span class="mord"><span class="mord mathnormal">L</span><span class="mord">3</span><span class="mord mathnormal" style="margin-right: 0.0278em;">D</span><span class="mspace" style="margin-right: 0.2222em;"></span><span class="mbin">−</span><span class="mspace" style="margin-right: 0.2222em;"></span><span class="mord mathnormal" style="margin-right: 0.0715em;">C</span><span class="mord mathnormal">A</span><span class="mord mathnormal" style="margin-right: 0.0715em;">C</span><span class="mord mathnormal" style="margin-right: 0.0813em;">H</span><span class="mord mathnormal" style="margin-right: 0.0576em;">E</span><span class="mspace" style="margin-right: 0.2222em;"></span><span class="mbin">−</span><span class="mspace" style="margin-right: 0.2222em;"></span><span class="mord mathnormal" style="margin-right: 0.1389em;">W</span><span class="mord mathnormal" style="margin-right: 0.0502em;">B</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.7693em;"><span class=""></span></span></span></span></span><span class="mclose nulldelimiter"></span></span></span></span></span></span></span><br> 比值越小，L3 cache内发生conflict的概率越小，此时L3 cache的利用率越高。</p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/6df346685a50000cc65d35707c3f009f/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">6.2 指标的应用与设计（12%）</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/f9342658d57c8ea2eea26d0c8f399f56/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">Three.js--》探寻Cannon.js构建震撼的3D物理交互体验（二）</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

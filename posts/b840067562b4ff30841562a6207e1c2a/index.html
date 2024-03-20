@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>【Go】Channel底层实现 ② - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="【Go】Channel底层实现 ②" />
+<meta property="og:description" content="文章目录 channel底层实现channel发送、接收数据有缓冲 channelchannel 先写再读channel 先读再写(when the receiver comes first) 无缓冲channelchannel存在3种状态： channel底层实现 // channel 类型定义 type hchan struct { // channel 中的元素数量, len qcount uint // total data in the queue // channel 的大小, cap dataqsiz uint // size of the circular queue // channel 的缓冲区，环形数组实现 buf unsafe.Pointer // points to an array of dataqsiz elements // 单个元素(数据类型)的大小 elemsize uint16 // closed 标志位 closed uint32 // 元素的类型 elemtype *_type // element type 指向类型元数据 （内存复制、垃圾回收等机制依赖数据的类型信息） // send 和 recieve 的索引，用于实现环形数组队列（用于记录 交替读写的下标位置） sendx uint // send index recvx uint // receive index // recv goroutine 等待队列 想读取数据但又被阻塞住的 goroutine 队列 recvq waitq // list of recv waiters // send goroutine 等待队列 想发送数据但又被阻塞住的 goroutine 队列 sendq waitq // list of send waiters // lock protects all fields in hchan, as well as several // fields in sudogs blocked on this channel." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/b840067562b4ff30841562a6207e1c2a/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2024-01-27T23:58:37+08:00" />
+<meta property="article:modified_time" content="2024-01-27T23:58:37+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">【Go】Channel底层实现 ②</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p></p> 
+<div class="toc"> 
+ <h4>文章目录</h4> 
+ <ul><li><ul><li><a href="#channel_3" rel="nofollow">channel底层实现</a></li><li><ul><li><a href="#channel_132" rel="nofollow">channel发送、接收数据</a></li><li><a href="#_channel_154" rel="nofollow">有缓冲 channel</a></li><li><ul><li><a href="#channel__155" rel="nofollow">channel 先写再读</a></li><li><a href="#channel_when_the_receiver_comes_first_171" rel="nofollow">channel 先读再写(when the receiver comes first)</a></li></ul> 
+    </li><li><a href="#channel_194" rel="nofollow">无缓冲channel</a></li><li><a href="#channel3_200" rel="nofollow">channel存在3种状态：</a></li></ul> 
+  </li></ul> 
+ </li></ul> 
+</div> 
+<p></p> 
+<h3><a id="channel_3"></a>channel底层实现</h3> 
+<pre><code class="prism language-go"><span class="token comment">// channel 类型定义</span>
+<span class="token keyword">type</span> hchan <span class="token keyword">struct</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token comment">// channel 中的元素数量, len</span>
+    qcount   <span class="token builtin">uint</span>           <span class="token comment">// total data in the queue</span>
+    
+    <span class="token comment">// channel 的大小, cap</span>
+    dataqsiz <span class="token builtin">uint</span>           <span class="token comment">// size of the circular queue</span>
+    
+    <span class="token comment">// channel 的缓冲区，环形数组实现 </span>
+    buf      unsafe<span class="token punctuation">.</span>Pointer <span class="token comment">// points to an array of dataqsiz elements</span>
+    
+    <span class="token comment">// 单个元素(数据类型)的大小</span>
+    elemsize <span class="token builtin">uint16</span>
+    
+    <span class="token comment">// closed 标志位</span>
+    closed   <span class="token builtin">uint32</span>
+    
+    <span class="token comment">// 元素的类型</span>
+    elemtype <span class="token operator">*</span>_type <span class="token comment">// element type 指向类型元数据 （内存复制、垃圾回收等机制依赖数据的类型信息）</span>
+    
+    <span class="token comment">// send 和 recieve 的索引，用于实现环形数组队列（用于记录 交替读写的下标位置）</span>
+    sendx    <span class="token builtin">uint</span>   <span class="token comment">// send index</span>
+    recvx    <span class="token builtin">uint</span>   <span class="token comment">// receive index</span>
+    
+    <span class="token comment">// recv goroutine 等待队列 想读取数据但又被阻塞住的 goroutine 队列</span>
+    recvq    waitq  <span class="token comment">// list of recv waiters</span>
+    
+    <span class="token comment">// send goroutine 等待队列 想发送数据但又被阻塞住的 goroutine 队列</span>
+    sendq    waitq  <span class="token comment">// list of send waiters</span>
+
+    <span class="token comment">// lock protects all fields in hchan, as well as several</span>
+    <span class="token comment">// fields in sudogs blocked on this channel.</span>
+    <span class="token comment">//</span>
+    <span class="token comment">// Do not change another G's status while holding this lock</span>
+    <span class="token comment">// (in particular, do not ready a G), as this can deadlock</span>
+    <span class="token comment">// with stack shrinking.</span>
+    lock mutex
+<span class="token punctuation">}</span>
+
+<span class="token comment">// 等待队列的链表实现</span>
+<span class="token keyword">type</span> waitq <span class="token keyword">struct</span> <span class="token punctuation">{<!-- --></span>    
+    first <span class="token operator">*</span>sudog       
+    last  <span class="token operator">*</span>sudog       
+<span class="token punctuation">}</span>
+
+<span class="token comment">// in src/runtime/runtime2.go</span>
+<span class="token comment">// 对 G 的封装</span>
+<span class="token keyword">type</span> sudog <span class="token keyword">struct</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token comment">// The following fields are protected by the hchan.lock of the</span>
+    <span class="token comment">// channel this sudog is blocking on. shrinkstack depends on</span>
+    <span class="token comment">// this for sudogs involved in channel ops.</span>
+
+    g          <span class="token operator">*</span>g
+    selectdone <span class="token operator">*</span><span class="token builtin">uint32</span> <span class="token comment">// CAS to 1 to win select race (may point to stack)</span>
+    next       <span class="token operator">*</span>sudog
+    prev       <span class="token operator">*</span>sudog
+    elem       unsafe<span class="token punctuation">.</span>Pointer <span class="token comment">// data element (may point to stack)</span>
+
+    <span class="token comment">// The following fields are never accessed concurrently.</span>
+    <span class="token comment">// For channels, waitlink is only accessed by g.</span>
+    <span class="token comment">// For semaphores, all fields (including the ones above)</span>
+    <span class="token comment">// are only accessed when holding a semaRoot lock.</span>
+
+    acquiretime <span class="token builtin">int64</span>
+    releasetime <span class="token builtin">int64</span>
+    ticket      <span class="token builtin">uint32</span>
+    parent      <span class="token operator">*</span>sudog <span class="token comment">// semaRoot binary tree</span>
+    waitlink    <span class="token operator">*</span>sudog <span class="token comment">// g.waiting list or semaRoot</span>
+    waittail    <span class="token operator">*</span>sudog <span class="token comment">// semaRoot</span>
+    c           <span class="token operator">*</span>hchan <span class="token comment">// channel</span>
+<span class="token punctuation">}</span>
+
+</code></pre> 
+<p><img src="https://images2.imgbox.com/f5/2d/57l3FDqb_o.png" alt="在这里插入图片描述"></p> 
+<p><strong>sendq 和 recvq 存储了当前 Channel 由于缓冲区空间不足而阻塞的 Goroutine 列表，这些等待队列使用双向链表 waitq 表示，链表中所有的元素都是 sudog 结构：</strong></p> 
+<pre><code class="prism language-go"><span class="token keyword">type</span> waitq <span class="token keyword">struct</span> <span class="token punctuation">{<!-- --></span>
+	first <span class="token operator">*</span>sudog
+	last  <span class="token operator">*</span>sudog
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>一个通道发送和接收通道，默认是阻塞的。</p> 
+<blockquote> 
+ <p>如果没有缓冲区，单纯的往其中放入元素立马就会进入阻塞状态，必须有其他的线程从其中取走元素。通俗的讲要有一个线程不断的取这个管道的元素，才能往其中放入元素。它就像一个窄窄的门框，进去就得出来。</p> 
+</blockquote> 
+<blockquote> 
+ <p>而有一个缓冲区的管道想一段地道，放入的元素不会马上进入阻塞状态，只有第二个准备进入而第一个还没有进入的情况下才会阻塞。</p> 
+</blockquote> 
+<pre><code class="prism language-go"><span class="token keyword">package</span> main
+
+<span class="token keyword">import</span> <span class="token punctuation">(</span>
+	<span class="token string">"fmt"</span>
+	<span class="token string">"time"</span>
+<span class="token punctuation">)</span>
+
+<span class="token keyword">func</span> <span class="token function">main</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+
+	intChan <span class="token operator">:=</span> <span class="token function">make</span><span class="token punctuation">(</span><span class="token keyword">chan</span> <span class="token builtin">int</span><span class="token punctuation">,</span> <span class="token number">1</span><span class="token punctuation">)</span>
+	<span class="token keyword">go</span> <span class="token keyword">func</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token keyword">for</span> <span class="token punctuation">{<!-- --></span>
+			v<span class="token punctuation">,</span> ok <span class="token operator">:=</span> <span class="token operator">&lt;-</span>intChan
+			<span class="token keyword">if</span> <span class="token operator">!</span>ok <span class="token punctuation">{<!-- --></span>
+				<span class="token keyword">break</span>
+			<span class="token punctuation">}</span><span class="token keyword">else</span><span class="token punctuation">{<!-- --></span>
+				fmt<span class="token punctuation">.</span><span class="token function">Println</span><span class="token punctuation">(</span>v<span class="token punctuation">)</span>
+			<span class="token punctuation">}</span>
+		<span class="token punctuation">}</span>
+	<span class="token punctuation">}</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+	intChan <span class="token operator">&lt;-</span> <span class="token number">1</span>
+	<span class="token function">close</span><span class="token punctuation">(</span>intChan<span class="token punctuation">)</span>
+	time<span class="token punctuation">.</span><span class="token function">Sleep</span><span class="token punctuation">(</span>time<span class="token punctuation">.</span>Second <span class="token operator">*</span> <span class="token number">1</span><span class="token punctuation">)</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>Channel是异步进行的。</p> 
+<h4><a id="channel_132"></a>channel发送、接收数据</h4> 
+<pre><code class="prism language-go"><span class="token comment">// G1</span>
+<span class="token keyword">func</span> <span class="token function">main</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span> 
+	 <span class="token operator">...</span> 
+	<span class="token keyword">for</span> <span class="token boolean">_</span><span class="token punctuation">,</span> task <span class="token operator">:=</span> <span class="token keyword">range</span> tasks <span class="token punctuation">{<!-- --></span> 
+		taskCh <span class="token operator">&lt;-</span> task
+	<span class="token punctuation">}</span> 
+	<span class="token operator">...</span> 
+<span class="token punctuation">}</span>
+
+<span class="token comment">// G2</span>
+<span class="token keyword">func</span> <span class="token function">worker</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span> 
+	<span class="token keyword">for</span> <span class="token punctuation">{<!-- --></span> 
+		task <span class="token operator">:=</span> <span class="token operator">&lt;-</span>taskCh
+		<span class="token function">process</span><span class="token punctuation">(</span>task<span class="token punctuation">)</span> 
+		<span class="token punctuation">}</span> 
+<span class="token punctuation">}</span>
+</code></pre> 
+<h4><a id="_channel_154"></a>有缓冲 channel</h4> 
+<h5><a id="channel__155"></a>channel 先写再读</h5> 
+<p>这一次会优先判断缓冲数据区域是否已满，如果未满，则将数据保存在缓冲数据区域，即环形队列里。</p> 
+<p><strong>如果已满，G1 暂时被挂在了 recvq ，让G1调gopark()休眠起来, G1与M解绑。</strong></p> 
+<p><img src="https://images2.imgbox.com/cc/4d/aeLKBXjH_o.jpg" alt="请添加图片描述"></p> 
+<p><strong>当 G2 要读取数据时，会优先从缓冲数据区域去读取，并且在读取完后，会检查 sendq 队列，如果 goroutine 有等待队列，则会将它上面的 data 补充到缓冲数据区域，并且也对其设置 goready 函数。同时设置 G1 goready 函数，G1状态从waitting改为runnable,调度到本地队列，等待下次调度运行。</strong></p> 
+<p><img src="https://images2.imgbox.com/46/cf/Uudnr2OP_o.jpg" alt="请添加图片描述"></p> 
+<p><img src="https://images2.imgbox.com/8e/ad/s9SaQvqd_o.png" alt="在这里插入图片描述"></p> 
+<h5><a id="channel_when_the_receiver_comes_first_171"></a>channel 先读再写(when the receiver comes first)</h5> 
+<p>G2 先读，但没数据，暂时被挂在了 recvq 队列，然后休眠起来。</p> 
+<p>G1 在写数据时，发现 recvq 队列有 goroutine 存在，于是直接将数据发送给 G2。同时设置 G2 goready 函数，等待下次调度运行。</p> 
+<p>G2因为有runnext指针，因为亲和性的原因优先级较高，会把G2调度到原来的P local quene中（p.runext指针）</p> 
+<p><strong>所以说go语言的goroutine调度是协作式的，你阻塞靠别人唤醒， 因为由runtime实现</strong></p> 
+<p><img src="https://images2.imgbox.com/7a/68/PAiXp74A_o.jpg" alt="请添加图片描述"></p> 
+<p><strong>On resuming, G2 does not need to acquire channel lock and manipulate the buffer. Also, one fewer memory copy.</strong></p> 
+<p><strong>优点：不重复入队出队，没有锁的开销, 减少一次内存拷贝开销，效率很高</strong></p> 
+<h4><a id="channel_194"></a>无缓冲channel</h4> 
+<p>跟有缓冲情况类似</p> 
+<h4><a id="channel3_200"></a>channel存在3种状态：</h4> 
+<ul><li>nil，未初始化的状态，只进行了声明，或者手动赋值为nil</li><li>active，正常的channel，可读或者可写</li><li>closed，已关闭，千万不要误认为关闭channel后，channel的值是nil</li></ul>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/b39a64daf235b3b05c5e8e088dad3d26/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">【数据分享】1929-2023年全球站点的逐日平均气温数据（Shp\Excel\免费获取）</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/4463d81d40972de0ae5a0b64b4998442/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">PhpStorm调试docker容器中的php项目</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

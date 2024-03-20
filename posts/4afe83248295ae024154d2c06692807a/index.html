@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>TextCNN - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="TextCNN" />
+<meta property="og:description" content="TextCNN 最早由paper《Convolutional Neural Networks for Sentence Classification》提出，将 CNN 应用到 NLP 领域，论文本身比较容易理解，下图即可理解模型结构：
+其实单层CNN加个全连接层辣
+基本流程：
+输入数据 embedding卷积核尺寸 = 单词 embedding 后的维度 * 每次考虑单词的数量，论文中提出的三种feature size的卷积核对应了3-gram，4-gram和5-gram。用不同尺寸（3， 4， 5）的卷积核去提取特征，进行最大池化。将不同尺寸的卷积核提取的特征拼接在一起作为输入到softmax中的特征向量。 代码实现 #%% import torch import numpy as np import torch.nn as nn import torch.optim as optim import torch.utils.data as Data import torch.nn.functional as F dtype = torch.FloatTensor device = torch.device(&#34;cuda&#34; if torch.cuda.is_available() else &#34;cpu&#34;) #%% # 3 words sentences (=sequence_length is 3) sentences = [&#34;i love you&#34;" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/4afe83248295ae024154d2c06692807a/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2020-06-26T14:18:40+08:00" />
+<meta property="article:modified_time" content="2020-06-26T14:18:40+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">TextCNN</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <div class="entry-content l-h-2x" style="font-size: 16px;"> 
+ <p>TextCNN 最早由paper《<span class="external-link"><a href="https://arxiv.org/abs/1408.5882" rel="nofollow noopener noreferrer" target="_blank">Convolutional Neural Networks for Sentence Classification<i></i></a></span>》提出，将 CNN 应用到 NLP 领域，论文本身比较容易理解，下图即可理解模型结构：<br><span class="external-link"><a href="https://imgchr.com/i/NsNBxe" rel="nofollow noopener noreferrer" target="_blank"></a></span></p> 
+ <div style="text-align: center;"> 
+  <a href="https://imgchr.com/i/NsNBxe" rel="nofollow noopener noreferrer" target="_blank"><img src="https://images2.imgbox.com/17/eb/rYmCvIZT_o.png" alt="Figure 1: Model architecture with two channels for an example sentence." title="Figure 1: Model architecture with two channels for an example sentence."></a> 
+ </div> 
+ <a href="https://imgchr.com/i/NsNBxe" rel="nofollow noopener noreferrer" target="_blank"><i></i></a> 
+ <p></p> 
+ <p><del>其实单层CNN加个全连接层辣</del></p> 
+ <p>基本流程：</p> 
+ <ol><li>输入数据 embedding</li><li>卷积核尺寸 = 单词 embedding 后的维度 * 每次考虑单词的数量，论文中提出的三种feature size的卷积核对应了3-gram，4-gram和5-gram。</li><li>用不同尺寸（3， 4， 5）的卷积核去提取特征，进行<strong>最大池化</strong>。</li><li>将不同尺寸的卷积核提取的特征<strong>拼接</strong>在一起作为输入到softmax中的特征向量。</li></ol> 
+ <h3>代码实现</h3> 
+ <pre class="has"><code class="lang-Python">#%%
+
+import torch
+import numpy as np
+import torch.nn as nn
+import torch.optim as optim
+import torch.utils.data as Data
+import torch.nn.functional as F
+dtype = torch.FloatTensor
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+#%%
+
+# 3 words sentences (=sequence_length is 3)
+sentences = ["i love you", "he loves me", "she likes baseball", "i hate you", "sorry for that", "this is awful"]
+labels = [1, 1, 1, 0, 0, 0]  # 1 is good, 0 is not good.
+
+# TextCNN Parameter
+embedding_size = 2
+sequence_length = len(sentences[0]) # every sentences contains sequence_length(=3) words
+num_classes = len(set(labels))  # num_classes=2
+batch_size = 3
+
+word_list = " ".join(sentences).split()
+vocab = list(set(word_list))
+word2idx = {w: i for i, w in enumerate(vocab)}
+vocab_size = len(vocab)
+
+#%%
+
+def make_data(sentences, labels):
+  inputs = []
+  for sen in sentences:
+      inputs.append([word2idx[n] for n in sen.split()])
+
+  targets = []
+  for out in labels:
+      targets.append(out)
+  return inputs, targets
+
+input_batch, target_batch = make_data(sentences, labels)
+input_batch, target_batch = torch.LongTensor(input_batch), torch.LongTensor(target_batch)
+
+dataset = Data.TensorDataset(input_batch, target_batch)
+loader = Data.DataLoader(dataset, batch_size, True)
+
+#%%
+
+class TextCNN(nn.Module):
+    def __init__(self):
+        super(TextCNN, self).__init__()
+        self.W = nn.Embedding(vocab_size, embedding_size)
+        output_channel = 3
+        self.conv = nn.Sequential(
+            nn.Conv2d(1, output_channel, (2, embedding_size)),
+            nn.ReLU(),
+            nn.MaxPool2d((2, 1)),
+        )
+        self.fc = nn.Linear(output_channel, num_classes)
+
+    def forward(self, X):
+      '''
+      X: [batch_size, sequence_length]
+      '''
+      batch_size = X.shape[0]
+      embedding_X = self.W(X) # [batch_size, sequence_length, embedding_size]
+      embedding_X = embedding_X.unsqueeze(1) # add channel(=1) [batch, channel(=1), sequence_length, embedding_size]
+      conved = self.conv(embedding_X) # [batch_size, output_channel*1*1]
+      flatten = conved.view(batch_size, -1)
+      output = self.fc(flatten)
+      return output
+
+#%%
+
+model = TextCNN().to(device)
+criterion = nn.CrossEntropyLoss().to(device)
+optimizer = optim.Adam(model.parameters(), lr=1e-3)
+
+# Training
+for epoch in range(5000):
+  for batch_x, batch_y in loader:
+    batch_x, batch_y = batch_x.to(device), batch_y.to(device)
+    pred = model(batch_x)
+    loss = criterion(pred, batch_y)
+    if (epoch + 1) % 1000 == 0:
+        print('Epoch:', '%04d' % (epoch + 1), 'loss =', '{:.6f}'.format(loss))
+
+    optimizer.zero_grad()
+    loss.backward()
+    optimizer.step()
+
+#%%
+
+# Test
+test_text = 'i hate baseball'
+tests = [[word2idx[n] for n in test_text.split()]]
+test_batch = torch.LongTensor(tests).to(device)
+# Predict
+model = model.eval()
+predict = model(test_batch).data.max(1, keepdim=True)[1]
+if predict[0][0] == 0:
+    print(test_text,"is Bad Mean...")
+else:
+    print(test_text,"is Good Mean!!")</code></pre> 
+</div>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/56c056a373c2c0ed0e363c77436ae767/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">配置LACP模式</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/a0dd4ad0a6ec415c631603d37a2814ea/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">AI产品经理，如何面对数据挖掘？</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>【超详细】初探FME--获取等时圈 - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="【超详细】初探FME--获取等时圈" />
+<meta property="og:description" content="在规划分析过程中，往往会涉及等时圈的概念。什么是等时圈呢？小编帮你百度过了，网上的说法是：等时圈是指从某点出发，以某种交通方式在特定时间内能到达的距离覆盖的范围。比如我们在规划设计中接触到的15分钟生活圈就是等时圈的一个具象应用。说到这里有朋友就疑惑了，我们怎么去获取等时圈呢？获取等时圈的方法有很多种，最常见的就是以下几种：
+（一）无中生有，自给自足。
+自给自足，很明显就是自己生成。当然，巧妇难为无米之炊，因此我们必须要准备一些 基础数据，包括道路矢量数据以及我们的设施点，而煮饭的工具小编推荐用ArcGIS网络分析工具中的服务区分析。具体步骤可以参考这一篇文章（设施服务区分析——5分钟服务范围）。但这种方法对数据基础的要求很高，路网构建得越接近现实，分析结果越精确，但在实际过程中很难保证我们的路网能百分百模拟真实路况，因此我们需要借助大数据平台的算法，来尽可能获取最接近实际的结果，例如百度地图、高德地图、mapbox等在线地图平台。
+（二）站在巨人的肩膀上，拿来吧你。
+今天小编主要介绍一下用FME来获取高德地图等时圈的思路和具体步骤，主要参考这一篇博客https://blog.csdn.net/fmechina/article/details/105566627，这篇博客的思路非常清晰，但是很多细节都没有展现出来，本期小编就帮大家翻译一下，让这篇推文变得更加的通俗易懂。悄悄告诉你，后台回复“等时圈”获取模板。
+进入主题
+【整体思路】
+1.构建起点坐标对并创建用户参数；
+2.构建终点坐标对；
+3.发送调用服务请求并解析JSON
+4.创建等时圈并导出为shp 【具体步骤】
+接下来我们以长沙火车站15分钟等时圈为例，来具体认识一下FME在获取网络数据中的魅力。本篇教程主要针对的是像我一样的小白，所以我会在流程中先讲解每一步的思路，再一一介绍我们用到的转换器，因此篇幅稍微长一点。
+1
+构建起点坐标和创建用户参数
+首先新建几个必要的用户参数。用户参数（user parameters）是FME为用户提供的参数，是为最终用户使用工作空间提供的输入接口。通俗一点讲，这些参数是贯穿整个程序的，因此我们提前准备好。我们只需右键导航窗口（Navigator）下的用户参数（user parameters），在弹出窗口中填入参数名称、别名、勾选必填，设置默认值为500（也可不设，不设的情况下在运行程序时会提醒设置）。依次添加OriginLonLat（起点经纬度）、Radius（预估半径）、Grid（网格密度）、Amap_Key（高德密钥）、Transportation（出行方案）等必填参数。其中，Amap_Key（高德密钥）需要去高德地图API控制台申请。
+其次在高德地图坐标拾取器https://lbs.amap.com/tools/picker中搜索我们的分析对象坐标，比如长沙火车站，将获取到的坐标复制到OriginLonLat（起点经纬度）参数中去。
+【Creator】用提供的参数来创建要素，并将这些要素发送到工作空间中进行处理。
+【ParameterFetcher】给要素添加一个属性并用先前发布的参数赋值。这里我们主要是为了获取用户参数到要素中。
+【AttributeSplitter】把选择的属性分离成一个属性列表。列表中的每一项都包含一个从列表中分离出的单个令牌。例如，你可以用这个转换器，把一个含有分隔逗号列表的属性分离成其组件。这一步主要是为了将起始点坐标对隔开存入列表中备用。
+【VertexCreator】将坐标附加到空（Null）、点、文本、线和弧等几何对象上，或者用点对象替换现有图形对象。这一步就是为了创建起点要素。
+2
+构建终点坐标对
+构建终点坐标对的思路是基于我们的起点创建一个大致的缓冲区作为预估范围，缓冲区半径是根据我们分析需求来确定（比如我们想要获取15分钟骑行等时圈，则根据15分钟骑行大约3000米的标准来确定阈值），其次是在这个缓冲区范围内创建一个网格，提取其网格中心点作为出行的终点，网格的大小决定了等时圈的精度，但受调用次数的限制，我们退而求其次尽量取合适的精度。
+【EsriReprojector】使用ESRI重投影库，把要素的坐标系重投影到另一个坐标系统。这里是因为后面创建缓冲区和网格的时候需要在平面坐标系下进行。
+【Bufferer】在输入几何对象周围或内部创建指定大小的缓冲区。
+【2DGridCreator转换器】用一个由二维点或者矩形形成的网格取代原来的输入要素，这些网格有指定的间距且覆盖所有进入此转换器的要素的整体外接区域。这里我们主要用于创建网格。
+【SpatialFilter】根据空间关系过滤点、线、面或文字等要素。每个输入候选（CANDIDATE）要素与所有过滤（FILTER）要素进行比较，基于给定的空间测试条件来判断是否满足。这里主要用于提取缓冲区范围内的网格，可大幅减少后面调用高德服务的次数。
+这一步将投影转换回WGS84是为了提取十进制度坐标值（高德地图采用的是火星坐标，火星坐标系是在GSP原始定位数据的基础上经过加密算法加密之后的定位数据所属坐标系，GSP原始定位数据所属坐标系叫WGS－84坐标系，WGS－84坐标系是美国国防制图局于1984建立的世界大地坐标系(World Geodetic System)的简称，出于安全考虑，我国国家测绘局规定国内必须对原始GSP数据进行加密，加密之后的坐标系就是GCJ-02坐标系，又叫火星坐标系。）
+【CenterPointReplacer】用几何要素的中心点替换几何要素，该点或者位于要素范围的中心，或者位于要素的质心。这一步是为了生成网格中心点，将其作为路径的终点。
+【CoordinateRounder】将要素坐标舍入到指定的小数位数。由于舍入而成为重复的任何连续点都将通过删除多余的点来细化。这一步是为了满足高德地图调用服务的条件（经纬度小数点不超过6位）。
+【CoordinateExtractor】按指定的索引检索坐标点XYZ值存储到属性字段中。这里是为了将终点的XY值提取到属性表中。到此完成终点构建。
+3
+构建URL、调用服务并解析结果
+完成起点和终点的构建后，就可以开始正式请求高德地图的服务了，模板如下。
+【AttributeCreator】给要素添加若干属性，并通过常量、属性值、表达式为属性赋值。属性值可以参考相邻的要素。这里我们主要用于构建URL（URL：统一资源定位符是WWW的统一资源定位标志，就是指网络地址）。
+参照高德API调用示例将其属性值设置为：
+“@Value(_transportation)origin=@Value(_OriginLonLat)&amp;destination=@Value(destination{0}.x),@Value(destination{0}.y)&amp;key=@Value(_Amap_Key)”。
+【HTTPCaller】通过HTTP或HTTPS访问URL，执行一个GET，PUT，POST，DELETE或HEAD操作。通过这一步去调用服务。请求URL设置为：
+“https://restapi.amap.com/v4/direction/@Value(_URL)”，结果保留至属性即可。
+上一步跑完后，如果成功的返回的值就会保存在“_response_body”字段中，这时我们需要对其进行解析，用到【JSONFragmenter】转换器，提取部分JSON格式化文本到新的FME的要素中。从示例中可以分析出，我们需要的时间藏在了“data”下面的“paths”中，因此，“JSON Query”的值设置为“json[&#34;data&#34;][&#34;paths&#34;][*][&#34;duration&#34;]”，运行后，“_response_body”的值直接会被替换为&#34;duration&#34;（总用时）。到此就完成了数据的获取。
+【AttributeRemover】从要素中删除选定的属性和列表属性。这一步是为了删除冗余的字段，提高运行速度。
+4
+构建等时圈并导出shp
+完成数据获取后，我们得到了起点到每个终点对应的出行时间，但网格点是离散的，因此我们需要将其模拟成连续的表面，再来提取等值线作为等时圈，这就跟高程点生成等高线一个道理，模板如下：
+【3DForcer】通过给每个坐标添加z值，把二维数据转换为三维数据。这里是为了将“duration”赋值给网格点的z值，使其具有三维属性。
+这一步是为了将其投影至平面坐标系，方便模拟运算。
+【SurfaceModeller】基于输入的点和断裂线构建Delaunay三角格网。当需要同一模型多个表达形式时这个转换器很有效。这里就是生成连续表面的过程，有几种输出结果，我们需要其中的“contour”，也就是等值线。
+【AreaBuilder】获取一系列拓扑上连接的线，当线形成首尾闭合时创建拓扑正确的多边形要素。这一步是为了将封闭的等值线筛选出来并转换成面要素。到这一步我们已经得到了预估范围内的所有等时圈。
+【Tester】执行要素的一个或多个测试条件，根据测试的结果决定要素的输出。判断可由任何FME允许的操作符组成。这一步是为了筛选出我们所需要的等时圈，比如15分钟（900秒），我们只需筛选出“_elevation”小于等于900的即可。
+最后通过写模块将结果输出为shp，大功告成，打完收工
+最后看一看效果，可以直观地了解火车站的15分钟骑行圈。
+再次悄悄告诉你，后台回复“等时圈”可以获取模板
+点个在看你最好看
+另外我悄悄地创建了一个知识星球供大家交流学习，本知识星球致力于分享GIS软件知识干货，并结合实际案例，让小白上手快。日常分享规划知识，并结合GIS在规划场景中的应用案例，不管是规划中的GISER，还是GIS路上的规划人，永远不迷路。
+在这里你将有3大收获：
+1.系统全面地了解和学习GIS软件操作及应用； 2.可个性化定制专属服务; 3.与广大同行朋友进行深入交流，交换知识。
+还有限量大额优惠券限时供应，冲冲冲！
+更有来自不同领域的嘉宾为您现场解答，还在等什么，快加入进来和大佬们一起探索吧！！！" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/b068522ce2f3ee45fc3a1326b2367d8d/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-04-21T10:24:24+08:00" />
+<meta property="article:modified_time" content="2023-04-21T10:24:24+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">【超详细】初探FME--获取等时圈</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <div id="js_content"> 
+ <p><img alt="91b1ac5c706e13f71272499d8eb0e146.png" src="https://images2.imgbox.com/1e/2a/Oc0udcOy_o.png"></p> 
+ <p><strong>在规划分析过程中，往往会涉及等时圈的概念</strong><strong>。什么是等时圈呢？</strong><strong>小编帮你百度过了，网上的说法是：等时圈是指从某点出发，以某种交通方式在特定时间内能到达的距离覆盖的范围。比如我们在规划设计中接触到的15分钟生活圈就是等时圈的一个具象应用。说到这里有朋友就疑惑了，我们怎么去获取等时圈呢？获取等时圈的方法有很多种，最常见的就是以下几种：</strong></p> 
+ <p style="text-align:left;"><strong>（一）无中生有，自给自足。</strong></p> 
+ <p style="text-align:left;">自给自足，很明显就是自己生成。当然，巧妇难为无米之炊，因此我们必须要准备一些 基础数据，包括道路矢量数据以及我们的设施点，而煮饭的工具小编推荐用ArcGIS网络分析工具中的服务区分析。具体步骤可以参考这一篇文章（<a href="" rel="nofollow">设施服务区分析——5分钟服务范围</a>）。但这种方法对数据基础的要求很高，路网构建得越接近现实，分析结果越精确，但在实际过程中很难保证我们的路网能百分百模拟真实路况，因此我们需要借助大数据平台的算法，来尽可能获取最接近实际的结果，例如百度地图、高德地图、mapbox等在线地图平台。</p> 
+ <p style="text-align:left;"><strong>（二）站在巨人的肩膀上，拿来吧你。</strong></p> 
+ <p style="text-align:left;">今天小编主要介绍一下用FME来获取高德地图等时圈的思路和具体步骤，主要参考这一篇博客https://blog.csdn.net/fmechina/article/details/105566627，这篇博客的思路非常清晰，但是很多细节都没有展现出来，本期小编就帮大家翻译一下，让这篇推文变得更加的通俗易懂。悄悄告诉你，后台回复“<strong>等时圈</strong>”获取模板。</p> 
+ <p></p> 
+ <p style="text-align:center;"><strong>进入主题</strong></p> 
+ <blockquote> 
+  <p><strong>【整体思路】</strong></p> 
+  <p style="text-align:left;">1.构建起点坐标对并创建用户参数；</p> 
+  <p style="text-align:left;">2.构建终点坐标对；</p> 
+  <p style="text-align:left;">3.发送调用服务请求并解析JSON</p> 
+  <p style="text-align:left;">4.创建等时圈并导出为shp       </p> 
+ </blockquote> 
+ <p style="text-align:left;"><strong>【具体步骤】</strong></p> 
+ <p style="text-align:left;">接下来我们以长沙火车站15分钟等时圈为例，来具体认识一下FME在获取网络数据中的魅力。本篇教程主要针对的是像我一样的小白，所以我会在流程中先讲解每一步的思路，再一一介绍我们用到的转换器，因此篇幅稍微长一点。</p> 
+ <p><strong>1</strong></p> 
+ <p><strong>构建起点坐标和创建用户参数</strong></p> 
+ <p style="text-align:center;"><img alt="6a86dc114a228aef968751e8e827299a.png" src="https://images2.imgbox.com/e6/c8/cIaSaMyQ_o.png"></p> 
+ <p style="text-align:justify;"><strong>首先新建几个必要的用户参数。</strong>用户参数（user parameters）是FME为用户提供的参数，是为最终用户使用工作空间提供的输入接口。通俗一点讲，这些参数是贯穿整个程序的，因此我们提前准备好。我们只需右键导航窗口（Navigator）下的用户参数（user parameters），在弹出窗口中填入参数名称、别名、勾选必填，设置默认值为500（也可不设，不设的情况下在运行程序时会提醒设置）。依次添加OriginLonLat（起点经纬度）、Radius（预估半径）、Grid（网格密度）、Amap_Key（高德密钥）、Transportation（出行方案）等必填参数。其中，Amap_Key（高德密钥）需要去高德地图API控制台申请。</p> 
+ <p style="text-align:center;"><img alt="65bea3ae1939ee073a1924abe4ed3d67.png" src="https://images2.imgbox.com/ac/d4/yjVAtdd5_o.png"></p> 
+ <p style="text-align:center;"><img alt="be65e8a04da697100a8becec3b5ee5d6.png" src="https://images2.imgbox.com/8a/37/ozl7s5yp_o.png"></p> 
+ <p style="text-align:left;">其次在高德地图坐标拾取器https://lbs.amap.com/tools/picker中搜索我们的分析对象坐标，比如长沙火车站，将获取到的坐标复制到OriginLonLat（起点经纬度）参数中去。</p> 
+ <p style="text-align:center;"><img alt="73b6c065c957836de08045983693eb55.png" src="https://images2.imgbox.com/92/c2/dCtpexWi_o.png"></p> 
+ <p style="text-align:left;"><strong>【Creator】</strong>用提供的参数来创建要素，并将这些要素发送到工作空间中进行处理。</p> 
+ <p style="text-align:center;"><img alt="c419794bd39a4731154bc9effc6466a2.png" src="https://images2.imgbox.com/ca/48/9183Zezg_o.png"></p> 
+ <p style="text-align:left;"><strong>【ParameterFetcher】</strong>给要素添加一个属性并用先前发布的参数赋值。这里我们主要是为了获取用户参数到要素中。</p> 
+ <p style="text-align:center;"><img alt="7cb16e26fa392d03ff6a9f5c5ca76ecb.png" src="https://images2.imgbox.com/0b/32/dkhStcbp_o.png"></p> 
+ <p style="text-align:left;"><strong>【AttributeSplitter】</strong>把选择的属性分离成一个属性列表。列表中的每一项都包含一个从列表中分离出的单个令牌。例如，你可以用这个转换器，把一个含有分隔逗号列表的属性分离成其组件。这一步主要是为了将起始点坐标对隔开存入列表中备用。</p> 
+ <p style="text-align:center;"><img alt="46f2bbbc21c62130924f672e07638eca.png" src="https://images2.imgbox.com/d9/e5/IED0tx0S_o.png"></p> 
+ <p style="text-align:left;"><strong>【VertexCreator】</strong>将坐标附加到空（Null）、点、文本、线和弧等几何对象上，或者用点对象替换现有图形对象。这一步就是为了创建起点要素。</p> 
+ <p style="text-align:center;"><img alt="985cf37b5909b446eae5470133fe248e.png" src="https://images2.imgbox.com/ad/8b/yEJ5bEOZ_o.png"></p> 
+ <p><strong>2</strong></p> 
+ <p><strong>构建终点坐标对</strong></p> 
+ <p style="text-align:left;"><strong>构建终点坐标对的思路</strong>是基于我们的起点创建一个大致的缓冲区作为预估范围，缓冲区半径是根据我们分析需求来确定（比如我们想要获取15分钟骑行等时圈，则根据15分钟骑行大约3000米的标准来确定阈值），其次是在这个缓冲区范围内创建一个网格，提取其网格中心点作为出行的终点，网格的大小决定了等时圈的精度，但受调用次数的限制，我们退而求其次尽量取合适的精度。</p> 
+ <p style="text-align:center;"><img alt="4e3fe729b8c6c2a1ced8a7fbb865cd01.png" src="https://images2.imgbox.com/d5/bc/dEFcq5hl_o.png"></p> 
+ <p style="text-align:left;"><strong>【EsriReprojector】</strong>使用ESRI重投影库，把要素的坐标系重投影到另一个坐标系统。这里是因为后面创建缓冲区和网格的时候需要在平面坐标系下进行。</p> 
+ <p style="text-align:center;"><img alt="9f532e37353b9c49ffdddcda80ed499e.png" src="https://images2.imgbox.com/ce/5e/jWr7H9rC_o.png"></p> 
+ <p style="text-align:left;"><strong>【Bufferer】</strong>在输入几何对象周围或内部创建指定大小的缓冲区。</p> 
+ <p style="text-align:center;"><img alt="3a0219fab74dced3d49905ea5ffaac9e.png" src="https://images2.imgbox.com/fd/0e/eCHVTkQe_o.png"></p> 
+ <p style="text-align:left;"><strong>【2DGridCreator转换器】</strong>用一个由二维点或者矩形形成的网格取代原来的输入要素，这些网格有指定的间距且覆盖所有进入此转换器的要素的整体外接区域。这里我们主要用于创建网格。</p> 
+ <p style="text-align:center;"><img alt="ec71cfa737e86d1e9eb32d813e8d8767.png" src="https://images2.imgbox.com/2e/58/Q3k6u2Nd_o.png"></p> 
+ <p style="text-align:left;"><strong>【SpatialFilter】</strong>根据空间关系过滤点、线、面或文字等要素。每个输入候选（CANDIDATE）要素与所有过滤（FILTER）要素进行比较，基于给定的空间测试条件来判断是否满足。这里主要用于提取缓冲区范围内的网格，可大幅减少后面调用高德服务的次数。</p> 
+ <p style="text-align:center;"><img alt="e2a272f2027ce0e6cf96ac35d71c35a8.png" src="https://images2.imgbox.com/18/7e/TTYTRYyV_o.png"></p> 
+ <p style="text-align:left;">这一步将投影转换回WGS84是为了提取十进制度坐标值（高德地图采用的是火星坐标，火星坐标系是在GSP原始定位数据的基础上经过加密算法加密之后的定位数据所属坐标系，GSP原始定位数据所属坐标系叫WGS－84坐标系，WGS－84坐标系是美国国防制图局于1984建立的世界大地坐标系(World Geodetic System)的简称，出于安全考虑，我国国家测绘局规定国内必须对原始GSP数据进行加密，加密之后的坐标系就是GCJ-02坐标系，又叫火星坐标系。）</p> 
+ <p style="text-align:center;"><img alt="045ee0b09f4ee2caefbcfee943b4e9d9.png" src="https://images2.imgbox.com/70/82/yLFuL1Qu_o.png"></p> 
+ <p style="text-align:left;"><strong>【CenterPointReplacer】</strong>用几何要素的中心点替换几何要素，该点或者位于要素范围的中心，或者位于要素的质心。这一步是为了生成网格中心点，将其作为路径的终点。</p> 
+ <p style="text-align:center;"><img alt="4c8636560eadd9686b47a18010781832.png" src="https://images2.imgbox.com/82/6b/uUu68BGQ_o.png"></p> 
+ <p style="text-align:justify;"><strong>【CoordinateRounder】</strong>将要素坐标舍入到指定的小数位数。由于舍入而成为重复的任何连续点都将通过删除多余的点来细化。这一步是为了满足高德地图调用服务的条件（经纬度小数点不超过6位）。</p> 
+ <p style="text-align:center;"><img alt="a106f2a0afbe19685fb648527b75b7f3.png" src="https://images2.imgbox.com/f0/4b/VOTt7PSu_o.png"></p> 
+ <p style="text-align:left;"><strong>【CoordinateExtractor】</strong>按指定的索引检索坐标点XYZ值存储到属性字段中。这里是为了将终点的XY值提取到属性表中。到此完成终点构建。</p> 
+ <p style="text-align:center;"><img alt="13b8eca8663383d35ca421a894f0be61.png" src="https://images2.imgbox.com/93/7e/P64VzNwG_o.png"></p> 
+ <p><strong>3</strong></p> 
+ <p><strong>构建URL、调用服务并解析结果</strong></p> 
+ <p style="text-align:left;">完成起点和终点的构建后，就可以开始正式请求高德地图的服务了，模板如下。</p> 
+ <p style="text-align:center;"><img alt="0cf230a1bcb003d21df6656805059407.png" src="https://images2.imgbox.com/c9/0b/bW2wgeEz_o.png"></p> 
+ <p style="text-align:left;"><strong>【AttributeCreator】</strong>给要素添加若干属性，并通过常量、属性值、表达式为属性赋值。属性值可以参考相邻的要素。这里我们主要用于构建URL（URL：统一资源定位符是WWW的统一资源定位标志，就是指网络地址）。</p> 
+ <p style="text-align:center;"><img alt="054766d75d5cb65acff603c67c51f34d.png" src="https://images2.imgbox.com/e0/0b/2Dk1bINb_o.png"></p> 
+ <p style="text-align:left;">参照高德API调用示例将其属性值设置为：</p> 
+ <p style="text-align:left;">“@Value(_transportation)origin=@Value(_OriginLonLat)&amp;destination=@Value(destination{0}.x),@Value(destination{0}.y)&amp;key=@Value(_Amap_Key)”。</p> 
+ <p style="text-align:center;"><img alt="57c457e5a7c18613a955345d0f2a3661.png" src="https://images2.imgbox.com/60/d3/Ckh0PscT_o.png"></p> 
+ <p style="text-align:left;"><strong>【HTTPCaller】</strong>通过HTTP或HTTPS访问URL，执行一个GET，PUT，POST，DELETE或HEAD操作。通过这一步去调用服务。请求URL设置为：</p> 
+ <p style="text-align:left;">“https://restapi.amap.com/v4/direction/@Value(_URL)”，结果保留至属性即可。</p> 
+ <p style="text-align:center;"><img alt="52b8db810d2ee278e1506d084c530828.png" src="https://images2.imgbox.com/e4/1b/6dj26OiO_o.png"></p> 
+ <p style="text-align:center;"><img alt="b73c08c53053cd96532c85ac979d58de.png" src="https://images2.imgbox.com/a2/7f/KbDKAzv3_o.png"></p> 
+ <p style="text-align:left;">上一步跑完后，如果成功的返回的值就会保存在“_response_body”字段中，这时我们需要对其进行解析，用到【JSONFragmenter】转换器，提取部分JSON格式化文本到新的FME的要素中。从示例中可以分析出，我们需要的时间藏在了“data”下面的“paths”中，因此，“JSON Query”的值设置为“json["data"]["paths"][*]["duration"]”，运行后，“_response_body”的值直接会被替换为"duration"（总用时）。到此就完成了数据的获取。</p> 
+ <p style="text-align:center;"><img alt="47e9262a257190772b1f56e9ece50e31.png" src="https://images2.imgbox.com/05/78/7A0cxWAR_o.png"></p> 
+ <p style="text-align:center;"><img alt="c62c64dd634e9914d668348eca5850a2.png" src="https://images2.imgbox.com/37/0e/p1eMepfc_o.png"></p> 
+ <p style="text-align:left;"><strong>【AttributeRemover】</strong>从要素中删除选定的属性和列表属性。这一步是为了删除冗余的字段，提高运行速度。</p> 
+ <p style="text-align:center;"><img alt="ebf2b911652ab6148323d56e1bb522e2.png" src="https://images2.imgbox.com/59/cb/LFRCUAbk_o.png"></p> 
+ <p><strong>4</strong></p> 
+ <p><strong>构建等时圈并导出shp</strong></p> 
+ <p style="text-align:left;">完成数据获取后，我们得到了起点到每个终点对应的出行时间，但网格点是离散的，因此我们需要将其模拟成连续的表面，再来提取等值线作为等时圈，这就跟高程点生成等高线一个道理，模板如下：</p> 
+ <p style="text-align:center;"><img alt="08586db139b143811b83ef6f790564e0.png" src="https://images2.imgbox.com/22/6e/tQi6X0RA_o.png"></p> 
+ <p style="text-align:left;"><strong>【3DForcer】</strong>通过给每个坐标添加z值，把二维数据转换为三维数据。这里是为了将“duration”赋值给网格点的z值，使其具有三维属性。</p> 
+ <p style="text-align:center;"><img alt="9b0c91653850b363a692d09d70973c56.png" src="https://images2.imgbox.com/f9/aa/JyNEr1kq_o.png"></p> 
+ <p style="text-align:left;">这一步是为了将其投影至平面坐标系，方便模拟运算。</p> 
+ <p style="text-align:center;"><img alt="72263f00ee045724d69be42fdd95881a.png" src="https://images2.imgbox.com/7f/83/UlTAcCoW_o.png"></p> 
+ <p style="text-align:justify;"><strong>【SurfaceModeller】</strong>基于输入的点和断裂线构建Delaunay三角格网。当需要同一模型多个表达形式时这个转换器很有效。这里就是生成连续表面的过程，有几种输出结果，我们需要其中的“contour”，也就是等值线。</p> 
+ <p style="text-align:center;"><img alt="a04861cc220d39a5f13cbc4dfb1c64d6.png" src="https://images2.imgbox.com/1a/fa/5zftEK8h_o.png"></p> 
+ <p style="text-align:justify;"><strong>【AreaBuilder】</strong>获取一系列拓扑上连接的线，当线形成首尾闭合时创建拓扑正确的多边形要素。这一步是为了将封闭的等值线筛选出来并转换成面要素。到这一步我们已经得到了预估范围内的所有等时圈。</p> 
+ <p style="text-align:center;"><img alt="71f21f824316d0da9f50fde0362e5070.png" src="https://images2.imgbox.com/1a/8d/gWCs2vIQ_o.png"></p> 
+ <p style="text-align:left;"><strong>【Tester】</strong>执行要素的一个或多个测试条件，根据测试的结果决定要素的输出。判断可由任何FME允许的操作符组成。这一步是为了筛选出我们所需要的等时圈，比如15分钟（900秒），我们只需筛选出“_elevation”小于等于900的即可。</p> 
+ <p style="text-align:center;"><img alt="a93d43a2fddf5a8a8c31c10540285bab.png" src="https://images2.imgbox.com/b3/05/2dXMMjCu_o.png"></p> 
+ <p style="text-align:left;">最后通过写模块将结果输出为shp，大功告成，打完收工<img alt="d653558ecde81b8d910ec35460fa2e38.png" height="15" src="https://images2.imgbox.com/e6/13/iuvYNGCo_o.png" width="15"><img alt="4c984b43c5ad753c80d0cbc5bf3b66cd.png" height="16" src="https://images2.imgbox.com/e0/8a/lpDu9PBo_o.png" width="16"><img alt="6a18810f944384ae3709146191cd3801.png" height="16" src="https://images2.imgbox.com/6f/83/qlCac7C8_o.png" width="16"></p> 
+ <p style="text-align:center;"><img alt="5c63e92e116d96a83b635150d6eb8e0b.png" src="https://images2.imgbox.com/08/18/o1ja6Mk8_o.png"></p> 
+ <p style="text-align:left;">最后看一看效果，可以直观地了解火车站的15分钟骑行圈。</p> 
+ <p style="text-align:center;"><img alt="8c8eda9aad57ff5ab481615546cbec41.png" src="https://images2.imgbox.com/65/6a/rRsJXtad_o.png"></p> 
+ <p style="text-align:left;">再次悄悄告诉你，后台回复“<strong>等时圈</strong>”可以获取模板<img alt="8053fb2e8fbe322ece2e51907d4ae55b.png" height="15" src="https://images2.imgbox.com/a9/d6/pn6FxrKb_o.png" width="15"></p> 
+ <p><img alt="5529ad5953e3ca26f16af4ded7149f26.png" height="29" src="https://images2.imgbox.com/57/06/LzJ0P2Mh_o.png" width="28"></p> 
+ <p>点个在看你最好看</p> 
+ <p style="text-align:left;">另外我悄悄地创建了一个<strong>知识星球</strong>供大家交流学习，本知识星球致力于分享GIS软件知识干货，并结合实际案例，让小白上手快。日常分享规划知识，并结合GIS在规划场景中的应用案例，不管是规划中的GISER，还是GIS路上的规划人，永远不迷路。</p> 
+ <p style="text-align:left;">在这里你将有3大收获：</p> 
+ <p style="text-align:left;">1.系统全面地了解和学习GIS软件操作及应用； </p> 
+ <p style="text-align:left;">2.可个性化定制专属服务; </p> 
+ <p style="text-align:left;">3.与广大同行朋友进行深入交流，交换知识。</p> 
+ <p style="text-align:left;">还有限量大额优惠券限时供应，冲冲冲！</p> 
+ <p style="text-align:left;">更有来自不同领域的嘉宾为您现场解答，还在等什么，快加入进来和大佬们一起探索吧！！！</p> 
+ <p style="text-align:center;"><img alt="7a23bac2fcfe357a2e3e0ca1b71378c4.jpeg" src="https://images2.imgbox.com/0b/17/u55bCE1Q_o.jpg"></p> 
+ <p></p> 
+</div>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/c529e665014d32aab338abe024830b6b/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">前端发送请求获取后端文件，并且前端实现下载文件功能</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/2d14fb89125f56ff8f4764f717cc17db/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">CentOS 7配置NFS文件共享</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

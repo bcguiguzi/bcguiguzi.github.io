@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>BGP在数据中心的应用4——BGP配置再优化 - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="BGP在数据中心的应用4——BGP配置再优化" />
+<meta property="og:description" content="注：
+本文根据《BGP in the Datacenter》整理，有兴趣和英文阅读能力的朋友可以直接看原文：https://www.oreilly.com/library/view/bgp-in-the/9781491983416/上一部分笔记请参考：https://blog.csdn.net/tushanpeipei/article/details/128531548 前要提示： 本篇内容与上一部分笔记连接紧密，在阅读本篇内容时请务必看已经阅读完了上一篇。在这里，我们依然使用的是下图中所显示的网络拓扑来结合阐述BGP配置的优化方案：
+图1：演示Clos网络架构 一、接口IP和远端ASN在数据中心中的必要性 在上一章的笔记中，我们已经通过重分发&#43;路由策略代替network，以接口名代替对等体IP的形式，极大的减少了BGP配置中的IP地址出现次数。但是，在BGP配置中依然有存在大量的远端ASN。并且，在BGP配置以外，每条链路的接口依需要配置IP地址。
+首先我们来探讨一下这两个部分是否可以进行优化。首先，接口IP地址的配置目的是保证直连的两个节点之间能过TCP/IP协议栈通信。BGP的承载协议为TCP，只有双方的TCP能够通信，BGP的邻居关系才能建立起来。从这个角度来说，IP地址是必要的。但是，我们配置这个IP地址的唯一目的也只是帮助BGP建立邻居关系，它并不会被通告进入整个网络中。此外，Clos网络中存在着大量的链路连接，那么意味着大量的IP地址需要规划和管理，这会给数据中心建设以及自动化带来较大的工作负担。那么，有没有一种方式能够在我们不需要在接口配置IP地址的情况下，依然能够让双方建立BGP对等体关系？这似乎是一个悖论。
+第二，我们的ASN在BGP中配置的主要目的标识对等体双方建立的BGP会话是iBGP还是eBGP。那么，我们能否用另外一种方式来替代ASN，但是依然能够标识这个会话是iBGP和eBGP？
+二、接口IP带来的弊端 在这里，我们进一步探讨一下在数据中心中规模下，配置接口IP地址会带来的弊端。以帮助我们了解为什么值得解决这个问题。
+我们可以想象一个简单的两层Clos网络，有4个Spine节点和和32个Leaf节点，这是一个相当常见的网络。在这种结构下，每个Spine节点有32条下连链路，每个Leaf一条。因此，这需要4 * 32 * 2 = 256个IP地址（4个Spine * 32个接口 * 每个接口2个地址，每端一个）。如果Leaf数为96个，而不是32个，那么我们需要的接口IP地址总数将是4 * 96 * 2 = 768。随着我们扩大规模，例如16个Spine节点，地址总数将上升到16 * 96 * 2 = 3,072。虽然算法推导出这些IP地址是可能的，但它可能很笨重，容易出错。此外，它也会自动化代码编写变得更加棘手。对自动化有一定了解的朋友们一定知道，目前我们通常采取的一种非常常见的方法，也就是将接口地址存储为一组列表，然后在自动化程序中，从这些变量中读取具体的IP地址，以便将地址分配给接口。
+虽然看着这种方式不错，但是在巨大规模的网络中，这并不是非常可取的一种方式。因为在规划IP以及配置IP的过程中都容易出现错误，比如，创建该列表本身就是一件不容易的事情。
+三、什么是Unnumbered接口？ 早期的网络架构师在这项设计中还探索了另一个分支：不为同一个节点的每个接口分配唯一的IP地址。自己在本地不唯一的IP地址的接口被称为“无编号（unnumbered）”接口。Unnumbered接口并不是说明接口没有IP地址，只是没有唯一的IP地址。进一步说，该接口会借用本台设备上其他接口的IP地址。但是，如果借用IP地址的接口失败，其IP地址就不能被借来使用了。为了避免接口突然丢失其IP地址，Unnumbered接口通常从环回（Loopback）接口借用IP地址。
+那么不同的路由协议如何处理Unnumbered接口？ISIS很好理解，ISIS运行在链路层，并且通告TLV（Type-Length-Value）字段将拓扑信息和路由信息进行了完全分离，能够在unnumbered接口的情况下很好的运行。OSPF虽然运行在IP之上，但是依然有相应的方式，在特定的场景（串口）下允许通过unnumbered接口建立邻居关系。那么对于BGP呢？
+四、BGP中的Unnumbered接口使用原理 BGP和OSPF虽然都运行在IP层上，但是OSPF建立邻居通常使用的是组播，也就是说它不需要直接了解去往邻居的IP路由，而是通过组播的Hello报文去发现邻居。相比之下，BGP则是通过TCP的方式单播与已知的邻居建立会话。这要求本端存在去往对端端路由。那么，如果本地和对端都是Unnumbered接口，由于不在同一个网段，是没有去往对端的路由的，因此是无法通过路由建立TCP连接。
+目前看来，好像进入了无解的地步。这个时候我们就需要借用另外一个协议栈，来帮助我们完成目标（接口不配置IP地址，依然双方能够建立BGP邻居）。这个帮手就是IPv6。
+首先，我们知道IPv6相比于IPv4来说，增加了链路本地地址（LLA）。该地址是链路自己生成，并且仅仅提供本链路的连通性。此外，为了了解链路对端的LLA，MAC地址，IPv6还提供了一种机制，被称为路由通告（Router Advertisement或RA）。一旦一个启用了IPv6的接口UP，就会周期性的向外通告RA报文，其中包含了自己的IPv6地址（包含LLA），以及MAC地址（如果需要）。那么，对端设备收到该RA报文之后，就会生成去往它邻居的LLA的路由，以及记录对应的MAC地址。因此，IPv6天然就能保证在无需手动配置IP的情况下，同一链路下的通信。
+到这里，我们找到了正确的方向。也就是说，我们可以通过IPv6的LLA地址建立BGP邻居。那么，这个邻居关系是通过IPv6建立的，如果我们要在该邻居中传递IPv4报文可以吗？看似匪夷所思，但是实际上是可行的。具体的实现，在RFC5549中进行了定义，该能力被称为extended nexthop，需要对等体双方进行协商是否支持。注意，这和隧道没有任何关系。
+图2：通过IPv6帮助建立BGP邻居并通告IPv4路由 图2展示了如何通过IPv6帮助建立BGP邻居并通告IPv4路由。详细来说，使用IPv6 LLA成功建立连接后，BGP会收到具有对等体通告的IPv4路由通告，例如10.1.1.0/24。如果BGP选择此路径作为达到10.1.1.0/24的最佳路径，它将此路由传递到路由信息数据库（RIB）进程，将下一跳设置为IPv6 LLA，此下一跳信息将在BGP UPDATE消息中标识。接下来，RIB进程发现该路由的下一跳是一个IPv6 LLA地址，将通过映射关系找到对应的MAC地址，例如是：00:00:01:02:03:04。接下来，RIB进程会添加一个ARP条目，169.254.0.1作为ip地址代替下一跳的IPv6 LLA（因为ARP仅仅适用于IPv4中），00:00:01:02:03:04是对应的MAC地址。其中169.254.0.1是默认的保留地址，不能更改。最终，路由和ARP表如下所示：
+ROUTE: 10.1.1.0/24 via 169.254.0.1 dev swp1 ARP: 169.254.0.1 dev swp1 lladdr 00:00:01:02:03:04 PERMANENT 总结一下，我们如何在不配置接口IP的情况下依然可以传递BGP ipv4路由：" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/1f286fd58b9f8b04a67e66547bd230d8/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-01-03T20:27:55+08:00" />
+<meta property="article:modified_time" content="2023-01-03T20:27:55+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">BGP在数据中心的应用4——BGP配置再优化</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p><strong>注：</strong></p> 
+<ul><li>本文根据《BGP in the Datacenter》整理，有兴趣和英文阅读能力的朋友可以直接看原文：<a href="https://www.oreilly.com/library/view/bgp-in-the/9781491983416/" rel="nofollow">https://www.oreilly.com/library/view/bgp-in-the/9781491983416/</a></li><li>上一部分笔记请参考：<a href="https://blog.csdn.net/tushanpeipei/article/details/128531548">https://blog.csdn.net/tushanpeipei/article/details/128531548</a></li></ul> 
+<h2><a id="_4"></a>前要提示：</h2> 
+<p>本篇内容与上一部分笔记连接紧密，在阅读本篇内容时请务必看已经阅读完了上一篇。在这里，我们依然使用的是下图中所显示的网络拓扑来结合阐述BGP配置的优化方案：<br> <img src="https://images2.imgbox.com/c0/14/M6QSfMMX_o.png" alt="在这里插入图片描述"></p> 
+<center>
+  图1：演示Clos网络架构 
+</center> 
+<br> 
+<h2><a id="IPASN_9"></a>一、接口IP和远端ASN在数据中心中的必要性</h2> 
+<p>在上一章的笔记中，我们已经通过重分发+路由策略代替network，以接口名代替对等体IP的形式，极大的减少了BGP配置中的IP地址出现次数。但是，在BGP配置中依然有存在大量的远端ASN。并且，在BGP配置以外，每条链路的接口依需要配置IP地址。</p> 
+<p>首先我们来探讨一下这两个部分是否可以进行优化。首先，接口IP地址的配置目的是保证直连的两个节点之间能过TCP/IP协议栈通信。BGP的承载协议为TCP，只有双方的TCP能够通信，BGP的邻居关系才能建立起来。从这个角度来说，IP地址是必要的。但是，我们配置这个IP地址的唯一目的也只是帮助BGP建立邻居关系，它并不会被通告进入整个网络中。此外，Clos网络中存在着大量的链路连接，那么意味着大量的IP地址需要规划和管理，这会给数据中心建设以及自动化带来较大的工作负担。那么，有没有一种方式能够在我们不需要在接口配置IP地址的情况下，依然能够让双方建立BGP对等体关系？这似乎是一个悖论。</p> 
+<p>第二，我们的ASN在BGP中配置的主要目的标识对等体双方建立的BGP会话是iBGP还是eBGP。那么，我们能否用另外一种方式来替代ASN，但是依然能够标识这个会话是iBGP和eBGP？</p> 
+<h2><a id="IP_16"></a>二、接口IP带来的弊端</h2> 
+<p>在这里，我们进一步探讨一下在数据中心中规模下，配置接口IP地址会带来的弊端。以帮助我们了解为什么值得解决这个问题。</p> 
+<p>我们可以想象一个简单的两层Clos网络，有4个Spine节点和和32个Leaf节点，这是一个相当常见的网络。在这种结构下，每个Spine节点有32条下连链路，每个Leaf一条。因此，这需要4 * 32 * 2 = 256个IP地址（4个Spine * 32个接口 * 每个接口2个地址，每端一个）。如果Leaf数为96个，而不是32个，那么我们需要的接口IP地址总数将是4 * 96 * 2 = 768。随着我们扩大规模，例如16个Spine节点，地址总数将上升到16 * 96 * 2 = 3,072。虽然算法推导出这些IP地址是可能的，但它可能很笨重，容易出错。此外，它也会自动化代码编写变得更加棘手。对自动化有一定了解的朋友们一定知道，目前我们通常采取的一种非常常见的方法，也就是将接口地址存储为一组列表，然后在自动化程序中，从这些变量中读取具体的IP地址，以便将地址分配给接口。</p> 
+<p>虽然看着这种方式不错，但是在巨大规模的网络中，这并不是非常可取的一种方式。因为在规划IP以及配置IP的过程中都容易出现错误，比如，创建该列表本身就是一件不容易的事情。</p> 
+<h2><a id="Unnumbered_24"></a>三、什么是Unnumbered接口？</h2> 
+<p>早期的网络架构师在这项设计中还探索了另一个分支：不为同一个节点的每个接口分配唯一的IP地址。自己在本地不唯一的IP地址的接口被称为“无编号（unnumbered）”接口。Unnumbered接口并不是说明接口没有IP地址，只是没有唯一的IP地址。进一步说，该接口会借用本台设备上其他接口的IP地址。但是，如果借用IP地址的接口失败，其IP地址就不能被借来使用了。为了避免接口突然丢失其IP地址，Unnumbered接口通常从环回（Loopback）接口借用IP地址。</p> 
+<p>那么不同的路由协议如何处理Unnumbered接口？ISIS很好理解，ISIS运行在链路层，并且通告TLV（Type-Length-Value）字段将拓扑信息和路由信息进行了完全分离，能够在unnumbered接口的情况下很好的运行。OSPF虽然运行在IP之上，但是依然有相应的方式，在特定的场景（串口）下允许通过unnumbered接口建立邻居关系。那么对于BGP呢？</p> 
+<h2><a id="BGPUnnumbered_29"></a>四、BGP中的Unnumbered接口使用原理</h2> 
+<p>BGP和OSPF虽然都运行在IP层上，但是OSPF建立邻居通常使用的是组播，也就是说它不需要直接了解去往邻居的IP路由，而是通过组播的Hello报文去发现邻居。相比之下，BGP则是通过TCP的方式单播与已知的邻居建立会话。这要求本端存在去往对端端路由。那么，如果本地和对端都是Unnumbered接口，由于不在同一个网段，是没有去往对端的路由的，因此是无法通过路由建立TCP连接。</p> 
+<p>目前看来，好像进入了无解的地步。这个时候我们就需要借用另外一个协议栈，来帮助我们完成目标（接口不配置IP地址，依然双方能够建立BGP邻居）。这个帮手就是IPv6。</p> 
+<p>首先，我们知道IPv6相比于IPv4来说，增加了链路本地地址（LLA）。该地址是链路自己生成，并且仅仅提供本链路的连通性。此外，为了了解链路对端的LLA，MAC地址，IPv6还提供了一种机制，被称为路由通告（Router Advertisement或RA）。一旦一个启用了IPv6的接口UP，就会周期性的向外通告RA报文，其中包含了自己的IPv6地址（包含LLA），以及MAC地址（如果需要）。那么，对端设备收到该RA报文之后，就会生成去往它邻居的LLA的路由，以及记录对应的MAC地址。因此，IPv6天然就能保证在无需手动配置IP的情况下，同一链路下的通信。</p> 
+<p>到这里，我们找到了正确的方向。也就是说，我们可以通过IPv6的LLA地址建立BGP邻居。那么，这个邻居关系是通过IPv6建立的，如果我们要在该邻居中传递IPv4报文可以吗？看似匪夷所思，但是实际上是可行的。具体的实现，在RFC5549中进行了定义，该能力被称为extended nexthop，需要对等体双方进行协商是否支持。注意，这和隧道没有任何关系。<br> <img src="https://images2.imgbox.com/4f/f8/nhonmLc2_o.png" alt="在这里插入图片描述"></p> 
+<center>
+  图2：通过IPv6帮助建立BGP邻居并通告IPv4路由 
+</center> 
+<br> 
+<p>图2展示了如何通过IPv6帮助建立BGP邻居并通告IPv4路由。详细来说，使用IPv6 LLA成功建立连接后，BGP会收到具有对等体通告的IPv4路由通告，例如10.1.1.0/24。如果BGP选择此路径作为达到10.1.1.0/24的最佳路径，它将此路由传递到路由信息数据库（RIB）进程，将下一跳设置为IPv6 LLA，此下一跳信息将在BGP UPDATE消息中标识。接下来，RIB进程发现该路由的下一跳是一个IPv6 LLA地址，将通过映射关系找到对应的MAC地址，例如是：00:00:01:02:03:04。接下来，RIB进程会添加一个ARP条目，169.254.0.1作为ip地址代替下一跳的IPv6 LLA（因为ARP仅仅适用于IPv4中），00:00:01:02:03:04是对应的MAC地址。其中169.254.0.1是默认的保留地址，不能更改。最终，路由和ARP表如下所示：</p> 
+<pre><code class="prism language-bash">ROUTE: <span class="token number">10.1</span>.1.0/24 via <span class="token number">169.254</span>.0.1 dev swp1
+ARP: <span class="token number">169.254</span>.0.1 dev swp1 lladdr 00:00:01:02:03:04 PERMANENT
+</code></pre> 
+<p>总结一下，我们如何在不配置接口IP的情况下依然可以传递BGP ipv4路由：</p> 
+<ol><li>BGP unnumbered使用接口的IPv6 LLA与对等体建立BGP会话；</li><li>本端通过IPv6的RA协议发现对端的IPv6 LLA和MAC；</li><li>BGP使用RFC 5549定义的能力对IPv4路由进行编程，让其可通过LLA IPv6下一跳访问对端。</li><li>RIB进程使用保留的IPv4 LLA（169.254.0.1）对静态ARP条目进行编程，MAC地址设置为通过RA学习的对端地址。</li><li>BGP 将 IPv4 路由传递给 RIB，以 IPv6 LLA 作为下一跳。</li><li>在路由加载进入转发表之前，RIB进程将下一跳转换为169.254.0.1，并且添加出接口。</li></ol> 
+<h2><a id="ASN_55"></a>五、远端ASN的替代方式</h2> 
+<p>当我们消除了接口IP地址后，目前唯一需要我们处理的就是在BGP的配置中替代远端的ASN。在这里，我们再来看看在BGP配置中设置远端ASN的目的是：</p> 
+<ol><li>如果意外连接到错误的AS域可能会造成大规模的财务损失，因此我们需要验证对端的ASN。</li><li>确定BGP会话受iBGP规则还是eBGP规则的约束。</li></ol> 
+<p>在数据中心网络中，由于使用的都是私有的ASN，所以不存在因为安全性而去验证对端ASN的情况。因此，我们不必担心第一个目的背后的安全性问题发生。那么，对于第二个目的，我们完全可以通过更简单的方式来解决，也就是将对端的AS号替换为External和Internal。如果是External，说明与对等体建立eBGP邻居关键，Intertal同理。需要注意的是，具体的AS号Open报文中依然会携带。最终，ASN替换后，我们的Leaf01和Spine01的BGP配置由如下所示：</p> 
+<pre><code class="prism language-bash">Leaf01:
+
+<span class="token function">ip</span> prefix-list DC_LOCAL_SUBNET <span class="token number">5</span> permit <span class="token number">10.1</span>.0.0/16 le <span class="token number">26</span>
+<span class="token function">ip</span> prefix-list DC_LOCAL_SUBNET <span class="token number">10</span> permit <span class="token number">10.0</span>.254.0/24 le <span class="token number">32</span>
+
+route-map ACCEPT_DC_LOCAL permit <span class="token number">10</span>
+	match ip-address DC_LOCAL_SUBNET
+  
+router bgp <span class="token number">65000</span>
+	bgp router-id <span class="token number">10.0</span>.254.1
+	bgp log-neighbor-changes
+	bgp no default ipv4-unicast
+	timers bgp <span class="token number">3</span> <span class="token number">9</span>
+	neighbor peer-group ISL
+	neighbor ISL remote-as external
+	neighbor ISL advertisement-interval <span class="token number">0</span>
+	neighbor ISL timers connect <span class="token number">5</span>
+	neighbor swp51 peer-group ISL
+	neighbor swp52 peer-group ISL
+	address-family ipv4 unicast
+		neighbor ISL activate
+		redistribute connected route-map DC_LOCAL
+		maximum-paths <span class="token number">64</span>
+	exit-address-family
+
+Spine01:
+
+<span class="token function">ip</span> prefix-list ACCRT <span class="token number">5</span> permit <span class="token number">10.1</span>.0.0/16 le <span class="token number">26</span>
+<span class="token function">ip</span> prefix-list ACCRT <span class="token number">10</span> permit <span class="token number">10.0</span>.254.0/24 le <span class="token number">32</span>
+    
+route-map DC_LOCAL permit <span class="token number">10</span>
+	match ip-address ACCRT
+    
+router bgp <span class="token number">65500</span>
+	bgp router-id <span class="token number">10.0</span>.254.254
+	bgp log-neighbor-changes
+	bgp no default ipv4-unicast
+	timers bgp <span class="token number">3</span> <span class="token number">9</span>
+	neighbor peer-group ISL
+	neighbor ISL advertisement-interval <span class="token number">0</span>
+	neighbor ISL timers connect <span class="token number">5</span>
+	neighbor swp1 remote-as external
+	neighbor swp1 peer-group ISL
+	neighbor swp2 remote-as external
+	neighbor swp2 peer-group ISL
+	neighbor swp3 remote-as external
+	neighbor swp3 peer-group ISL
+	neighbor swp4 remote-as external
+	neighbor swp4 peer-group ISL
+	bgp bestpath as-path multipath-relax
+	address-family ipv4 unicast
+		neighbor ISL activate
+		redistribute connected route-map DC_LOCAL
+		maximum-paths <span class="token number">64</span>
+	exit-address-family
+</code></pre> 
+<p>本篇笔记完成了BGP配置优化的所有内容整理，下一篇笔记将着重探讨BGP的生命周期管理。</p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/1dc0676f3c33d8aa156bde34948aef23/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">2021icpc上海m</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/883fdf2f1f680b28ce6136d80d399ea0/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">Java理解多线程</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

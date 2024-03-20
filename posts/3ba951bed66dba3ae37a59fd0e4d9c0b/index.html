@@ -1,0 +1,674 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>gici-open学习日记(5)：runMeasurementAddin函数引申——初始化 - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="gici-open学习日记(5)：runMeasurementAddin函数引申——初始化" />
+<meta property="og:description" content="gici-open学习日记——初始化 回顾GNSS/INS初始化初始化器的观测量添加`addGnssSolutionMeasurement` `optimize()`优化 GNSS/INS初始化补充1：`RtkEstimator`流程`SppEstimator::addGnssMeasurementAndState` 视觉初始化`FeatureHandler::initializeLandmarks``addImageMeasurementAndState` 总结 回顾 能进行到具体状态估计初始化的这步，是在具体的addMeasurement这个函数中，关于具体怎么调用到这个函数以及这个函数的其他作用，可以看我的上一篇博客runMeasurementAddin线程 ，这里看上去是分开进行了GNSS/IMU的初始化和视觉的初始化
+这篇文章有大量的内容涉及到GNSS、IMU的具体解算和知识，如SPP、RTK以及预积分等，这些内容的具体原理会放在之后的博客，这里只是梳理一下流程
+GNSS/INS初始化 首先关注一个变量，gnss_imu_initializer_，其涉及到了GINS初始化的具体操作和相关设置，它的定义是在RtkImuCameraRrrEstimator类的构造函数中(这里以RTK/IMU/视觉的紧组合为学习对象，所以很多变量的基础都在RtkImuCameraRrrEstimator里，同理如果选择其他的解算组合类型，对应的变量也就在对应的XXXEstimator中)
+gnss_imu_initializer_.reset(new GnssImuInitializer( init_options, gnss_loose_base_options, imu_base_options, // 这里都会用到GNSS松组合的设置 base_options, graph_, initializer_sub_estimator_)); manual手册里关于GNSS/INS的初始化有一段话的解释
+The GNSS/INS initializer estimates initial poses, velocities, and biases for LC or TC estimators. Regardless of whether we use LC or TC integrations, we use the LC formulations, i.e. position and velocity, to form the initialization optimization graph for efficiency.
+The pitch and roll angle is first computed by the acceleration measure." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/3ba951bed66dba3ae37a59fd0e4d9c0b/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-07-21T11:39:31+08:00" />
+<meta property="article:modified_time" content="2023-07-21T11:39:31+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">gici-open学习日记(5)：runMeasurementAddin函数引申——初始化</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p></p> 
+<div class="toc"> 
+ <h4>gici-open学习日记——初始化</h4> 
+ <ul><li><a href="#_2" rel="nofollow">回顾</a></li><li><a href="#GNSSINS_7" rel="nofollow">GNSS/INS初始化</a></li><li><ul><li><a href="#_46" rel="nofollow">初始化器的观测量添加</a></li><li><ul><li><a href="#addGnssSolutionMeasurement_119" rel="nofollow">`addGnssSolutionMeasurement`</a></li></ul> 
+   </li><li><a href="#optimize_264" rel="nofollow">`optimize()`优化</a></li></ul> 
+  </li><li><a href="#GNSSINS1RtkEstimator_280" rel="nofollow">GNSS/INS初始化补充1：`RtkEstimator`流程</a></li><li><ul><li><a href="#SppEstimatoraddGnssMeasurementAndState_418" rel="nofollow">`SppEstimator::addGnssMeasurementAndState`</a></li></ul> 
+  </li><li><a href="#_488" rel="nofollow">视觉初始化</a></li><li><ul><li><a href="#FeatureHandlerinitializeLandmarks_561" rel="nofollow">`FeatureHandler::initializeLandmarks`</a></li><li><a href="#addImageMeasurementAndState_639" rel="nofollow">`addImageMeasurementAndState`</a></li></ul> 
+  </li><li><a href="#_688" rel="nofollow">总结</a></li></ul> 
+</div> 
+<p></p> 
+<h2><a id="_2"></a>回顾</h2> 
+<p>能进行到具体状态估计初始化的这步，是在具体的<code>addMeasurement</code>这个函数中，关于具体怎么调用到这个函数以及这个函数的其他作用，可以看我的上一篇博客<a href="http://t.csdn.cn/5hRzP" rel="nofollow">runMeasurementAddin线程</a> ，这里看上去是分开进行了GNSS/IMU的初始化和视觉的初始化</p> 
+<p><strong>这篇文章有大量的内容涉及到GNSS、IMU的具体解算和知识，如SPP、RTK以及预积分等，这些内容的具体原理会放在之后的博客，这里只是梳理一下流程</strong></p> 
+<h2><a id="GNSSINS_7"></a>GNSS/INS初始化</h2> 
+<p>首先关注一个变量，<code>gnss_imu_initializer_</code>，其涉及到了GINS初始化的具体操作和相关设置，它的定义是在<code>RtkImuCameraRrrEstimator</code>类的构造函数中(<strong>这里以RTK/IMU/视觉的紧组合为学习对象，所以很多变量的基础都在RtkImuCameraRrrEstimator里，同理如果选择其他的解算组合类型，对应的变量也就在对应的XXXEstimator中</strong>)</p> 
+<pre><code class="prism language-cpp">  gnss_imu_initializer_<span class="token punctuation">.</span><span class="token function">reset</span><span class="token punctuation">(</span><span class="token keyword">new</span> <span class="token function">GnssImuInitializer</span><span class="token punctuation">(</span>
+    init_options<span class="token punctuation">,</span> gnss_loose_base_options<span class="token punctuation">,</span> imu_base_options<span class="token punctuation">,</span> 	<span class="token comment">// 这里都会用到GNSS松组合的设置</span>
+    base_options<span class="token punctuation">,</span> graph_<span class="token punctuation">,</span> initializer_sub_estimator_<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+</code></pre> 
+<p>manual手册里关于GNSS/INS的初始化有一段话的解释</p> 
+<blockquote> 
+ <p>The GNSS/INS initializer estimates initial poses, velocities, and biases for LC or TC estimators. Regardless of whether we use LC or TC integrations, we use the LC formulations, i.e. position and velocity, to form the initialization optimization graph for efficiency.<br> The pitch and roll angle is first computed by the acceleration measure. Then a batch optimization is conducted when a sufficient acceleration is detected. The optimization structure is mostly the same as GINS LC optimization. The difference is that we do not trust the position measurements during initialization because they exhibit large noise if the integer values of GNSS ambiguities are unsolved, which often leads to divergence. Instead, we use the velocity measurement to compute the increment of initial position parameters because we believe the GNSS doppler measurement (which mainly contributes to the velocity estimation) is precise and less affected by errors.</p> 
+</blockquote> 
+<p>所以无论是松组合(LC)还是紧组合(TC)，在初始化的时候都需要松组合的形式：即用位置、速度等形成优化框架，这也就解释了代码里为什么在构造的时候会包括<code>gnss_loose_base_options</code>这个变量<br> 具体GNSS/INS初始化的调用，就直接调用了<code>estimate</code>函数</p> 
+<pre><code class="prism language-cpp">gnss_imu_initializer_<span class="token operator">-&gt;</span><span class="token function">estimate</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>  <span class="token comment">// TODO GNSS/IMU初始化</span>
+</code></pre> 
+<p>但这个函数依旧只是一个接口，具体的初始化操作是通过调用<code>optimize()</code>实现的，剩下的都是一些日志信息</p> 
+<pre><code class="prism language-cpp"><span class="token keyword">bool</span> <span class="token class-name">GnssImuInitializer</span><span class="token double-colon punctuation">::</span><span class="token function">estimate</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+  <span class="token function">optimize</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+  <span class="token comment">// Log information</span>
+  <span class="token keyword">if</span> <span class="token punctuation">(</span>base_options_<span class="token punctuation">.</span>verbose_output<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token function">LOG</span><span class="token punctuation">(</span>INFO<span class="token punctuation">)</span> <span class="token operator">&lt;&lt;</span> <span class="token string">"GNSS/IMU initialization: "</span> 
+      <span class="token operator">&lt;&lt;</span> <span class="token string">"Iterations: "</span> <span class="token operator">&lt;&lt;</span> graph_<span class="token operator">-&gt;</span>summary<span class="token punctuation">.</span>iterations<span class="token punctuation">.</span><span class="token function">size</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">&lt;&lt;</span> <span class="token string">", "</span>
+      <span class="token operator">&lt;&lt;</span> std<span class="token double-colon punctuation">::</span>scientific <span class="token operator">&lt;&lt;</span> std<span class="token double-colon punctuation">::</span><span class="token function">setprecision</span><span class="token punctuation">(</span><span class="token number">3</span><span class="token punctuation">)</span> 
+      <span class="token operator">&lt;&lt;</span> <span class="token string">"Initial cost: "</span> <span class="token operator">&lt;&lt;</span> graph_<span class="token operator">-&gt;</span>summary<span class="token punctuation">.</span>initial_cost <span class="token operator">&lt;&lt;</span> <span class="token string">", "</span>
+      <span class="token operator">&lt;&lt;</span> <span class="token string">"Final cost: "</span> <span class="token operator">&lt;&lt;</span> graph_<span class="token operator">-&gt;</span>summary<span class="token punctuation">.</span>final_cost<span class="token punctuation">;</span>
+  <span class="token punctuation">}</span>
+
+  finished_ <span class="token operator">=</span> <span class="token boolean">true</span><span class="token punctuation">;</span>
+  <span class="token keyword">return</span> <span class="token boolean">true</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<h3><a id="_46"></a>初始化器的观测量添加</h3> 
+<p>在执行<code>estimate()</code>之前，还有一个重要的操作，也就是向初始化器中添加观测量，可以理解为问题的构建过程</p> 
+<pre><code class="prism language-cpp"><span class="token keyword">if</span> <span class="token punctuation">(</span>gnss_imu_initializer_<span class="token operator">-&gt;</span><span class="token function">addMeasurement</span><span class="token punctuation">(</span>measurement<span class="token punctuation">)</span><span class="token punctuation">)</span>
+</code></pre> 
+<p>在<code>addMeasurement</code>里，先添加IMU</p> 
+<pre><code class="prism language-cpp">  <span class="token keyword">if</span> <span class="token punctuation">(</span>measurement<span class="token punctuation">.</span>imu <span class="token operator">&amp;&amp;</span> measurement<span class="token punctuation">.</span>imu_role <span class="token operator">==</span> ImuRole<span class="token double-colon punctuation">::</span>Major<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token function">addImuMeasurement</span><span class="token punctuation">(</span><span class="token operator">*</span>measurement<span class="token punctuation">.</span>imu<span class="token punctuation">)</span><span class="token punctuation">;</span>
+  <span class="token punctuation">}</span>
+</code></pre> 
+<p>如果此时有解，且解为速度或位置或速度位置的情况下，就把解算结果转成GNSS解的类型，然后把GNSS解加进去</p> 
+<pre><code class="prism language-cpp">  <span class="token keyword">if</span> <span class="token punctuation">(</span>measurement<span class="token punctuation">.</span>solution <span class="token operator">&amp;&amp;</span> 
+      <span class="token punctuation">(</span>measurement<span class="token punctuation">.</span>solution_role <span class="token operator">==</span> SolutionRole<span class="token double-colon punctuation">::</span>Position <span class="token operator">||</span> 
+       measurement<span class="token punctuation">.</span>solution_role <span class="token operator">==</span> SolutionRole<span class="token double-colon punctuation">::</span>Velocity <span class="token operator">||</span>
+       measurement<span class="token punctuation">.</span>solution_role <span class="token operator">==</span> SolutionRole<span class="token double-colon punctuation">::</span>PositionAndVelocity<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    GnssSolution gnss_solution <span class="token operator">=</span> <span class="token function">convertSolutionToGnssSolution</span><span class="token punctuation">(</span>
+      <span class="token operator">*</span>measurement<span class="token punctuation">.</span>solution<span class="token punctuation">,</span> measurement<span class="token punctuation">.</span>solution_role<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">return</span> <span class="token function">addGnssSolutionMeasurement</span><span class="token punctuation">(</span>gnss_solution<span class="token punctuation">)</span><span class="token punctuation">;</span>
+  <span class="token punctuation">}</span>
+</code></pre> 
+<p><strong>这里说的加进去，都是加到对应的成员变量里去</strong>，IMU是加到了<code>ImuEstimatorBase</code>类的成员变量里面，GNSS解是加到了<code>GnssImuInitializer</code>类的成员变量里，后者是前者的继承类，<strong>不过前者只是观测量的添加，后者还涉及到解的添加，也加到图优化结构里，要比前者麻烦很多</strong></p> 
+<p>如果是GNSS观测量的话，就要用到<code>sub_gnss_estimator_</code>变量了，这个变量就是初始化器构造时的最后一个参数，我觉得可以理解为对应于GNSS的初始解算，并且要把GNSS的观测量加到这里面去</p> 
+<pre><code class="prism language-cpp">sub_gnss_estimator_<span class="token operator">-&gt;</span><span class="token function">addMeasurement</span><span class="token punctuation">(</span><span class="token operator">*</span>measurement<span class="token punctuation">.</span>gnss<span class="token punctuation">)</span>
+</code></pre> 
+<p>这里的<code>addMeasurement</code>，与<code>gnss_imu_initializer_</code>构造时最后一个参数是对应的，所以如果是<strong>RTK/IMU/视觉的解算策略</strong>，这里对应的就是</p> 
+<pre><code class="prism language-cpp"><span class="token keyword">bool</span> <span class="token class-name">RtkEstimator</span><span class="token double-colon punctuation">::</span><span class="token function">addMeasurement</span><span class="token punctuation">(</span><span class="token keyword">const</span> EstimatorDataCluster<span class="token operator">&amp;</span> measurement<span class="token punctuation">)</span>
+</code></pre> 
+<p>这个函数里面就涉及到GNSS的解算，同理，接下来调用的<code>estimate</code>也是<code>RtkEstimator</code>对应的优化函数</p> 
+<pre><code class="prism language-cpp">sub_gnss_estimator_<span class="token operator">-&gt;</span><span class="token function">estimate</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+</code></pre> 
+<p>把解算得到的值都赋给<code>solution</code>，最后同样是把GNSS解变量加进去</p> 
+<pre><code class="prism language-cpp">  <span class="token keyword">if</span> <span class="token punctuation">(</span>sub_gnss_estimator_ <span class="token operator">&amp;&amp;</span> measurement<span class="token punctuation">.</span>gnss<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>sub_gnss_estimator_<span class="token operator">-&gt;</span><span class="token function">addMeasurement</span><span class="token punctuation">(</span><span class="token operator">*</span>measurement<span class="token punctuation">.</span>gnss<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+      <span class="token keyword">if</span> <span class="token punctuation">(</span>sub_gnss_estimator_<span class="token operator">-&gt;</span><span class="token function">estimate</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        Solution solution<span class="token punctuation">;</span>
+        solution<span class="token punctuation">.</span>coordinate <span class="token operator">=</span> coordinate_<span class="token punctuation">;</span>
+        solution<span class="token punctuation">.</span>timestamp <span class="token operator">=</span> sub_gnss_estimator_<span class="token operator">-&gt;</span><span class="token function">getTimestamp</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        solution<span class="token punctuation">.</span>pose <span class="token operator">=</span> sub_gnss_estimator_<span class="token operator">-&gt;</span><span class="token function">getPoseEstimate</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        solution<span class="token punctuation">.</span>speed_and_bias <span class="token operator">=</span> sub_gnss_estimator_<span class="token operator">-&gt;</span><span class="token function">getSpeedAndBiasEstimate</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        solution<span class="token punctuation">.</span>covariance <span class="token operator">=</span> sub_gnss_estimator_<span class="token operator">-&gt;</span><span class="token function">getCovariance</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        std<span class="token double-colon punctuation">::</span>shared_ptr<span class="token operator">&lt;</span>GnssEstimatorBase<span class="token operator">&gt;</span> gnss_estimator <span class="token operator">=</span> 
+          std<span class="token double-colon punctuation">::</span><span class="token generic-function"><span class="token function">dynamic_pointer_cast</span><span class="token generic class-name"><span class="token operator">&lt;</span>GnssEstimatorBase<span class="token operator">&gt;</span></span></span><span class="token punctuation">(</span>sub_gnss_estimator_<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        solution<span class="token punctuation">.</span>status <span class="token operator">=</span> gnss_estimator<span class="token operator">-&gt;</span><span class="token function">getSolutionStatus</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        solution<span class="token punctuation">.</span>num_satellites <span class="token operator">=</span> gnss_estimator<span class="token operator">-&gt;</span><span class="token function">getNumberSatellite</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        solution<span class="token punctuation">.</span>differential_age <span class="token operator">=</span> gnss_estimator<span class="token operator">-&gt;</span><span class="token function">getDifferentialAge</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        SolutionRole role<span class="token punctuation">;</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>gnss_estimator<span class="token operator">-&gt;</span><span class="token function">hasVelocityEstimate</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+          role <span class="token operator">=</span> SolutionRole<span class="token double-colon punctuation">::</span>PositionAndVelocity<span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+        <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+          role <span class="token operator">=</span> SolutionRole<span class="token double-colon punctuation">::</span>Position<span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+        
+        GnssSolution gnss_solution <span class="token operator">=</span> <span class="token function">convertSolutionToGnssSolution</span><span class="token punctuation">(</span>solution<span class="token punctuation">,</span> role<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">return</span> <span class="token function">addGnssSolutionMeasurement</span><span class="token punctuation">(</span>gnss_solution<span class="token punctuation">)</span><span class="token punctuation">;</span>
+      <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+  <span class="token punctuation">}</span>
+</code></pre> 
+<h4><a id="addGnssSolutionMeasurement_119"></a><code>addGnssSolutionMeasurement</code></h4> 
+<p>首先调用的是<code>slowMotionInitialization()</code>函数，对应的是manual里的<strong>The pitch and roll angle is first computed by the acceleration measure</strong>，函数里的计算部分</p> 
+<pre><code class="prism language-cpp">    <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">initPoseAndBiases</span><span class="token punctuation">(</span>imu_measurements_<span class="token punctuation">,</span> 
+        imu_base_options_<span class="token punctuation">.</span>imu_parameters<span class="token punctuation">.</span>g<span class="token punctuation">,</span> T_WS_0_<span class="token punctuation">,</span> speed_and_bias_0_<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+      zero_motion_finished_ <span class="token operator">=</span> <span class="token boolean">true</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+</code></pre> 
+<p><code>initPoseAndBiases</code>函数最核心的部分主要是最后，把<code>T_WS</code>进行了位姿变换</p> 
+<pre><code class="prism language-cpp"><span class="token keyword">bool</span> <span class="token function">initPoseAndBiases</span><span class="token punctuation">(</span><span class="token keyword">const</span> ImuMeasurements<span class="token operator">&amp;</span> imu_measurements<span class="token punctuation">,</span>
+                       <span class="token keyword">const</span> <span class="token keyword">double</span> gravity<span class="token punctuation">,</span>
+                       Transformation<span class="token operator">&amp;</span> T_WS<span class="token punctuation">,</span>
+                       SpeedAndBias<span class="token operator">&amp;</span> speed_and_bias<span class="token punctuation">,</span> 
+                       <span class="token keyword">const</span> <span class="token keyword">double</span> timestamp_start<span class="token punctuation">,</span> 
+                       <span class="token keyword">const</span> <span class="token keyword">double</span> timestamp_end<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+  <span class="token comment">// set to zero</span>
+  T_WS<span class="token punctuation">.</span><span class="token function">setIdentity</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+  speed_and_bias<span class="token punctuation">.</span><span class="token function">setZero</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+  <span class="token keyword">if</span> <span class="token punctuation">(</span>imu_measurements<span class="token punctuation">.</span><span class="token function">size</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">==</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token keyword">return</span> <span class="token boolean">false</span><span class="token punctuation">;</span>
+
+  <span class="token comment">// Check zero motion</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">if</span> <span class="token expression"><span class="token number">1</span></span></span>
+  <span class="token keyword">int</span> n_measurements <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+  <span class="token keyword">int</span> n_valid_measurements <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+  Eigen<span class="token double-colon punctuation">::</span>Vector3d acc_B <span class="token operator">=</span> Eigen<span class="token double-colon punctuation">::</span><span class="token class-name">Vector3d</span><span class="token double-colon punctuation">::</span><span class="token function">Zero</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+  Eigen<span class="token double-colon punctuation">::</span>Vector3d gyro_B <span class="token operator">=</span> Eigen<span class="token double-colon punctuation">::</span><span class="token class-name">Vector3d</span><span class="token double-colon punctuation">::</span><span class="token function">Zero</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+  <span class="token keyword">for</span> <span class="token punctuation">(</span>size_t i <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span> i <span class="token operator">&lt;</span> imu_measurements<span class="token punctuation">.</span><span class="token function">size</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span> <span class="token operator">++</span>i<span class="token punctuation">)</span>
+  <span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>imu_measurements<span class="token punctuation">[</span>i<span class="token punctuation">]</span><span class="token punctuation">.</span>timestamp <span class="token operator">&lt;</span> timestamp_start <span class="token operator">||</span> 
+        imu_measurements<span class="token punctuation">[</span>i<span class="token punctuation">]</span><span class="token punctuation">.</span>timestamp <span class="token operator">&gt;</span> timestamp_end<span class="token punctuation">)</span> <span class="token keyword">continue</span><span class="token punctuation">;</span>
+    n_measurements<span class="token operator">++</span><span class="token punctuation">;</span>
+
+    <span class="token comment">// zero motion check</span>
+    <span class="token comment">// if (fabs(imu_measurements[i].linear_acceleration.norm() - gravity) &gt; 0.5 || </span>
+    <span class="token comment">//     fabs(imu_measurements[i].angular_velocity.norm()) &gt; 0.05) continue;</span>
+    <span class="token keyword">double</span> acc_norm <span class="token operator">=</span> <span class="token function">fabs</span><span class="token punctuation">(</span>imu_measurements<span class="token punctuation">[</span>i<span class="token punctuation">]</span><span class="token punctuation">.</span>linear_acceleration<span class="token punctuation">.</span><span class="token function">norm</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">-</span> gravity<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>acc_norm <span class="token operator">&gt;</span> <span class="token number">0.5</span><span class="token punctuation">)</span> <span class="token keyword">continue</span><span class="token punctuation">;</span>     <span class="token comment">// 判断是不是低速运动状态</span>
+
+    acc_B <span class="token operator">+=</span> imu_measurements<span class="token punctuation">[</span>i<span class="token punctuation">]</span><span class="token punctuation">.</span>linear_acceleration<span class="token punctuation">;</span>
+    gyro_B <span class="token operator">+=</span> imu_measurements<span class="token punctuation">[</span>i<span class="token punctuation">]</span><span class="token punctuation">.</span>angular_velocity<span class="token punctuation">;</span>
+    n_valid_measurements<span class="token operator">++</span><span class="token punctuation">;</span>
+  <span class="token punctuation">}</span>
+  <span class="token keyword">if</span> <span class="token punctuation">(</span>n_measurements <span class="token operator">==</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token keyword">return</span> <span class="token boolean">false</span><span class="token punctuation">;</span>
+  <span class="token keyword">else</span> <span class="token keyword">if</span> <span class="token punctuation">(</span>n_valid_measurements <span class="token operator">!=</span> n_measurements<span class="token punctuation">)</span> <span class="token keyword">return</span> <span class="token boolean">false</span><span class="token punctuation">;</span>  <span class="token comment">// 确保用来初始化的IMU观测量都是低速运动状态</span>
+  acc_B <span class="token operator">/=</span> <span class="token generic-function"><span class="token function">static_cast</span><span class="token generic class-name"><span class="token operator">&lt;</span><span class="token keyword">double</span><span class="token operator">&gt;</span></span></span><span class="token punctuation">(</span>n_measurements<span class="token punctuation">)</span><span class="token punctuation">;</span>                   <span class="token comment">// 加速度和角速度取平均</span>
+  gyro_B <span class="token operator">/=</span> <span class="token generic-function"><span class="token function">static_cast</span><span class="token generic class-name"><span class="token operator">&lt;</span><span class="token keyword">double</span><span class="token operator">&gt;</span></span></span><span class="token punctuation">(</span>n_measurements<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+  <span class="token comment">/* 省略部分代码 */</span>
+  
+  Eigen<span class="token double-colon punctuation">::</span>Vector3d e_acc <span class="token operator">=</span> acc_B<span class="token punctuation">.</span><span class="token function">normalized</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>     <span class="token comment">// 相当于平均加速度的单位向量</span>
+
+  <span class="token comment">// align with ez_W:</span>
+  Eigen<span class="token double-colon punctuation">::</span>Vector3d <span class="token function">ez_W</span><span class="token punctuation">(</span><span class="token number">0.0</span><span class="token punctuation">,</span> <span class="token number">0.0</span><span class="token punctuation">,</span> <span class="token number">1.0</span><span class="token punctuation">)</span><span class="token punctuation">;</span>            <span class="token comment">// world系的单位向量</span>
+  Eigen<span class="token double-colon punctuation">::</span>Matrix<span class="token operator">&lt;</span><span class="token keyword">double</span><span class="token punctuation">,</span> <span class="token number">6</span><span class="token punctuation">,</span> <span class="token number">1</span><span class="token operator">&gt;</span> pose_increment<span class="token punctuation">;</span>
+  pose_increment<span class="token punctuation">.</span><span class="token generic-function"><span class="token function">head</span><span class="token generic class-name"><span class="token operator">&lt;</span><span class="token number">3</span><span class="token operator">&gt;</span></span></span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">=</span> Eigen<span class="token double-colon punctuation">::</span><span class="token class-name">Vector3d</span><span class="token double-colon punctuation">::</span><span class="token function">Zero</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+  <span class="token comment">//! @todo this gives a bad result if ez_W.cross(e_acc) norm is</span>
+  <span class="token comment">//! close to zero, deal with it!</span>
+  pose_increment<span class="token punctuation">.</span><span class="token generic-function"><span class="token function">tail</span><span class="token generic class-name"><span class="token operator">&lt;</span><span class="token number">3</span><span class="token operator">&gt;</span></span></span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">=</span> ez_W<span class="token punctuation">.</span><span class="token function">cross</span><span class="token punctuation">(</span>e_acc<span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">normalized</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>  <span class="token comment">// cross得到的是旋转轴</span>
+  <span class="token keyword">double</span> angle <span class="token operator">=</span> std<span class="token double-colon punctuation">::</span><span class="token function">acos</span><span class="token punctuation">(</span>ez_W<span class="token punctuation">.</span><span class="token function">transpose</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">*</span> e_acc<span class="token punctuation">)</span><span class="token punctuation">;</span>         <span class="token comment">// 两个向量之间的夹角</span>
+  pose_increment<span class="token punctuation">.</span><span class="token generic-function"><span class="token function">tail</span><span class="token generic class-name"><span class="token operator">&lt;</span><span class="token number">3</span><span class="token operator">&gt;</span></span></span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">*=</span> angle<span class="token punctuation">;</span>                          <span class="token comment">// 相当于得到了绕着旋转轴旋转一定角度的旋转向量</span>
+  T_WS <span class="token operator">=</span> <span class="token class-name">Transformation</span><span class="token double-colon punctuation">::</span><span class="token function">exp</span><span class="token punctuation">(</span><span class="token operator">-</span>pose_increment<span class="token punctuation">)</span> <span class="token operator">*</span> T_WS<span class="token punctuation">;</span>         <span class="token comment">// 位姿变换</span>
+  T_WS<span class="token punctuation">.</span><span class="token function">getRotation</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">normalize</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>                             <span class="token comment">// 更新后的位姿归一化</span>
+
+  <span class="token comment">// biases</span>
+  <span class="token comment">// Eigen::Vector3d g(0.0, 0.0, gravity);</span>
+  <span class="token comment">// speed_and_bias.segment&lt;3&gt;(3) = gyro_B;</span>
+  <span class="token comment">// speed_and_bias.segment&lt;3&gt;(6) = </span>
+  <span class="token comment">//   acc_B - T_WS.getRotationMatrix().transpose() * g;</span>
+
+  <span class="token keyword">return</span> <span class="token boolean">true</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p><strong>这里我目前理解的是把T_WS转换到e_acc，也就是当前根据IMU加速度得到的坐标系下</strong></p> 
+<p>在初始姿态得到后，先把<code>measurement</code>加入到<code>gnss_solution_measurements_</code>之中</p> 
+<pre><code class="prism language-cpp">  <span class="token comment">// Store measurements</span>
+  gnss_solution_measurements_<span class="token punctuation">.</span><span class="token function">push_back</span><span class="token punctuation">(</span>measurement<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+  <span class="token comment">// Ensure that no duration overlaped with slow motion initialization</span>
+  <span class="token keyword">while</span> <span class="token punctuation">(</span>gnss_solution_measurements_<span class="token punctuation">.</span><span class="token function">size</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">&gt;</span> <span class="token number">0</span> <span class="token operator">&amp;&amp;</span>
+    gnss_solution_measurements_<span class="token punctuation">.</span><span class="token function">front</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span>timestamp <span class="token operator">&lt;</span> imu_measurements_<span class="token punctuation">.</span><span class="token function">front</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span>timestamp<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    gnss_solution_measurements_<span class="token punctuation">.</span><span class="token function">pop_front</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+  <span class="token punctuation">}</span>
+</code></pre> 
+<p>加下来比较重要的一个地方是，在有速度的情况下，根据设置的<code>car_motion</code>对初始化进行了一个约束，所以<strong>car_motion这个设置可以理解成为针对初始化时载体运动的限制约束</strong></p> 
+<ul><li><strong>这里后来又看了下manual，这里对应的应该是NHC</strong></li></ul> 
+<pre><code class="prism language-cpp">      <span class="token keyword">if</span> <span class="token punctuation">(</span>imu_base_options_<span class="token punctuation">.</span>car_motion<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>                   <span class="token comment">// 这里利用car_motion进行约束</span>
+        <span class="token keyword">const</span> <span class="token keyword">double</span> angular_velocity_norm <span class="token operator">=</span> <span class="token function">getImuMeasurementNear</span><span class="token punctuation">(</span>
+          gnss_solution_measurements_<span class="token punctuation">[</span>i <span class="token operator">-</span> <span class="token number">1</span><span class="token punctuation">]</span><span class="token punctuation">.</span>timestamp<span class="token punctuation">)</span><span class="token punctuation">.</span>angular_velocity<span class="token punctuation">.</span><span class="token function">norm</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>last_velocity<span class="token punctuation">.</span><span class="token function">norm</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">&lt;</span> 
+            imu_base_options_<span class="token punctuation">.</span>car_motion_min_velocity <span class="token operator">||</span> 
+            angular_velocity_norm <span class="token operator">&gt;</span> 
+            imu_base_options_<span class="token punctuation">.</span>car_motion_max_anguler_velocity<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+          gnss_solution_measurements_<span class="token punctuation">.</span><span class="token function">clear</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span> 
+          dynamic_window_full_ <span class="token operator">=</span> <span class="token boolean">false</span><span class="token punctuation">;</span> <span class="token keyword">break</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+      <span class="token punctuation">}</span>
+</code></pre> 
+<p>然后就是找到认为运动激励已经够了的加速度</p> 
+<pre><code class="prism language-cpp">      initial_velocity <span class="token operator">=</span> last_velocity<span class="token punctuation">;</span>
+      <span class="token keyword">double</span> dt <span class="token operator">=</span> gnss_solution_measurements_<span class="token punctuation">[</span>i<span class="token punctuation">]</span><span class="token punctuation">.</span>timestamp <span class="token operator">-</span> 
+                  gnss_solution_measurements_<span class="token punctuation">[</span>i <span class="token operator">-</span> <span class="token number">1</span><span class="token punctuation">]</span><span class="token punctuation">.</span>timestamp<span class="token punctuation">;</span>
+      <span class="token keyword">double</span> horizontal_acc <span class="token operator">=</span> <span class="token punctuation">(</span>velocity<span class="token punctuation">.</span><span class="token generic-function"><span class="token function">head</span><span class="token generic class-name"><span class="token operator">&lt;</span><span class="token number">2</span><span class="token operator">&gt;</span></span></span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">norm</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">-</span> 
+                              last_velocity<span class="token punctuation">.</span><span class="token generic-function"><span class="token function">head</span><span class="token generic class-name"><span class="token operator">&lt;</span><span class="token number">2</span><span class="token operator">&gt;</span></span></span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">norm</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token operator">/</span> dt<span class="token punctuation">;</span>
+      <span class="token keyword">if</span> <span class="token punctuation">(</span>horizontal_acc <span class="token operator">&gt;</span> max_acc<span class="token punctuation">)</span> max_acc <span class="token operator">=</span> horizontal_acc<span class="token punctuation">;</span>
+      <span class="token keyword">if</span> <span class="token punctuation">(</span>horizontal_acc <span class="token operator">&gt;</span> options_<span class="token punctuation">.</span>min_acceleration<span class="token punctuation">)</span> acc_ensured <span class="token operator">=</span> <span class="token boolean">true</span><span class="token punctuation">;</span> <span class="token comment">// 认为有足够的运动激励</span>
+</code></pre> 
+<p>没有速度的情况下就根据位置计算速度</p> 
+<pre><code class="prism language-cpp">      <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span><span class="token function">computeCoarseVelocityFromPosition</span><span class="token punctuation">(</span>last<span class="token punctuation">,</span> cur<span class="token punctuation">,</span> velocity<span class="token punctuation">)</span> <span class="token operator">||</span> 
+          <span class="token operator">!</span><span class="token function">computeCoarseVelocityFromPosition</span><span class="token punctuation">(</span>last_last<span class="token punctuation">,</span> last<span class="token punctuation">,</span> last_velocity<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">continue</span><span class="token punctuation">;</span>
+      <span class="token punctuation">}</span>
+</code></pre> 
+<p>然后和有速度的判断方法一样。</p> 
+<p><strong>最后，把初始的状态加到了图结构之中</strong></p> 
+<pre><code class="prism language-cpp">  <span class="token keyword">double</span> initial_yaw <span class="token operator">=</span> <span class="token number">0.0</span><span class="token punctuation">;</span>
+  speed_and_bias_0_<span class="token punctuation">.</span><span class="token generic-function"><span class="token function">head</span><span class="token generic class-name"><span class="token operator">&lt;</span><span class="token number">3</span><span class="token operator">&gt;</span></span></span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">=</span> initial_velocity<span class="token punctuation">;</span>
+  <span class="token keyword">if</span> <span class="token punctuation">(</span>imu_base_options_<span class="token punctuation">.</span>car_motion<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token comment">// compute initial yaw from GNSS velocity</span>
+    initial_yaw <span class="token operator">=</span> <span class="token operator">-</span><span class="token function">atan2</span><span class="token punctuation">(</span><span class="token function">initial_velocity</span><span class="token punctuation">(</span><span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token function">initial_velocity</span><span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token operator">*</span> R2D<span class="token punctuation">;</span>     <span class="token comment">// yaw角不可观，这里根据速度获得</span>
+  <span class="token punctuation">}</span>
+  <span class="token comment">// set initial yaw and put items to graph</span>
+  Eigen<span class="token double-colon punctuation">::</span>Vector3d rpy <span class="token operator">=</span> <span class="token function">quaternionToEulerAngle</span><span class="token punctuation">(</span>T_WS_0_<span class="token punctuation">.</span><span class="token function">getEigenQuaternion</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+  rpy<span class="token punctuation">.</span><span class="token function">z</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">=</span> initial_yaw <span class="token operator">*</span> D2R<span class="token punctuation">;</span>    <span class="token comment">// 恢复过的yaw</span>
+  Eigen<span class="token double-colon punctuation">::</span>Quaterniond q_WS <span class="token operator">=</span> <span class="token function">eulerAngleToQuaternion</span><span class="token punctuation">(</span>rpy<span class="token punctuation">)</span><span class="token punctuation">;</span>
+  <span class="token function">putMeasurementAndStateToGraph</span><span class="token punctuation">(</span>q_WS<span class="token punctuation">,</span> speed_and_bias_0_<span class="token punctuation">)</span><span class="token punctuation">;</span>   <span class="token comment">// TODO 加到图优化框架里</span>
+</code></pre> 
+<h3><a id="optimize_264"></a><code>optimize()</code>优化</h3> 
+<p>这里初始化直接就是用了松组合优化的结构，不过manual里给的说明是<strong>初始化阶段中不会相信位置值，而是选择相信多普勒观测量来通过速度计算位置增量</strong>，这也和之前<code>addMeasurement</code>是可以对应上的，这个函数里面没什么关键的内容，主要就是设置了优化求解的一些参数，然后求解完成后又更新了一下协方差</p> 
+<pre><code class="prism language-cpp"><span class="token keyword">void</span> <span class="token class-name">EstimatorBase</span><span class="token double-colon punctuation">::</span><span class="token function">optimize</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+  <span class="token comment">/* 不重要的代码，主要都是求解器的设置 */</span>
+  <span class="token comment">// call solver</span>
+  graph_<span class="token operator">-&gt;</span><span class="token function">solve</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+  <span class="token comment">// update covariance </span>
+  <span class="token keyword">if</span> <span class="token punctuation">(</span>base_options_<span class="token punctuation">.</span>compute_covariance <span class="token operator">&amp;&amp;</span> can_compute_covariance_<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token function">updateCovariance</span><span class="token punctuation">(</span><span class="token function">latestState</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+  <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<h2><a id="GNSSINS1RtkEstimator_280"></a>GNSS/INS初始化补充1：<code>RtkEstimator</code>流程</h2> 
+<p>这里对应着上一节中的GNSS观测量添加，这个类在构造函数中会分别初始化一个<strong>SPP估计器</strong>和一个<strong>模糊度解算的估计器</strong>，在具体的<code>addMeasurement</code>函数中，先把流动站和基准站的观测都加了进去，之后又进行时间差(<strong>根据流动站找时间差得最少的基站</strong>)</p> 
+<pre><code class="prism language-cpp">  meausrement_align_<span class="token punctuation">.</span><span class="token function">add</span><span class="token punctuation">(</span>measurement<span class="token punctuation">)</span><span class="token punctuation">;</span>      <span class="token comment">// 这里会根据是rover还是base放到不同的成员变量里</span>
+  <span class="token keyword">if</span> <span class="token punctuation">(</span>meausrement_align_<span class="token punctuation">.</span><span class="token function">get</span><span class="token punctuation">(</span>rtk_options_<span class="token punctuation">.</span>max_age<span class="token punctuation">,</span> rov<span class="token punctuation">,</span> ref<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span> <span class="token comment">// get可以理解为把rov和ref对应起来了</span>
+    <span class="token keyword">return</span> <span class="token function">addGnssMeasurementAndState</span><span class="token punctuation">(</span>rov<span class="token punctuation">,</span> ref<span class="token punctuation">)</span><span class="token punctuation">;</span>
+  <span class="token punctuation">}</span>
+</code></pre> 
+<p>然后调用主要的函数<code>addGnssMeasurementAndState</code>，进行观测量的添加，<strong>这个是主要的函数</strong></p> 
+<ol><li>先调用<code>SppEstimator::addGnssMeasurementAndState</code>函数</li></ol> 
+<pre><code class="prism language-cpp">  <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span>spp_estimator_<span class="token operator">-&gt;</span><span class="token function">addGnssMeasurementAndState</span><span class="token punctuation">(</span>measurement_rov<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">return</span> <span class="token boolean">false</span><span class="token punctuation">;</span>
+  <span class="token punctuation">}</span>
+</code></pre> 
+<ol start="2"><li>调用<code>estimate</code>，进行优化</li></ol> 
+<pre><code class="prism language-cpp">  <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span>spp_estimator_<span class="token operator">-&gt;</span><span class="token function">estimate</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">return</span> <span class="token boolean">false</span><span class="token punctuation">;</span>
+  <span class="token punctuation">}</span>
+</code></pre> 
+<ul><li class="task-list-item"><input type="checkbox" class="task-list-item-checkbox" disabled> <strong>TODO</strong>：这里完成了SPP的具体的迭代计算，不过目前还没有看具体的图优化结构，所以之后再看</li></ul> 
+<ol start="3"><li>设置相关的变量</li></ol> 
+<pre><code class="prism language-cpp">  Eigen<span class="token double-colon punctuation">::</span>Vector3d position_prior <span class="token operator">=</span> spp_estimator_<span class="token operator">-&gt;</span><span class="token function">getPositionEstimate</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+  Eigen<span class="token double-colon punctuation">::</span>Vector3d velocity_prior <span class="token operator">=</span> spp_estimator_<span class="token operator">-&gt;</span><span class="token function">getVelocityEstimate</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+  <span class="token function">curState</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span>status <span class="token operator">=</span> GnssSolutionStatus<span class="token double-colon punctuation">::</span>Single<span class="token punctuation">;</span>
+
+  <span class="token comment">// Set to local measurement handle</span>
+  <span class="token function">curGnssRov</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">=</span> measurement_rov<span class="token punctuation">;</span>
+  <span class="token function">curGnssRov</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span>position <span class="token operator">=</span> position_prior<span class="token punctuation">;</span>
+  <span class="token function">curGnssRef</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">=</span> measurement_ref<span class="token punctuation">;</span>
+</code></pre> 
+<ol start="4"><li>观测值重新排序：这里我感觉最终的目的就是每一个相位只留一个观测值</li></ol> 
+<pre><code class="prism language-cpp">  gnss_common<span class="token double-colon punctuation">::</span><span class="token function">rearrangePhasesAndCodes</span><span class="token punctuation">(</span><span class="token function">curGnssRov</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+  gnss_common<span class="token double-colon punctuation">::</span><span class="token function">rearrangePhasesAndCodes</span><span class="token punctuation">(</span><span class="token function">curGnssRef</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+</code></pre> 
+<ol start="5"><li>然后是双差类型的构建</li></ol> 
+<pre><code class="prism language-cpp">  <span class="token comment">// Form double difference pair</span>
+  GnssMeasurementDDIndexPairs index_pairs <span class="token operator">=</span> gnss_common<span class="token double-colon punctuation">::</span><span class="token function">formPhaserangeDDPair</span><span class="token punctuation">(</span>
+    <span class="token function">curGnssRov</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token function">curGnssRef</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span> gnss_base_options_<span class="token punctuation">.</span>common<span class="token punctuation">)</span><span class="token punctuation">;</span>   <span class="token comment">// 双差</span>
+</code></pre> 
+<ol start="6"><li>周跳探测</li></ol> 
+<pre><code class="prism language-cpp">  <span class="token comment">// Cycle-slip detection</span>
+  <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span><span class="token function">isFirstEpoch</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token function">cycleSlipDetectionSD</span><span class="token punctuation">(</span><span class="token function">lastGnssRov</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token function">lastGnssRef</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span> 
+      <span class="token function">curGnssRov</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token function">curGnssRef</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span> gnss_base_options_<span class="token punctuation">.</span>common<span class="token punctuation">)</span><span class="token punctuation">;</span>
+  <span class="token punctuation">}</span>
+</code></pre> 
+<ol start="7"><li>加到图优化结构</li></ol> 
+<pre><code class="prism language-cpp">  <span class="token comment">// Add parameter blocks</span>
+  <span class="token keyword">double</span> timestamp <span class="token operator">=</span> <span class="token function">curGnssRov</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span>timestamp<span class="token punctuation">;</span>
+  <span class="token function">curState</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span>timestamp <span class="token operator">=</span> timestamp<span class="token punctuation">;</span>
+  <span class="token comment">// position block</span>
+  BackendId position_id <span class="token operator">=</span> <span class="token function">addGnssPositionParameterBlock</span><span class="token punctuation">(</span><span class="token function">curGnssRov</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span>id<span class="token punctuation">,</span> position_prior<span class="token punctuation">)</span><span class="token punctuation">;</span>
+  <span class="token function">curState</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span>id <span class="token operator">=</span> position_id<span class="token punctuation">;</span>
+  <span class="token function">curState</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span>id_in_graph <span class="token operator">=</span> position_id<span class="token punctuation">;</span>
+  <span class="token comment">// ambiguity blocks</span>
+  <span class="token function">addSdAmbiguityParameterBlocks</span><span class="token punctuation">(</span><span class="token function">curGnssRov</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span> 
+    <span class="token function">curGnssRef</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span> index_pairs<span class="token punctuation">,</span> <span class="token function">curGnssRov</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span>id<span class="token punctuation">,</span> <span class="token function">curAmbiguityState</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+  <span class="token keyword">if</span> <span class="token punctuation">(</span>rtk_options_<span class="token punctuation">.</span>estimate_velocity<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token comment">// velocity block</span>
+    <span class="token function">addGnssVelocityParameterBlock</span><span class="token punctuation">(</span><span class="token function">curGnssRov</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span>id<span class="token punctuation">,</span> velocity_prior<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token comment">// frequency block</span>
+    <span class="token keyword">int</span> num_valid_doppler_system <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+    <span class="token function">addFrequencyParameterBlocks</span><span class="token punctuation">(</span><span class="token function">curGnssRov</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token function">curGnssRov</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span>id<span class="token punctuation">,</span> num_valid_doppler_system<span class="token punctuation">)</span><span class="token punctuation">;</span>
+  <span class="token punctuation">}</span>
+  
+  <span class="token comment">// Add pseudorange residual blocks</span>
+  <span class="token keyword">int</span> num_valid_satellite <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+  <span class="token function">addDdPseudorangeResidualBlocks</span><span class="token punctuation">(</span><span class="token function">curGnssRov</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span> 
+    <span class="token function">curGnssRef</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span> index_pairs<span class="token punctuation">,</span> <span class="token function">curState</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span> num_valid_satellite<span class="token punctuation">)</span><span class="token punctuation">;</span>
+</code></pre> 
+<ol start="8"><li>查看有效卫星数够不够，不够的话就把加进去的再删了</li></ol> 
+<pre><code class="prism language-cpp">  <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span><span class="token function">checkSufficientSatellite</span><span class="token punctuation">(</span>num_valid_satellite<span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token comment">// erase parameters in current state</span>
+    <span class="token function">eraseGnssPositionParameterBlock</span><span class="token punctuation">(</span><span class="token function">curState</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token function">eraseAmbiguityParameterBlocks</span><span class="token punctuation">(</span><span class="token function">curAmbiguityState</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>rtk_options_<span class="token punctuation">.</span>estimate_velocity<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+      <span class="token function">eraseGnssVelocityParameterBlock</span><span class="token punctuation">(</span><span class="token function">curState</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+      <span class="token function">eraseFrequencyParameterBlocks</span><span class="token punctuation">(</span><span class="token function">curState</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token keyword">return</span> <span class="token boolean">false</span><span class="token punctuation">;</span>
+  <span class="token punctuation">}</span>
+</code></pre> 
+<ol start="9"><li>满足的话继续加残差块</li></ol> 
+<pre><code class="prism language-cpp">  <span class="token comment">// Add phaserange residual blocks</span>
+  <span class="token function">addDdPhaserangeResidualBlocks</span><span class="token punctuation">(</span><span class="token function">curGnssRov</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token function">curGnssRef</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span> index_pairs<span class="token punctuation">,</span> <span class="token function">curState</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+  <span class="token comment">// Add doppler residual blocks</span>
+  <span class="token keyword">if</span> <span class="token punctuation">(</span>rtk_options_<span class="token punctuation">.</span>estimate_velocity<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token function">addDopplerResidualBlocks</span><span class="token punctuation">(</span><span class="token function">curGnssRov</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token function">curState</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span> num_valid_satellite<span class="token punctuation">)</span><span class="token punctuation">;</span>
+  <span class="token punctuation">}</span>
+
+  <span class="token comment">// Add relative errors</span>
+  <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span><span class="token function">isFirstEpoch</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span>rtk_options_<span class="token punctuation">.</span>estimate_velocity<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+      <span class="token comment">// position</span>
+      <span class="token function">addRelativePositionResidualBlock</span><span class="token punctuation">(</span><span class="token function">lastState</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token function">curState</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+    <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+      <span class="token comment">// position and velocity</span>
+      <span class="token function">addRelativePositionAndVelocityBlock</span><span class="token punctuation">(</span><span class="token function">lastState</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token function">curState</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+      <span class="token comment">// frequency</span>
+      <span class="token function">addRelativeFrequencyBlock</span><span class="token punctuation">(</span><span class="token function">lastState</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token function">curState</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+    <span class="token comment">// ambiguity</span>
+    <span class="token function">addRelativeAmbiguityResidualBlock</span><span class="token punctuation">(</span>
+      <span class="token function">lastGnssRov</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token function">curGnssRov</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token function">lastAmbiguityState</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token function">curAmbiguityState</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+  <span class="token punctuation">}</span>
+</code></pre> 
+<ol start="10"><li>最后更新DOP值</li></ol> 
+<pre><code class="prism language-cpp">  <span class="token comment">// Compute DOP</span>
+  <span class="token function">updateGdop</span><span class="token punctuation">(</span><span class="token function">curGnssRov</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span> index_pairs<span class="token punctuation">)</span><span class="token punctuation">;</span>
+</code></pre> 
+<h3><a id="SppEstimatoraddGnssMeasurementAndState_418"></a><code>SppEstimator::addGnssMeasurementAndState</code></h3> 
+<p>先获得先验位置，如果不是第一个历元的话就用``getPositionEstimate函数去获得，是第一个历元的话就把当前的坐标转到ECEF系下作为先验坐标</p> 
+<pre><code class="prism language-cpp">  Eigen<span class="token double-colon punctuation">::</span>Vector3d position_prior <span class="token operator">=</span> Eigen<span class="token double-colon punctuation">::</span><span class="token class-name">Vector3d</span><span class="token double-colon punctuation">::</span><span class="token function">Zero</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+  <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span><span class="token function">isFirstEpoch</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    position_prior <span class="token operator">=</span> <span class="token function">getPositionEstimate</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+  <span class="token punctuation">}</span>
+  <span class="token keyword">else</span> <span class="token keyword">if</span> <span class="token punctuation">(</span>coordinate_<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    position_prior <span class="token operator">=</span> coordinate_<span class="token operator">-&gt;</span><span class="token function">getZero</span><span class="token punctuation">(</span>GeoType<span class="token double-colon punctuation">::</span>ECEF<span class="token punctuation">)</span><span class="token punctuation">;</span>
+  <span class="token punctuation">}</span>
+</code></pre> 
+<p>都设置得差不多了之后就进行各种改正</p> 
+<ol><li><strong>首先是DCB改正</strong>：这里注释做了说明，说得很详细了，具体的函数在<code>CodeBias::getCodeBias</code>这里</li></ol> 
+<blockquote> 
+ <p>// Get code bias correction in relative with base frequency<br> // Apply the code bias by: P_corrected = P_raw + bias<br> // For the broadcast ephemeris, the base frequencies for each system are:<br> // GPS: L1P/L2P IF combination (L1W/L2W)<br> // GLONASS: L1P/L2P IF combination<br> // Galileo: E1/E5a IF combination (INAV)<br> // BDS: B3I<br> // For the precise ephemeris, user should specify the base frequencies, in<br> // defualt, we use the following configures:<br> // GPS: L1P/L2P IF combination (L1W/L2W)<br> // GLONASS: L1P/L2P IF combination<br> // Galileo: E1/E5a IF combination<br> // BDS: B1I/B3I IF combination</p> 
+</blockquote> 
+<pre><code class="prism language-cpp">  <span class="token comment">// Correct code bias</span>
+  <span class="token function">correctCodeBias</span><span class="token punctuation">(</span><span class="token function">curGnss</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+</code></pre> 
+<ol start="2"><li><strong>然后是电离层改正</strong>：看了下<code>IonoType</code>，分为不改正(None)、广播星历改正(Broadcast)、双频改正(DualFrequency)或者增强(<strong>应该是指SBAS</strong>)(Augmentation)</li></ol> 
+<pre><code class="prism language-cpp">  <span class="token comment">// Compute ionosphere delays</span>
+  <span class="token function">computeIonosphereDelay</span><span class="token punctuation">(</span><span class="token function">curGnss</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token boolean">true</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+</code></pre> 
+<ol start="3"><li><strong>把信息都加到图优化结构中</strong>：关于GNSS的图优化结构还没具体看</li></ol> 
+<pre><code class="prism language-cpp">  <span class="token comment">// position block</span>
+  <span class="token comment">// TODO GNSS的图优化结构</span>
+  BackendId position_id <span class="token operator">=</span> <span class="token function">addGnssPositionParameterBlock</span><span class="token punctuation">(</span><span class="token function">curGnss</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span>id<span class="token punctuation">,</span> position_prior<span class="token punctuation">)</span><span class="token punctuation">;</span>  <span class="token comment">// 位置先验</span>
+  <span class="token function">curState</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span>id <span class="token operator">=</span> position_id<span class="token punctuation">;</span>
+  <span class="token function">curState</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span>id_in_graph <span class="token operator">=</span> position_id<span class="token punctuation">;</span>
+  <span class="token comment">// clock block</span>
+  <span class="token keyword">int</span> num_valid_system <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+  <span class="token function">addClockParameterBlocks</span><span class="token punctuation">(</span><span class="token function">curGnss</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token function">curGnss</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span>id<span class="token punctuation">,</span> num_valid_system<span class="token punctuation">)</span><span class="token punctuation">;</span> <span class="token comment">// 钟差</span>
+  
+  <span class="token comment">// Add pseudorange residual blocks</span>
+  <span class="token keyword">int</span> num_valid_satellite <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+  <span class="token function">addPseudorangeResidualBlocks</span><span class="token punctuation">(</span><span class="token function">curGnss</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token function">curState</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span> num_valid_satellite<span class="token punctuation">,</span> <span class="token boolean">true</span><span class="token punctuation">)</span><span class="token punctuation">;</span> <span class="token comment">// 伪距残差</span>
+</code></pre> 
+<ol start="4"><li><strong>判断卫星数量够不够</strong>：分为两部分，第一部分是基础的4(用载波相位)或者3(不用载波相位)，第二部分是有效的系统数，两个加在一起是这里的判断阈值</li></ol> 
+<pre><code class="prism language-cpp">  <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span><span class="token function">checkSufficientSatellite</span><span class="token punctuation">(</span>num_valid_satellite<span class="token punctuation">,</span> num_valid_system<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">return</span> <span class="token boolean">false</span><span class="token punctuation">;</span>
+  <span class="token punctuation">}</span>
+</code></pre> 
+<ol start="5"><li><strong>把当前历元外的信息从图优化结构中都移除</strong></li></ol> 
+<pre><code class="prism language-cpp">  Graph<span class="token double-colon punctuation">::</span>ParameterBlockCollection parameters <span class="token operator">=</span> graph_<span class="token operator">-&gt;</span><span class="token function">parameters</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+  <span class="token keyword">for</span> <span class="token punctuation">(</span><span class="token keyword">auto</span> parameter <span class="token operator">:</span> parameters<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">BackendId</span><span class="token punctuation">(</span>parameter<span class="token punctuation">.</span>first<span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">bundleId</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">==</span> <span class="token function">curState</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span>id<span class="token punctuation">.</span><span class="token function">bundleId</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token keyword">continue</span><span class="token punctuation">;</span>
+    graph_<span class="token operator">-&gt;</span><span class="token function">removeParameterBlock</span><span class="token punctuation">(</span>parameter<span class="token punctuation">.</span>first<span class="token punctuation">)</span><span class="token punctuation">;</span>
+  <span class="token punctuation">}</span>
+</code></pre> 
+<h2><a id="_488"></a>视觉初始化</h2> 
+<p>视觉初始化的调用也是在<code>tkImuCameraRrrEstimator::addMeasurement</code>中，涉及到的具体函数是<code>visualInitialization</code>，当视觉初始化的标志仍为<code>false</code>时，就会进入到这里执行视觉初始化的步骤。同时结合manual中的描述来看，视觉初始化这里是用到了GINS初始化的结果，根据位姿来进行三角化</p> 
+<blockquote> 
+ <p>The GNSS/INS/Camera initializer estimates initial poses, velocities, biases, and landmark positions for SRR or RRR estimators. The initialization is done in two steps: GNSS/INS initialization step and visual initialization step. The GNSS/INS initialization step has been introduced in subsection 3.9.3. After the GNSS/INS initialization, we triangulate the tracked features using the estimated poses.</p> 
+</blockquote> 
+<p>具体的代码流程如下：</p> 
+<ol><li>先把GINS对应的初始化结果储存起来，<code>init_solution_store_</code>会存入不止一个结果</li></ol> 
+<pre><code class="prism language-cpp">  Solution solution<span class="token punctuation">;</span>    <span class="token comment">// 记录下目前最新状态的时间、位姿、速度等等</span>
+  solution<span class="token punctuation">.</span>timestamp <span class="token operator">=</span> <span class="token function">getTimestamp</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+  solution<span class="token punctuation">.</span>pose <span class="token operator">=</span> <span class="token function">getPoseEstimate</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+  solution<span class="token punctuation">.</span>speed_and_bias <span class="token operator">=</span> <span class="token function">getSpeedAndBiasEstimate</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+  init_solution_store_<span class="token punctuation">.</span><span class="token function">push_back</span><span class="token punctuation">(</span>solution<span class="token punctuation">)</span><span class="token punctuation">;</span>
+</code></pre> 
+<ol start="2"><li>把关键帧也储存起来，然后这里具体的设置是初始化只用两个关键帧</li></ol> 
+<pre><code class="prism language-cpp">  <span class="token keyword">if</span> <span class="token punctuation">(</span>frame_bundle<span class="token operator">-&gt;</span><span class="token function">isKeyframe</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    init_keyframes_<span class="token punctuation">.</span><span class="token function">push_back</span><span class="token punctuation">(</span>frame_bundle<span class="token punctuation">)</span><span class="token punctuation">;</span>  <span class="token comment">// 初始化相当于只用2个关键帧</span>
+    <span class="token keyword">while</span> <span class="token punctuation">(</span>init_keyframes_<span class="token punctuation">.</span><span class="token function">size</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">&gt;</span> <span class="token number">2</span><span class="token punctuation">)</span> init_keyframes_<span class="token punctuation">.</span><span class="token function">pop_front</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+  <span class="token punctuation">}</span> 
+  <span class="token keyword">if</span> <span class="token punctuation">(</span>init_keyframes_<span class="token punctuation">.</span><span class="token function">size</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">&lt;</span> <span class="token number">2</span><span class="token punctuation">)</span> <span class="token keyword">return</span> <span class="token boolean">false</span><span class="token punctuation">;</span>
+</code></pre> 
+<ol start="3"><li>接下来对yaw角的协方差进行判断，因为之前的yaw角是恢复出来的，所以这里结合设置的一个阈值进判断，要确保GINS充分收敛</li></ol> 
+<pre><code class="prism language-cpp">  <span class="token keyword">double</span> std_yaw <span class="token operator">=</span> <span class="token function">sqrt</span><span class="token punctuation">(</span><span class="token function">computeAndGetCovariance</span><span class="token punctuation">(</span><span class="token function">lastState</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">(</span><span class="token number">5</span><span class="token punctuation">,</span> <span class="token number">5</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+  <span class="token keyword">if</span> <span class="token punctuation">(</span>std_yaw <span class="token operator">&gt;</span> rrr_options_<span class="token punctuation">.</span>min_yaw_std_init_visual <span class="token operator">*</span> D2R<span class="token punctuation">)</span> <span class="token keyword">return</span> <span class="token boolean">false</span><span class="token punctuation">;</span>
+</code></pre> 
+<ol start="4"><li>然后会设置视觉的位姿，这里也会具体到IMU的预积分过程</li></ol> 
+<pre><code class="prism language-cpp">  <span class="token keyword">for</span> <span class="token punctuation">(</span><span class="token keyword">auto</span><span class="token operator">&amp;</span> frame_bundle <span class="token operator">:</span> init_keyframes_<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">bool</span> found <span class="token operator">=</span> <span class="token boolean">false</span><span class="token punctuation">;</span>
+    <span class="token keyword">double</span> timestamp <span class="token operator">=</span> frame_bundle<span class="token operator">-&gt;</span><span class="token function">getMinTimestampSeconds</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">for</span> <span class="token punctuation">(</span>size_t i <span class="token operator">=</span> <span class="token number">1</span><span class="token punctuation">;</span> i <span class="token operator">&lt;</span> init_solution_store_<span class="token punctuation">.</span><span class="token function">size</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span> i<span class="token operator">++</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+      <span class="token keyword">double</span> dt1 <span class="token operator">=</span> init_solution_store_<span class="token punctuation">[</span>i<span class="token punctuation">]</span><span class="token punctuation">.</span>timestamp <span class="token operator">-</span> timestamp<span class="token punctuation">;</span>
+      <span class="token keyword">double</span> dt2 <span class="token operator">=</span> init_solution_store_<span class="token punctuation">[</span>i <span class="token operator">-</span> <span class="token number">1</span><span class="token punctuation">]</span><span class="token punctuation">.</span>timestamp <span class="token operator">-</span> timestamp<span class="token punctuation">;</span>
+      <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token punctuation">(</span>dt1 <span class="token operator">&gt;=</span> <span class="token number">0</span> <span class="token operator">&amp;&amp;</span> dt2 <span class="token operator">&lt;=</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token operator">||</span>                           <span class="token comment">// 找到对应的时间段</span>
+          <span class="token punctuation">(</span>i <span class="token operator">==</span> init_solution_store_<span class="token punctuation">.</span><span class="token function">size</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">-</span> <span class="token number">1</span><span class="token punctuation">)</span> <span class="token operator">&amp;&amp;</span> dt1 <span class="token operator">&lt;</span> <span class="token number">0</span> <span class="token operator">&amp;&amp;</span> <span class="token function">fabs</span><span class="token punctuation">(</span>dt1<span class="token punctuation">)</span> <span class="token operator">&lt;</span> <span class="token number">2.0</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        size_t idx <span class="token operator">=</span> <span class="token punctuation">(</span>dt1 <span class="token operator">&gt;=</span> <span class="token number">0</span> <span class="token operator">&amp;&amp;</span> dt2 <span class="token operator">&lt;=</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token operator">?</span> <span class="token punctuation">(</span>i <span class="token operator">-</span> <span class="token number">1</span><span class="token punctuation">)</span> <span class="token operator">:</span> i<span class="token punctuation">;</span>
+        Transformation T_WS <span class="token operator">=</span> init_solution_store_<span class="token punctuation">[</span>idx<span class="token punctuation">]</span><span class="token punctuation">.</span>pose<span class="token punctuation">;</span>
+        SpeedAndBias speed_and_bias <span class="token operator">=</span> init_solution_store_<span class="token punctuation">[</span>idx<span class="token punctuation">]</span><span class="token punctuation">.</span>speed_and_bias<span class="token punctuation">;</span>
+        <span class="token function">imuIntegration</span><span class="token punctuation">(</span>init_solution_store_<span class="token punctuation">[</span>idx<span class="token punctuation">]</span><span class="token punctuation">.</span>timestamp<span class="token punctuation">,</span>   <span class="token comment">// TODO IMU预积分</span>
+          timestamp<span class="token punctuation">,</span> T_WS<span class="token punctuation">,</span> speed_and_bias<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        speed_and_biases<span class="token punctuation">.</span><span class="token function">push_back</span><span class="token punctuation">(</span>speed_and_bias<span class="token punctuation">)</span><span class="token punctuation">;</span>           <span class="token comment">// 预积分会更新速度和零偏</span>
+        frame_bundle<span class="token operator">-&gt;</span><span class="token function">set_T_W_B</span><span class="token punctuation">(</span>T_WS<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        found <span class="token operator">=</span> <span class="token boolean">true</span><span class="token punctuation">;</span>
+        <span class="token keyword">break</span><span class="token punctuation">;</span>
+      <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+    <span class="token function">CHECK</span><span class="token punctuation">(</span>found<span class="token punctuation">)</span><span class="token punctuation">;</span>
+  <span class="token punctuation">}</span>
+</code></pre> 
+<ol start="5"><li>接下来就是具体的三角化了，这里也就把相机的尺度恢复出来了，调用了<code>feature_handler_</code>这个变量</li></ol> 
+<pre><code class="prism language-cpp">  feature_handler_<span class="token operator">-&gt;</span><span class="token function">initializeLandmarks</span><span class="token punctuation">(</span>init_keyframes_<span class="token punctuation">.</span><span class="token function">back</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token operator">-&gt;</span><span class="token function">at</span><span class="token punctuation">(</span><span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+  feature_handler_<span class="token operator">-&gt;</span><span class="token function">setGlobalScaleInitialized</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+</code></pre> 
+<ol start="6"><li>然后把两个关键帧都添加进去</li></ol> 
+<pre><code class="prism language-cpp">  <span class="token function">CHECK</span><span class="token punctuation">(</span><span class="token function">addImageMeasurementAndState</span><span class="token punctuation">(</span>init_keyframes_<span class="token punctuation">.</span><span class="token function">front</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span> speed_and_biases<span class="token punctuation">.</span><span class="token function">front</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+  <span class="token function">CHECK</span><span class="token punctuation">(</span><span class="token function">addImageMeasurementAndState</span><span class="token punctuation">(</span>init_keyframes_<span class="token punctuation">.</span><span class="token function">back</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span> speed_and_biases<span class="token punctuation">.</span><span class="token function">back</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+</code></pre> 
+<ol start="7"><li>最后设置一些解算的标志</li></ol> 
+<pre><code class="prism language-cpp">  visual_initialized_ <span class="token operator">=</span> <span class="token boolean">true</span><span class="token punctuation">;</span>
+  do_not_remove_imu_measurements_ <span class="token operator">=</span> <span class="token boolean">false</span><span class="token punctuation">;</span>
+  can_compute_covariance_ <span class="token operator">=</span> <span class="token boolean">true</span><span class="token punctuation">;</span>
+</code></pre> 
+<h3><a id="FeatureHandlerinitializeLandmarks_561"></a><code>FeatureHandler::initializeLandmarks</code></h3> 
+<p>首先得确保当前帧是关键帧，因为初始化的时候要求必须是关键帧</p> 
+<pre><code class="prism language-cpp">  <span class="token keyword">const</span> FramePtr<span class="token operator">&amp;</span> frame <span class="token operator">=</span> keyframe<span class="token punctuation">;</span>
+  <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span>frame<span class="token operator">-&gt;</span><span class="token function">isKeyframe</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token keyword">return</span><span class="token punctuation">;</span>
+</code></pre> 
+<p>然后遍历每一个特征点，如果是初始化过了或者类型是外点的特征点就跳过</p> 
+<pre><code class="prism language-cpp">    <span class="token comment">// already initialized</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">isSeed</span><span class="token punctuation">(</span>frame<span class="token operator">-&gt;</span>type_vec_<span class="token punctuation">[</span>i<span class="token punctuation">]</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token keyword">continue</span><span class="token punctuation">;</span>  <span class="token comment">// 初始化过的就跳过</span>
+
+    <span class="token comment">// rejected by bundle adjuster</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>frame<span class="token operator">-&gt;</span>type_vec_<span class="token punctuation">[</span>i<span class="token punctuation">]</span> <span class="token operator">==</span> FeatureType<span class="token double-colon punctuation">::</span>kOutlier<span class="token punctuation">)</span> <span class="token keyword">continue</span><span class="token punctuation">;</span>
+</code></pre> 
+<p>接下来找到参考帧，这里用了<code>rbegin</code>，我觉得是因为<code>obs_</code>是按时间顺序添加的，所以这里找出和当前帧时间离得尽可能近的参考帧，结果更精确一些</p> 
+<pre><code class="prism language-cpp">    <span class="token keyword">for</span> <span class="token punctuation">(</span><span class="token keyword">auto</span> obs <span class="token operator">=</span> landmark<span class="token operator">-&gt;</span>obs_<span class="token punctuation">.</span><span class="token function">rbegin</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span> obs <span class="token operator">!=</span> landmark<span class="token operator">-&gt;</span>obs_<span class="token punctuation">.</span><span class="token function">rend</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span> obs<span class="token operator">++</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+      <span class="token keyword">if</span> <span class="token punctuation">(</span>FramePtr f <span class="token operator">=</span> obs<span class="token operator">-&gt;</span>frame<span class="token punctuation">.</span><span class="token function">lock</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>f<span class="token operator">-&gt;</span><span class="token function">isKeyframe</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">&amp;&amp;</span> f<span class="token operator">-&gt;</span><span class="token function">id</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">&lt;</span> frame<span class="token operator">-&gt;</span><span class="token function">id</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">&amp;&amp;</span> f<span class="token operator">-&gt;</span>has_transform_<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>  <span class="token comment">// 这里理论上已经初始化过位姿了</span>
+          ref_frame <span class="token operator">=</span> f<span class="token punctuation">;</span> 
+          index_ref <span class="token operator">=</span> obs<span class="token operator">-&gt;</span>keypoint_index_<span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+      <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+</code></pre> 
+<p>而参考帧和当前帧之间也要满足视差要求，这样才会继续进行后面的三角化的过程</p> 
+<pre><code class="prism language-cpp">    <span class="token keyword">double</span> disparity <span class="token operator">=</span> <span class="token punctuation">(</span>ref_frame<span class="token operator">-&gt;</span>px_vec_<span class="token punctuation">.</span><span class="token function">col</span><span class="token punctuation">(</span>index_ref<span class="token punctuation">)</span> <span class="token operator">-</span> 
+      frame<span class="token operator">-&gt;</span>px_vec_<span class="token punctuation">.</span><span class="token function">col</span><span class="token punctuation">(</span>i<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">norm</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>disparity <span class="token operator">&lt;</span> options_<span class="token punctuation">.</span>min_disparity_init_landmark<span class="token punctuation">)</span> <span class="token keyword">continue</span><span class="token punctuation">;</span>
+</code></pre> 
+<p>之后就是三角化的步骤了，这里先得到两帧之间的变换关系，以及两帧的单位向量</p> 
+<pre><code class="prism language-cpp">    Transformation T_cur_ref <span class="token operator">=</span> frame<span class="token operator">-&gt;</span>T_f_w_ <span class="token operator">*</span> ref_frame<span class="token operator">-&gt;</span>T_f_w_<span class="token punctuation">.</span><span class="token function">inverse</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>	<span class="token comment">// 这里得到的是ref-cur吧</span>
+    BearingVector f_ref <span class="token operator">=</span> ref_frame<span class="token operator">-&gt;</span>f_vec_<span class="token punctuation">.</span><span class="token function">col</span><span class="token punctuation">(</span>index_ref<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    BearingVector f_cur <span class="token operator">=</span> frame<span class="token operator">-&gt;</span>f_vec_<span class="token punctuation">.</span><span class="token function">col</span><span class="token punctuation">(</span>i<span class="token punctuation">)</span><span class="token punctuation">;</span>
+</code></pre> 
+<p>接下来调用<code>depthFromTriangulation</code>函数进行三角化，这里的三角化应该是和SVO中相同的办法，就是直接法，很好推，下面进行一个公式豪放地推<br> <img src="https://images2.imgbox.com/9c/5a/lFsC5r82_o.jpg" alt="在这里插入图片描述"><br> 和代码也是可以直接对应上</p> 
+<pre><code class="prism language-cpp">FeatureMatcher<span class="token double-colon punctuation">::</span>MatchResult <span class="token function">depthFromTriangulation</span><span class="token punctuation">(</span>
+    <span class="token keyword">const</span> Transformation<span class="token operator">&amp;</span> T_search_ref<span class="token punctuation">,</span>
+    <span class="token keyword">const</span> Eigen<span class="token double-colon punctuation">::</span>Vector3d<span class="token operator">&amp;</span> f_ref<span class="token punctuation">,</span>
+    <span class="token keyword">const</span> Eigen<span class="token double-colon punctuation">::</span>Vector3d<span class="token operator">&amp;</span> f_cur<span class="token punctuation">,</span>
+    <span class="token keyword">double</span><span class="token operator">*</span> depth<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+  Eigen<span class="token double-colon punctuation">::</span>Matrix<span class="token operator">&lt;</span><span class="token keyword">double</span><span class="token punctuation">,</span><span class="token number">3</span><span class="token punctuation">,</span><span class="token number">2</span><span class="token operator">&gt;</span> A<span class="token punctuation">;</span> A <span class="token operator">&lt;&lt;</span> T_search_ref<span class="token punctuation">.</span><span class="token function">getRotation</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">rotate</span><span class="token punctuation">(</span>f_ref<span class="token punctuation">)</span><span class="token punctuation">,</span> f_cur<span class="token punctuation">;</span>
+  <span class="token keyword">const</span> Eigen<span class="token double-colon punctuation">::</span>Matrix2d AtA <span class="token operator">=</span> A<span class="token punctuation">.</span><span class="token function">transpose</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token operator">*</span>A<span class="token punctuation">;</span>
+  <span class="token keyword">if</span><span class="token punctuation">(</span>AtA<span class="token punctuation">.</span><span class="token function">determinant</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">&lt;</span> <span class="token number">0.000001</span><span class="token punctuation">)</span>
+    <span class="token keyword">return</span> FeatureMatcher<span class="token double-colon punctuation">::</span>MatchResult<span class="token double-colon punctuation">::</span>kFailTriangulation<span class="token punctuation">;</span>
+  <span class="token keyword">const</span> Eigen<span class="token double-colon punctuation">::</span>Vector2d depth2 <span class="token operator">=</span> <span class="token operator">-</span> AtA<span class="token punctuation">.</span><span class="token function">inverse</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token operator">*</span>A<span class="token punctuation">.</span><span class="token function">transpose</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token operator">*</span>T_search_ref<span class="token punctuation">.</span><span class="token function">getPosition</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+  <span class="token punctuation">(</span><span class="token operator">*</span>depth<span class="token punctuation">)</span> <span class="token operator">=</span> std<span class="token double-colon punctuation">::</span><span class="token function">fabs</span><span class="token punctuation">(</span>depth2<span class="token punctuation">[</span><span class="token number">0</span><span class="token punctuation">]</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+  <span class="token keyword">return</span> FeatureMatcher<span class="token double-colon punctuation">::</span>MatchResult<span class="token double-colon punctuation">::</span>kSuccess<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>下面就是再把坐标恢复出来了，这里还贴心地给了注释，要注意转换时的乘法顺序</p> 
+<pre><code class="prism language-cpp"><span class="token comment">// Note that the follow equation should not be T * f_ref * depth.</span>
+<span class="token comment">// Because the operater "*" is applied in homogeneous coordinate</span>
+landmark<span class="token operator">-&gt;</span>pos_ <span class="token operator">=</span> ref_frame<span class="token operator">-&gt;</span><span class="token function">T_world_cam</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">*</span> <span class="token punctuation">(</span>f_ref <span class="token operator">*</span> depth<span class="token punctuation">)</span><span class="token punctuation">;</span>
+</code></pre> 
+<p>接下来的这步是把特征点的<code>FeatureType</code>进行一下转换，也就是加上一个三角化过(或者说恢复过深度)的标志</p> 
+<pre><code class="prism language-cpp">    <span class="token keyword">for</span> <span class="token punctuation">(</span><span class="token keyword">auto</span> obs <span class="token operator">:</span> landmark<span class="token operator">-&gt;</span>obs_<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+      <span class="token keyword">if</span> <span class="token punctuation">(</span>FramePtr f <span class="token operator">=</span> obs<span class="token punctuation">.</span>frame<span class="token punctuation">.</span><span class="token function">lock</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token function">changeFeatureTypeToSeed</span><span class="token punctuation">(</span>f<span class="token operator">-&gt;</span>type_vec_<span class="token punctuation">[</span>obs<span class="token punctuation">.</span>keypoint_index_<span class="token punctuation">]</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+      <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+</code></pre> 
+<h3><a id="addImageMeasurementAndState_639"></a><code>addImageMeasurementAndState</code></h3> 
+<p>这个函数涉及到把当前帧观测加入的具体操作，首先根据当前帧和上一帧的时间差，对处理的频率进行判断(<strong>代码里设的是10Hz</strong>)</p> 
+<pre><code class="prism language-cpp">  <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span>frame_bundle<span class="token operator">-&gt;</span><span class="token function">isKeyframe</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">&amp;&amp;</span> frame_bundles_<span class="token punctuation">.</span><span class="token function">size</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">&gt;</span> <span class="token number">1</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">const</span> <span class="token keyword">double</span> t_last <span class="token operator">=</span> <span class="token function">lastFrameBundle</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token operator">-&gt;</span><span class="token function">getMinTimestampSeconds</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">const</span> <span class="token keyword">double</span> t_cur <span class="token operator">=</span> frame_bundle<span class="token operator">-&gt;</span><span class="token function">getMinTimestampSeconds</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>t_cur <span class="token operator">-</span> t_last <span class="token operator">&lt;</span> <span class="token number">1.0</span> <span class="token operator">/</span> visual_base_options_<span class="token punctuation">.</span>max_frequency<span class="token punctuation">)</span> <span class="token keyword">return</span> <span class="token boolean">false</span><span class="token punctuation">;</span>
+  <span class="token punctuation">}</span>
+</code></pre> 
+<p>接下来先加入IMU状态，这里其实没太看明白，函数声明的注释是</p> 
+<blockquote> 
+ <p>// Inserts a state inside or at ends of state window<br> // Retures the index of current added state in states_ buffer<br> // The pose block and speed and bias block will be added here, note that we do not extrinsics<br> // blocks here, it should be added by other sensor bases.<br> // If you want add a state at the front, you must specify the prior values.</p> 
+</blockquote> 
+<pre><code class="prism language-cpp">  <span class="token keyword">if</span> <span class="token punctuation">(</span>speed_and_bias <span class="token operator">!=</span> <span class="token class-name">SpeedAndBias</span><span class="token double-colon punctuation">::</span><span class="token function">Zero</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    index <span class="token operator">=</span> <span class="token function">insertImuState</span><span class="token punctuation">(</span>timestamp<span class="token punctuation">,</span> pose_id<span class="token punctuation">,</span>          <span class="token comment">// TODO 加入IMU状态</span>
+      <span class="token function">curFrame</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token operator">-&gt;</span><span class="token function">T_world_imu</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span> speed_and_bias<span class="token punctuation">,</span> <span class="token boolean">true</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+  <span class="token punctuation">}</span>
+  <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+    index <span class="token operator">=</span> <span class="token function">insertImuState</span><span class="token punctuation">(</span>timestamp<span class="token punctuation">,</span> pose_id<span class="token punctuation">)</span><span class="token punctuation">;</span>
+  <span class="token punctuation">}</span>
+</code></pre> 
+<p>接下来分别加入相机外参，进行三角化(<strong>视觉初始化阶段不会再三角化了</strong>)以及添加残差信息</p> 
+<pre><code class="prism language-cpp">  <span class="token comment">// camera extrinsics</span>
+  <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span>camera_extrinsics_id_<span class="token punctuation">.</span><span class="token function">valid</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    camera_extrinsics_id_ <span class="token operator">=</span> 
+      <span class="token function">addCameraExtrinsicsParameterBlock</span><span class="token punctuation">(</span>bundle_id<span class="token punctuation">,</span> <span class="token function">curFrame</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token operator">-&gt;</span><span class="token function">T_imu_cam</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+  <span class="token punctuation">}</span>
+
+  <span class="token comment">// Initialize landmarks</span>
+  <span class="token keyword">if</span> <span class="token punctuation">(</span>visual_initialized_ <span class="token operator">&amp;&amp;</span> <span class="token function">curFrame</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token operator">-&gt;</span><span class="token function">isKeyframe</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>  <span class="token comment">// 在最开始三角化的时候就不会进到这里</span>
+    <span class="token function">curFrame</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token operator">-&gt;</span><span class="token function">set_T_w_imu</span><span class="token punctuation">(</span><span class="token function">getPoseEstimate</span><span class="token punctuation">(</span>states_<span class="token punctuation">[</span>index<span class="token punctuation">]</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    feature_handler_<span class="token operator">-&gt;</span><span class="token function">initializeLandmarks</span><span class="token punctuation">(</span><span class="token function">curFrame</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>    <span class="token comment">// 三角化地图点</span>
+  <span class="token punctuation">}</span>
+
+  <span class="token comment">// Add Landmark parameters and minimal resiudals at keyframe</span>
+  <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">curFrame</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token operator">-&gt;</span><span class="token function">isKeyframe</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token function">addLandmarkParameterBlocksWithResiduals</span><span class="token punctuation">(</span><span class="token function">curFrame</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+  <span class="token punctuation">}</span>
+
+  <span class="token comment">// Add landmark observations</span>
+  <span class="token function">addReprojectionErrorResidualBlocks</span><span class="token punctuation">(</span>states_<span class="token punctuation">[</span>index<span class="token punctuation">]</span><span class="token punctuation">,</span> <span class="token function">curFrame</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span> <span class="token comment">// 重投影误差</span>
+</code></pre> 
+<h2><a id="_688"></a>总结</h2> 
+<p>这里只是把<strong>GINS及视觉初始化的流程梳理了一遍</strong>，初始化这里还涉及GNSS的图优化结构、IMU预积分等等，还没有深入地去看。以及这里我感觉初始化完全就是用了松组合，先是GINS，然后再把GINS初始化的结果拿给视觉用。</p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/657d172524b2ad0522755705d4705d26/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">windows下载安装启动nexus</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/16e0df6e2006e7cc9d17a220e498ed83/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">抓包导出的har格式解析</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

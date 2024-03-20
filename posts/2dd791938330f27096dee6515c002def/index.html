@@ -1,0 +1,946 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>u-boot分析（三）：main函数分析、uboot自拷贝和重定位 - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="u-boot分析（三）：main函数分析、uboot自拷贝和重定位" />
+<meta property="og:description" content="uboot分析三 1、main函数1.1 board_init_f_alloc_reserve函数1.2 board_init_f_init_reserve函数1.3 board_init_f函数1.3.1 initcall_run_list函数 1.4 relocate_code函数1.5 relocate_vectors函数1.6 c_runtime_cpu_setup 函数1.7 board_init_r 函数1.7.1 init_sequence_r 1、main函数 main函数代码如下。sp = CONFIG_SYS_INIT_SP_ADDR = 0X0091FF00, 未定义CONFIG_CPU_V7M，sp 8字节对齐，r0 = sp，执行 board_init_f_alloc_reserve函数。
+ENTRY(_main) /* * Set up initial C runtime environment and call board_init_f(0). */ #if defined(CONFIG_SPL_BUILD) &amp;&amp; defined(CONFIG_SPL_STACK) ldr	sp, =(CONFIG_SPL_STACK) #else ldr	sp, =(CONFIG_SYS_INIT_SP_ADDR) #endif #if defined(CONFIG_CPU_V7M)	/* v7M forbids using SP as BIC destination */ mov	r3, sp bic	r3, r3, #7 mov	sp, r3 #else bic	sp, sp, #7	/* 8-byte alignment for ABI compliance */ #endif mov	r0, sp bl	board_init_f_alloc_reserve mov	sp, r0 /* set up gd here, outside any C code */ mov	r9, r0 bl	board_init_f_init_reserve mov	r0, #0 bl	board_init_f #if !" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/2dd791938330f27096dee6515c002def/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2022-04-15T20:42:14+08:00" />
+<meta property="article:modified_time" content="2022-04-15T20:42:14+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">u-boot分析（三）：main函数分析、uboot自拷贝和重定位</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-light">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p></p> 
+<div class="toc"> 
+ <h4>uboot分析三</h4> 
+ <ul><li><a href="#1main_1" rel="nofollow">1、main函数</a></li><li><ul><li><a href="#11_board_init_f_alloc_reserve_118" rel="nofollow">1.1 board_init_f_alloc_reserve函数</a></li><li><a href="#12_board_init_f_init_reserve_140" rel="nofollow">1.2 board_init_f_init_reserve函数</a></li><li><a href="#13_board_init_f_183" rel="nofollow">1.3 board_init_f函数</a></li><li><ul><li><a href="#131_initcall_run_list_222" rel="nofollow">1.3.1 initcall_run_list函数</a></li></ul> 
+   </li><li><a href="#14_relocate_code_494" rel="nofollow">1.4 relocate_code函数</a></li><li><a href="#15_relocate_vectors_575" rel="nofollow">1.5 relocate_vectors函数</a></li><li><a href="#16_c_runtime_cpu_setup%09_618" rel="nofollow">1.6 c_runtime_cpu_setup 函数</a></li><li><a href="#17_board_init_r%09_636" rel="nofollow">1.7 board_init_r 函数</a></li><li><ul><li><a href="#171_init_sequence_r_667" rel="nofollow">1.7.1 init_sequence_r</a></li></ul> 
+  </li></ul> 
+ </li></ul> 
+</div> 
+<p></p> 
+<h2><a id="1main_1"></a>1、main函数</h2> 
+<p>main函数代码如下。sp = CONFIG_SYS_INIT_SP_ADDR = 0X0091FF00, 未定义CONFIG_CPU_V7M，sp 8字节对齐，r0 = sp，执行 board_init_f_alloc_reserve函数。</p> 
+<pre><code class="prism language-c"><span class="token function">ENTRY</span><span class="token punctuation">(</span>_main<span class="token punctuation">)</span>
+
+<span class="token comment">/*
+ * Set up initial C runtime environment and call board_init_f(0).
+ */</span>
+
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">if</span> <span class="token expression"><span class="token function">defined</span><span class="token punctuation">(</span>CONFIG_SPL_BUILD<span class="token punctuation">)</span> <span class="token operator">&amp;&amp;</span> <span class="token function">defined</span><span class="token punctuation">(</span>CONFIG_SPL_STACK<span class="token punctuation">)</span></span></span>
+	ldr	sp<span class="token punctuation">,</span> <span class="token operator">=</span><span class="token punctuation">(</span>CONFIG_SPL_STACK<span class="token punctuation">)</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">else</span></span>
+	ldr	sp<span class="token punctuation">,</span> <span class="token operator">=</span><span class="token punctuation">(</span>CONFIG_SYS_INIT_SP_ADDR<span class="token punctuation">)</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">if</span> <span class="token expression"><span class="token function">defined</span><span class="token punctuation">(</span>CONFIG_CPU_V7M<span class="token punctuation">)</span>	</span><span class="token comment">/* v7M forbids using SP as BIC destination */</span></span>
+	mov	r3<span class="token punctuation">,</span> sp
+	bic	r3<span class="token punctuation">,</span> r3<span class="token punctuation">,</span> #<span class="token number">7</span>
+	mov	sp<span class="token punctuation">,</span> r3
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">else</span></span>
+	bic	sp<span class="token punctuation">,</span> sp<span class="token punctuation">,</span> #<span class="token number">7</span>	<span class="token comment">/* 8-byte alignment for ABI compliance */</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+	mov	r0<span class="token punctuation">,</span> sp
+	bl	board_init_f_alloc_reserve
+	mov	sp<span class="token punctuation">,</span> r0
+	<span class="token comment">/* set up gd here, outside any C code */</span>
+	mov	r9<span class="token punctuation">,</span> r0
+	bl	board_init_f_init_reserve
+
+	mov	r0<span class="token punctuation">,</span> #<span class="token number">0</span>
+	bl	board_init_f
+
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">if</span> <span class="token expression"><span class="token operator">!</span> <span class="token function">defined</span><span class="token punctuation">(</span>CONFIG_SPL_BUILD<span class="token punctuation">)</span></span></span>
+
+<span class="token comment">/*
+ * Set up intermediate environment (new sp and gd) and call
+ * relocate_code(addr_moni). Trick here is that we'll return
+ * 'here' but relocated.
+ */</span>
+
+	ldr	sp<span class="token punctuation">,</span> <span class="token punctuation">[</span>r9<span class="token punctuation">,</span> #GD_START_ADDR_SP<span class="token punctuation">]</span>	<span class="token comment">/* sp = gd-&gt;start_addr_sp */</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">if</span> <span class="token expression"><span class="token function">defined</span><span class="token punctuation">(</span>CONFIG_CPU_V7M<span class="token punctuation">)</span>	</span><span class="token comment">/* v7M forbids using SP as BIC destination */</span></span>
+	mov	r3<span class="token punctuation">,</span> sp
+	bic	r3<span class="token punctuation">,</span> r3<span class="token punctuation">,</span> #<span class="token number">7</span>
+	mov	sp<span class="token punctuation">,</span> r3
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">else</span></span>
+	bic	sp<span class="token punctuation">,</span> sp<span class="token punctuation">,</span> #<span class="token number">7</span>	<span class="token comment">/* 8-byte alignment for ABI compliance */</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+	ldr	r9<span class="token punctuation">,</span> <span class="token punctuation">[</span>r9<span class="token punctuation">,</span> #GD_BD<span class="token punctuation">]</span>		<span class="token comment">/* r9 = gd-&gt;bd */</span>
+	sub	r9<span class="token punctuation">,</span> r9<span class="token punctuation">,</span> #GD_SIZE		<span class="token comment">/* new GD is below bd */</span>
+
+	adr	lr<span class="token punctuation">,</span> here
+	ldr	r0<span class="token punctuation">,</span> <span class="token punctuation">[</span>r9<span class="token punctuation">,</span> #GD_RELOC_OFF<span class="token punctuation">]</span>		<span class="token comment">/* r0 = gd-&gt;reloc_off */</span>
+	add	lr<span class="token punctuation">,</span> lr<span class="token punctuation">,</span> r0
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">if</span> <span class="token expression"><span class="token function">defined</span><span class="token punctuation">(</span>CONFIG_CPU_V7M<span class="token punctuation">)</span></span></span>
+	orr	lr<span class="token punctuation">,</span> #<span class="token number">1</span>				<span class="token comment">/* As required by Thumb-only */</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+	ldr	r0<span class="token punctuation">,</span> <span class="token punctuation">[</span>r9<span class="token punctuation">,</span> #GD_RELOCADDR<span class="token punctuation">]</span>		<span class="token comment">/* r0 = gd-&gt;relocaddr */</span>
+	b	relocate_code
+here<span class="token operator">:</span>
+<span class="token comment">/*
+ * now relocate vectors
+ */</span>
+
+	bl	relocate_vectors
+
+<span class="token comment">/* Set up final (full) environment */</span>
+
+	bl	c_runtime_cpu_setup	<span class="token comment">/* we still call old routine here */</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">if</span> <span class="token expression"><span class="token operator">!</span><span class="token function">defined</span><span class="token punctuation">(</span>CONFIG_SPL_BUILD<span class="token punctuation">)</span> <span class="token operator">||</span> <span class="token function">defined</span><span class="token punctuation">(</span>CONFIG_SPL_FRAMEWORK<span class="token punctuation">)</span></span></span>
+<span class="token macro property"><span class="token directive-hash">#</span> <span class="token directive keyword">ifdef</span> <span class="token expression">CONFIG_SPL_BUILD</span></span>
+	<span class="token comment">/* Use a DRAM stack for the rest of SPL, if requested */</span>
+	bl	spl_relocate_stack_gd
+	cmp	r0<span class="token punctuation">,</span> #<span class="token number">0</span>
+	movne	sp<span class="token punctuation">,</span> r0
+	movne	r9<span class="token punctuation">,</span> r0
+<span class="token macro property"><span class="token directive-hash">#</span> <span class="token directive keyword">endif</span></span>
+	ldr	r0<span class="token punctuation">,</span> <span class="token operator">=</span>__bss_start	<span class="token comment">/* this is auto-relocated! */</span>
+
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">ifdef</span> <span class="token expression">CONFIG_USE_ARCH_MEMSET</span></span>
+	ldr	r3<span class="token punctuation">,</span> <span class="token operator">=</span>__bss_end		<span class="token comment">/* this is auto-relocated! */</span>
+	mov	r1<span class="token punctuation">,</span> #<span class="token number">0x00000000</span>		<span class="token comment">/* prepare zero to clear BSS */</span>
+
+	subs	r2<span class="token punctuation">,</span> r3<span class="token punctuation">,</span> r0		<span class="token comment">/* r2 = memset len */</span>
+	bl	memset
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">else</span></span>
+	ldr	r1<span class="token punctuation">,</span> <span class="token operator">=</span>__bss_end		<span class="token comment">/* this is auto-relocated! */</span>
+	mov	r2<span class="token punctuation">,</span> #<span class="token number">0x00000000</span>		<span class="token comment">/* prepare zero to clear BSS */</span>
+
+clbss_l<span class="token operator">:</span>cmp	r0<span class="token punctuation">,</span> r1			<span class="token comment">/* while not at end of BSS */</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">if</span> <span class="token expression"><span class="token function">defined</span><span class="token punctuation">(</span>CONFIG_CPU_V7M<span class="token punctuation">)</span></span></span>
+	itt	lo
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+	strlo	r2<span class="token punctuation">,</span> <span class="token punctuation">[</span>r0<span class="token punctuation">]</span>		<span class="token comment">/* clear 32-bit BSS word */</span>
+	addlo	r0<span class="token punctuation">,</span> r0<span class="token punctuation">,</span> #<span class="token number">4</span>		<span class="token comment">/* move to next */</span>
+	blo	clbss_l
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">if</span> <span class="token expression"><span class="token operator">!</span> <span class="token function">defined</span><span class="token punctuation">(</span>CONFIG_SPL_BUILD<span class="token punctuation">)</span></span></span>
+	bl coloured_LED_init
+	bl red_led_on
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+	<span class="token comment">/* call board_init_r(gd_t *id, ulong dest_addr) */</span>
+	mov     r0<span class="token punctuation">,</span> r9                  <span class="token comment">/* gd_t */</span>
+	ldr	r1<span class="token punctuation">,</span> <span class="token punctuation">[</span>r9<span class="token punctuation">,</span> #GD_RELOCADDR<span class="token punctuation">]</span>	<span class="token comment">/* dest_addr */</span>
+	<span class="token comment">/* call board_init_r */</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">if</span> <span class="token expression"><span class="token function">defined</span><span class="token punctuation">(</span>CONFIG_SYS_THUMB_BUILD<span class="token punctuation">)</span></span></span>
+	ldr	lr<span class="token punctuation">,</span> <span class="token operator">=</span>board_init_r	<span class="token comment">/* this is auto-relocated! */</span>
+	bx	lr
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">else</span></span>
+	ldr	pc<span class="token punctuation">,</span> <span class="token operator">=</span>board_init_r	<span class="token comment">/* this is auto-relocated! */</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+	<span class="token comment">/* we should not return here. */</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+
+<span class="token function">ENDPROC</span><span class="token punctuation">(</span>_main<span class="token punctuation">)</span>
+</code></pre> 
+<h3><a id="11_board_init_f_alloc_reserve_118"></a>1.1 board_init_f_alloc_reserve函数</h3> 
+<p>board_init_f_alloc_reserve函数如下，在main函数部分r0 = sp，board_init_f_alloc_reserve 的top = r0，执行完之后，sp = r0 = (0X0091FB00 -248 ) - (0X0091FB00 -248 )%16 = 0X0091FA00, r9 = r0，将gdata地址设置成0X0091FA00，此时去执行board_init_f_init_reserve函数。base = r0 = 0X0091FA00，执行完base = base +roundup(248,16) =0X0091FA00 + 0X100 = 0X0091FB00</p> 
+<pre><code class="prism language-c">ulong <span class="token function">board_init_f_alloc_reserve</span><span class="token punctuation">(</span>ulong top<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token comment">/* Reserve early malloc arena */</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">if</span> <span class="token expression"><span class="token function">defined</span><span class="token punctuation">(</span>CONFIG_SYS_MALLOC_F<span class="token punctuation">)</span></span></span>
+	top <span class="token operator">-=</span> CONFIG_SYS_MALLOC_F_LEN<span class="token punctuation">;</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+	<span class="token comment">/* LAST : reserve GD (rounded up to a multiple of 16 bytes) */</span>
+	top <span class="token operator">=</span> <span class="token function">rounddown</span><span class="token punctuation">(</span>top<span class="token operator">-</span><span class="token keyword">sizeof</span><span class="token punctuation">(</span><span class="token keyword">struct</span> <span class="token class-name">global_data</span><span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token number">16</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+	<span class="token keyword">return</span> top<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name function">rounddown</span><span class="token expression"><span class="token punctuation">(</span>x<span class="token punctuation">,</span> y<span class="token punctuation">)</span> <span class="token punctuation">(</span>				</span><span class="token punctuation">\</span>
+<span class="token expression"><span class="token punctuation">{<!-- --></span>							</span><span class="token punctuation">\</span>
+	<span class="token expression"><span class="token keyword">typeof</span><span class="token punctuation">(</span>x<span class="token punctuation">)</span> __x <span class="token operator">=</span> <span class="token punctuation">(</span>x<span class="token punctuation">)</span><span class="token punctuation">;</span>				</span><span class="token punctuation">\</span>
+	<span class="token expression">__x <span class="token operator">-</span> <span class="token punctuation">(</span>__x <span class="token operator">%</span> <span class="token punctuation">(</span>y<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>				</span><span class="token punctuation">\</span>
+<span class="token expression"><span class="token punctuation">}</span>							</span><span class="token punctuation">\</span>
+<span class="token expression"><span class="token punctuation">)</span></span></span>
+</code></pre> 
+<h3><a id="12_board_init_f_init_reserve_140"></a>1.2 board_init_f_init_reserve函数</h3> 
+<p>board_init_f_init_reserve函数代码如下。gd 这个变量通过 DECLARE_GLOBAL_DATA_PTR 定义，这个变量的作用是用来存储 uboot 需要使用到的全局变量，这样可以减少全局变量的数量，方便他人阅读代码。具体的作用可以从结构体成员中得知。 bd 这个成员变量的主要作用是用来保存一些和板级相关的信息，如波特率、ip 地址等。</p> 
+<pre><code class="prism language-c"><span class="token keyword">void</span> <span class="token function">board_init_f_init_reserve</span><span class="token punctuation">(</span>ulong base<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token keyword">struct</span> <span class="token class-name">global_data</span> <span class="token operator">*</span>gd_ptr<span class="token punctuation">;</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">ifndef</span> <span class="token expression">_USE_MEMCPY</span></span>
+	<span class="token keyword">int</span> <span class="token operator">*</span>ptr<span class="token punctuation">;</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+
+	<span class="token comment">/*
+	 * clear GD entirely and set it up.
+	 * Use gd_ptr, as gd may not be properly set yet.
+	 */</span>
+
+	gd_ptr <span class="token operator">=</span> <span class="token punctuation">(</span><span class="token keyword">struct</span> <span class="token class-name">global_data</span> <span class="token operator">*</span><span class="token punctuation">)</span>base<span class="token punctuation">;</span>
+	<span class="token comment">/* zero the area */</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">ifdef</span> <span class="token expression">_USE_MEMCPY</span></span>
+	<span class="token function">memset</span><span class="token punctuation">(</span>gd_ptr<span class="token punctuation">,</span> <span class="token string">'\0'</span><span class="token punctuation">,</span> <span class="token keyword">sizeof</span><span class="token punctuation">(</span><span class="token operator">*</span>gd<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">else</span></span>
+	<span class="token keyword">for</span> <span class="token punctuation">(</span>ptr <span class="token operator">=</span> <span class="token punctuation">(</span><span class="token keyword">int</span> <span class="token operator">*</span><span class="token punctuation">)</span>gd_ptr<span class="token punctuation">;</span> ptr <span class="token operator">&lt;</span> <span class="token punctuation">(</span><span class="token keyword">int</span> <span class="token operator">*</span><span class="token punctuation">)</span><span class="token punctuation">(</span>gd_ptr <span class="token operator">+</span> <span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">;</span> <span class="token punctuation">)</span>
+		<span class="token operator">*</span>ptr<span class="token operator">++</span> <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+	<span class="token comment">/* set GD unless architecture did it already */</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">if</span> <span class="token expression"><span class="token operator">!</span><span class="token function">defined</span><span class="token punctuation">(</span>CONFIG_ARM<span class="token punctuation">)</span></span></span>
+	<span class="token function">arch_setup_gd</span><span class="token punctuation">(</span>gd_ptr<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+	<span class="token comment">/* next alloc will be higher by one GD plus 16-byte alignment */</span>
+	base <span class="token operator">+=</span> <span class="token function">roundup</span><span class="token punctuation">(</span><span class="token keyword">sizeof</span><span class="token punctuation">(</span><span class="token keyword">struct</span> <span class="token class-name">global_data</span><span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token number">16</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+	<span class="token comment">/*
+	 * record early malloc arena start.
+	 * Use gd as it is now properly set for all architectures.
+	 */</span>
+
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">if</span> <span class="token expression"><span class="token function">defined</span><span class="token punctuation">(</span>CONFIG_SYS_MALLOC_F<span class="token punctuation">)</span></span></span>
+	<span class="token comment">/* go down one 'early malloc arena' */</span>
+	gd<span class="token operator">-&gt;</span>malloc_base <span class="token operator">=</span> base<span class="token punctuation">;</span>
+	<span class="token comment">/* next alloc will be higher by one 'early malloc arena' size */</span>
+	base <span class="token operator">+=</span> CONFIG_SYS_MALLOC_F_LEN<span class="token punctuation">;</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<h3><a id="13_board_init_f_183"></a>1.3 board_init_f函数</h3> 
+<p>board_init_f_init_reserve函数执行完后，r0 = 0；board_init_f函数代码如下。主要运行initcall_run_list函数初始化序列init_sequence_f里面男的一系列函数</p> 
+<pre><code class="prism language-c"><span class="token keyword">void</span> <span class="token function">board_init_f</span><span class="token punctuation">(</span>ulong boot_flags<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">ifdef</span> <span class="token expression">CONFIG_SYS_GENERIC_GLOBAL_DATA</span></span>
+	<span class="token comment">/*
+	 * For some archtectures, global data is initialized and used before
+	 * calling this function. The data should be preserved. For others,
+	 * CONFIG_SYS_GENERIC_GLOBAL_DATA should be defined and use the stack
+	 * here to host global data until relocation.
+	 */</span>
+	<span class="token class-name">gd_t</span> data<span class="token punctuation">;</span>
+
+	gd <span class="token operator">=</span> <span class="token operator">&amp;</span>data<span class="token punctuation">;</span>
+
+	<span class="token comment">/*
+	 * Clear global data before it is accessed at debug print
+	 * in initcall_run_list. Otherwise the debug print probably
+	 * get the wrong vaule of gd-&gt;have_console.
+	 */</span>
+	<span class="token function">zero_global_data</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+
+	gd<span class="token operator">-&gt;</span>flags <span class="token operator">=</span> boot_flags<span class="token punctuation">;</span>
+	gd<span class="token operator">-&gt;</span>have_console <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+
+	<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">initcall_run_list</span><span class="token punctuation">(</span>init_sequence_f<span class="token punctuation">)</span><span class="token punctuation">)</span>
+		<span class="token function">hang</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">if</span> <span class="token expression"><span class="token operator">!</span><span class="token function">defined</span><span class="token punctuation">(</span>CONFIG_ARM<span class="token punctuation">)</span> <span class="token operator">&amp;&amp;</span> <span class="token operator">!</span><span class="token function">defined</span><span class="token punctuation">(</span>CONFIG_SANDBOX<span class="token punctuation">)</span> <span class="token operator">&amp;&amp;</span> </span><span class="token punctuation">\</span>
+		<span class="token expression"><span class="token operator">!</span><span class="token function">defined</span><span class="token punctuation">(</span>CONFIG_EFI_APP<span class="token punctuation">)</span></span></span>
+	<span class="token comment">/* NOTREACHED - jump_to_copy() does not return */</span>
+	<span class="token function">hang</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<h4><a id="131_initcall_run_list_222"></a>1.3.1 initcall_run_list函数</h4> 
+<p>函数代码如下，遍历执行init_sequence里面的函数。</p> 
+<pre><code class="prism language-c"><span class="token keyword">int</span> <span class="token function">initcall_run_list</span><span class="token punctuation">(</span><span class="token keyword">const</span> <span class="token class-name">init_fnc_t</span> init_sequence<span class="token punctuation">[</span><span class="token punctuation">]</span><span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token keyword">const</span> <span class="token class-name">init_fnc_t</span> <span class="token operator">*</span>init_fnc_ptr<span class="token punctuation">;</span>
+
+	<span class="token keyword">for</span> <span class="token punctuation">(</span>init_fnc_ptr <span class="token operator">=</span> init_sequence<span class="token punctuation">;</span> <span class="token operator">*</span>init_fnc_ptr<span class="token punctuation">;</span> <span class="token operator">++</span>init_fnc_ptr<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token keyword">unsigned</span> <span class="token keyword">long</span> reloc_ofs <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+		<span class="token keyword">int</span> ret<span class="token punctuation">;</span>
+
+		<span class="token keyword">if</span> <span class="token punctuation">(</span>gd<span class="token operator">-&gt;</span>flags <span class="token operator">&amp;</span> GD_FLG_RELOC<span class="token punctuation">)</span>
+			reloc_ofs <span class="token operator">=</span> gd<span class="token operator">-&gt;</span>reloc_off<span class="token punctuation">;</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">ifdef</span> <span class="token expression">CONFIG_EFI_APP</span></span>
+		reloc_ofs <span class="token operator">=</span> <span class="token punctuation">(</span><span class="token keyword">unsigned</span> <span class="token keyword">long</span><span class="token punctuation">)</span>image_base<span class="token punctuation">;</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+		<span class="token function">debug</span><span class="token punctuation">(</span><span class="token string">"initcall: %p"</span><span class="token punctuation">,</span> <span class="token punctuation">(</span><span class="token keyword">char</span> <span class="token operator">*</span><span class="token punctuation">)</span><span class="token operator">*</span>init_fnc_ptr <span class="token operator">-</span> reloc_ofs<span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token keyword">if</span> <span class="token punctuation">(</span>gd<span class="token operator">-&gt;</span>flags <span class="token operator">&amp;</span> GD_FLG_RELOC<span class="token punctuation">)</span>
+			<span class="token function">debug</span><span class="token punctuation">(</span><span class="token string">" (relocated to %p)\n"</span><span class="token punctuation">,</span> <span class="token punctuation">(</span><span class="token keyword">char</span> <span class="token operator">*</span><span class="token punctuation">)</span><span class="token operator">*</span>init_fnc_ptr<span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token keyword">else</span>
+			<span class="token function">debug</span><span class="token punctuation">(</span><span class="token string">"\n"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+		ret <span class="token operator">=</span> <span class="token punctuation">(</span><span class="token operator">*</span>init_fnc_ptr<span class="token punctuation">)</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token keyword">if</span> <span class="token punctuation">(</span>ret<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+			<span class="token function">printf</span><span class="token punctuation">(</span><span class="token string">"initcall sequence %p failed at call %p (err=%d)\n"</span><span class="token punctuation">,</span>
+			       init_sequence<span class="token punctuation">,</span>
+			       <span class="token punctuation">(</span><span class="token keyword">char</span> <span class="token operator">*</span><span class="token punctuation">)</span><span class="token operator">*</span>init_fnc_ptr <span class="token operator">-</span> reloc_ofs<span class="token punctuation">,</span> ret<span class="token punctuation">)</span><span class="token punctuation">;</span>
+			<span class="token keyword">return</span> <span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">;</span>
+		<span class="token punctuation">}</span>
+	<span class="token punctuation">}</span>
+	<span class="token keyword">return</span> <span class="token number">0</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+</code></pre> 
+<p>init_sequence_f序列里面包含了一些列的函数，代码如下。</p> 
+<pre><code class="prism language-c"><span class="token keyword">static</span> <span class="token class-name">init_fnc_t</span> init_sequence_f<span class="token punctuation">[</span><span class="token punctuation">]</span> <span class="token operator">=</span> <span class="token punctuation">{<!-- --></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">ifdef</span> <span class="token expression">CONFIG_SANDBOX</span></span>
+	setup_ram_buf<span class="token punctuation">,</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+	setup_mon_len<span class="token punctuation">,</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">ifdef</span> <span class="token expression">CONFIG_OF_CONTROL</span></span>
+	fdtdec_setup<span class="token punctuation">,</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">ifdef</span> <span class="token expression">CONFIG_TRACE</span></span>
+	trace_early_init<span class="token punctuation">,</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+	initf_malloc<span class="token punctuation">,</span>
+	initf_console_record<span class="token punctuation">,</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">if</span> <span class="token expression"><span class="token function">defined</span><span class="token punctuation">(</span>CONFIG_MPC85xx<span class="token punctuation">)</span> <span class="token operator">||</span> <span class="token function">defined</span><span class="token punctuation">(</span>CONFIG_MPC86xx<span class="token punctuation">)</span></span></span>
+	<span class="token comment">/* TODO: can this go into arch_cpu_init()? */</span>
+	probecpu<span class="token punctuation">,</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">if</span> <span class="token expression"><span class="token function">defined</span><span class="token punctuation">(</span>CONFIG_X86<span class="token punctuation">)</span> <span class="token operator">&amp;&amp;</span> <span class="token function">defined</span><span class="token punctuation">(</span>CONFIG_HAVE_FSP<span class="token punctuation">)</span></span></span>
+	x86_fsp_init<span class="token punctuation">,</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+	arch_cpu_init<span class="token punctuation">,</span>		<span class="token comment">/* basic arch cpu dependent setup */</span>
+	initf_dm<span class="token punctuation">,</span>
+	arch_cpu_init_dm<span class="token punctuation">,</span>
+	mark_bootstage<span class="token punctuation">,</span>		<span class="token comment">/* need timer, go after init dm */</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">if</span> <span class="token expression"><span class="token function">defined</span><span class="token punctuation">(</span>CONFIG_BOARD_EARLY_INIT_F<span class="token punctuation">)</span></span></span>
+	board_early_init_f<span class="token punctuation">,</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+	<span class="token comment">/* TODO: can any of this go into arch_cpu_init()? */</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">if</span> <span class="token expression"><span class="token function">defined</span><span class="token punctuation">(</span>CONFIG_PPC<span class="token punctuation">)</span> <span class="token operator">&amp;&amp;</span> <span class="token operator">!</span><span class="token function">defined</span><span class="token punctuation">(</span>CONFIG_8xx_CPUCLK_DEFAULT<span class="token punctuation">)</span></span></span>
+	get_clocks<span class="token punctuation">,</span>		<span class="token comment">/* get CPU and bus clocks (etc.) */</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">if</span> <span class="token expression"><span class="token function">defined</span><span class="token punctuation">(</span>CONFIG_TQM8xxL<span class="token punctuation">)</span> <span class="token operator">&amp;&amp;</span> <span class="token operator">!</span><span class="token function">defined</span><span class="token punctuation">(</span>CONFIG_TQM866M<span class="token punctuation">)</span> </span><span class="token punctuation">\</span>
+		<span class="token expression"><span class="token operator">&amp;&amp;</span> <span class="token operator">!</span><span class="token function">defined</span><span class="token punctuation">(</span>CONFIG_TQM885D<span class="token punctuation">)</span></span></span>
+	adjust_sdram_tbs_8xx<span class="token punctuation">,</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+	<span class="token comment">/* TODO: can we rename this to timer_init()? */</span>
+	init_timebase<span class="token punctuation">,</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">if</span> <span class="token expression"><span class="token function">defined</span><span class="token punctuation">(</span>CONFIG_ARM<span class="token punctuation">)</span> <span class="token operator">||</span> <span class="token function">defined</span><span class="token punctuation">(</span>CONFIG_MIPS<span class="token punctuation">)</span> <span class="token operator">||</span> </span><span class="token punctuation">\</span>
+		<span class="token expression"><span class="token function">defined</span><span class="token punctuation">(</span>CONFIG_BLACKFIN<span class="token punctuation">)</span> <span class="token operator">||</span> <span class="token function">defined</span><span class="token punctuation">(</span>CONFIG_NDS32<span class="token punctuation">)</span> <span class="token operator">||</span> </span><span class="token punctuation">\</span>
+		<span class="token expression"><span class="token function">defined</span><span class="token punctuation">(</span>CONFIG_SPARC<span class="token punctuation">)</span></span></span>
+	timer_init<span class="token punctuation">,</span>		<span class="token comment">/* initialize timer */</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">ifdef</span> <span class="token expression">CONFIG_SYS_ALLOC_DPRAM</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">if</span> <span class="token expression"><span class="token operator">!</span><span class="token function">defined</span><span class="token punctuation">(</span>CONFIG_CPM2<span class="token punctuation">)</span></span></span>
+	dpram_init<span class="token punctuation">,</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">if</span> <span class="token expression"><span class="token function">defined</span><span class="token punctuation">(</span>CONFIG_BOARD_POSTCLK_INIT<span class="token punctuation">)</span></span></span>
+	board_postclk_init<span class="token punctuation">,</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">if</span> <span class="token expression"><span class="token function">defined</span><span class="token punctuation">(</span>CONFIG_SYS_FSL_CLK<span class="token punctuation">)</span> <span class="token operator">||</span> <span class="token function">defined</span><span class="token punctuation">(</span>CONFIG_M68K<span class="token punctuation">)</span></span></span>
+	get_clocks<span class="token punctuation">,</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+	env_init<span class="token punctuation">,</span>		<span class="token comment">/* initialize environment */</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">if</span> <span class="token expression"><span class="token function">defined</span><span class="token punctuation">(</span>CONFIG_8xx_CPUCLK_DEFAULT<span class="token punctuation">)</span></span></span>
+	<span class="token comment">/* get CPU and bus clocks according to the environment variable */</span>
+	get_clocks_866<span class="token punctuation">,</span>
+	<span class="token comment">/* adjust sdram refresh rate according to the new clock */</span>
+	sdram_adjust_866<span class="token punctuation">,</span>
+	init_timebase<span class="token punctuation">,</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+	init_baud_rate<span class="token punctuation">,</span>		<span class="token comment">/* initialze baudrate settings */</span>
+	serial_init<span class="token punctuation">,</span>		<span class="token comment">/* serial communications setup */</span>
+	console_init_f<span class="token punctuation">,</span>		<span class="token comment">/* stage 1 init of console */</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">ifdef</span> <span class="token expression">CONFIG_SANDBOX</span></span>
+	sandbox_early_getopt_check<span class="token punctuation">,</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">ifdef</span> <span class="token expression">CONFIG_OF_CONTROL</span></span>
+	fdtdec_prepare_fdt<span class="token punctuation">,</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+	display_options<span class="token punctuation">,</span>	<span class="token comment">/* say that we are here */</span>
+	display_text_info<span class="token punctuation">,</span>	<span class="token comment">/* show debugging info if required */</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">if</span> <span class="token expression"><span class="token function">defined</span><span class="token punctuation">(</span>CONFIG_MPC8260<span class="token punctuation">)</span></span></span>
+	prt_8260_rsr<span class="token punctuation">,</span>
+	prt_8260_clks<span class="token punctuation">,</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span> <span class="token comment">/* CONFIG_MPC8260 */</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">if</span> <span class="token expression"><span class="token function">defined</span><span class="token punctuation">(</span>CONFIG_MPC83xx<span class="token punctuation">)</span></span></span>
+	prt_83xx_rsr<span class="token punctuation">,</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">if</span> <span class="token expression"><span class="token function">defined</span><span class="token punctuation">(</span>CONFIG_PPC<span class="token punctuation">)</span> <span class="token operator">||</span> <span class="token function">defined</span><span class="token punctuation">(</span>CONFIG_M68K<span class="token punctuation">)</span></span></span>
+	checkcpu<span class="token punctuation">,</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+	print_cpuinfo<span class="token punctuation">,</span>		<span class="token comment">/* display cpu info (and speed) */</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">if</span> <span class="token expression"><span class="token function">defined</span><span class="token punctuation">(</span>CONFIG_MPC5xxx<span class="token punctuation">)</span></span></span>
+	prt_mpc5xxx_clks<span class="token punctuation">,</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span> <span class="token comment">/* CONFIG_MPC5xxx */</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">if</span> <span class="token expression"><span class="token function">defined</span><span class="token punctuation">(</span>CONFIG_DISPLAY_BOARDINFO<span class="token punctuation">)</span></span></span>
+	show_board_info<span class="token punctuation">,</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+	INIT_FUNC_WATCHDOG_INIT
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">if</span> <span class="token expression"><span class="token function">defined</span><span class="token punctuation">(</span>CONFIG_MISC_INIT_F<span class="token punctuation">)</span></span></span>
+	misc_init_f<span class="token punctuation">,</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+	INIT_FUNC_WATCHDOG_RESET
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">if</span> <span class="token expression"><span class="token function">defined</span><span class="token punctuation">(</span>CONFIG_HARD_I2C<span class="token punctuation">)</span> <span class="token operator">||</span> <span class="token function">defined</span><span class="token punctuation">(</span>CONFIG_SYS_I2C<span class="token punctuation">)</span></span></span>
+	init_func_i2c<span class="token punctuation">,</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">if</span> <span class="token expression"><span class="token function">defined</span><span class="token punctuation">(</span>CONFIG_HARD_SPI<span class="token punctuation">)</span></span></span>
+	init_func_spi<span class="token punctuation">,</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+	announce_dram_init<span class="token punctuation">,</span>
+	<span class="token comment">/* TODO: unify all these dram functions? */</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">if</span> <span class="token expression"><span class="token function">defined</span><span class="token punctuation">(</span>CONFIG_ARM<span class="token punctuation">)</span> <span class="token operator">||</span> <span class="token function">defined</span><span class="token punctuation">(</span>CONFIG_X86<span class="token punctuation">)</span> <span class="token operator">||</span> <span class="token function">defined</span><span class="token punctuation">(</span>CONFIG_NDS32<span class="token punctuation">)</span> <span class="token operator">||</span> </span><span class="token punctuation">\</span>
+		<span class="token expression"><span class="token function">defined</span><span class="token punctuation">(</span>CONFIG_MICROBLAZE<span class="token punctuation">)</span> <span class="token operator">||</span> <span class="token function">defined</span><span class="token punctuation">(</span>CONFIG_AVR32<span class="token punctuation">)</span></span></span>
+	dram_init<span class="token punctuation">,</span>		<span class="token comment">/* configure available RAM banks */</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">if</span> <span class="token expression"><span class="token function">defined</span><span class="token punctuation">(</span>CONFIG_MIPS<span class="token punctuation">)</span> <span class="token operator">||</span> <span class="token function">defined</span><span class="token punctuation">(</span>CONFIG_PPC<span class="token punctuation">)</span> <span class="token operator">||</span> <span class="token function">defined</span><span class="token punctuation">(</span>CONFIG_M68K<span class="token punctuation">)</span></span></span>
+	init_func_ram<span class="token punctuation">,</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">ifdef</span> <span class="token expression">CONFIG_POST</span></span>
+	post_init_f<span class="token punctuation">,</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+	INIT_FUNC_WATCHDOG_RESET
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">if</span> <span class="token expression"><span class="token function">defined</span><span class="token punctuation">(</span>CONFIG_SYS_DRAM_TEST<span class="token punctuation">)</span></span></span>
+	testdram<span class="token punctuation">,</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span> <span class="token comment">/* CONFIG_SYS_DRAM_TEST */</span></span>
+	INIT_FUNC_WATCHDOG_RESET
+
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">ifdef</span> <span class="token expression">CONFIG_POST</span></span>
+	init_post<span class="token punctuation">,</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+	INIT_FUNC_WATCHDOG_RESET
+	<span class="token comment">/*
+	 * Now that we have DRAM mapped and working, we can
+	 * relocate the code and continue running from DRAM.
+	 *
+	 * Reserve memory at end of RAM for (top down in that order):
+	 *  - area that won't get touched by U-Boot and Linux (optional)
+	 *  - kernel log buffer
+	 *  - protected RAM
+	 *  - LCD framebuffer
+	 *  - monitor code
+	 *  - board info struct
+	 */</span>
+	setup_dest_addr<span class="token punctuation">,</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">if</span> <span class="token expression"><span class="token function">defined</span><span class="token punctuation">(</span>CONFIG_BLACKFIN<span class="token punctuation">)</span></span></span>
+	<span class="token comment">/* Blackfin u-boot monitor should be on top of the ram */</span>
+	reserve_uboot<span class="token punctuation">,</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">if</span> <span class="token expression"><span class="token function">defined</span><span class="token punctuation">(</span>CONFIG_SPARC<span class="token punctuation">)</span></span></span>
+	reserve_prom<span class="token punctuation">,</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">if</span> <span class="token expression"><span class="token function">defined</span><span class="token punctuation">(</span>CONFIG_LOGBUFFER<span class="token punctuation">)</span> <span class="token operator">&amp;&amp;</span> <span class="token operator">!</span><span class="token function">defined</span><span class="token punctuation">(</span>CONFIG_ALT_LB_ADDR<span class="token punctuation">)</span></span></span>
+	reserve_logbuffer<span class="token punctuation">,</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">ifdef</span> <span class="token expression">CONFIG_PRAM</span></span>
+	reserve_pram<span class="token punctuation">,</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+	reserve_round_4k<span class="token punctuation">,</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">if</span> <span class="token expression"><span class="token operator">!</span><span class="token punctuation">(</span><span class="token function">defined</span><span class="token punctuation">(</span>CONFIG_SYS_ICACHE_OFF<span class="token punctuation">)</span> <span class="token operator">&amp;&amp;</span> <span class="token function">defined</span><span class="token punctuation">(</span>CONFIG_SYS_DCACHE_OFF<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token operator">&amp;&amp;</span> </span><span class="token punctuation">\</span>
+		<span class="token expression"><span class="token function">defined</span><span class="token punctuation">(</span>CONFIG_ARM<span class="token punctuation">)</span></span></span>
+	reserve_mmu<span class="token punctuation">,</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">ifdef</span> <span class="token expression">CONFIG_DM_VIDEO</span></span>
+	reserve_video<span class="token punctuation">,</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">else</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span> <span class="token directive keyword">ifdef</span> <span class="token expression">CONFIG_LCD</span></span>
+	reserve_lcd<span class="token punctuation">,</span>
+<span class="token macro property"><span class="token directive-hash">#</span> <span class="token directive keyword">endif</span></span>
+	<span class="token comment">/* TODO: Why the dependency on CONFIG_8xx? */</span>
+<span class="token macro property"><span class="token directive-hash">#</span> <span class="token directive keyword">if</span> <span class="token expression"><span class="token function">defined</span><span class="token punctuation">(</span>CONFIG_VIDEO<span class="token punctuation">)</span> <span class="token operator">&amp;&amp;</span> <span class="token punctuation">(</span><span class="token operator">!</span><span class="token function">defined</span><span class="token punctuation">(</span>CONFIG_PPC<span class="token punctuation">)</span> <span class="token operator">||</span> <span class="token function">defined</span><span class="token punctuation">(</span>CONFIG_8xx<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token operator">&amp;&amp;</span> </span><span class="token punctuation">\</span>
+		<span class="token expression"><span class="token operator">!</span><span class="token function">defined</span><span class="token punctuation">(</span>CONFIG_ARM<span class="token punctuation">)</span> <span class="token operator">&amp;&amp;</span> <span class="token operator">!</span><span class="token function">defined</span><span class="token punctuation">(</span>CONFIG_X86<span class="token punctuation">)</span> <span class="token operator">&amp;&amp;</span> </span><span class="token punctuation">\</span>
+		<span class="token expression"><span class="token operator">!</span><span class="token function">defined</span><span class="token punctuation">(</span>CONFIG_BLACKFIN<span class="token punctuation">)</span> <span class="token operator">&amp;&amp;</span> <span class="token operator">!</span><span class="token function">defined</span><span class="token punctuation">(</span>CONFIG_M68K<span class="token punctuation">)</span></span></span>
+	reserve_legacy_video<span class="token punctuation">,</span>
+<span class="token macro property"><span class="token directive-hash">#</span> <span class="token directive keyword">endif</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span> <span class="token comment">/* CONFIG_DM_VIDEO */</span></span>
+	reserve_trace<span class="token punctuation">,</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">if</span> <span class="token expression"><span class="token operator">!</span><span class="token function">defined</span><span class="token punctuation">(</span>CONFIG_BLACKFIN<span class="token punctuation">)</span></span></span>
+	reserve_uboot<span class="token punctuation">,</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">ifndef</span> <span class="token expression">CONFIG_SPL_BUILD</span></span>
+	reserve_malloc<span class="token punctuation">,</span>
+	reserve_board<span class="token punctuation">,</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+	setup_machine<span class="token punctuation">,</span>
+	reserve_global_data<span class="token punctuation">,</span>
+	reserve_fdt<span class="token punctuation">,</span>
+	reserve_arch<span class="token punctuation">,</span>
+	reserve_stacks<span class="token punctuation">,</span>
+	setup_dram_config<span class="token punctuation">,</span>
+	show_dram_config<span class="token punctuation">,</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">if</span> <span class="token expression"><span class="token function">defined</span><span class="token punctuation">(</span>CONFIG_PPC<span class="token punctuation">)</span> <span class="token operator">||</span> <span class="token function">defined</span><span class="token punctuation">(</span>CONFIG_M68K<span class="token punctuation">)</span> <span class="token operator">||</span> <span class="token function">defined</span><span class="token punctuation">(</span>CONFIG_MIPS<span class="token punctuation">)</span></span></span>
+	setup_board_part1<span class="token punctuation">,</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">if</span> <span class="token expression"><span class="token function">defined</span><span class="token punctuation">(</span>CONFIG_PPC<span class="token punctuation">)</span> <span class="token operator">||</span> <span class="token function">defined</span><span class="token punctuation">(</span>CONFIG_M68K<span class="token punctuation">)</span></span></span>
+	INIT_FUNC_WATCHDOG_RESET
+	setup_board_part2<span class="token punctuation">,</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+	display_new_sp<span class="token punctuation">,</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">ifdef</span> <span class="token expression">CONFIG_SYS_EXTBDINFO</span></span>
+	setup_board_extra<span class="token punctuation">,</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+	INIT_FUNC_WATCHDOG_RESET
+	reloc_fdt<span class="token punctuation">,</span>
+	setup_reloc<span class="token punctuation">,</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">if</span> <span class="token expression"><span class="token function">defined</span><span class="token punctuation">(</span>CONFIG_X86<span class="token punctuation">)</span> <span class="token operator">||</span> <span class="token function">defined</span><span class="token punctuation">(</span>CONFIG_ARC<span class="token punctuation">)</span></span></span>
+	copy_uboot_to_ram<span class="token punctuation">,</span>
+	clear_bss<span class="token punctuation">,</span>
+	do_elf_reloc_fixups<span class="token punctuation">,</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">if</span> <span class="token expression"><span class="token operator">!</span><span class="token function">defined</span><span class="token punctuation">(</span>CONFIG_ARM<span class="token punctuation">)</span> <span class="token operator">&amp;&amp;</span> <span class="token operator">!</span><span class="token function">defined</span><span class="token punctuation">(</span>CONFIG_SANDBOX<span class="token punctuation">)</span></span></span>
+	jump_to_copy<span class="token punctuation">,</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+	<span class="token constant">NULL</span><span class="token punctuation">,</span>
+<span class="token punctuation">}</span><span class="token punctuation">;</span>
+</code></pre> 
+<p>（1）setup_mon_len ：函数设置 gd 的 mon_len 成员变量即代码长度 = __bss_end -_start =0X878A8E74-0x87800000=0XA8E74；<br> （2）initf_malloc： 函数初始化 gd 中跟 malloc 有关的成员变量，比如 malloc_limit，gd-&gt;malloc_limit = CONFIG_SYS_MALLOC_F_LEN=0X400 内存池大小为0x400；<br> <img src="https://images2.imgbox.com/57/0d/trMNQgUd_o.png" alt="在这里插入图片描述"><br> （3）timer_init ：初始化A7内核定时器，类似于M内核SysTick<br> （4）env_init： 设置 gd 的成员变量 env_addr，也就是环境变量的保存地址<br> （5）init_baud_rate ：函数用于初始化波特率，根据环境变量 baudrate 来初始化 gd-&gt;baudrate。<br> （6）dram_init ：设置 gd-&gt;ram_size 的值 512MB<br> （7）setup_dest_addr函数，设置目的地址，设置gd-&gt;ram_size，gd-&gt;ram_top，gd-&gt;relocaddr 等<br> <img src="https://images2.imgbox.com/a4/c5/6CMFzn8h_o.png" alt="在这里插入图片描述"><br> （8）reserve_uboot， 留出重定位后的 uboot 所占用的内存区域<br> <img src="https://images2.imgbox.com/b9/01/Pu2TKd4t_o.png" alt="在这里插入图片描述"></p> 
+<p>（9）reserve_mmu：留出 MMU 的 TLB 表的位置<br> <img src="https://images2.imgbox.com/52/bf/lNRSFTwc_o.png" alt="在这里插入图片描述"><br> （10）reserve_malloc：reserve_malloc，留出 malloc 区域，调整 gd-&gt;start_addr_sp 位置，malloc 区域由宏TOTAL_MALLOC_LEN 定义：#define TOTAL_MALLOC_LEN (CONFIG_SYS_MALLOC_LEN +<br> CONFIG_ENV_SIZE)，宏 CONFIG_SYS_MALLOC_LEN 为 16MB=0X1000000， 宏CONFIG_ENV_SIZE=8KB=0X2000，因此 TOTAL_MALLOC_LEN=0X1002000。调整以后<br> gd-&gt;start_addr_sp=0X9EF45000 //0X9FF47000-16MB-8KB=0X9EF45000<br> （11）reserve_board ：留出板子 bd 所占的内存区，bd 是结构体 bd_t，bd_t 大小为<br> 80 字节<br> <img src="https://images2.imgbox.com/70/47/sJnMucbf_o.png" alt="在这里插入图片描述"><br> （12）reserve_global_data：保留出 gd_t 的内存区域<br> <img src="https://images2.imgbox.com/bf/3d/HRdiEo8B_o.png" alt="在这里插入图片描述"><br> （13）reserve_stacks 留出栈空间，先对 gd-&gt;start_addr_sp 减去 16，然后做 16 字节对齐<br> <img src="https://images2.imgbox.com/3e/c1/amYcm1yq_o.png" alt="在这里插入图片描述"><br> （14）setup_dram_config 函数设置 dram 信息，就是设置 gd-&gt;bd-&gt;bi_dram[0].start 和 gd-&gt;bd-&gt;bi_dram[0].size，后面会传递给 linux 内核，告诉 linux DRAM 的起始地址和大小。<br> <img src="https://images2.imgbox.com/d9/52/ZJ9DEdQA_o.png" alt="在这里插入图片描述"><br> （15）setup_reloc，设置 gd 的其他一些成员变量，供后面重定位的时候使用，并且将以<br> 前的 gd 拷贝到 gd-&gt;new_gd 处。</p> 
+<p>最终的DRAM内存分配图如下图所示：<br> <img src="https://images2.imgbox.com/33/8f/TCX5QWzy_o.png" alt="在这里插入图片描述"></p> 
+<h3><a id="14_relocate_code_494"></a>1.4 relocate_code函数</h3> 
+<p>执行完board_init_f函数之后，ldr sp, [r9, #GD_START_ADDR_SP] 这句话会将sp = gd-&gt;start_addr_sp = 0X9EF44E90。下面三条指令，将here函数采用adr相对寻址的方式，将地址给lr，因为下面要调用relocate_code进行重定位。<br> adr lr, here<br> ldr r0, [r9, #GD_RELOC_OFF] /* r0 = gd-&gt;reloc_off */<br> add lr, lr, r0<br> 然后设置 r0 =gd-&gt;relocaddr = 0X9FF47000，调用 relocate_code函数，代码如下</p> 
+<pre><code class="prism language-c"><span class="token comment">/*
+ * void relocate_code(addr_moni)
+ *
+ * This function relocates the monitor code.
+ *
+ * NOTE:
+ * To prevent the code below from containing references with an R_ARM_ABS32
+ * relocation record type, we never refer to linker-defined symbols directly.
+ * Instead, we declare literals which contain their relative location with
+ * respect to relocate_code, and at run time, add relocate_code back to them.
+ */</span>
+
+<span class="token function">ENTRY</span><span class="token punctuation">(</span>relocate_code<span class="token punctuation">)</span>
+	ldr	r1<span class="token punctuation">,</span> <span class="token operator">=</span>__image_copy_start	<span class="token comment">/* r1 &lt;- SRC &amp;__image_copy_start */</span>
+	subs	r4<span class="token punctuation">,</span> r0<span class="token punctuation">,</span> r1		<span class="token comment">/* r4 &lt;- relocation offset */</span>
+	beq	relocate_done		<span class="token comment">/* skip relocation */</span>
+	ldr	r2<span class="token punctuation">,</span> <span class="token operator">=</span>__image_copy_end	<span class="token comment">/* r2 &lt;- SRC &amp;__image_copy_end */</span>
+
+copy_loop<span class="token operator">:</span>
+	ldmia	r1<span class="token operator">!</span><span class="token punctuation">,</span> <span class="token punctuation">{<!-- --></span>r10<span class="token operator">-</span>r11<span class="token punctuation">}</span>		<span class="token comment">/* copy from source address [r1]    */</span>
+	stmia	r0<span class="token operator">!</span><span class="token punctuation">,</span> <span class="token punctuation">{<!-- --></span>r10<span class="token operator">-</span>r11<span class="token punctuation">}</span>		<span class="token comment">/* copy to   target address [r0]    */</span>
+	cmp	r1<span class="token punctuation">,</span> r2			<span class="token comment">/* until source end address [r2]    */</span>
+	blo	copy_loop
+
+	<span class="token comment">/*
+	 * fix .rel.dyn relocations
+	 */</span>
+	ldr	r2<span class="token punctuation">,</span> <span class="token operator">=</span>__rel_dyn_start	<span class="token comment">/* r2 &lt;- SRC &amp;__rel_dyn_start */</span>
+	ldr	r3<span class="token punctuation">,</span> <span class="token operator">=</span>__rel_dyn_end	<span class="token comment">/* r3 &lt;- SRC &amp;__rel_dyn_end */</span>
+fixloop<span class="token operator">:</span>
+	ldmia	r2<span class="token operator">!</span><span class="token punctuation">,</span> <span class="token punctuation">{<!-- --></span>r0<span class="token operator">-</span>r1<span class="token punctuation">}</span>		<span class="token comment">/* (r0,r1) &lt;- (SRC location,fixup) */</span>
+	and	r1<span class="token punctuation">,</span> r1<span class="token punctuation">,</span> #<span class="token number">0xff</span>
+	cmp	r1<span class="token punctuation">,</span> #<span class="token number">23</span>			<span class="token comment">/* relative fixup? */</span>
+	bne	fixnext
+
+	<span class="token comment">/* relative fix: increase location by offset */</span>
+	add	r0<span class="token punctuation">,</span> r0<span class="token punctuation">,</span> r4
+	ldr	r1<span class="token punctuation">,</span> <span class="token punctuation">[</span>r0<span class="token punctuation">]</span>
+	add	r1<span class="token punctuation">,</span> r1<span class="token punctuation">,</span> r4
+	str	r1<span class="token punctuation">,</span> <span class="token punctuation">[</span>r0<span class="token punctuation">]</span>
+fixnext<span class="token operator">:</span>
+	cmp	r2<span class="token punctuation">,</span> r3
+	blo	fixloop
+
+relocate_done<span class="token operator">:</span>
+
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">ifdef</span> <span class="token expression">__XSCALE__</span></span>
+	<span class="token comment">/*
+	 * On xscale, icache must be invalidated and write buffers drained,
+	 * even with cache disabled - 4.2.7 of xscale core developer's manual
+	 */</span>
+	mcr	p15<span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">,</span> r0<span class="token punctuation">,</span> c7<span class="token punctuation">,</span> c7<span class="token punctuation">,</span> <span class="token number">0</span>	<span class="token comment">/* invalidate icache */</span>
+	mcr	p15<span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">,</span> r0<span class="token punctuation">,</span> c7<span class="token punctuation">,</span> c10<span class="token punctuation">,</span> <span class="token number">4</span>	<span class="token comment">/* drain write buffer */</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+
+	<span class="token comment">/* ARMv4- don't know bx lr but the assembler fails to see that */</span>
+
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">ifdef</span> <span class="token expression">__ARM_ARCH_4__</span></span>
+	mov	pc<span class="token punctuation">,</span> lr
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">else</span></span>
+	bx	lr
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+
+<span class="token function">ENDPROC</span><span class="token punctuation">(</span>relocate_code<span class="token punctuation">)</span>
+</code></pre> 
+<p>uboot拷贝：r1 = __image_copy_start=0X87800000;r0=0X9FF47000，这个地址就是 uboot 拷贝的目标首地址;r0-r1 等于 0，说明 r0 和 r1 相等，也就是源地址和目的地址是一样的，那肯定就不需要拷贝了！执行 relocate_done 函数。<br> 如果r0与r1不相等，读取 uboot 代码保存到 r10 和 r11 中，一次就只拷贝这 2 个 32 位的数据。拷贝完成以后 r1 的值会更新，保存下一个要拷贝的数据地址。然后将 r10 和 r11 的数据写到 r0 开始的地方，也就是目的地址。写完以后 r0 的值会更新，更新为下一个要写入的数据地址。</p> 
+<p>重定位：<br> r2=__rel_dyn_start，也就是.rel.dyn 段的起始地址<br> r3=__rel_dyn_end，也就是.rel.dyn 段的终止地址。<br> 从.rel.dyn 段起始地址开始，每次读取两个 4 字节的数据存放到 r0 和 r1 寄存器中，r0 存放低 4 字节的数据，也就是 Label 地址；<br> r1 存放高 4 字节的数据，也就是 Label 标志。r1 中给的值与 0xff 进行与运算，其实就是取 r1 的低 8 位，判断 r1 中的值是否等于 23(0X17)，如果 r1 不等于 23 的话就说明不是描述 Label 的，执行函数 fixnext。否则的话，r0 保存着 Label 值，r4 保存着重定位后的地址偏移，r0+r4 就得到了重定位后的Label 值。此时 r0 保存着重定位后的 Label 值，相当于0X87804198+0X18747000=0X9FF4B198。ldr r1, [r0]这条指定读取r0数据，这个数据就是记录原来的变量地址，由于重定位了，所以add r1, r1, r4，将原来记录的变量的存储地址也加上偏移，并将新的值写入r0，所以执行str r1, [r0]。</p> 
+<h3><a id="15_relocate_vectors_575"></a>1.5 relocate_vectors函数</h3> 
+<p>relocate_vectors函数代码如下。 在.config 里面定义了 CONFIG_HAS_VBAR，因此会执行CONFIG_HAS_VBAR这个分支。，r0=gd-&gt;relocaddr，也就是重定位后 uboot 的首地址，将 r0 的值写入到 CP15 的 VBAR 寄存器中，也就是将新的向量表首地址写入到寄存器 VBAR 中，设置向量表偏移。</p> 
+<pre><code class="prism language-c"><span class="token function">ENTRY</span><span class="token punctuation">(</span>relocate_vectors<span class="token punctuation">)</span>
+
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">ifdef</span> <span class="token expression">CONFIG_CPU_V7M</span></span>
+	<span class="token comment">/*
+	 * On ARMv7-M we only have to write the new vector address
+	 * to VTOR register.
+	 */</span>
+	ldr	r0<span class="token punctuation">,</span> <span class="token punctuation">[</span>r9<span class="token punctuation">,</span> #GD_RELOCADDR<span class="token punctuation">]</span>	<span class="token comment">/* r0 = gd-&gt;relocaddr */</span>
+	ldr	r1<span class="token punctuation">,</span> <span class="token operator">=</span>V7M_SCB_BASE
+	str	r0<span class="token punctuation">,</span> <span class="token punctuation">[</span>r1<span class="token punctuation">,</span> V7M_SCB_VTOR<span class="token punctuation">]</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">else</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">ifdef</span> <span class="token expression">CONFIG_HAS_VBAR</span></span>
+	<span class="token comment">/*
+	 * If the ARM processor has the security extensions,
+	 * use VBAR to relocate the exception vectors.
+	 */</span>
+	ldr	r0<span class="token punctuation">,</span> <span class="token punctuation">[</span>r9<span class="token punctuation">,</span> #GD_RELOCADDR<span class="token punctuation">]</span>	<span class="token comment">/* r0 = gd-&gt;relocaddr */</span>
+	mcr     p15<span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">,</span> r0<span class="token punctuation">,</span> c12<span class="token punctuation">,</span> c0<span class="token punctuation">,</span> <span class="token number">0</span>  <span class="token comment">/* Set VBAR */</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">else</span></span>
+	<span class="token comment">/*
+	 * Copy the relocated exception vectors to the
+	 * correct address
+	 * CP15 c1 V bit gives us the location of the vectors:
+	 * 0x00000000 or 0xFFFF0000.
+	 */</span>
+	ldr	r0<span class="token punctuation">,</span> <span class="token punctuation">[</span>r9<span class="token punctuation">,</span> #GD_RELOCADDR<span class="token punctuation">]</span>	<span class="token comment">/* r0 = gd-&gt;relocaddr */</span>
+	mrc	p15<span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">,</span> r2<span class="token punctuation">,</span> c1<span class="token punctuation">,</span> c0<span class="token punctuation">,</span> <span class="token number">0</span>	<span class="token comment">/* V bit (bit[13]) in CP15 c1 */</span>
+	ands	r2<span class="token punctuation">,</span> r2<span class="token punctuation">,</span> #<span class="token punctuation">(</span><span class="token number">1</span> <span class="token operator">&lt;&lt;</span> <span class="token number">13</span><span class="token punctuation">)</span>
+	ldreq	r1<span class="token punctuation">,</span> <span class="token operator">=</span><span class="token number">0x00000000</span>		<span class="token comment">/* If V=0 */</span>
+	ldrne	r1<span class="token punctuation">,</span> <span class="token operator">=</span><span class="token number">0xFFFF0000</span>		<span class="token comment">/* If V=1 */</span>
+	ldmia	r0<span class="token operator">!</span><span class="token punctuation">,</span> <span class="token punctuation">{<!-- --></span>r2<span class="token operator">-</span>r8<span class="token punctuation">,</span>r10<span class="token punctuation">}</span>
+	stmia	r1<span class="token operator">!</span><span class="token punctuation">,</span> <span class="token punctuation">{<!-- --></span>r2<span class="token operator">-</span>r8<span class="token punctuation">,</span>r10<span class="token punctuation">}</span>
+	ldmia	r0<span class="token operator">!</span><span class="token punctuation">,</span> <span class="token punctuation">{<!-- --></span>r2<span class="token operator">-</span>r8<span class="token punctuation">,</span>r10<span class="token punctuation">}</span>
+	stmia	r1<span class="token operator">!</span><span class="token punctuation">,</span> <span class="token punctuation">{<!-- --></span>r2<span class="token operator">-</span>r8<span class="token punctuation">,</span>r10<span class="token punctuation">}</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+	bx	lr
+
+<span class="token function">ENDPROC</span><span class="token punctuation">(</span>relocate_vectors<span class="token punctuation">)</span>
+</code></pre> 
+<h3><a id="16_c_runtime_cpu_setup%09_618"></a>1.6 c_runtime_cpu_setup 函数</h3> 
+<p>c_runtime_cpu_setup 函数代码如下，不使用icache。</p> 
+<pre><code class="prism language-c"><span class="token function">ENTRY</span><span class="token punctuation">(</span>c_runtime_cpu_setup<span class="token punctuation">)</span>
+<span class="token comment">/*
+ * If I-cache is enabled invalidate it
+ */</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">ifndef</span> <span class="token expression">CONFIG_SYS_ICACHE_OFF</span></span>
+	mcr	p15<span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">,</span> r0<span class="token punctuation">,</span> c7<span class="token punctuation">,</span> c5<span class="token punctuation">,</span> <span class="token number">0</span>	@ invalidate icache
+	mcr     p15<span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">,</span> r0<span class="token punctuation">,</span> c7<span class="token punctuation">,</span> c10<span class="token punctuation">,</span> <span class="token number">4</span>	@ DSB
+	mcr     p15<span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">,</span> r0<span class="token punctuation">,</span> c7<span class="token punctuation">,</span> c5<span class="token punctuation">,</span> <span class="token number">4</span>	@ ISB
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+
+	bx	lr
+
+<span class="token function">ENDPROC</span><span class="token punctuation">(</span>c_runtime_cpu_setup<span class="token punctuation">)</span>
+</code></pre> 
+<h3><a id="17_board_init_r%09_636"></a>1.7 board_init_r 函数</h3> 
+<p>在执行board_init_r 函数之前，首先执行mov r0, r9 ；ldr r1, [r9, #GD_RELOCADDR]；r0 = gd_t ，r1 = gd-&gt;relocadd。board_init_r函数代码如下。也是initcall_run_list函数对序列init_sequence_r里面的函数进行调用初始化。</p> 
+<pre><code class="prism language-c"><span class="token keyword">void</span> <span class="token function">board_init_r</span><span class="token punctuation">(</span><span class="token class-name">gd_t</span> <span class="token operator">*</span>new_gd<span class="token punctuation">,</span> ulong dest_addr<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">ifdef</span> <span class="token expression">CONFIG_NEEDS_MANUAL_RELOC</span></span>
+	<span class="token keyword">int</span> i<span class="token punctuation">;</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">ifdef</span> <span class="token expression">CONFIG_AVR32</span></span>
+	<span class="token function">mmu_init_r</span><span class="token punctuation">(</span>dest_addr<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">if</span> <span class="token expression"><span class="token operator">!</span><span class="token function">defined</span><span class="token punctuation">(</span>CONFIG_X86<span class="token punctuation">)</span> <span class="token operator">&amp;&amp;</span> <span class="token operator">!</span><span class="token function">defined</span><span class="token punctuation">(</span>CONFIG_ARM<span class="token punctuation">)</span> <span class="token operator">&amp;&amp;</span> <span class="token operator">!</span><span class="token function">defined</span><span class="token punctuation">(</span>CONFIG_ARM64<span class="token punctuation">)</span></span></span>
+	gd <span class="token operator">=</span> new_gd<span class="token punctuation">;</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">ifdef</span> <span class="token expression">CONFIG_NEEDS_MANUAL_RELOC</span></span>
+	<span class="token keyword">for</span> <span class="token punctuation">(</span>i <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span> i <span class="token operator">&lt;</span> <span class="token function">ARRAY_SIZE</span><span class="token punctuation">(</span>init_sequence_r<span class="token punctuation">)</span><span class="token punctuation">;</span> i<span class="token operator">++</span><span class="token punctuation">)</span>
+		init_sequence_r<span class="token punctuation">[</span>i<span class="token punctuation">]</span> <span class="token operator">+=</span> gd<span class="token operator">-&gt;</span>reloc_off<span class="token punctuation">;</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+
+	<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">initcall_run_list</span><span class="token punctuation">(</span>init_sequence_r<span class="token punctuation">)</span><span class="token punctuation">)</span>
+		<span class="token function">hang</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+	<span class="token comment">/* NOTREACHED - run_main_loop() does not return */</span>
+	<span class="token function">hang</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<h4><a id="171_init_sequence_r_667"></a>1.7.1 init_sequence_r</h4> 
+<p>init_sequence_r里面的函数集合如下。</p> 
+<pre><code class="prism language-c"><span class="token class-name">init_fnc_t</span> init_sequence_r<span class="token punctuation">[</span><span class="token punctuation">]</span> <span class="token operator">=</span> <span class="token punctuation">{<!-- --></span>
+	initr_trace<span class="token punctuation">,</span>
+	initr_reloc<span class="token punctuation">,</span>
+	<span class="token comment">/* TODO: could x86/PPC have this also perhaps? */</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">ifdef</span> <span class="token expression">CONFIG_ARM</span></span>
+	initr_caches<span class="token punctuation">,</span>
+	<span class="token comment">/* Note: For Freescale LS2 SoCs, new MMU table is created in DDR.
+	 *	 A temporary mapping of IFC high region is since removed,
+	 *	 so environmental variables in NOR flash is not availble
+	 *	 until board_init() is called below to remap IFC to high
+	 *	 region.
+	 */</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+	initr_reloc_global_data<span class="token punctuation">,</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">if</span> <span class="token expression"><span class="token function">defined</span><span class="token punctuation">(</span>CONFIG_SYS_INIT_RAM_LOCK<span class="token punctuation">)</span> <span class="token operator">&amp;&amp;</span> <span class="token function">defined</span><span class="token punctuation">(</span>CONFIG_E500<span class="token punctuation">)</span></span></span>
+	initr_unlock_ram_in_cache<span class="token punctuation">,</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+	initr_barrier<span class="token punctuation">,</span>
+	initr_malloc<span class="token punctuation">,</span>
+	initr_console_record<span class="token punctuation">,</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">ifdef</span> <span class="token expression">CONFIG_SYS_NONCACHED_MEMORY</span></span>
+	initr_noncached<span class="token punctuation">,</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+	bootstage_relocate<span class="token punctuation">,</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">ifdef</span> <span class="token expression">CONFIG_DM</span></span>
+	initr_dm<span class="token punctuation">,</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+	initr_bootstage<span class="token punctuation">,</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">if</span> <span class="token expression"><span class="token function">defined</span><span class="token punctuation">(</span>CONFIG_ARM<span class="token punctuation">)</span> <span class="token operator">||</span> <span class="token function">defined</span><span class="token punctuation">(</span>CONFIG_NDS32<span class="token punctuation">)</span></span></span>
+	board_init<span class="token punctuation">,</span>	<span class="token comment">/* Setup chipselects */</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+	<span class="token comment">/*
+	 * TODO: printing of the clock inforamtion of the board is now
+	 * implemented as part of bdinfo command. Currently only support for
+	 * davinci SOC's is added. Remove this check once all the board
+	 * implement this.
+	 */</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">ifdef</span> <span class="token expression">CONFIG_CLOCKS</span></span>
+	set_cpu_clk_info<span class="token punctuation">,</span> <span class="token comment">/* Setup clock information */</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+	stdio_init_tables<span class="token punctuation">,</span>
+	initr_serial<span class="token punctuation">,</span>
+	initr_announce<span class="token punctuation">,</span>
+	INIT_FUNC_WATCHDOG_RESET
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">ifdef</span> <span class="token expression">CONFIG_NEEDS_MANUAL_RELOC</span></span>
+	initr_manual_reloc_cmdtable<span class="token punctuation">,</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">if</span> <span class="token expression"><span class="token function">defined</span><span class="token punctuation">(</span>CONFIG_PPC<span class="token punctuation">)</span> <span class="token operator">||</span> <span class="token function">defined</span><span class="token punctuation">(</span>CONFIG_M68K<span class="token punctuation">)</span></span></span>
+	initr_trap<span class="token punctuation">,</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">ifdef</span> <span class="token expression">CONFIG_ADDR_MAP</span></span>
+	initr_addr_map<span class="token punctuation">,</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">if</span> <span class="token expression"><span class="token function">defined</span><span class="token punctuation">(</span>CONFIG_BOARD_EARLY_INIT_R<span class="token punctuation">)</span></span></span>
+	board_early_init_r<span class="token punctuation">,</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+	INIT_FUNC_WATCHDOG_RESET
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">ifdef</span> <span class="token expression">CONFIG_LOGBUFFER</span></span>
+	initr_logbuffer<span class="token punctuation">,</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">ifdef</span> <span class="token expression">CONFIG_POST</span></span>
+	initr_post_backlog<span class="token punctuation">,</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+	INIT_FUNC_WATCHDOG_RESET
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">ifdef</span> <span class="token expression">CONFIG_SYS_DELAYED_ICACHE</span></span>
+	initr_icache_enable<span class="token punctuation">,</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">if</span> <span class="token expression"><span class="token function">defined</span><span class="token punctuation">(</span>CONFIG_PCI<span class="token punctuation">)</span> <span class="token operator">&amp;&amp;</span> <span class="token function">defined</span><span class="token punctuation">(</span>CONFIG_SYS_EARLY_PCI_INIT<span class="token punctuation">)</span></span></span>
+	<span class="token comment">/*
+	 * Do early PCI configuration _before_ the flash gets initialised,
+	 * because PCU ressources are crucial for flash access on some boards.
+	 */</span>
+	initr_pci<span class="token punctuation">,</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">ifdef</span> <span class="token expression">CONFIG_WINBOND_83C553</span></span>
+	initr_w83c553f<span class="token punctuation">,</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">ifdef</span> <span class="token expression">CONFIG_ARCH_EARLY_INIT_R</span></span>
+	arch_early_init_r<span class="token punctuation">,</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+	power_init_board<span class="token punctuation">,</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">ifndef</span> <span class="token expression">CONFIG_SYS_NO_FLASH</span></span>
+	initr_flash<span class="token punctuation">,</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+	INIT_FUNC_WATCHDOG_RESET
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">if</span> <span class="token expression"><span class="token function">defined</span><span class="token punctuation">(</span>CONFIG_PPC<span class="token punctuation">)</span> <span class="token operator">||</span> <span class="token function">defined</span><span class="token punctuation">(</span>CONFIG_M68K<span class="token punctuation">)</span> <span class="token operator">||</span> <span class="token function">defined</span><span class="token punctuation">(</span>CONFIG_X86<span class="token punctuation">)</span> <span class="token operator">||</span> </span><span class="token punctuation">\</span>
+	<span class="token expression"><span class="token function">defined</span><span class="token punctuation">(</span>CONFIG_SPARC<span class="token punctuation">)</span></span></span>
+	<span class="token comment">/* initialize higher level parts of CPU like time base and timers */</span>
+	cpu_init_r<span class="token punctuation">,</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">ifdef</span> <span class="token expression">CONFIG_PPC</span></span>
+	initr_spi<span class="token punctuation">,</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">ifdef</span> <span class="token expression">CONFIG_CMD_NAND</span></span>
+	initr_nand<span class="token punctuation">,</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">ifdef</span> <span class="token expression">CONFIG_CMD_ONENAND</span></span>
+	initr_onenand<span class="token punctuation">,</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">ifdef</span> <span class="token expression">CONFIG_GENERIC_MMC</span></span>
+	initr_mmc<span class="token punctuation">,</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">ifdef</span> <span class="token expression">CONFIG_HAS_DATAFLASH</span></span>
+	initr_dataflash<span class="token punctuation">,</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+	initr_env<span class="token punctuation">,</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">ifdef</span> <span class="token expression">CONFIG_SYS_BOOTPARAMS_LEN</span></span>
+	initr_malloc_bootparams<span class="token punctuation">,</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+	INIT_FUNC_WATCHDOG_RESET
+	initr_secondary_cpu<span class="token punctuation">,</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">if</span> <span class="token expression"><span class="token function">defined</span><span class="token punctuation">(</span>CONFIG_ID_EEPROM<span class="token punctuation">)</span> <span class="token operator">||</span> <span class="token function">defined</span><span class="token punctuation">(</span>CONFIG_SYS_I2C_MAC_OFFSET<span class="token punctuation">)</span></span></span>
+	mac_read_from_eeprom<span class="token punctuation">,</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+	INIT_FUNC_WATCHDOG_RESET
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">if</span> <span class="token expression"><span class="token function">defined</span><span class="token punctuation">(</span>CONFIG_PCI<span class="token punctuation">)</span> <span class="token operator">&amp;&amp;</span> <span class="token operator">!</span><span class="token function">defined</span><span class="token punctuation">(</span>CONFIG_SYS_EARLY_PCI_INIT<span class="token punctuation">)</span></span></span>
+	<span class="token comment">/*
+	 * Do pci configuration
+	 */</span>
+	initr_pci<span class="token punctuation">,</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+	stdio_add_devices<span class="token punctuation">,</span>
+	initr_jumptable<span class="token punctuation">,</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">ifdef</span> <span class="token expression">CONFIG_API</span></span>
+	initr_api<span class="token punctuation">,</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+	console_init_r<span class="token punctuation">,</span>		<span class="token comment">/* fully init console as a device */</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">ifdef</span> <span class="token expression">CONFIG_DISPLAY_BOARDINFO_LATE</span></span>
+	show_board_info<span class="token punctuation">,</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">ifdef</span> <span class="token expression">CONFIG_ARCH_MISC_INIT</span></span>
+	arch_misc_init<span class="token punctuation">,</span>		<span class="token comment">/* miscellaneous arch-dependent init */</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">ifdef</span> <span class="token expression">CONFIG_MISC_INIT_R</span></span>
+	misc_init_r<span class="token punctuation">,</span>		<span class="token comment">/* miscellaneous platform-dependent init */</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+	INIT_FUNC_WATCHDOG_RESET
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">ifdef</span> <span class="token expression">CONFIG_CMD_KGDB</span></span>
+	initr_kgdb<span class="token punctuation">,</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+	interrupt_init<span class="token punctuation">,</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">if</span> <span class="token expression"><span class="token function">defined</span><span class="token punctuation">(</span>CONFIG_ARM<span class="token punctuation">)</span> <span class="token operator">||</span> <span class="token function">defined</span><span class="token punctuation">(</span>CONFIG_AVR32<span class="token punctuation">)</span></span></span>
+	initr_enable_interrupts<span class="token punctuation">,</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">if</span> <span class="token expression"><span class="token function">defined</span><span class="token punctuation">(</span>CONFIG_MICROBLAZE<span class="token punctuation">)</span> <span class="token operator">||</span> <span class="token function">defined</span><span class="token punctuation">(</span>CONFIG_AVR32<span class="token punctuation">)</span> <span class="token operator">||</span> <span class="token function">defined</span><span class="token punctuation">(</span>CONFIG_M68K<span class="token punctuation">)</span></span></span>
+	timer_init<span class="token punctuation">,</span>		<span class="token comment">/* initialize timer */</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">if</span> <span class="token expression"><span class="token function">defined</span><span class="token punctuation">(</span>CONFIG_STATUS_LED<span class="token punctuation">)</span></span></span>
+	initr_status_led<span class="token punctuation">,</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+	<span class="token comment">/* PPC has a udelay(20) here dating from 2002. Why? */</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">ifdef</span> <span class="token expression">CONFIG_CMD_NET</span></span>
+	initr_ethaddr<span class="token punctuation">,</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">ifdef</span> <span class="token expression">CONFIG_BOARD_LATE_INIT</span></span>
+	board_late_init<span class="token punctuation">,</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">ifdef</span> <span class="token expression">CONFIG_FSL_FASTBOOT</span></span>
+	initr_fastboot_setup<span class="token punctuation">,</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">if</span> <span class="token expression"><span class="token function">defined</span><span class="token punctuation">(</span>CONFIG_CMD_AMBAPP<span class="token punctuation">)</span></span></span>
+	ambapp_init_reloc<span class="token punctuation">,</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">if</span> <span class="token expression"><span class="token function">defined</span><span class="token punctuation">(</span>CONFIG_SYS_AMBAPP_PRINT_ON_STARTUP<span class="token punctuation">)</span></span></span>
+	initr_ambapp_print<span class="token punctuation">,</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">ifdef</span> <span class="token expression">CONFIG_CMD_SCSI</span></span>
+	INIT_FUNC_WATCHDOG_RESET
+	initr_scsi<span class="token punctuation">,</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">ifdef</span> <span class="token expression">CONFIG_CMD_DOC</span></span>
+	INIT_FUNC_WATCHDOG_RESET
+	initr_doc<span class="token punctuation">,</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">ifdef</span> <span class="token expression">CONFIG_BITBANGMII</span></span>
+	initr_bbmii<span class="token punctuation">,</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">ifdef</span> <span class="token expression">CONFIG_CMD_NET</span></span>
+	INIT_FUNC_WATCHDOG_RESET
+	initr_net<span class="token punctuation">,</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">ifdef</span> <span class="token expression">CONFIG_POST</span></span>
+	initr_post<span class="token punctuation">,</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">if</span> <span class="token expression"><span class="token function">defined</span><span class="token punctuation">(</span>CONFIG_CMD_PCMCIA<span class="token punctuation">)</span> <span class="token operator">&amp;&amp;</span> <span class="token operator">!</span><span class="token function">defined</span><span class="token punctuation">(</span>CONFIG_CMD_IDE<span class="token punctuation">)</span></span></span>
+	initr_pcmcia<span class="token punctuation">,</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">if</span> <span class="token expression"><span class="token function">defined</span><span class="token punctuation">(</span>CONFIG_CMD_IDE<span class="token punctuation">)</span></span></span>
+	initr_ide<span class="token punctuation">,</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">ifdef</span> <span class="token expression">CONFIG_LAST_STAGE_INIT</span></span>
+	INIT_FUNC_WATCHDOG_RESET
+	<span class="token comment">/*
+	 * Some parts can be only initialized if all others (like
+	 * Interrupts) are up and running (i.e. the PC-style ISA
+	 * keyboard).
+	 */</span>
+	last_stage_init<span class="token punctuation">,</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">ifdef</span> <span class="token expression">CONFIG_CMD_BEDBUG</span></span>
+	INIT_FUNC_WATCHDOG_RESET
+	initr_bedbug<span class="token punctuation">,</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">if</span> <span class="token expression"><span class="token function">defined</span><span class="token punctuation">(</span>CONFIG_PRAM<span class="token punctuation">)</span> <span class="token operator">||</span> <span class="token function">defined</span><span class="token punctuation">(</span>CONFIG_LOGBUFFER<span class="token punctuation">)</span></span></span>
+	initr_mem<span class="token punctuation">,</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">ifdef</span> <span class="token expression">CONFIG_PS2KBD</span></span>
+	initr_kbd<span class="token punctuation">,</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">if</span> <span class="token expression"><span class="token function">defined</span><span class="token punctuation">(</span>CONFIG_SPARC<span class="token punctuation">)</span></span></span>
+	prom_init<span class="token punctuation">,</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">ifdef</span> <span class="token expression">CONFIG_FSL_FASTBOOT</span></span>
+	initr_check_fastboot<span class="token punctuation">,</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+	run_main_loop<span class="token punctuation">,</span>
+<span class="token punctuation">}</span><span class="token punctuation">;</span>
+</code></pre> 
+<p>（1）initr_trace 函数：初始化和调试跟踪有关的内容<br> （2）initr_caches 函数：初始化 cache，使能 cache<br> （3）initr_malloc 函数：初始化 malloc<br> （4）initr_serial 函数：初始化串口<br> （5）initr_nand函数：初始化NAND<br> （6）initr_mmc 函数：初始化 EMMC</p> 
+<p>()run_main_loop:这个函数后面再分析</p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/d4ce6e5c2c37582b68209ec645ea5a63/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">Rust安装(windows)</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/8757635953ea60d5cd215c1b521da6b8/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">[sitemap 索引情况提示] 根据 sitemap 的规则[0]，当前页面 [pages/index/index] 将被索引</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

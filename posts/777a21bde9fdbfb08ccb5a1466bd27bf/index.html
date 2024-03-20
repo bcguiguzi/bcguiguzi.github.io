@@ -1,0 +1,511 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>allocator 源码 - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="allocator 源码" />
+<meta property="og:description" content="/*==================================================================== BSD 2-Clause License Copyright (c) 2020, Ruler All rights reserved. Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met: * Redistributions of source code must retain the above copyright notice, this list of conditions and the following disclaimer. * Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the following disclaimer in the documentation and/or other materials provided with the distribution." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/777a21bde9fdbfb08ccb5a1466bd27bf/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2016-12-11T13:40:46+08:00" />
+<meta property="article:modified_time" content="2016-12-11T13:40:46+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">allocator 源码</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <pre><code class="language-cpp">/*====================================================================
+BSD 2-Clause License
+
+Copyright (c) 2020, Ruler
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+* Redistributions of source code must retain the above copyright notice, this
+list of conditions and the following disclaimer.
+
+* Redistributions in binary form must reproduce the above copyright notice,
+this list of conditions and the following disclaimer in the documentation
+and/or other materials provided with the distribution.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+====================================================================*/
+#pragma once
+
+#ifndef __CORE_ALLOCATOR_H__
+#define __CORE_ALLOCATOR_H__
+
+#include &lt;memory&gt;
+#include &lt;exception&gt;
+#include &lt;cstring&gt;
+
+namespace core
+{
+	template &lt;class T, int inst&gt; class allocator;
+
+	// Specialize for void
+	template &lt;int inst&gt;
+	class allocator&lt;void, inst&gt;
+	{
+	public:
+		using value_type      = void;
+		using pointer         = void*;
+		using const_pointer   = const void*;
+		using size_type       = size_t;
+		using difference_type = ptrdiff_t;
+
+		template &lt;class U&gt;
+		struct rebind
+		{
+			using other = allocator&lt;U, inst&gt;;
+		};
+	};
+
+
+	// Class template allocator_base
+	template &lt;int inst&gt;
+	class allocator_base
+	{
+	public:
+		size_t capacity(void)
+		{
+			return heap_size;
+		}
+
+		size_t size(void)
+		{
+			return used_size;
+		}
+	protected:
+		void* arw_allocate(size_t size)
+		{
+			if (size &gt; max_bytes)
+			{
+				void* result = malloc(size);
+				if (result == nullptr)
+					throw std::bad_alloc();
+				return result;
+			}
+			else
+			{
+				char* result = nullptr;
+				size_t count = chunk_count;
+				free_chunk_node** current_list = reinterpret_cast&lt;free_chunk_node**&gt;(get_free_list(size));
+
+				if (*current_list != nullptr)
+				{
+					result = (*current_list)-&gt;buffer;
+					*current_list = (*current_list)-&gt;next;
+				}
+				else
+				{
+					size_t align_bytes = round_up(size);
+					size_t total_bytes = align_bytes * count;
+					size_t free_bytes = free_end - free_start;
+
+					if (free_bytes &gt;= total_bytes)
+					{
+						result = free_start;
+						free_start += total_bytes;
+					}
+					else if (free_bytes &gt;= align_bytes)
+					{
+						count = free_bytes / align_bytes;
+						total_bytes = align_bytes * count;
+						result = free_start;
+						free_start += total_bytes;
+					}
+					else
+					{
+						if (free_bytes &gt; 0)
+						{
+							free_chunk_node** free_list_left = reinterpret_cast&lt;free_chunk_node**&gt;(get_free_list(free_bytes));
+							reinterpret_cast&lt;free_chunk_node*&gt;(free_start)-&gt;next = *free_list_left;
+							*free_list_left = reinterpret_cast&lt;free_chunk_node*&gt;(free_start);
+							free_start = free_end;
+						}
+						result = chunk_alloc(align_bytes, count);
+					}
+					if (result != nullptr &amp;&amp; count &gt; 1)
+					{
+						char *cur, *next = result + align_bytes;
+						*current_list = reinterpret_cast&lt;free_chunk_node*&gt;(next);
+						for (size_t i = 2; i &lt; count; ++i)
+						{
+							cur = next;
+							next += align_bytes;
+							reinterpret_cast&lt;free_chunk_node*&gt;(cur)-&gt;next = reinterpret_cast&lt;free_chunk_node*&gt;(next);
+						}
+						reinterpret_cast&lt;free_chunk_node*&gt;(next)-&gt;next = nullptr;
+					}
+				}
+				if (result != nullptr)
+					used_size += size;
+				else
+					throw std::bad_alloc();
+				return reinterpret_cast&lt;void*&gt;(result);
+			}
+		}
+
+		void* arw_reallocate(void* p, size_t old_size, size_t new_size)
+		{
+			void* result = nullptr;
+			size_t copy_size;
+
+			if (old_size &gt; max_bytes &amp;&amp; new_size &gt; max_bytes)
+			{
+				result = realloc(p, new_size);
+			}
+			if (round_up(old_size) == round_up(new_size))
+			{
+				result = p;
+				used_size -= old_size;
+				used_size += new_size;
+			}
+			else
+			{
+				result = arw_allocate(new_size);
+				if (result == nullptr)
+				{
+					copy_size = new_size &gt; old_size ? old_size : new_size;
+					std::memcpy(result, p, copy_size);
+					arw_deallocate(p, old_size);
+				}
+			}
+			if (result == nullptr)
+				throw std::bad_alloc();
+			return result;
+		}
+
+		void arw_deallocate(void* p, size_t size)
+		{
+			if (size &gt; max_bytes)
+			{
+				free(p);
+			}
+			else
+			{
+				free_chunk_node** current_list = reinterpret_cast&lt;free_chunk_node**&gt;(get_free_list(size));
+				reinterpret_cast&lt;free_chunk_node*&gt;(p)-&gt;next = *current_list;
+				*current_list = reinterpret_cast&lt;free_chunk_node*&gt;(p);
+				used_size -= size;
+			}
+		}
+
+		void release(void)
+		{
+			if (used_size != 0)
+				return;
+			while (memory_list != nullptr)
+			{
+				void* next = *reinterpret_cast&lt;void**&gt;(memory_list);
+				// std::cout &lt;&lt; "free: ";
+				// std::cout &lt;&lt; std::hex &lt;&lt; std::setiosflags(std::ios::showbase);
+				// std::cout &lt;&lt; reinterpret_cast&lt;size_t&gt;(memory_list) &lt;&lt; std::endl;
+				free(memory_list);
+				memory_list = next;
+			}
+			heap_size = 0;
+			used_size = 0;
+		}
+	private:
+		inline size_t round_up(size_t bytes)
+		{
+			return ((bytes + align - 1) &amp; ~(align - 1));
+		}
+
+		inline void** get_free_list(size_t bytes)
+		{
+			return reinterpret_cast&lt;void**&gt;(free_list + (bytes + align - 1) / align - 1);
+		}
+
+		char* chunk_alloc(size_t align_bytes, size_t&amp; count)
+		{
+			char* result = nullptr;
+			size_t memory_size;
+			size_t total_bytes = align_bytes * count;
+
+			if (heap_size &lt; heap_threshold)
+				memory_size = total_bytes &lt;&lt; 1;
+			else
+				memory_size = (heap_size &gt;&gt; 7) &lt;&lt; 3;
+			while (memory_size &gt;= total_bytes)
+			{
+				void* p = malloc(memory_size + sizeof(void*));
+				// std::cout &lt;&lt; "malloc: ";
+				// std::cout &lt;&lt; std::hex &lt;&lt; std::setiosflags(std::ios::showbase);
+				// std::cout &lt;&lt; reinterpret_cast&lt;size_t&gt;(p) &lt;&lt; std::endl;
+				if (p != nullptr)
+				{
+					result = reinterpret_cast&lt;char*&gt;(reinterpret_cast&lt;size_t&gt;(p) + sizeof(void*));
+					free_start = result + total_bytes;
+					free_end = result + memory_size;
+					heap_size += memory_size;
+					*reinterpret_cast&lt;void**&gt;(p) = memory_list;
+					memory_list = reinterpret_cast&lt;void**&gt;(p);
+					break;
+				}
+				memory_size &gt;&gt;= 1;
+			}
+			if (result == nullptr)
+			{
+				for (size_t size = align_bytes; size &lt;= max_bytes; size += align)
+				{
+					free_chunk_node** current_list = reinterpret_cast&lt;free_chunk_node**&gt;(get_free_list(size));
+					if (*current_list != nullptr)
+					{
+						count = 1;
+						result = (*current_list)-&gt;buffer;
+						free_start = result + align_bytes;
+						free_end = result + size;
+						break;
+					}
+				}
+			}
+			return result;
+		}
+	private:
+		union free_chunk_node
+		{
+			free_chunk_node*    next;
+			char                buffer[1];
+		};
+	private:
+		static constexpr size_t align          = 8;
+		static constexpr size_t max_bytes      = align &lt;&lt; 4;
+		static constexpr size_t free_list_size = 16;
+		static constexpr size_t chunk_count    = 16;
+		static constexpr size_t heap_threshold = (max_bytes * chunk_count) &lt;&lt; 5;
+
+		static size_t           heap_size;
+		static size_t           used_size;
+		static char*            free_start;
+		static char*            free_end;
+		static void*            memory_list;
+		static free_chunk_node* free_list[free_list_size];
+	};
+
+	// Initialize static variables
+	template &lt;int inst&gt;
+	size_t allocator_base&lt;inst&gt;::heap_size = 0;
+	template &lt;int inst&gt;
+	size_t allocator_base&lt;inst&gt;::used_size = 0;
+	template &lt;int inst&gt;
+	char*  allocator_base&lt;inst&gt;::free_start = nullptr;
+	template &lt;int inst&gt;
+	char*  allocator_base&lt;inst&gt;::free_end = nullptr;
+	template &lt;int inst&gt;
+	void* allocator_base&lt;inst&gt;::memory_list = nullptr;
+	template &lt;int inst&gt;
+	typename allocator_base&lt;inst&gt;::free_chunk_node* allocator_base&lt;inst&gt;::free_list[free_list_size] =
+	{
+		nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+		nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr
+	};
+
+
+	// Class template allocator
+	template &lt;class T, int inst = 0&gt;
+	class allocator : public allocator_base&lt;inst&gt;
+	{
+	public:
+		using value_type      = T;
+		using pointer         = value_type*;
+		using const_pointer   = const value_type*;
+		using size_type       = size_t;
+		using difference_type = ptrdiff_t;
+		
+		template&lt;class U&gt;
+		struct rebind
+		{
+			using other = allocator&lt;U, inst&gt;;
+		};
+
+		using propagate_on_container_copy_assignment = std::false_type;
+		using propagate_on_container_move_assignment = std::false_type;
+		using propagate_on_container_swap            = std::false_type;
+		using is_always_equal                        = std::true_type;
+	public:
+		// Construct default allocator
+		allocator(void) noexcept
+		{
+		}
+		// Construct by copying
+		allocator(const allocator&lt;T, inst&gt;&amp;) noexcept
+		{
+		}
+		// Construct from a related allocator
+		template&lt;class U&gt;
+		allocator(const allocator&lt;U, inst&gt;&amp;) noexcept
+		{
+		}
+
+		// Destructor
+		~allocator(void)
+		{
+			this-&gt;release();
+		}
+
+		// Assign from a related allocator
+		template&lt;class U&gt;
+		allocator&lt;T, inst&gt;&amp; operator=(const allocator&lt;U, inst&gt;&amp;)
+		{
+			return (*this);
+		}
+
+		// Return address of mutable x
+		pointer address(value_type&amp; x) const noexcept
+		{
+			return (std::addressof(x));
+		}
+
+		// Return address of nonmutable x
+		const_pointer address(const value_type&amp; x) const noexcept
+		{
+			return (std::addressof(x));
+		}
+
+		// Allocate array of n elements
+		pointer allocate(size_type n, typename allocator&lt;void, inst&gt;::const_pointer hint = nullptr)
+		{
+			return (static_cast&lt;pointer&gt;(this-&gt;arw_allocate(n * sizeof(value_type))));
+		}
+
+		// Deallocate object at p
+		void deallocate(pointer p, size_type n)
+		{
+			this-&gt;arw_deallocate(p, n * sizeof(value_type));
+		}
+
+		// Estimate maximum array size
+		size_type max_size(void) const noexcept
+		{
+			return (static_cast&lt;size_t&gt;(-1) / sizeof(value_type));
+		}
+
+		// Construct U(Args...) at p
+		template&lt;class U, class... Args&gt;
+		void construct(U* p, Args&amp;&amp;... args)
+		{
+			::new ((void*)p) U(std::forward&lt;Args&gt;(args)...);
+		}
+
+		// Destroy object at p
+		template &lt;class U&gt;
+		void destroy(U* p)
+		{
+			p-&gt;~U();
+		}
+	};
+
+	template &lt;class T1, class T2, int inst&gt;
+	inline bool operator==(const allocator&lt;T1, inst&gt;&amp;, const allocator&lt;T2, inst&gt;&amp;)
+	{
+		return true;
+	}
+	template &lt;class T1, class T2, int inst&gt;
+	inline bool operator!=(const allocator&lt;T1, inst&gt;&amp;, const allocator&lt;T2, inst&gt;&amp;)
+	{
+		return false;
+	}
+
+} // namespace core
+
+#endif
+</code></pre> 
+<p> </p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/430828e84f452c380df9040cd33d5d29/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">Unity3D UNet网络组件详解</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/d98efc0640d2e1b5d51d1bb008938f5f/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">unity引擎简介——（1）Unity3D游戏开发流程与规范</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

@@ -1,0 +1,2670 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>【大数据】Flink 内存管理（四）：TaskManager 内存分配（实战篇） - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="【大数据】Flink 内存管理（四）：TaskManager 内存分配（实战篇）" />
+<meta property="og:description" content="《Flink 内存管理》系列（已完结），共包含以下 4 篇文章：
+Flink 内存管理（一）：设置 Flink 进程内存Flink 内存管理（二）：JobManager 内存分配（含实际计算案例）Flink 内存管理（三）：TaskManager 内存分配（理论篇）Flink 内存管理（四）：TaskManager 内存分配（实战篇） 😊 如果您觉得这篇文章有用 ✔️ 的话，请给博主一个一键三连 🚀🚀🚀 吧 （点赞 🧡、关注 💛、收藏 💚）！！！您的支持 💖💖💖 将激励 🔥 博主输出更多优质内容！！！
+Flink 内存管理（四）：TaskManager 内存分配（实战篇） 1.单独分配 Total Process Size2.单独分配 Total Flink Size3.单独分配 Heap Size &amp;&amp; Managed Memory4.分配 Total Process Size 和 Heap Size &amp;&amp; Managed Memory5.分配 Total Flink Size 和 Heap Size &amp;&amp; Managed Memory6.内存分配小结 在 《Flink 内存管理（一）：设置 Flink 进程内存》中我们提到，必须使用下述三种方法之一配置 Flink 的内存（本地执行除外），否则 Flink 启动将失败。这意味着必须明确配置以下选项子集之一，这些子集没有默认值。" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/882b5ba2b8a73043935b91ace2479553/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2024-02-25T12:08:38+08:00" />
+<meta property="article:modified_time" content="2024-02-25T12:08:38+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">【大数据】Flink 内存管理（四）：TaskManager 内存分配（实战篇）</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-tomorrow-night-eighties">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p>《<font color="#e47542"><strong>Flink 内存管理</strong></font>》系列（已完结），共包含以下 4 篇文章：</p> 
+<ul><li><a href="https://blog.csdn.net/Be_racle/article/details/136263713">Flink 内存管理（一）：设置 Flink 进程内存</a></li><li><a href="https://blog.csdn.net/Be_racle/article/details/136265544">Flink 内存管理（二）：JobManager 内存分配（含实际计算案例）</a></li><li><a href="https://blog.csdn.net/Be_racle/article/details/136270432">Flink 内存管理（三）：TaskManager 内存分配（理论篇）</a></li><li><a href="https://blog.csdn.net/Be_racle/article/details/136277369">Flink 内存管理（四）：TaskManager 内存分配（实战篇）</a></li></ul> 
+<blockquote> 
+ <p>😊 如果您觉得这篇文章有用 ✔️ 的话，请给博主一个一键三连 🚀🚀🚀 吧 （点赞 🧡、关注 💛、收藏 💚）！！！您的支持 💖💖💖 将激励 🔥 博主输出更多优质内容！！！</p> 
+</blockquote> 
+<p></p> 
+<div class="toc"> 
+ <h4> 
+  <center>
+    Flink 内存管理（四）：TaskManager 内存分配（实战篇） 
+  </center></h4> 
+ <ul><li><a href="#1_Total_Process_Size_17" rel="nofollow">1.单独分配 Total Process Size</a></li><li><a href="#2_Total_Flink_Size_42" rel="nofollow">2.单独分配 Total Flink Size</a></li><li><a href="#3_Heap_Size__Managed_Memory_63" rel="nofollow">3.单独分配 Heap Size &amp;&amp; Managed Memory</a></li><li><a href="#4_Total_Process_Size__Heap_Size__Managed_Memory_83" rel="nofollow">4.分配 Total Process Size 和 Heap Size &amp;&amp; Managed Memory</a></li><li><a href="#5_Total_Flink_Size__Heap_Size__Managed_Memory_104" rel="nofollow">5.分配 Total Flink Size 和 Heap Size &amp;&amp; Managed Memory</a></li><li><a href="#6_126" rel="nofollow">6.内存分配小结</a></li></ul> 
+</div> 
+<p></p> 
+<p>在 《<a href="https://blog.csdn.net/be_racle/article/details/136263713">Flink 内存管理（一）：设置 Flink 进程内存</a>》中我们提到，必须使用下述三种方法之一配置 Flink 的内存（本地执行除外），否则 Flink 启动将失败。这意味着必须明确配置以下选项子集之一，这些子集没有默认值。</p> 
+<table><thead><tr><th>序号</th><th>for TaskManager</th><th>for JobManager</th></tr></thead><tbody><tr><td>1️⃣</td><td><code>taskmanager.memory.flink.size</code></td><td><code>jobmanager.memory.flink.size</code></td></tr><tr><td>2️⃣</td><td><code>taskmanager.memory.process.size</code></td><td><code>jobmanager.memory.process.size</code></td></tr><tr><td>3️⃣</td><td><code>taskmanager.memory.task.heap.size</code> 和 <code>taskmanager.memory.managed.size</code></td><td><code>jobmanager.memory.heap.size</code></td></tr></tbody></table> 
+<h2><a id="1_Total_Process_Size_17"></a>1.单独分配 Total Process Size</h2> 
+<p>单独分配 <code>Total Process Size</code>，其它的组件都会自动分配。</p> 
+<pre><code class="prism language-yaml"><span class="token key atrule">taskmanager.memory.process.size</span><span class="token punctuation">:</span> 2000m
+</code></pre> 
+<p><img src="https://images2.imgbox.com/cd/61/kquBdg5G_o.png" alt="在这里插入图片描述"></p> 
+<p>内存分配步骤如下：</p> 
+<ul><li>首先 <code>Total Process Size</code> <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          = 
+         
+        
+          2000 
+         
+        
+          M 
+         
+        
+       
+         = 2000M 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.3669em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord">2000</span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span></span></span></span></span></li><li>因为没有显示分配组件中的任何参数，所以 <code>JVM Overhead</code> <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          = 
+         
+        
+          2000 
+         
+        
+          M 
+         
+        
+          × 
+         
+        
+          0.1 
+         
+        
+          = 
+         
+        
+          200 
+         
+        
+          M 
+         
+        
+       
+         = 2000M × 0.1 = 200M 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.3669em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 0.7667em; vertical-align: -0.0833em;"></span><span class="mord">2000</span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span><span class="mspace" style="margin-right: 0.2222em;"></span><span class="mbin">×</span><span class="mspace" style="margin-right: 0.2222em;"></span></span><span class="base"><span class="strut" style="height: 0.6444em;"></span><span class="mord">0.1</span><span class="mspace" style="margin-right: 0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord">200</span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span></span></span></span></span></li><li><code>JVM Metaspace</code> <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          = 
+         
+        
+          256 
+         
+        
+          M 
+         
+        
+       
+         = 256M 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.3669em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord">256</span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span></span></span></span></span></li><li>⭐ 所以 <code>Native Memory</code> = <code>JVM Overhead</code> + <code>JVM Metaspace</code> <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          = 
+         
+        
+          456 
+         
+        
+          M 
+         
+        
+       
+         = 456M 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.3669em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord">456</span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span></span></span></span></span></li><li><code>Total Flink Size</code> <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          = 
+         
+        
+          2000 
+         
+        
+          M 
+         
+        
+          − 
+         
+        
+          200 
+         
+        
+          M 
+         
+        
+          − 
+         
+        
+          256 
+         
+        
+          M 
+         
+        
+          = 
+         
+        
+          1544 
+         
+        
+          M 
+         
+        
+          B 
+         
+        
+          = 
+         
+        
+          1.508 
+         
+        
+          G 
+         
+        
+          B 
+         
+        
+       
+         = 2000M - 200M - 256M = 1544MB = 1.508GB 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.3669em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 0.7667em; vertical-align: -0.0833em;"></span><span class="mord">2000</span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span><span class="mspace" style="margin-right: 0.2222em;"></span><span class="mbin">−</span><span class="mspace" style="margin-right: 0.2222em;"></span></span><span class="base"><span class="strut" style="height: 0.7667em; vertical-align: -0.0833em;"></span><span class="mord">200</span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span><span class="mspace" style="margin-right: 0.2222em;"></span><span class="mbin">−</span><span class="mspace" style="margin-right: 0.2222em;"></span></span><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord">256</span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span><span class="mspace" style="margin-right: 0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord">1544</span><span class="mord mathnormal" style="margin-right: 0.0502em;">MB</span><span class="mspace" style="margin-right: 0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord">1.508</span><span class="mord mathnormal" style="margin-right: 0.0502em;">GB</span></span></span></span></span></li><li><code>Network Memory</code> <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          = 
+         
+        
+          1544 
+         
+        
+          × 
+         
+        
+          0.1 
+         
+        
+          = 
+         
+        
+          154.4 
+         
+        
+          M 
+         
+        
+       
+         = 1544 × 0.1 = 154.4M 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.3669em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 0.7278em; vertical-align: -0.0833em;"></span><span class="mord">1544</span><span class="mspace" style="margin-right: 0.2222em;"></span><span class="mbin">×</span><span class="mspace" style="margin-right: 0.2222em;"></span></span><span class="base"><span class="strut" style="height: 0.6444em;"></span><span class="mord">0.1</span><span class="mspace" style="margin-right: 0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord">154.4</span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span></span></span></span></span></li><li><code>Task Off-Heap</code> <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          = 
+         
+        
+       
+         = 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.3669em;"></span><span class="mrel">=</span></span></span></span></span> <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          0 
+         
+        
+          M 
+         
+        
+          B 
+         
+        
+       
+         0MB 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord">0</span><span class="mord mathnormal" style="margin-right: 0.0502em;">MB</span></span></span></span></span>（默认）</li><li><code>Framework Off-Heap</code> <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          = 
+         
+        
+       
+         = 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.3669em;"></span><span class="mrel">=</span></span></span></span></span> <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          128 
+         
+        
+          M 
+         
+        
+       
+         128M 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord">128</span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span></span></span></span></span>（默认）</li><li>⭐ 所以 <code>Total Direct Memory</code> <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          = 
+         
+        
+          154.4 
+         
+        
+          M 
+         
+        
+          + 
+         
+        
+          0 
+         
+        
+          + 
+         
+        
+          128 
+         
+        
+          M 
+         
+        
+          = 
+         
+        
+          282.4 
+         
+        
+          M 
+         
+        
+       
+         = 154.4M + 0 + 128M = 282.4M 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.3669em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 0.7667em; vertical-align: -0.0833em;"></span><span class="mord">154.4</span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span><span class="mspace" style="margin-right: 0.2222em;"></span><span class="mbin">+</span><span class="mspace" style="margin-right: 0.2222em;"></span></span><span class="base"><span class="strut" style="height: 0.7278em; vertical-align: -0.0833em;"></span><span class="mord">0</span><span class="mspace" style="margin-right: 0.2222em;"></span><span class="mbin">+</span><span class="mspace" style="margin-right: 0.2222em;"></span></span><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord">128</span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span><span class="mspace" style="margin-right: 0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord">282.4</span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span></span></span></span></span></li><li><code>Managed Memory</code> <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          = 
+         
+        
+          1544 
+         
+        
+          M 
+         
+        
+          B 
+         
+        
+          × 
+         
+        
+          0.4 
+         
+        
+          = 
+         
+        
+          617.6 
+         
+        
+          M 
+         
+        
+       
+         = 1544MB × 0.4 = 617.6M 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.3669em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 0.7667em; vertical-align: -0.0833em;"></span><span class="mord">1544</span><span class="mord mathnormal" style="margin-right: 0.0502em;">MB</span><span class="mspace" style="margin-right: 0.2222em;"></span><span class="mbin">×</span><span class="mspace" style="margin-right: 0.2222em;"></span></span><span class="base"><span class="strut" style="height: 0.6444em;"></span><span class="mord">0.4</span><span class="mspace" style="margin-right: 0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord">617.6</span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span></span></span></span></span></li><li><code>Total JVM Heap Memory</code> <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          = 
+         
+        
+          1544 
+         
+        
+          M 
+         
+        
+          − 
+         
+        
+          282.4 
+         
+        
+          M 
+         
+        
+          − 
+         
+        
+          617.6 
+         
+        
+          M 
+         
+        
+          = 
+         
+        
+          644 
+         
+        
+          M 
+         
+        
+          B 
+         
+        
+       
+         = 1544M - 282.4M - 617.6M = 644MB 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.3669em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 0.7667em; vertical-align: -0.0833em;"></span><span class="mord">1544</span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span><span class="mspace" style="margin-right: 0.2222em;"></span><span class="mbin">−</span><span class="mspace" style="margin-right: 0.2222em;"></span></span><span class="base"><span class="strut" style="height: 0.7667em; vertical-align: -0.0833em;"></span><span class="mord">282.4</span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span><span class="mspace" style="margin-right: 0.2222em;"></span><span class="mbin">−</span><span class="mspace" style="margin-right: 0.2222em;"></span></span><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord">617.6</span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span><span class="mspace" style="margin-right: 0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord">644</span><span class="mord mathnormal" style="margin-right: 0.0502em;">MB</span></span></span></span></span></li><li><code>Framework Heap</code> <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          = 
+         
+        
+          128 
+         
+        
+          M 
+         
+        
+       
+         = 128M 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.3669em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord">128</span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span></span></span></span></span></li><li><code>Task Heap</code> <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          = 
+         
+        
+          644 
+         
+        
+          M 
+         
+        
+          − 
+         
+        
+          128 
+         
+        
+          M 
+         
+        
+          = 
+         
+        
+          516 
+         
+        
+          M 
+         
+        
+       
+         = 644M - 128M = 516M 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.3669em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 0.7667em; vertical-align: -0.0833em;"></span><span class="mord">644</span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span><span class="mspace" style="margin-right: 0.2222em;"></span><span class="mbin">−</span><span class="mspace" style="margin-right: 0.2222em;"></span></span><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord">128</span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span><span class="mspace" style="margin-right: 0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord">516</span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span></span></span></span></span></li></ul> 
+<p>可以与以下的日志进行对比，完全能对上，😁😁😁！</p> 
+<p><img src="https://images2.imgbox.com/92/f4/qdbh8yx3_o.png" alt="在这里插入图片描述"></p> 
+<h2><a id="2_Total_Flink_Size_42"></a>2.单独分配 Total Flink Size</h2> 
+<pre><code class="prism language-yaml"><span class="token key atrule">taskmanager.memory.flink.size</span><span class="token punctuation">:</span> 2000m
+</code></pre> 
+<p>假如直接只分配 <code>taskmanager.memory.flink.size: 2000m</code></p> 
+<ul><li><code>Total Flink Size</code> <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          = 
+         
+        
+          2000 
+         
+        
+          M 
+         
+        
+       
+         = 2000M 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.3669em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord">2000</span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span></span></span></span></span></li><li><code>Managed Memory</code> <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          = 
+         
+        
+          2000 
+         
+        
+          M 
+         
+        
+          × 
+         
+        
+          0.4 
+         
+        
+          = 
+         
+        
+          800 
+         
+        
+          M 
+         
+        
+       
+         = 2000M × 0.4 = 800M 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.3669em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 0.7667em; vertical-align: -0.0833em;"></span><span class="mord">2000</span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span><span class="mspace" style="margin-right: 0.2222em;"></span><span class="mbin">×</span><span class="mspace" style="margin-right: 0.2222em;"></span></span><span class="base"><span class="strut" style="height: 0.6444em;"></span><span class="mord">0.4</span><span class="mspace" style="margin-right: 0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord">800</span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span></span></span></span></span></li><li><code>NetWork Memory</code> <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          = 
+         
+        
+          2000 
+         
+        
+          M 
+         
+        
+          × 
+         
+        
+          0.1 
+         
+        
+          = 
+         
+        
+          200 
+         
+        
+          M 
+         
+        
+       
+         = 2000M × 0.1 = 200M 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.3669em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 0.7667em; vertical-align: -0.0833em;"></span><span class="mord">2000</span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span><span class="mspace" style="margin-right: 0.2222em;"></span><span class="mbin">×</span><span class="mspace" style="margin-right: 0.2222em;"></span></span><span class="base"><span class="strut" style="height: 0.6444em;"></span><span class="mord">0.1</span><span class="mspace" style="margin-right: 0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord">200</span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span></span></span></span></span></li><li><code>Framework Off-Heap</code> <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          = 
+         
+        
+          128 
+         
+        
+          M 
+         
+        
+       
+         = 128M 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.3669em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord">128</span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span></span></span></span></span></li><li><code>Task Off-Heap</code> <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          = 
+         
+        
+          0 
+         
+        
+          B 
+         
+        
+          y 
+         
+        
+          t 
+         
+        
+          e 
+         
+        
+          = 
+         
+        
+          0 
+         
+        
+          M 
+         
+        
+       
+         = 0Byte = 0M 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.3669em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 0.8778em; vertical-align: -0.1944em;"></span><span class="mord">0</span><span class="mord mathnormal" style="margin-right: 0.0502em;">B</span><span class="mord mathnormal" style="margin-right: 0.0359em;">y</span><span class="mord mathnormal">t</span><span class="mord mathnormal">e</span><span class="mspace" style="margin-right: 0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord">0</span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span></span></span></span></span></li><li>⭐ 所以 <code>Total Direct Memory</code> <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          = 
+         
+        
+          200 
+         
+        
+          M 
+         
+        
+          + 
+         
+        
+          128 
+         
+        
+          M 
+         
+        
+          + 
+         
+        
+          0 
+         
+        
+          M 
+         
+        
+          = 
+         
+        
+          328 
+         
+        
+          M 
+         
+        
+       
+         = 200M + 128M + 0M= 328M 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.3669em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 0.7667em; vertical-align: -0.0833em;"></span><span class="mord">200</span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span><span class="mspace" style="margin-right: 0.2222em;"></span><span class="mbin">+</span><span class="mspace" style="margin-right: 0.2222em;"></span></span><span class="base"><span class="strut" style="height: 0.7667em; vertical-align: -0.0833em;"></span><span class="mord">128</span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span><span class="mspace" style="margin-right: 0.2222em;"></span><span class="mbin">+</span><span class="mspace" style="margin-right: 0.2222em;"></span></span><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord">0</span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span><span class="mspace" style="margin-right: 0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord">328</span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span></span></span></span></span></li><li><code>Total Off-Heap Memory</code> <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          = 
+         
+        
+          800 
+         
+        
+          M 
+         
+        
+          + 
+         
+        
+          328 
+         
+        
+          M 
+         
+        
+          = 
+         
+        
+          1128 
+         
+        
+          M 
+         
+        
+       
+         = 800M + 328M = 1128M 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.3669em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 0.7667em; vertical-align: -0.0833em;"></span><span class="mord">800</span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span><span class="mspace" style="margin-right: 0.2222em;"></span><span class="mbin">+</span><span class="mspace" style="margin-right: 0.2222em;"></span></span><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord">328</span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span><span class="mspace" style="margin-right: 0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord">1128</span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span></span></span></span></span></li><li><code>Total JVM Heap</code> <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          = 
+         
+        
+          2000 
+         
+        
+          M 
+         
+        
+          − 
+         
+        
+          800 
+         
+        
+          M 
+         
+        
+          − 
+         
+        
+          328 
+         
+        
+          M 
+         
+        
+          = 
+         
+        
+          872 
+         
+        
+          M 
+         
+        
+       
+         = 2000M - 800M - 328M = 872M 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.3669em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 0.7667em; vertical-align: -0.0833em;"></span><span class="mord">2000</span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span><span class="mspace" style="margin-right: 0.2222em;"></span><span class="mbin">−</span><span class="mspace" style="margin-right: 0.2222em;"></span></span><span class="base"><span class="strut" style="height: 0.7667em; vertical-align: -0.0833em;"></span><span class="mord">800</span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span><span class="mspace" style="margin-right: 0.2222em;"></span><span class="mbin">−</span><span class="mspace" style="margin-right: 0.2222em;"></span></span><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord">328</span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span><span class="mspace" style="margin-right: 0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord">872</span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span></span></span></span></span></li><li><code>Framework Heap</code> <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          = 
+         
+        
+          128 
+         
+        
+          M 
+         
+        
+       
+         = 128M 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.3669em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord">128</span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span></span></span></span></span></li><li><code>Task Heap</code> <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          = 
+         
+        
+          872 
+         
+        
+          M 
+         
+        
+          − 
+         
+        
+          128 
+         
+        
+          M 
+         
+        
+          = 
+         
+        
+          744 
+         
+        
+          M 
+         
+        
+       
+         = 872M - 128M = 744M 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.3669em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 0.7667em; vertical-align: -0.0833em;"></span><span class="mord">872</span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span><span class="mspace" style="margin-right: 0.2222em;"></span><span class="mbin">−</span><span class="mspace" style="margin-right: 0.2222em;"></span></span><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord">128</span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span><span class="mspace" style="margin-right: 0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord">744</span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span></span></span></span></span></li><li><code>JVM MetaSpace</code> <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          = 
+         
+        
+          256 
+         
+        
+          M 
+         
+        
+       
+         = 256M 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.3669em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord">256</span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span></span></span></span></span>（默认）</li><li><code>JVM Overhead</code> <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          = 
+         
+        
+          ( 
+         
+        
+       
+         = ( 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.3669em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mopen">(</span></span></span></span></span><code>JVM Overhead</code> <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          + 
+         
+        
+            
+         
+        
+          256 
+         
+        
+          M 
+         
+        
+       
+         +\ 256M 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.7667em; vertical-align: -0.0833em;"></span><span class="mord">+</span><span class="mspace"> </span><span class="mord">256</span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span></span></span></span></span> <code>Metaspace</code> <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          + 
+         
+        
+            
+         
+        
+          2000 
+         
+        
+          M 
+         
+        
+       
+         +\ 2000M 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.7667em; vertical-align: -0.0833em;"></span><span class="mord">+</span><span class="mspace"> </span><span class="mord">2000</span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span></span></span></span></span> <code>Total Flink Size</code> <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          ) 
+         
+        
+          × 
+         
+        
+          0.1 
+         
+        
+       
+         ) × 0.1 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mclose">)</span><span class="mspace" style="margin-right: 0.2222em;"></span><span class="mbin">×</span><span class="mspace" style="margin-right: 0.2222em;"></span></span><span class="base"><span class="strut" style="height: 0.6444em;"></span><span class="mord">0.1</span></span></span></span></span>，求解 <code>JVM Overhead</code> <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          = 
+         
+        
+          250.667 
+         
+        
+          M 
+         
+        
+       
+         = 250.667M 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.3669em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord">250.667</span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span></span></span></span></span> 在 <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          192 
+         
+        
+          M 
+         
+        
+          B 
+         
+        
+          ～ 
+         
+        
+          1 
+         
+        
+          G 
+         
+        
+          B 
+         
+        
+       
+         192MB ～ 1GB 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord">192</span><span class="mord mathnormal" style="margin-right: 0.0502em;">MB</span><span class="mord cjk_fallback">～</span><span class="mord">1</span><span class="mord mathnormal" style="margin-right: 0.0502em;">GB</span></span></span></span></span>，生效</li><li><code>Total Process Size</code> <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          = 
+         
+        
+          2000 
+         
+        
+          M 
+         
+        
+          + 
+         
+        
+          256 
+         
+        
+          M 
+         
+        
+          + 
+         
+        
+          250.667 
+         
+        
+          M 
+         
+        
+          = 
+         
+        
+          2506.667 
+         
+        
+          M 
+         
+        
+          = 
+         
+        
+          2.448 
+         
+        
+          G 
+         
+        
+          B 
+         
+        
+       
+         = 2000M + 256M + 250.667M = 2506.667M = 2.448GB 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.3669em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 0.7667em; vertical-align: -0.0833em;"></span><span class="mord">2000</span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span><span class="mspace" style="margin-right: 0.2222em;"></span><span class="mbin">+</span><span class="mspace" style="margin-right: 0.2222em;"></span></span><span class="base"><span class="strut" style="height: 0.7667em; vertical-align: -0.0833em;"></span><span class="mord">256</span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span><span class="mspace" style="margin-right: 0.2222em;"></span><span class="mbin">+</span><span class="mspace" style="margin-right: 0.2222em;"></span></span><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord">250.667</span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span><span class="mspace" style="margin-right: 0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord">2506.667</span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span><span class="mspace" style="margin-right: 0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord">2.448</span><span class="mord mathnormal" style="margin-right: 0.0502em;">GB</span></span></span></span></span></li></ul> 
+<p><img src="https://images2.imgbox.com/e9/c7/wAG090KM_o.png" alt="在这里插入图片描述"></p> 
+<h2><a id="3_Heap_Size__Managed_Memory_63"></a>3.单独分配 Heap Size &amp;&amp; Managed Memory</h2> 
+<pre><code class="prism language-yaml"><span class="token key atrule">taskmanager.memory.task.heap.size</span><span class="token punctuation">:</span> 1000m
+<span class="token key atrule">taskmanager.memory.managed.size</span><span class="token punctuation">:</span> 1000m
+</code></pre> 
+<ul><li><code>Framework Heap</code> <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          = 
+         
+        
+          128 
+         
+        
+          M 
+         
+        
+       
+         = 128M 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.3669em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord">128</span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span></span></span></span></span>（默认）</li><li><code>Task Heap</code> <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          = 
+         
+        
+          1000 
+         
+        
+          M 
+         
+        
+       
+         = 1000M 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.3669em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord">1000</span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span></span></span></span></span>（配置）</li><li><code>Total JVM Heap</code> <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          = 
+         
+        
+          1000 
+         
+        
+          M 
+         
+        
+          + 
+         
+        
+          128 
+         
+        
+          M 
+         
+        
+          = 
+         
+        
+          1128 
+         
+        
+          M 
+         
+        
+          = 
+         
+        
+          1.102 
+         
+        
+          G 
+         
+        
+          B 
+         
+        
+       
+         = 1000M + 128M = 1128M = 1.102GB 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.3669em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 0.7667em; vertical-align: -0.0833em;"></span><span class="mord">1000</span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span><span class="mspace" style="margin-right: 0.2222em;"></span><span class="mbin">+</span><span class="mspace" style="margin-right: 0.2222em;"></span></span><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord">128</span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span><span class="mspace" style="margin-right: 0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord">1128</span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span><span class="mspace" style="margin-right: 0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord">1.102</span><span class="mord mathnormal" style="margin-right: 0.0502em;">GB</span></span></span></span></span></li><li><code>Managed Memory</code> <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          = 
+         
+        
+          1000 
+         
+        
+          M 
+         
+        
+       
+         = 1000M 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.3669em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord">1000</span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span></span></span></span></span>（配置）</li><li><code>Framework Off-Heap</code> <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          = 
+         
+        
+          128 
+         
+        
+          M 
+         
+        
+       
+         = 128M 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.3669em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord">128</span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span></span></span></span></span></li><li><code>Task Off-Heap</code> <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          = 
+         
+        
+          0 
+         
+        
+          M 
+         
+        
+       
+         = 0M 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.3669em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord">0</span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span></span></span></span></span></li><li><code>NetWork</code> <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          = 
+         
+        
+       
+         = 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.3669em;"></span><span class="mrel">=</span></span></span></span></span> <code>Total Flink Size</code> <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          × 
+         
+        
+            
+         
+        
+          0.1 
+         
+        
+       
+         ×\ 0.1 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.7278em; vertical-align: -0.0833em;"></span><span class="mord">×</span><span class="mspace"> </span><span class="mord">0.1</span></span></span></span></span> <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          = 
+         
+        
+          ( 
+         
+        
+       
+         = ( 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.3669em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mopen">(</span></span></span></span></span><code>NetWork</code> <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          + 
+         
+        
+            
+         
+        
+          1128 
+         
+        
+          M 
+         
+        
+          + 
+         
+        
+          1000 
+         
+        
+          M 
+         
+        
+          + 
+         
+        
+          128 
+         
+        
+          M 
+         
+        
+          + 
+         
+        
+          0 
+         
+        
+          M 
+         
+        
+          ) 
+         
+        
+          × 
+         
+        
+          0.1 
+         
+        
+       
+         +\ 1128M + 1000M + 128M + 0M) × 0.1 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.7667em; vertical-align: -0.0833em;"></span><span class="mord">+</span><span class="mspace"> </span><span class="mord">1128</span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span><span class="mspace" style="margin-right: 0.2222em;"></span><span class="mbin">+</span><span class="mspace" style="margin-right: 0.2222em;"></span></span><span class="base"><span class="strut" style="height: 0.7667em; vertical-align: -0.0833em;"></span><span class="mord">1000</span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span><span class="mspace" style="margin-right: 0.2222em;"></span><span class="mbin">+</span><span class="mspace" style="margin-right: 0.2222em;"></span></span><span class="base"><span class="strut" style="height: 0.7667em; vertical-align: -0.0833em;"></span><span class="mord">128</span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span><span class="mspace" style="margin-right: 0.2222em;"></span><span class="mbin">+</span><span class="mspace" style="margin-right: 0.2222em;"></span></span><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mord">0</span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span><span class="mclose">)</span><span class="mspace" style="margin-right: 0.2222em;"></span><span class="mbin">×</span><span class="mspace" style="margin-right: 0.2222em;"></span></span><span class="base"><span class="strut" style="height: 0.6444em;"></span><span class="mord">0.1</span></span></span></span></span>，计算得到 <code>Network</code> <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          = 
+         
+        
+          250.667 
+         
+        
+          M 
+         
+        
+          B 
+         
+        
+       
+         = 250.667MB 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.3669em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord">250.667</span><span class="mord mathnormal" style="margin-right: 0.0502em;">MB</span></span></span></span></span>，处于 <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          64 
+         
+        
+          M 
+         
+        
+          B 
+         
+        
+          ～ 
+         
+        
+          1 
+         
+        
+          G 
+         
+        
+          B 
+         
+        
+       
+         64MB ～ 1GB 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord">64</span><span class="mord mathnormal" style="margin-right: 0.0502em;">MB</span><span class="mord cjk_fallback">～</span><span class="mord">1</span><span class="mord mathnormal" style="margin-right: 0.0502em;">GB</span></span></span></span></span>，有效</li><li>⭐ 所以 <code>Total Direct Memory</code> <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          = 
+         
+        
+          128 
+         
+        
+          M 
+         
+        
+          + 
+         
+        
+          250.667 
+         
+        
+          M 
+         
+        
+          = 
+         
+        
+          378.667 
+         
+        
+          M 
+         
+        
+       
+         = 128M + 250.667M = 378.667M 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.3669em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 0.7667em; vertical-align: -0.0833em;"></span><span class="mord">128</span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span><span class="mspace" style="margin-right: 0.2222em;"></span><span class="mbin">+</span><span class="mspace" style="margin-right: 0.2222em;"></span></span><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord">250.667</span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span><span class="mspace" style="margin-right: 0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord">378.667</span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span></span></span></span></span></li><li><code>Total Flink Size</code> <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          = 
+         
+        
+          1128 
+         
+        
+          M 
+         
+        
+          + 
+         
+        
+          1378.667 
+         
+        
+          M 
+         
+        
+          = 
+         
+        
+          2506.667 
+         
+        
+          M 
+         
+        
+          = 
+         
+        
+          2.448 
+         
+        
+          G 
+         
+        
+          B 
+         
+        
+       
+         = 1128M + 1378.667M = 2506.667M = 2.448GB 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.3669em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 0.7667em; vertical-align: -0.0833em;"></span><span class="mord">1128</span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span><span class="mspace" style="margin-right: 0.2222em;"></span><span class="mbin">+</span><span class="mspace" style="margin-right: 0.2222em;"></span></span><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord">1378.667</span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span><span class="mspace" style="margin-right: 0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord">2506.667</span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span><span class="mspace" style="margin-right: 0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord">2.448</span><span class="mord mathnormal" style="margin-right: 0.0502em;">GB</span></span></span></span></span></li><li><code>JVM Metaspace</code> <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          = 
+         
+        
+          256 
+         
+        
+          M 
+         
+        
+       
+         = 256M 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.3669em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord">256</span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span></span></span></span></span>（默认）</li><li><code>JVM Overhead</code> <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          = 
+         
+        
+          ( 
+         
+        
+       
+         = ( 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.3669em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mopen">(</span></span></span></span></span><code>JVM Overhead</code> <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          + 
+         
+        
+            
+         
+        
+          1128 
+         
+        
+          M 
+         
+        
+          + 
+         
+        
+          1000 
+         
+        
+          M 
+         
+        
+          + 
+         
+        
+          378.667 
+         
+        
+          M 
+         
+        
+          + 
+         
+        
+          256 
+         
+        
+          M 
+         
+        
+          ) 
+         
+        
+          × 
+         
+        
+          0.1 
+         
+        
+          = 
+         
+        
+          306.963 
+         
+        
+          M 
+         
+        
+       
+         +\ 1128M + 1000M + 378.667M + 256M) × 0.1 = 306.963M 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.7667em; vertical-align: -0.0833em;"></span><span class="mord">+</span><span class="mspace"> </span><span class="mord">1128</span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span><span class="mspace" style="margin-right: 0.2222em;"></span><span class="mbin">+</span><span class="mspace" style="margin-right: 0.2222em;"></span></span><span class="base"><span class="strut" style="height: 0.7667em; vertical-align: -0.0833em;"></span><span class="mord">1000</span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span><span class="mspace" style="margin-right: 0.2222em;"></span><span class="mbin">+</span><span class="mspace" style="margin-right: 0.2222em;"></span></span><span class="base"><span class="strut" style="height: 0.7667em; vertical-align: -0.0833em;"></span><span class="mord">378.667</span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span><span class="mspace" style="margin-right: 0.2222em;"></span><span class="mbin">+</span><span class="mspace" style="margin-right: 0.2222em;"></span></span><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mord">256</span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span><span class="mclose">)</span><span class="mspace" style="margin-right: 0.2222em;"></span><span class="mbin">×</span><span class="mspace" style="margin-right: 0.2222em;"></span></span><span class="base"><span class="strut" style="height: 0.6444em;"></span><span class="mord">0.1</span><span class="mspace" style="margin-right: 0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord">306.963</span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span></span></span></span></span>，处于 <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          192 
+         
+        
+          M 
+         
+        
+          ～ 
+         
+        
+          1 
+         
+        
+          G 
+         
+        
+          B 
+         
+        
+       
+         192M ～ 1GB 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord">192</span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span><span class="mord cjk_fallback">～</span><span class="mord">1</span><span class="mord mathnormal" style="margin-right: 0.0502em;">GB</span></span></span></span></span>，有效</li><li><code>Total Process Size</code> <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          = 
+         
+        
+          2506.667 
+         
+        
+          M 
+         
+        
+          + 
+         
+        
+          256 
+         
+        
+          M 
+         
+        
+          + 
+         
+        
+          306.963 
+         
+        
+          M 
+         
+        
+          = 
+         
+        
+          3069.63 
+         
+        
+          M 
+         
+        
+          = 
+         
+        
+          2.998 
+         
+        
+          G 
+         
+        
+       
+         = 2506.667M + 256M + 306.963M = 3069.63M = 2.998G 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.3669em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 0.7667em; vertical-align: -0.0833em;"></span><span class="mord">2506.667</span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span><span class="mspace" style="margin-right: 0.2222em;"></span><span class="mbin">+</span><span class="mspace" style="margin-right: 0.2222em;"></span></span><span class="base"><span class="strut" style="height: 0.7667em; vertical-align: -0.0833em;"></span><span class="mord">256</span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span><span class="mspace" style="margin-right: 0.2222em;"></span><span class="mbin">+</span><span class="mspace" style="margin-right: 0.2222em;"></span></span><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord">306.963</span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span><span class="mspace" style="margin-right: 0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord">3069.63</span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span><span class="mspace" style="margin-right: 0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord">2.998</span><span class="mord mathnormal">G</span></span></span></span></span></li></ul> 
+<p><img src="https://images2.imgbox.com/da/8f/A1ZTwWyq_o.png" alt="在这里插入图片描述"></p> 
+<h2><a id="4_Total_Process_Size__Heap_Size__Managed_Memory_83"></a>4.分配 Total Process Size 和 Heap Size &amp;&amp; Managed Memory</h2> 
+<p>指定 <code>Total Process Size</code>，同时显式分配组件 <code>JVM Heap</code> 和 <code>Mamaged Memory</code>。</p> 
+<pre><code class="prism language-yaml"><span class="token key atrule">taskmanager.memory.process.size</span><span class="token punctuation">:</span> 3000m
+<span class="token key atrule">taskmanager.memory.task.heap.size</span><span class="token punctuation">:</span> 1000m
+<span class="token key atrule">taskmanager.memory.managed.size</span><span class="token punctuation">:</span> 1000m
+</code></pre> 
+<ul><li><code>Total Process Size</code> <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          = 
+         
+        
+          3000 
+         
+        
+          M 
+         
+        
+       
+         = 3000M 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.3669em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord">3000</span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span></span></span></span></span></li><li><code>Framework Heap</code> <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          = 
+         
+        
+          128 
+         
+        
+          M 
+         
+        
+       
+         = 128M 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.3669em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord">128</span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span></span></span></span></span>（默认）</li><li><code>Task Heap</code> <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          = 
+         
+        
+          1000 
+         
+        
+          M 
+         
+        
+       
+         = 1000M 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.3669em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord">1000</span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span></span></span></span></span>（配置）</li><li><code>Total JVM Heap</code> <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          = 
+         
+        
+       
+         = 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.3669em;"></span><span class="mrel">=</span></span></span></span></span> <code>Framework Heap</code> <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          + 
+         
+        
+       
+         + 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.6667em; vertical-align: -0.0833em;"></span><span class="mord">+</span></span></span></span></span> <code>Task Heap</code> <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          = 
+         
+        
+          128 
+         
+        
+          M 
+         
+        
+          + 
+         
+        
+          1000 
+         
+        
+          M 
+         
+        
+          = 
+         
+        
+          1128 
+         
+        
+          M 
+         
+        
+          = 
+         
+        
+          1.102 
+         
+        
+          G 
+         
+        
+       
+         = 128M + 1000M = 1128M = 1.102G 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.3669em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 0.7667em; vertical-align: -0.0833em;"></span><span class="mord">128</span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span><span class="mspace" style="margin-right: 0.2222em;"></span><span class="mbin">+</span><span class="mspace" style="margin-right: 0.2222em;"></span></span><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord">1000</span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span><span class="mspace" style="margin-right: 0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord">1128</span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span><span class="mspace" style="margin-right: 0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord">1.102</span><span class="mord mathnormal">G</span></span></span></span></span></li><li><code>Managed Memory</code> <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          = 
+         
+        
+          1000 
+         
+        
+          M 
+         
+        
+       
+         = 1000M 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.3669em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord">1000</span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span></span></span></span></span>（配置）</li><li><code>Framework Off-Heap</code> <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          = 
+         
+        
+          128 
+         
+        
+          M 
+         
+        
+       
+         = 128M 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.3669em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord">128</span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span></span></span></span></span>（默认）</li><li><code>Task Off-Heap</code> <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          = 
+         
+        
+          0 
+         
+        
+          M 
+         
+        
+       
+         = 0M 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.3669em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord">0</span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span></span></span></span></span>（默认）</li><li><code>Network Memory</code> <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          = 
+         
+        
+          ( 
+         
+        
+       
+         = ( 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.3669em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mopen">(</span></span></span></span></span><code>Network Memory</code> <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          + 
+         
+        
+            
+         
+        
+          1128 
+         
+        
+          M 
+         
+        
+          + 
+         
+        
+          1128 
+         
+        
+          M 
+         
+        
+          ) 
+         
+        
+          × 
+         
+        
+          0.1 
+         
+        
+          = 
+         
+        
+          250.667 
+         
+        
+          M 
+         
+        
+       
+         +\ 1128M + 1128M) × 0.1 = 250.667M 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.7667em; vertical-align: -0.0833em;"></span><span class="mord">+</span><span class="mspace"> </span><span class="mord">1128</span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span><span class="mspace" style="margin-right: 0.2222em;"></span><span class="mbin">+</span><span class="mspace" style="margin-right: 0.2222em;"></span></span><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mord">1128</span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span><span class="mclose">)</span><span class="mspace" style="margin-right: 0.2222em;"></span><span class="mbin">×</span><span class="mspace" style="margin-right: 0.2222em;"></span></span><span class="base"><span class="strut" style="height: 0.6444em;"></span><span class="mord">0.1</span><span class="mspace" style="margin-right: 0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord">250.667</span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span></span></span></span></span>，在 <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          64 
+         
+        
+          M 
+         
+        
+          ～ 
+         
+        
+          1 
+         
+        
+          G 
+         
+        
+          B 
+         
+        
+       
+         64M ～ 1GB 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord">64</span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span><span class="mord cjk_fallback">～</span><span class="mord">1</span><span class="mord mathnormal" style="margin-right: 0.0502em;">GB</span></span></span></span></span> 之间，满足要求</li><li><code>Total Off-Heap</code> <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          = 
+         
+        
+          1000 
+         
+        
+          M 
+         
+        
+          + 
+         
+        
+          128 
+         
+        
+          M 
+         
+        
+          + 
+         
+        
+          250.667 
+         
+        
+          M 
+         
+        
+          + 
+         
+        
+          0 
+         
+        
+          M 
+         
+        
+          = 
+         
+        
+          1378.667 
+         
+        
+          M 
+         
+        
+          = 
+         
+        
+          1.346 
+         
+        
+          G 
+         
+        
+          B 
+         
+        
+       
+         = 1000M + 128M + 250.667M + 0M = 1378.667M = 1.346GB 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.3669em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 0.7667em; vertical-align: -0.0833em;"></span><span class="mord">1000</span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span><span class="mspace" style="margin-right: 0.2222em;"></span><span class="mbin">+</span><span class="mspace" style="margin-right: 0.2222em;"></span></span><span class="base"><span class="strut" style="height: 0.7667em; vertical-align: -0.0833em;"></span><span class="mord">128</span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span><span class="mspace" style="margin-right: 0.2222em;"></span><span class="mbin">+</span><span class="mspace" style="margin-right: 0.2222em;"></span></span><span class="base"><span class="strut" style="height: 0.7667em; vertical-align: -0.0833em;"></span><span class="mord">250.667</span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span><span class="mspace" style="margin-right: 0.2222em;"></span><span class="mbin">+</span><span class="mspace" style="margin-right: 0.2222em;"></span></span><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord">0</span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span><span class="mspace" style="margin-right: 0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord">1378.667</span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span><span class="mspace" style="margin-right: 0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord">1.346</span><span class="mord mathnormal" style="margin-right: 0.0502em;">GB</span></span></span></span></span></li><li><code>Total Flink Size</code> <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          = 
+         
+        
+          1128 
+         
+        
+          M 
+         
+        
+          + 
+         
+        
+          1378.667 
+         
+        
+          M 
+         
+        
+          = 
+         
+        
+          2506.667 
+         
+        
+          M 
+         
+        
+          = 
+         
+        
+          2.448 
+         
+        
+          G 
+         
+        
+          B 
+         
+        
+       
+         = 1128M + 1378.667M = 2506.667M = 2.448GB 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.3669em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 0.7667em; vertical-align: -0.0833em;"></span><span class="mord">1128</span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span><span class="mspace" style="margin-right: 0.2222em;"></span><span class="mbin">+</span><span class="mspace" style="margin-right: 0.2222em;"></span></span><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord">1378.667</span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span><span class="mspace" style="margin-right: 0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord">2506.667</span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span><span class="mspace" style="margin-right: 0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord">2.448</span><span class="mord mathnormal" style="margin-right: 0.0502em;">GB</span></span></span></span></span></li><li><code>JVM Metaspace</code> <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          = 
+         
+        
+          256 
+         
+        
+          M 
+         
+        
+       
+         = 256M 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.3669em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord">256</span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span></span></span></span></span></li><li><code>JVM Overhead</code> <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          = 
+         
+        
+          3000 
+         
+        
+          M 
+         
+        
+          − 
+         
+        
+          2506.667 
+         
+        
+          M 
+         
+        
+          − 
+         
+        
+          256 
+         
+        
+          M 
+         
+        
+          = 
+         
+        
+          237.333 
+         
+        
+          M 
+         
+        
+       
+         = 3000M - 2506.667M - 256M = 237.333M 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.3669em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 0.7667em; vertical-align: -0.0833em;"></span><span class="mord">3000</span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span><span class="mspace" style="margin-right: 0.2222em;"></span><span class="mbin">−</span><span class="mspace" style="margin-right: 0.2222em;"></span></span><span class="base"><span class="strut" style="height: 0.7667em; vertical-align: -0.0833em;"></span><span class="mord">2506.667</span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span><span class="mspace" style="margin-right: 0.2222em;"></span><span class="mbin">−</span><span class="mspace" style="margin-right: 0.2222em;"></span></span><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord">256</span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span><span class="mspace" style="margin-right: 0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord">237.333</span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span></span></span></span></span>，在 <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          192 
+         
+        
+          M 
+         
+        
+          ～ 
+         
+        
+          1 
+         
+        
+          G 
+         
+        
+          B 
+         
+        
+       
+         192M ～ 1GB 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord">192</span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span><span class="mord cjk_fallback">～</span><span class="mord">1</span><span class="mord mathnormal" style="margin-right: 0.0502em;">GB</span></span></span></span></span> 之间，满足要求</li></ul> 
+<p><img src="https://images2.imgbox.com/72/03/j9WhHfhu_o.png" alt="在这里插入图片描述"></p> 
+<h2><a id="5_Total_Flink_Size__Heap_Size__Managed_Memory_104"></a>5.分配 Total Flink Size 和 Heap Size &amp;&amp; Managed Memory</h2> 
+<p>指定 <code>Total Flink Size</code>，同时显式分配组件 <code>JVM Heap</code> 和 <code>Mamaged Memory</code>。</p> 
+<pre><code class="prism language-yaml"><span class="token key atrule">taskmanager.memory.flink.size</span><span class="token punctuation">:</span> 3000m
+<span class="token key atrule">taskmanager.memory.task.heap.size</span><span class="token punctuation">:</span> 1000m
+<span class="token key atrule">taskmanager.memory.managed.size</span><span class="token punctuation">:</span> 1000m
+</code></pre> 
+<ul><li><code>Total Flink Size</code> <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          = 
+         
+        
+          3000 
+         
+        
+          M 
+         
+        
+          = 
+         
+        
+          2.93 
+         
+        
+          G 
+         
+        
+          B 
+         
+        
+       
+         = 3000M = 2.93GB 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.3669em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord">3000</span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span><span class="mspace" style="margin-right: 0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord">2.93</span><span class="mord mathnormal" style="margin-right: 0.0502em;">GB</span></span></span></span></span>（配置）</li><li><code>Managed Memory</code> <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          = 
+         
+        
+          1000 
+         
+        
+          M 
+         
+        
+       
+         = 1000M 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.3669em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord">1000</span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span></span></span></span></span>（配置）</li><li><code>Task Heap</code> <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          = 
+         
+        
+          1000 
+         
+        
+          M 
+         
+        
+       
+         = 1000M 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.3669em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord">1000</span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span></span></span></span></span>（配置）</li><li><code>Framework Heap</code> <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          = 
+         
+        
+          128 
+         
+        
+          M 
+         
+        
+       
+         = 128M 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.3669em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord">128</span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span></span></span></span></span>（默认）</li><li><code>Total JVM Heap</code> <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          = 
+         
+        
+       
+         = 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.3669em;"></span><span class="mrel">=</span></span></span></span></span> <code>Framework Heap</code> + <code>Task Heap</code> <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          = 
+         
+        
+          128 
+         
+        
+          M 
+         
+        
+          + 
+         
+        
+          1000 
+         
+        
+          M 
+         
+        
+          = 
+         
+        
+          1128 
+         
+        
+          M 
+         
+        
+       
+         = 128M + 1000M =1128M 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.3669em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 0.7667em; vertical-align: -0.0833em;"></span><span class="mord">128</span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span><span class="mspace" style="margin-right: 0.2222em;"></span><span class="mbin">+</span><span class="mspace" style="margin-right: 0.2222em;"></span></span><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord">1000</span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span><span class="mspace" style="margin-right: 0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord">1128</span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span></span></span></span></span></li><li><code>Total Off-Heap Memory</code> <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          = 
+         
+        
+          3000 
+         
+        
+          M 
+         
+        
+          − 
+         
+        
+          1128 
+         
+        
+          M 
+         
+        
+          = 
+         
+        
+          1872 
+         
+        
+          M 
+         
+        
+          = 
+         
+        
+          1.828 
+         
+        
+          G 
+         
+        
+          B 
+         
+        
+       
+         = 3000M - 1128M = 1872M = 1.828GB 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.3669em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 0.7667em; vertical-align: -0.0833em;"></span><span class="mord">3000</span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span><span class="mspace" style="margin-right: 0.2222em;"></span><span class="mbin">−</span><span class="mspace" style="margin-right: 0.2222em;"></span></span><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord">1128</span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span><span class="mspace" style="margin-right: 0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord">1872</span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span><span class="mspace" style="margin-right: 0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord">1.828</span><span class="mord mathnormal" style="margin-right: 0.0502em;">GB</span></span></span></span></span></li><li><code>Direct Memory</code> <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          = 
+         
+        
+       
+         = 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.3669em;"></span><span class="mrel">=</span></span></span></span></span> <code>Total Off-Heap Memory</code> - <code>Managed Memory</code> <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          = 
+         
+        
+          1872 
+         
+        
+          M 
+         
+        
+          − 
+         
+        
+          1000 
+         
+        
+          M 
+         
+        
+          = 
+         
+        
+          872 
+         
+        
+          M 
+         
+        
+       
+         = 1872M - 1000M = 872M 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.3669em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 0.7667em; vertical-align: -0.0833em;"></span><span class="mord">1872</span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span><span class="mspace" style="margin-right: 0.2222em;"></span><span class="mbin">−</span><span class="mspace" style="margin-right: 0.2222em;"></span></span><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord">1000</span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span><span class="mspace" style="margin-right: 0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord">872</span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span></span></span></span></span></li><li><code>Task Off-Heap</code> <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          = 
+         
+        
+          0 
+         
+        
+          M 
+         
+        
+       
+         = 0M 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.3669em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord">0</span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span></span></span></span></span>（默认）</li><li><code>Framework Off-Heap</code> <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          = 
+         
+        
+          128 
+         
+        
+          M 
+         
+        
+       
+         = 128M 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.3669em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord">128</span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span></span></span></span></span>（默认）</li><li><code>Network Memory</code> <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          = 
+         
+        
+       
+         = 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.3669em;"></span><span class="mrel">=</span></span></span></span></span> <code>Direct Memory</code> <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          − 
+         
+        
+       
+         - 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.6667em; vertical-align: -0.0833em;"></span><span class="mord">−</span></span></span></span></span> <code>Task Off-Heap</code> - <code>Framework Off-Heap</code> <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          = 
+         
+        
+          872 
+         
+        
+          M 
+         
+        
+          − 
+         
+        
+          0 
+         
+        
+          M 
+         
+        
+          − 
+         
+        
+          128 
+         
+        
+          M 
+         
+        
+          = 
+         
+        
+          744 
+         
+        
+          M 
+         
+        
+       
+         = 872M - 0M - 128M = 744M 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.3669em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 0.7667em; vertical-align: -0.0833em;"></span><span class="mord">872</span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span><span class="mspace" style="margin-right: 0.2222em;"></span><span class="mbin">−</span><span class="mspace" style="margin-right: 0.2222em;"></span></span><span class="base"><span class="strut" style="height: 0.7667em; vertical-align: -0.0833em;"></span><span class="mord">0</span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span><span class="mspace" style="margin-right: 0.2222em;"></span><span class="mbin">−</span><span class="mspace" style="margin-right: 0.2222em;"></span></span><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord">128</span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span><span class="mspace" style="margin-right: 0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord">744</span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span></span></span></span></span></li><li><code>JVM Metaspace</code> <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          = 
+         
+        
+          256 
+         
+        
+          M 
+         
+        
+       
+         = 256M 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.3669em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord">256</span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span></span></span></span></span>（默认）</li><li><code>JVM Overhead</code> <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          = 
+         
+        
+          ( 
+         
+        
+       
+         = ( 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.3669em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mopen">(</span></span></span></span></span><code>JVM Overhead</code> <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          + 
+         
+        
+            
+         
+        
+          3000 
+         
+        
+          M 
+         
+        
+          + 
+         
+        
+          256 
+         
+        
+          M 
+         
+        
+          ) 
+         
+        
+          × 
+         
+        
+          0.1 
+         
+        
+       
+         +\ 3000M + 256M) × 0.1 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.7667em; vertical-align: -0.0833em;"></span><span class="mord">+</span><span class="mspace"> </span><span class="mord">3000</span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span><span class="mspace" style="margin-right: 0.2222em;"></span><span class="mbin">+</span><span class="mspace" style="margin-right: 0.2222em;"></span></span><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mord">256</span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span><span class="mclose">)</span><span class="mspace" style="margin-right: 0.2222em;"></span><span class="mbin">×</span><span class="mspace" style="margin-right: 0.2222em;"></span></span><span class="base"><span class="strut" style="height: 0.6444em;"></span><span class="mord">0.1</span></span></span></span></span>，计算得到 <code>JVM Overhead</code> <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          = 
+         
+        
+          361.778 
+         
+        
+          M 
+         
+        
+       
+         = 361.778M 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.3669em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord">361.778</span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span></span></span></span></span>，处于 <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          192 
+         
+        
+          M 
+         
+        
+          ～ 
+         
+        
+          1 
+         
+        
+          G 
+         
+        
+       
+         192M～1G 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord">192</span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span><span class="mord cjk_fallback">～</span><span class="mord">1</span><span class="mord mathnormal">G</span></span></span></span></span> 之间，符合条件</li><li><code>Total Process Size</code> <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          = 
+         
+        
+          3000 
+         
+        
+          M 
+         
+        
+          + 
+         
+        
+          256 
+         
+        
+          M 
+         
+        
+          + 
+         
+        
+          361.778 
+         
+        
+          M 
+         
+        
+          = 
+         
+        
+          3617.778 
+         
+        
+          M 
+         
+        
+          = 
+         
+        
+          3.533 
+         
+        
+          G 
+         
+        
+          B 
+         
+        
+       
+         = 3000M + 256M + 361.778M = 3617.778M = 3.533GB 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.3669em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 0.7667em; vertical-align: -0.0833em;"></span><span class="mord">3000</span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span><span class="mspace" style="margin-right: 0.2222em;"></span><span class="mbin">+</span><span class="mspace" style="margin-right: 0.2222em;"></span></span><span class="base"><span class="strut" style="height: 0.7667em; vertical-align: -0.0833em;"></span><span class="mord">256</span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span><span class="mspace" style="margin-right: 0.2222em;"></span><span class="mbin">+</span><span class="mspace" style="margin-right: 0.2222em;"></span></span><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord">361.778</span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span><span class="mspace" style="margin-right: 0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord">3617.778</span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span><span class="mspace" style="margin-right: 0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord">3.533</span><span class="mord mathnormal" style="margin-right: 0.0502em;">GB</span></span></span></span></span></li></ul> 
+<p><img src="https://images2.imgbox.com/83/1c/rC6AUERr_o.png" alt="在这里插入图片描述"></p> 
+<h2><a id="6_126"></a>6.内存分配小结</h2> 
+<p>在 Flink 的集群内存分配的过程中，我们大致可以通过 <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         3 
+        
+       
+      
+        3 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.6444em;"></span><span class="mord">3</span></span></span></span></span> 种方式进行分配。</p> 
+<ul><li>指定 <code>Total Process Size</code> 或 <code>Total Flink Size</code>，取决于你用什么方式部署。</li><li>单独指定某个组件，比如 <code>Task-Heap</code> 的大小，其它的组件都会被推导出来。</li><li>指定 <code>Total Process / Flink Size</code> &amp;&amp; <code>Heap</code> or <code>Off-Heap</code> 其中之一，其它的组件通过默认值进行填充或者进推导，如： 
+  <ul><li><code>Total Flink Size</code> = <code>Total Heap Size</code> + <code>Total Off-Heap Size</code></li><li><code>Total Heap Size</code> = <code>Task Heap</code> + <code>Framework Heap</code></li><li><code>Total Off-Heap</code> = <code>Task Off-Heap</code> + <code>Framework Off-Heap</code> + <code>Network Memory</code> + <code>Managed Memory</code></li><li><code>Network</code> = <code>Total Flink Size</code> <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+        
+         
+          
+          
+            × 
+           
+          
+              
+           
+          
+            0.1 
+           
+          
+         
+           ×\ 0.1 
+          
+         
+       </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.7278em; vertical-align: -0.0833em;"></span><span class="mord">×</span><span class="mspace"> </span><span class="mord">0.1</span></span></span></span></span>（没有指定其它组件情况下）</li><li><code>JVM Overhead</code> = <code>Total Process Size</code> <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+        
+         
+          
+          
+            × 
+           
+          
+              
+           
+          
+            0.1 
+           
+          
+         
+           ×\ 0.1 
+          
+         
+       </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.7278em; vertical-align: -0.0833em;"></span><span class="mord">×</span><span class="mspace"> </span><span class="mord">0.1</span></span></span></span></span>（没有指定其它组件情况下）</li><li>… …</li></ul> </li></ul>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/f2c06045c4162b8e93a829516b48e36e/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">AveragePooling1D层 和 MaxPooling1D layer</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/79d04919bf8109b39cfebfc821738d45/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">写PPT心得</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

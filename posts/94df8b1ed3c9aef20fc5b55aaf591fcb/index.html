@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>MySQL-InnoDB MVCC实现、Read View使用详解 - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="MySQL-InnoDB MVCC实现、Read View使用详解" />
+<meta property="og:description" content="InnoDB事务支持 MySQL InnoDB 引擎使用 redo log(重做日志) 保证事务的持久性，使用 undo log(回滚日志) 来保证事务的原子性。
+MySQL InnoDB 引擎通过 锁机制、MVCC 等手段来保证事务的隔离性（ 默认支持的隔离级别是 可重复读 ）。
+保证了事务的持久性、原子性、隔离性之后，一致性才能得到保障。
+ACID以及事务隔离性参考另外一篇文章：MySQL-ACID、事务隔离级别
+InnoDB 对 MVCC 的实现 MVCC 全称Multi-Version Concurrency Control，MVCC是一种通过增加版本冗余数据来实现并发控制的方法，一般在数据库管理系统中，实现对数据库的并发访问，在编程语言中实现事务内存。
+InnoDB中实现了MVCC主要是为了提高数据库的并发性能，在无锁的情况下也能处理读写并发，大大提高数据库的并发度。
+MVCC 的实现依赖于：隐藏字段（DB_TRX_ID、DB_ROLL_PTR、DB_ROW_ID）、Read View、undo log。
+在内部实现中，InnoDB 通过数据行的 DB_TRX_ID 和 Read View 来判断数据的可见性，如不可见，则通过数据行的 DB_ROLL_PTR 找到 undo log 中的历史版本。每个事务读到的数据版本可能是不一样的，在同一个事务中，用户只能看到该事务创建 Read View 之前已经提交的修改和该事务本身做的修改。
+隐藏字段 在内部，InnoDB 存储引擎为每行数据添加了三个 隐藏字段 ：
+DB_TRX_ID（6字节）：表示最后一次插入或更新该行的事务 id。此外，delete 操作在内部被视为更新，只不过会在记录头 Record header 中的 deleted_flag 字段将其标记为已删除 ；DB_ROLL_PTR（7字节） 回滚指针，指向该行的 undo log 。如果该行未被更新，则为空 ；DB_ROW_ID（6字节）：如果没有设置主键且该表没有唯一非空索引时，InnoDB 会使用该 id 来生成聚簇索引。 innodb表加上隐藏字段如下：" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/94df8b1ed3c9aef20fc5b55aaf591fcb/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-05-17T10:38:16+08:00" />
+<meta property="article:modified_time" content="2023-05-17T10:38:16+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">MySQL-InnoDB MVCC实现、Read View使用详解</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <h3><a id="InnoDB_2"></a>InnoDB事务支持</h3> 
+<p>  MySQL InnoDB 引擎使用 <strong>redo log(重做日志) 保证事务的持久性</strong>，使用 <strong>undo log(回滚日志) 来保证事务的原子性</strong>。</p> 
+<p>  MySQL InnoDB 引擎通过 锁机制、<strong>MVCC 等手段来保证事务的隔离性</strong>（ 默认支持的隔离级别是 <strong>可重复读</strong> ）。</p> 
+<p>  保证了事务的持久性、原子性、隔离性之后，一致性才能得到保障。</p> 
+<p>  ACID以及事务隔离性参考另外一篇文章：<a href="https://blog.csdn.net/NF_ALONG/article/details/123163200">MySQL-ACID、事务隔离级别</a></p> 
+<h3><a id="InnoDB__MVCC__11"></a>InnoDB 对 MVCC 的实现</h3> 
+<p>  MVCC 全称Multi-Version Concurrency Control，MVCC是一种通过增加版本冗余数据来实现并发控制的方法，一般在数据库管理系统中，实现对数据库的并发访问，在编程语言中实现事务内存。</p> 
+<p>  InnoDB中实现了MVCC主要是为了<strong>提高数据库的并发性能</strong>，在无锁的情况下也能处理读写并发，大大提高数据库的并发度。</p> 
+<p>  MVCC 的实现依赖于：<strong>隐藏字段（DB_TRX_ID、DB_ROLL_PTR、DB_ROW_ID）</strong>、<strong>Read View</strong>、<strong>undo log</strong>。</p> 
+<p>  在内部实现中，InnoDB 通过数据行的 <strong>DB_TRX_ID</strong> 和 <strong>Read View</strong> 来判断数据的可见性，如不可见，则通过数据行的 <strong>DB_ROLL_PTR</strong> 找到 <strong>undo log</strong> 中的历史版本。每个事务读到的数据版本可能是不一样的，在同一个事务中，用户只能看到该事务创建 <strong>Read View</strong> 之前已经提交的修改和该事务本身做的修改。</p> 
+<h4><a id="_21"></a>隐藏字段</h4> 
+<p>  在内部，InnoDB 存储引擎为每行数据添加了三个 隐藏字段 ：</p> 
+<ul><li><strong>DB_TRX_ID</strong>（6字节）：表示<strong>最后一次插入或更新该行的事务 id</strong>。此外，delete 操作在内部被视为更新，只不过会在记录头 Record header 中的 deleted_flag 字段将其标记为已删除 ；</li><li><strong>DB_ROLL_PTR</strong>（7字节） 回滚指针，指向该行的 undo log 。如果该行未被更新，则为空 ；</li><li><strong>DB_ROW_ID</strong>（6字节）：如果没有设置主键且该表没有唯一非空索引时，InnoDB 会使用该 id 来生成聚簇索引。</li></ul> 
+<p>  innodb表加上隐藏字段如下：<br> <img src="https://images2.imgbox.com/f8/ec/3vaCLtGh_o.png" alt="在这里插入图片描述"></p> 
+<h4><a id="ReadView_31"></a>ReadView</h4> 
+<p>  ReadView 是事务快照读的时候产生的数据读视图，在该事务执行快照读的那一刻，会生成一个数据系统当前的快照，记录并维护系统当前活跃事务的id，事务的id值是递增的。</p> 
+<p>  ReadView 的最大作用就是<strong>判断数据的可见性</strong>，当某个事务执行快照读的时候，会对此记录创建一个ReadView 的视图，在整个事务期间根据某些条件判断该事务能够看到的版本链上的哪条历史数据。</p> 
+<p>  Read View主要是用来做<strong>可见性判断</strong>，里面保存了 “当前对本事务不可见的其他活跃事务”</p> 
+<p>  主要有以下字段：</p> 
+<ul><li><strong>m_low_limit_id</strong>：目前出现过的最大的事务 ID+1，即下一个将被分配的事务 ID。大于等于这个 ID 的数据版本均不可见 ;</li><li><strong>m_up_limit_id</strong>：活跃事务列表 m_ids 中最小的事务 ID，如果 m_ids 为空，则 m_up_limit_id 为 m_low_limit_id。小于这个 ID 的数据版本均可见;</li><li><strong>m_ids</strong>：Read View 创建时其他<strong>未提交的活跃事务 ID 列表</strong>。创建 Read View时，将当前未提交事务 ID 记录下来，后续即使它们修改了记录行的值，对于当前事务也是不可见的。m_ids 不包括当前事务自己和已提交的事务（正在内存中）;</li><li><strong>m_creator_trx_id</strong>：创建该 Read View 的事务 ID。</li></ul> 
+<p>  事务可见性示意图：<img src="https://images2.imgbox.com/7d/1a/krUVDb4g_o.png" alt="在这里插入图片描述"></p> 
+<blockquote> 
+ <p>访问记录的版本事务ID即前面提到的隐藏DB_TRX_ID。<br> 根据访问记录的版本DB_TRX_ID分为数据行的DB_TRX_ID和undo log中数据行的DB_TRX_ID。<br> 当访问undo log中数据行d时，即使用d中的DB_TRX_ID与ReadView 的数据对比判断当前数据行是否可见。</p> 
+</blockquote> 
+<ol><li>DB_TRX_ID=m_creator_trx_id <strong>该版本对当前事务可见</strong>：<br> 如果被访问记录的版本事务ID（DB_TRX_ID）与ReadView 中的m_creator_trx_id值相同，那么表示当前事务访问的是自己修改过的记录，那么该版本对当前事务可见；</li><li>DB_TRX_ID&lt;m_up_limit_id <strong>该版本可以被当前事务访问</strong>:<br> 如果被访问版本的 事务ID（DB_TRX_ID）小于 ReadView 中的m_up_limit_id的值，那么表示生成该版本的事务在当前事务生成 ReadView 前已经提交，所以该版本可以被当前事务访问。</li><li>DB_TRX_ID&gt;m_low_limit_id <strong>该版本不可以被当前事务访问</strong> :<br> 如果被访问版本的事务ID（DB_TRX_ID）大于 ReadView 中的m_low_limit_id 值，那么表示生成该版本的事务在当前事务生成 ReadView 后才开启，所以该版本不可以被当前事务访问。</li><li>m_up_limit_id&lt;=DB_TRX_ID&lt;m_low_limit_id 并且 DB_TRX_ID 是否存在m_ids :<br> 如果被访问版本的 事务ID（DB_TRX_ID）在 ReadView 的m_up_limit_id和m_low_limit_id 之间，那就需要判断一下版本的事务ID是不是在 m_ids 列表中。<br> 如果在，说明创建 ReadView 时生成该版本的事务还是活跃的，该版本不可以被访问；<br> 如果不在，说明创建 ReadView 时生成该版本的事务已经被提交，该版本可以被访问。</li></ol> 
+<p>  如果某个版本对当前事务不可见，那么顺着版本链找到下个版本记录，然后继续上面的对比规则，直到找到版本链中的最后一个版本，如果最后一个版本都不可见，那么该条记录对此事务完全不可见，也就查不到这个记录。</p> 
+<h4><a id="undo_log_64"></a>undo log</h4> 
+<p>  undo log 主要有两个作用：</p> 
+<ul><li>当事务回滚时用于将数据恢复到修改前的样子；</li><li>另一个作用是 MVCC ，当读取记录时，若该记录被其他事务占用或当前版本对该事务不可见，则可以通过 undo log 读取之前的版本数据，以此实现非锁定读。</li></ul> 
+<p>  在 InnoDB 存储引擎中 undo log 分为两种： <strong>insert undo log</strong> 和 <strong>update undo log</strong>：</p> 
+<p>  <strong>insert undo log</strong> ：指在 insert 操作中产生的 undo log。因为 insert 操作的记录只对事务本身可见，对其他事务不可见，故该 undo log 可以在事务提交后直接删除。不需要进行 purge 操作。<br>   <strong>update undo log</strong> ：update 或 delete 操作中产生的 undo log。该 undo log可能需要提供 MVCC 机制，因此不能在事务提交时就进行删除。提交时放入 undo log 链表，等待 purge线程 进行最后的删除。</p> 
+<h4><a id="_73"></a>当前读和快照读</h4> 
+<h5><a id="_74"></a>当前读</h5> 
+<p>  <strong>当前读获取的数据是最新数据</strong>，而且在读取时不能被其他修改的，所以会对读取的记录加锁来控制。如下</p> 
+<pre><code class="prism language-sql"><span class="token keyword">select</span> <span class="token operator">*</span> <span class="token keyword">from</span> <span class="token keyword">user</span> <span class="token keyword">where</span> id <span class="token operator">&gt;</span> <span class="token number">1</span> <span class="token keyword">lock</span> <span class="token operator">in</span> <span class="token keyword">share</span> <span class="token keyword">mode</span><span class="token punctuation">;</span>
+<span class="token keyword">select</span> <span class="token operator">*</span> <span class="token keyword">from</span> <span class="token keyword">user</span> <span class="token keyword">where</span> id <span class="token operator">&gt;</span><span class="token number">1</span> <span class="token keyword">for</span> <span class="token keyword">update</span><span class="token punctuation">;</span>
+</code></pre> 
+<h5><a id="_82"></a>快照读</h5> 
+<p>  快照读，顾名思义读取的是一份快照数据，所以读到的并不一定是最新数据，可能是历史数据。</p> 
+<p>  简单的select查询就是快照读，不加锁非阻塞读，降低数据库的开销。如下：</p> 
+<pre><code class="prism language-sql"><span class="token keyword">select</span> <span class="token operator">*</span> <span class="token keyword">from</span> <span class="token keyword">user</span> <span class="token keyword">where</span> id <span class="token operator">&gt;</span><span class="token number">1</span>
+</code></pre> 
+<p>  但是快照读在隔离级别是串行化级别是没有意义的，因为串行化的sql都是排队执行的，不存在并发，所以就会变成当前读。</p> 
+<h3><a id="Read_View_96"></a>Read View生成时机与数据可见性判断</h3> 
+<p>  虽然 RC（读已提交） 和 RR（可重复读） 都通过 MVCC 来读取快照数据，但由于 生成 Read View 时机不同，从而在 RR 级别下实现可重复读。</p> 
+<p>Read View生成时机：</p> 
+<ul><li>RC 级别下每次查询都会生成Read View；</li><li>RR 级别下只会生成一次Read View。</li></ul> 
+<p>  举个例子：<img src="https://images2.imgbox.com/af/2e/4DhBG9G2_o.png" alt="在这里插入图片描述"></p> 
+<h4><a id="RC__ReadView__105"></a>RC 下 ReadView 生成情况</h4> 
+<p>  假设时间线来到 T4 ，那么此时数据行 id = 1 的版本链为：<img src="https://images2.imgbox.com/b5/f0/7Gm6fUOg_o.png" alt="在这里插入图片描述"><br>   由于 <strong>RC 级别下每次查询都会生成Read View</strong> ，并且事务 101、102 并未提交，此时 103 事务生成的 Read View 中活跃的事务<br> <strong>m_ids</strong> 为：[101,102] ，<br> <strong>m_low_limit_id</strong>为：104，<br> <strong>m_up_limit_id</strong>为：101，<br> <strong>m_creator_trx_id</strong> 为：103</p> 
+<ul><li>此时最新记录的 DB_TRX_ID 为 101，m_up_limit_id &lt;= 101 &lt; m_low_limit_id，所以要在 m_ids 列表中查找，发现 DB_TRX_ID 存在m_ids列表中，那么这个记录不可见；</li><li>根据 DB_ROLL_PTR 找到 undo log 中的上一版本记录，上一条记录的 DB_TRX_ID 还是 101，不可见 ；</li><li>继续找上一条 DB_TRX_ID为 1，满足 1 &lt; m_up_limit_id，可见，所以事务 103 查询到数据为 name = 菜花</li></ul> 
+<p>  时间线来到 T6 ，数据的版本链为：<img src="https://images2.imgbox.com/4d/ac/pzfCInzs_o.png" alt="在这里插入图片描述">  因为在 RC 级别下，重新生成 Read View，这时事务 101 已经提交，102 并未提交，所以此时 Read View 中活跃的事务<br> <strong>m_ids</strong>：[102] ，<br> <strong>m_low_limit_id</strong>为：104，<br> <strong>m_up_limit_id</strong>为：102，<br> <strong>m_creator_trx_id</strong>为：103</p> 
+<ul><li>此时最新记录的 DB_TRX_ID 为 102，m_up_limit_id &lt;= 102 &lt; m_low_limit_id，所以要在 m_ids 列表中查找，发现 DB_TRX_ID 存在列表中，那么这个记录不可见 ；</li><li>根据 DB_ROLL_PTR 找到 undo log 中的上一版本记录，上一条记录的 DB_TRX_ID 为 101，满足 101 &lt; m_up_limit_id，记录可见，所以在 T6 时间点查询到数据为 name = 李四，与时间 T4 查询到的结果不一致，不可重复读！</li></ul> 
+<p>  时间线来到 T9 ，数据的版本链为：<img src="https://images2.imgbox.com/80/8d/NG0sko2B_o.png" alt="在这里插入图片描述">  重新生成 Read View， 这时事务 101 和 102 都已经提交，所以 m_ids 为空，则 m_up_limit_id = m_low_limit_id = 104，最新版本事务 ID 为 102，满足 102 &lt; m_low_limit_id，可见，查询结果为 name = 赵六 。</p> 
+<blockquote> 
+ <p>总结： 在 RC 隔离级别下，事务在每次查询开始时都会生成并设置新的 Read View，所以导致不可重复读</p> 
+</blockquote> 
+<h4><a id="RR__ReadView__129"></a>RR 下 ReadView 生成情况</h4> 
+<p>  在可重复读级别下，只会在事务开始后第一次读取数据时生成一个 Read View（m_ids 列表）。<br> 1.在 T4 情况下的版本链为：<img src="https://images2.imgbox.com/21/a6/I5yIofMb_o.png" alt="在这里插入图片描述">  在当前执行 select 语句时生成一个 Read View，此时<br> <strong>m_ids</strong>：[101,102] ，<br> <strong>m_low_limit_id</strong>为：104，<br> <strong>m_up_limit_id</strong>为：101，<br> <strong>m_creator_trx_id</strong> 为：103。</p> 
+<p>  此时和 RC 级别下一样：</p> 
+<ul><li>最新记录的 DB_TRX_ID 为 101，m_up_limit_id &lt;= 101 &lt; m_low_limit_id，所以要在 m_ids 列表中查找，发现 DB_TRX_ID 存在列表中，那么这个记录不可见；</li><li>根据 DB_ROLL_PTR 找到 undo log 中的上一版本记录，上一条记录的 DB_TRX_ID 还是 101，不可见 ；</li><li>继续找上一条 DB_TRX_ID为 1，满足 1 &lt; m_up_limit_id，可见，所以事务 103 查询到数据为 name = 菜花</li></ul> 
+<p>2.时间点 T6 情况下：<img src="https://images2.imgbox.com/9d/f6/U8c5xN6A_o.png" alt="在这里插入图片描述">  在 <strong>RR 级别下只会生成一次Read View</strong>，所以此时依然沿用<br> <strong>m_ids</strong> ：[101,102] ，<br> <strong>m_low_limit_id</strong>为：104，<br> <strong>m_up_limit_id</strong>为：101，<br> <strong>m_creator_trx_id</strong> 为：103。</p> 
+<ul><li>最新记录的 DB_TRX_ID 为 102，m_up_limit_id &lt;= 102 &lt; m_low_limit_id，所以要在 m_ids 列表中查找，发现 DB_TRX_ID 存在列表中，那么这个记录不可见 ；</li><li>根据 DB_ROLL_PTR 找到 undo log 中的上一版本记录，上一条记录的 DB_TRX_ID 为 101，不可见 ；</li><li>继续根据 DB_ROLL_PTR 找到 undo log 中的上一版本记录，上一条记录的 DB_TRX_ID 还是 101，不可见 ；</li><li>继续找上一条 DB_TRX_ID为 1，满足 1 &lt; m_up_limit_id，可见，所以事务 103 查询到数据为 name = 菜花</li></ul> 
+<p>  时间点 T9 情况下:<img src="https://images2.imgbox.com/d2/8a/Y6404gAn_o.png" alt="在这里插入图片描述">  此时情况跟 T6 完全一样，由于已经生成了 Read View，此时依然沿用 m_ids ：[101,102] ，所以查询结果依然是 name = 菜花。</p> 
+<h3><a id="InnoDB__153"></a>InnoDB 存储引擎的锁的算法</h3> 
+<ol><li><strong>行锁（Record Lock）</strong>:<strong>锁直接加在索引记录</strong>上面，锁住的是key。</li><li><strong>间隙锁（Gap Lock）</strong>:<strong>锁定索引记录间隙</strong>，确保索引记录的间隙不变。间隙锁是针对事务隔离级别为可重复读或以上级别而已的。</li><li><strong>Next-Key Lock</strong> ：行锁和间隙锁组合起来就叫Next-Key Lock。</li></ol> 
+<h3><a id="InnoDB_158"></a>InnoDB问题</h3> 
+<h4><a id="MyISAM__InnoDB__159"></a>MyISAM 和 InnoDB 存储引擎使用的锁</h4> 
+<ul><li>MyISAM 采用表级锁(table-level locking)。</li><li>InnoDB 支持行级锁(row-level locking)和表级锁,默认为行级锁</li></ul> 
+<p>  表级锁和行级锁对比：</p> 
+<ul><li><strong>表级锁</strong>： MySQL 中锁定 粒度最大 的一种锁，对当前操作的整张表加锁，实现简单，资源消耗也比较少，加锁快，不会出现死锁。其锁定粒度最大，触发锁冲突的概率最高，并发度最低，MyISAM 和 InnoDB 引擎都支持表级锁。</li><li><strong>行级锁</strong>： MySQL 中锁定 粒度最小 的一种锁，只针对当前操作的行进行加锁。 行级锁能大大减少数据库操作的冲突。其加锁粒度最小，并发度高，但加锁的开销也最大，加锁慢，会出现死锁。</li></ul> 
+<p>参考：<br> <a href="https://javaguide.cn/database/mysql/innodb-implementation-of-mvcc/#%E9%94%81%E5%AE%9A%E8%AF%BB" rel="nofollow">https://javaguide.cn/database/mysql/innodb-implementation-of-mvcc/#锁定读</a><br> <a href="https://zhuanlan.zhihu.com/p/418300709" rel="nofollow">MySQL进阶系列：多版本并发控制mvcc的实现</a></p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/43bee9a8d23afde580629a48641c2cb9/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">Android：你真的会用Toast吗（介绍安卓好看简约的Toast快速解锁方法）</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/31af1317ef471358a434c20cc21fee02/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">第十届蓝桥杯青少年Scratch真题</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

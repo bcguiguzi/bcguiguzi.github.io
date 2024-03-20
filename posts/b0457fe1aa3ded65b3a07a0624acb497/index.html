@@ -1,0 +1,391 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>select、poll和epoll的区别 - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="select、poll和epoll的区别" />
+<meta property="og:description" content="文章目录 概要一、多路复用I/O模型的诞生1.1 多线程或进程方式1.2 通过数组，链表等方式保存socket fd，不断轮询 二、select三、poll四、epoll五、小结六、参考 概要 在Unix五种I/O模型一文中，提到了I/O多路复用模型，其在Linux下有3种实现方式：select、poll、epoll，本文主要深入介绍下它们各自特点。
+事先说明：I/O多路复用模型，select和poll核心就是【轮询&#43;内核I/O事件就绪通知】,epoll的核心是内核I/O事件就绪通知。
+多路：多个socket连接（即多个客户端连接）
+复用：允许内核监听多个socket描述符，一旦发现进程指定的一个或多个scoket的I/O事件就绪（TCP三次握手成功[accept]、可读[read]，可写[write]等），就通知该进程
+要想更好的了解，最好根据代码来说，下面是代码的基本框架：
+void main(int argc, char **argv) { int listenfd, connfd; struct sockaddr_in srv_addr; //创建socket套接字 if ((listenfd = socket(AF_INET, SOCK_STREAM, 0)) == -1) { printf(&#34;create socket error: %s(errno: %d)\n&#34;, strerror(errno), errno); return; } //设置绑定地址的内容 memset(&amp;srv_addr, 0, sizeof(srv_addr)); srv_addr.sin_family = AF_INET; //ipv4 srv_addr.sin_addr.s_addr = htonl(INADDR_ANY);//ip 0.0.0.0 srv_addr.sin_port = htons(8888); //端口 //绑定地址 if (bind(listenfd, (struct sockaddr *)&amp;srv_addr, sizeof(srv_addr)) == -1) { printf(&#34;" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/b0457fe1aa3ded65b3a07a0624acb497/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2024-02-15T13:46:21+08:00" />
+<meta property="article:modified_time" content="2024-02-15T13:46:21+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">select、poll和epoll的区别</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p></p> 
+<div class="toc"> 
+ <h4>文章目录</h4> 
+ <ul><li><ul><li><a href="#_1" rel="nofollow">概要</a></li><li><a href="#IO_48" rel="nofollow">一、多路复用I/O模型的诞生</a></li><li><ul><li><ul><li><a href="#11__92" rel="nofollow">1.1 多线程或进程方式</a></li><li><a href="#12_socket_fd_160" rel="nofollow">1.2 通过数组，链表等方式保存socket fd，不断轮询</a></li></ul> 
+   </li></ul> 
+   </li><li><a href="#select_207" rel="nofollow">二、select</a></li><li><a href="#poll_257" rel="nofollow">三、poll</a></li><li><a href="#epoll_289" rel="nofollow">四、epoll</a></li><li><a href="#_365" rel="nofollow">五、小结</a></li><li><a href="#_371" rel="nofollow">六、参考</a></li></ul> 
+ </li></ul> 
+</div> 
+<p></p> 
+<h3><a id="_1"></a>概要</h3> 
+<p>在<a href="https://blog.csdn.net/weixin_38597669/article/details/136022419">Unix五种I/O模型</a>一文中，提到了I/O多路复用模型，其在Linux下有3种实现方式：select、poll、epoll，本文主要深入介绍下它们各自特点。</p> 
+<p><code>事先说明：I/O多路复用模型，select和poll核心就是【轮询+内核I/O事件就绪通知】,epoll的核心是内核I/O事件就绪通知。</code></p> 
+<blockquote> 
+ <p>多路：多个socket连接（即多个客户端连接）<br> 复用：允许内核监听多个socket描述符，一旦发现进程指定的一个或多个scoket的I/O事件就绪（TCP三次握手成功[accept]、可读[read]，可写[write]等），就通知该进程</p> 
+</blockquote> 
+<p>要想更好的了解，最好根据代码来说，下面是代码的基本框架：</p> 
+<pre><code class="prism language-c"><span class="token keyword">void</span> <span class="token function">main</span><span class="token punctuation">(</span><span class="token keyword">int</span> argc<span class="token punctuation">,</span> <span class="token keyword">char</span> <span class="token operator">*</span><span class="token operator">*</span>argv<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">int</span> listenfd<span class="token punctuation">,</span> connfd<span class="token punctuation">;</span>
+    <span class="token keyword">struct</span> <span class="token class-name">sockaddr_in</span> srv_addr<span class="token punctuation">;</span>
+    <span class="token comment">//创建socket套接字</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token punctuation">(</span>listenfd <span class="token operator">=</span> <span class="token function">socket</span><span class="token punctuation">(</span>AF_INET<span class="token punctuation">,</span> SOCK_STREAM<span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token operator">==</span> <span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">)</span>
+    <span class="token punctuation">{<!-- --></span>
+        <span class="token function">printf</span><span class="token punctuation">(</span><span class="token string">"create socket error: %s(errno: %d)\n"</span><span class="token punctuation">,</span> <span class="token function">strerror</span><span class="token punctuation">(</span>errno<span class="token punctuation">)</span><span class="token punctuation">,</span> errno<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">return</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+    <span class="token comment">//设置绑定地址的内容</span>
+    <span class="token function">memset</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>srv_addr<span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">,</span> <span class="token keyword">sizeof</span><span class="token punctuation">(</span>srv_addr<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    srv_addr<span class="token punctuation">.</span>sin_family <span class="token operator">=</span> AF_INET<span class="token punctuation">;</span> <span class="token comment">//ipv4</span>
+    srv_addr<span class="token punctuation">.</span>sin_addr<span class="token punctuation">.</span>s_addr <span class="token operator">=</span> <span class="token function">htonl</span><span class="token punctuation">(</span>INADDR_ANY<span class="token punctuation">)</span><span class="token punctuation">;</span><span class="token comment">//ip 0.0.0.0</span>
+    srv_addr<span class="token punctuation">.</span>sin_port <span class="token operator">=</span> <span class="token function">htons</span><span class="token punctuation">(</span><span class="token number">8888</span><span class="token punctuation">)</span><span class="token punctuation">;</span> <span class="token comment">//端口</span>
+
+    <span class="token comment">//绑定地址</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">bind</span><span class="token punctuation">(</span>listenfd<span class="token punctuation">,</span> <span class="token punctuation">(</span><span class="token keyword">struct</span> <span class="token class-name">sockaddr</span> <span class="token operator">*</span><span class="token punctuation">)</span><span class="token operator">&amp;</span>srv_addr<span class="token punctuation">,</span> <span class="token keyword">sizeof</span><span class="token punctuation">(</span>srv_addr<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token operator">==</span> <span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">)</span>
+    <span class="token punctuation">{<!-- --></span>
+        <span class="token function">printf</span><span class="token punctuation">(</span><span class="token string">"bind socket error: %s(errno: %d)\n"</span><span class="token punctuation">,</span> <span class="token function">strerror</span><span class="token punctuation">(</span>errno<span class="token punctuation">)</span><span class="token punctuation">,</span> errno<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">return</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+    <span class="token comment">//listen</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">listen</span><span class="token punctuation">(</span>listenfd<span class="token punctuation">,</span> SOMAXCONN<span class="token punctuation">)</span> <span class="token operator">==</span> <span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">)</span> <span class="token comment">//指定监听的套接字描述符、TCP半连接和全连接队列大小</span>
+    <span class="token punctuation">{<!-- --></span>
+        <span class="token function">printf</span><span class="token punctuation">(</span><span class="token string">"listen socket error: %s(errno: %d)\n"</span><span class="token punctuation">,</span> <span class="token function">strerror</span><span class="token punctuation">(</span>errno<span class="token punctuation">)</span><span class="token punctuation">,</span> errno<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">return</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token comment">//【在这个区域分别使用阻塞，多线程，select，poll，epoll等多种方式实现连接】</span>
+    
+    <span class="token function">close</span><span class="token punctuation">(</span>listenfd<span class="token punctuation">)</span><span class="token punctuation">;</span> <span class="token comment">//关闭listen socket</span>
+    <span class="token keyword">return</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>PS:基于<a href="https://github.com/torvalds/linux/blob/v6.7/fs/select.c">Linux内核V6.7</a></p> 
+<h3><a id="IO_48"></a>一、多路复用I/O模型的诞生</h3> 
+<p>之所以诞生多路复用I/O模型，肯定是旧的I/O模型无法满足需要了，首先回顾下基础的阻塞I/O模型：</p> 
+<p>代码如下：</p> 
+<pre><code class="prism language-c">    <span class="token keyword">char</span> buff<span class="token punctuation">[</span>MAXLNE<span class="token punctuation">]</span><span class="token punctuation">;</span>
+    <span class="token keyword">int</span> n<span class="token punctuation">;</span>
+    <span class="token keyword">struct</span> <span class="token class-name">sockaddr_in</span> cli_addr<span class="token punctuation">;</span>
+    <span class="token class-name">socklen_t</span> len <span class="token operator">=</span> <span class="token keyword">sizeof</span><span class="token punctuation">(</span>client<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token punctuation">(</span>connfd <span class="token operator">=</span> <span class="token function">accept</span><span class="token punctuation">(</span>listenfd<span class="token punctuation">,</span> <span class="token punctuation">(</span><span class="token keyword">struct</span> <span class="token class-name">sockaddr</span> <span class="token operator">*</span><span class="token punctuation">)</span><span class="token operator">&amp;</span>cli_addr<span class="token punctuation">,</span> <span class="token operator">&amp;</span>len<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token operator">==</span> <span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">)</span>
+    <span class="token punctuation">{<!-- --></span>
+        <span class="token function">printf</span><span class="token punctuation">(</span><span class="token string">"accept socket error: %s(errno: %d)\n"</span><span class="token punctuation">,</span> <span class="token function">strerror</span><span class="token punctuation">(</span>errno<span class="token punctuation">)</span><span class="token punctuation">,</span> errno<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">return</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+    <span class="token keyword">while</span><span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">)</span>
+    <span class="token punctuation">{<!-- --></span>
+        n <span class="token operator">=</span> <span class="token function">recv</span><span class="token punctuation">(</span>connfd<span class="token punctuation">,</span> buff<span class="token punctuation">,</span> MAXLNE<span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">;</span> <span class="token comment">//阻塞</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>n <span class="token operator">&gt;</span> <span class="token number">0</span><span class="token punctuation">)</span>
+        <span class="token punctuation">{<!-- --></span>
+            <span class="token comment">//加上字符串的尾部，以便显示和转发</span>
+            buff<span class="token punctuation">[</span>n<span class="token punctuation">]</span> <span class="token operator">=</span> <span class="token char">'\0'</span><span class="token punctuation">;</span>
+            <span class="token function">printf</span><span class="token punctuation">(</span><span class="token string">"recv msg: %s \n"</span><span class="token punctuation">,</span> buff<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token function">send</span><span class="token punctuation">(</span>connfd<span class="token punctuation">,</span> buff<span class="token punctuation">,</span> n<span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+        <span class="token keyword">else</span> <span class="token keyword">if</span> <span class="token punctuation">(</span>n <span class="token operator">==</span> <span class="token number">0</span><span class="token punctuation">)</span>
+        <span class="token punctuation">{<!-- --></span>
+            <span class="token function">close</span><span class="token punctuation">(</span>connfd<span class="token punctuation">)</span><span class="token punctuation">;</span> <span class="token comment">//关闭client socket连接</span>
+        <span class="token punctuation">}</span>
+        <span class="token keyword">else</span> <span class="token comment">//n==-1</span>
+        <span class="token punctuation">{<!-- --></span>
+            <span class="token function">printf</span><span class="token punctuation">(</span><span class="token string">"recv errno: %d\n"</span><span class="token punctuation">,</span> errno<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+</code></pre> 
+<blockquote> 
+ <p>此时while在accept API之后，那么只能处理一个client，并维持长连接。<br> 那么while在accept API之前会如何呢，显而易见，此时能处理多个client,但只能处理每个client一条消息，不能未出长连接。</p> 
+</blockquote> 
+<p>如果想<code>与多个client维持长连接</code>，该如何做呢？于是基于阻塞I/O模型有了以下两种方式：</p> 
+<ul><li>多线程或进程；</li><li>通过数组，链表等方式保存socket fd，不断轮询；</li></ul> 
+<h5><a id="11__92"></a>1.1 多线程或进程方式</h5> 
+<p>代码如下(以多进程为例)：</p> 
+<pre><code class="prism language-c">	<span class="token function">signal</span><span class="token punctuation">(</span>SIGCHLD<span class="token punctuation">,</span> sig_child<span class="token punctuation">)</span><span class="token punctuation">;</span> <span class="token comment">//注册子进程退出处理函数</span>
+	<span class="token class-name">pid_t</span> child_pid<span class="token punctuation">;</span>
+  <span class="token keyword">while</span><span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">)</span>
+    <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">struct</span> <span class="token class-name">sockaddr_in</span> cli_addr<span class="token punctuation">;</span>
+        <span class="token class-name">socklen_t</span> len <span class="token operator">=</span> <span class="token keyword">sizeof</span><span class="token punctuation">(</span>client<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token punctuation">(</span>connfd <span class="token operator">=</span> <span class="token function">accept</span><span class="token punctuation">(</span>listenfd<span class="token punctuation">,</span> <span class="token punctuation">(</span><span class="token keyword">struct</span> <span class="token class-name">sockaddr</span> <span class="token operator">*</span><span class="token punctuation">)</span><span class="token operator">&amp;</span>cli_addr<span class="token punctuation">,</span> <span class="token operator">&amp;</span>len<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token operator">==</span> <span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">)</span>
+        <span class="token punctuation">{<!-- --></span>
+            <span class="token function">printf</span><span class="token punctuation">(</span><span class="token string">"accept socket error: %s(errno: %d)\n"</span><span class="token punctuation">,</span> <span class="token function">strerror</span><span class="token punctuation">(</span>errno<span class="token punctuation">)</span><span class="token punctuation">,</span> errno<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token keyword">return</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token punctuation">(</span>child_pid <span class="token operator">=</span> <span class="token function">fork</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token operator">==</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token comment">//为每个client派生一个子进程处理</span>
+        <span class="token punctuation">{<!-- --></span> 
+			       <span class="token function">close</span><span class="token punctuation">(</span>listenfd<span class="token punctuation">)</span><span class="token punctuation">;</span>
+			       <span class="token function">str_echo</span><span class="token punctuation">(</span>connfd<span class="token punctuation">)</span><span class="token punctuation">;</span>
+			       <span class="token function">exit</span><span class="token punctuation">(</span><span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+		    <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+  
+</code></pre> 
+<p>子进程处理客户端请求函数</p> 
+<pre><code class="prism language-c"><span class="token keyword">void</span> <span class="token function">str_echo</span><span class="token punctuation">(</span><span class="token keyword">int</span> connfd<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	 <span class="token keyword">int</span> n<span class="token punctuation">;</span>
+	 <span class="token keyword">char</span> buff<span class="token punctuation">[</span>MAXLNE<span class="token punctuation">]</span><span class="token punctuation">;</span>
+	 
+again<span class="token operator">:</span>
+	<span class="token keyword">while</span> <span class="token punctuation">(</span><span class="token punctuation">(</span>n <span class="token operator">=</span> <span class="token function">recv</span><span class="token punctuation">(</span>connfd<span class="token punctuation">,</span> buf<span class="token punctuation">,</span> MAXLINE<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token operator">&gt;</span> <span class="token number">0</span><span class="token punctuation">)</span>
+	<span class="token punctuation">{<!-- --></span>
+	  <span class="token function">printf</span><span class="token punctuation">(</span><span class="token string">"recv msg: %s \n"</span><span class="token punctuation">,</span> buff<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	  <span class="token function">send</span><span class="token punctuation">(</span>sockfd<span class="token punctuation">,</span> buf<span class="token punctuation">,</span> n<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+	<span class="token keyword">if</span> <span class="token punctuation">(</span>n <span class="token operator">&lt;</span> <span class="token number">0</span> <span class="token operator">&amp;&amp;</span> errno <span class="token operator">==</span> EINTR<span class="token punctuation">)</span>
+	<span class="token punctuation">{<!-- --></span>
+	  <span class="token keyword">goto</span> again<span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>	
+	<span class="token keyword">else</span> <span class="token keyword">if</span> <span class="token punctuation">(</span>n <span class="token operator">==</span> <span class="token number">0</span><span class="token punctuation">)</span>
+  <span class="token punctuation">{<!-- --></span>
+      <span class="token function">close</span><span class="token punctuation">(</span>connfd<span class="token punctuation">)</span><span class="token punctuation">;</span> <span class="token comment">//结束</span>
+      <span class="token keyword">return</span><span class="token punctuation">;</span>  <span class="token comment">//退出进程</span>
+  <span class="token punctuation">}</span>
+  <span class="token keyword">else</span> <span class="token comment">//n==-1</span>
+  <span class="token punctuation">{<!-- --></span>
+     <span class="token function">printf</span><span class="token punctuation">(</span><span class="token string">"recv errno: %d\n"</span><span class="token punctuation">,</span> errno<span class="token punctuation">)</span><span class="token punctuation">;</span>
+  <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>子进程退出函数</p> 
+<pre><code class="prism language-c"><span class="token keyword">void</span> <span class="token function">sig_child</span><span class="token punctuation">(</span><span class="token keyword">int</span> signo<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token class-name">pid_t</span> pid<span class="token punctuation">;</span>
+	<span class="token keyword">int</span> stat<span class="token punctuation">;</span>
+	<span class="token comment">//等待所有子进程退出</span>
+	<span class="token keyword">while</span> <span class="token punctuation">(</span><span class="token punctuation">(</span>pid <span class="token operator">=</span> <span class="token function">waitpid</span><span class="token punctuation">(</span><span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">,</span> <span class="token operator">&amp;</span>stat<span class="token punctuation">,</span> WNOHANG<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token operator">&gt;</span> <span class="token number">0</span><span class="token punctuation">)</span>
+		<span class="token function">printf</span><span class="token punctuation">(</span><span class="token string">"child %d exit\n"</span><span class="token punctuation">,</span> pid<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token keyword">return</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p><strong>但是这方式有个弊端，每个client由一个进程/线程去处理，系统开销相当大，很难维持大量客户端。</strong></p> 
+<h5><a id="12_socket_fd_160"></a>1.2 通过数组，链表等方式保存socket fd，不断轮询</h5> 
+<p>这种模式是将客户端socket fd通过数组，链表等方式保存下来，然后不断地轮询，如果客户端太多，轮询也是很慢的。</p> 
+<p>伪代码如下：</p> 
+<pre><code class="prism language-c"><span class="token keyword">int</span> client_fds<span class="token punctuation">[</span>FD_SETSIZE<span class="token punctuation">]</span><span class="token punctuation">;</span>
+<span class="token keyword">int</span> sockfd<span class="token punctuation">;</span>
+<span class="token keyword">while</span><span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+   <span class="token keyword">int</span> connfd <span class="token operator">=</span> <span class="token function">accept</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token comment">//阻塞</span>
+   <span class="token keyword">for</span> <span class="token punctuation">(</span>i <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span> i <span class="token operator">&lt;</span> FD_SETSIZE<span class="token punctuation">;</span> i<span class="token operator">++</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span> 
+			<span class="token keyword">if</span> <span class="token punctuation">(</span>client<span class="token punctuation">[</span>i<span class="token punctuation">]</span> <span class="token operator">&lt;</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+					client_fds<span class="token punctuation">[</span>i<span class="token punctuation">]</span> <span class="token operator">=</span> connfd<span class="token punctuation">;</span>
+					<span class="token keyword">break</span><span class="token punctuation">;</span>
+			<span class="token punctuation">}</span>
+	 <span class="token punctuation">}</span>
+	 <span class="token keyword">for</span> <span class="token punctuation">(</span>i <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span> i <span class="token operator">&lt;</span> FD_SETSIZE<span class="token punctuation">;</span> i<span class="token operator">++</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+	    <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token punctuation">(</span>sockfd <span class="token operator">=</span> client_fds<span class="token punctuation">[</span>i<span class="token punctuation">]</span><span class="token punctuation">)</span> <span class="token operator">&lt;=</span> <span class="token number">0</span><span class="token punctuation">)</span>
+	    <span class="token punctuation">{<!-- --></span>
+	      <span class="token keyword">continue</span><span class="token punctuation">;</span> 
+	    <span class="token punctuation">}</span>
+	    n <span class="token operator">=</span> <span class="token function">recv</span><span class="token punctuation">(</span>sockfd<span class="token punctuation">,</span> buf<span class="token punctuation">,</span> MAXLINE<span class="token punctuation">)</span><span class="token comment">//阻塞</span>
+		  <span class="token keyword">if</span><span class="token punctuation">(</span>n <span class="token operator">&gt;</span> <span class="token number">0</span><span class="token punctuation">)</span>
+	    <span class="token punctuation">{<!-- --></span>
+	      <span class="token function">printf</span><span class="token punctuation">(</span><span class="token string">"recv msg: %s \n"</span><span class="token punctuation">,</span> buff<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	      <span class="token function">send</span><span class="token punctuation">(</span>sockfd<span class="token punctuation">,</span> buf<span class="token punctuation">,</span> n<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	    <span class="token punctuation">}</span>
+	    <span class="token keyword">else</span> <span class="token keyword">if</span> <span class="token punctuation">(</span>n <span class="token operator">&lt;</span> <span class="token number">0</span> <span class="token punctuation">)</span>
+	    <span class="token punctuation">{<!-- --></span>
+	       <span class="token function">printf</span><span class="token punctuation">(</span><span class="token string">"recv fd:%d, errno: %d\n"</span><span class="token punctuation">,</span> sockfd<span class="token punctuation">,</span> errno<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	    <span class="token punctuation">}</span>	
+	    <span class="token keyword">else</span><span class="token comment">// n == 0</span>
+      <span class="token punctuation">{<!-- --></span>
+        <span class="token function">close</span><span class="token punctuation">(</span>connfd<span class="token punctuation">)</span><span class="token punctuation">;</span> <span class="token comment">//结束</span>
+        client_fds<span class="token punctuation">[</span>i<span class="token punctuation">]</span> <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span> <span class="token comment">//标记一下</span>
+      <span class="token punctuation">}</span>	
+	 <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>  
+        
+</code></pre> 
+<p>可以看到通过<code>client_fds数组</code>将客户端连接的描述符保存下来，后续对其进行轮询，来达到<code>与多个client维持长连接</code>的目的。<br> 但accept，recv等函数都是阻塞的，如果此时I/O事件（比如accept的TCP三次握手成功，recv的可读，send的可写）没就绪，那岂不永远卡死了。所以我们需要一种机制，告诉我们<code>client_fds数组和监听socket listenfd</code>中哪些socket有I/O就绪事件，基于此多路复用I/O模型诞生了，没错，该模型本质就是<strong>告诉进程哪些socket有I/O就绪事件</strong>，然后我们基于此去轮询那些有I/O就绪事件的scoket,这样就不会卡住了。</p> 
+<p><code>PS:这种方式是没有实际应用的，主要是为了引出多路复用I/O模型。</code></p> 
+<p>那select、poll、epoll是如何告诉进程哪些socket有I/O就绪事件呢？下面依次探究下吧。</p> 
+<h3><a id="select_207"></a>二、select</h3> 
+<p>select api函数(还有个<a href="https://blog.csdn.net/tjcwt2011/article/details/126623816">pselect函数</a>，不是很常用，不过二者核心逻辑是一样的)：</p> 
+<pre><code class="prism language-c"><span class="token keyword">int</span> <span class="token function">select</span><span class="token punctuation">(</span><span class="token keyword">int</span> nfds<span class="token punctuation">,</span> fd_set <span class="token operator">*</span>readfds<span class="token punctuation">,</span> fd_set <span class="token operator">*</span>writefds<span class="token punctuation">,</span>fd_set <span class="token operator">*</span>exceptfds<span class="token punctuation">,</span> <span class="token keyword">struct</span> <span class="token class-name">timeval</span> <span class="token operator">*</span>timeout<span class="token punctuation">)</span><span class="token punctuation">;</span>
+</code></pre> 
+<blockquote> 
+ <p>参数：<br> nfds：最大的文件描述符加1<br> readfds：监听可读集合<br> writefds：监听可写集合<br> exceptfds：监听异常集合<br> timeout：超时时间<br> 返回值：<br> 大于0,表示I/O就绪事件的socket描述符个数；<br> 等于0表示没有描述符有状态变化，并且调用超时；<br> 小于0表示出错，此时全局变量errno保存错误码。</p> 
+</blockquote> 
+<p>我们使用Glibc库<a href="https://blog.csdn.net/weixin_38597669/article/details/136075148">select或pselect函数</a>时，都会走Linux内核<a href="https://github.com/torvalds/linux/blob/v6.7/fs/select.c#L479">do_select</a>函数，可以看到本质就是轮询readfds、writefds、exceptfds这三个集合，每次调用会轮询两次：</p> 
+<ol><li>第一次会将当前进程(本质是I/O事件就绪时的回调函数)加入到readfds、writefds、exceptfds这三个集合中socket的等待队列中（socket有I/O事件就会触发回调函数），然后就通过poll_schedule_timeout函数挂起；</li><li>一旦有某个socket描述符I/O事件就绪，会立即通知进程，就会开始第二次轮询，本次轮询会确定readfds、writefds、exceptfds这三个集合中到底是哪些socket描述符有就绪的I/O事件；</li><li>明明两次，为啥会有三呢，这里主要是在do_select最后会调用一次<code>poll_freewait</code>函数，该函数会将当前进程从readfds、writefds、exceptfds这三个集合中socket的等待队列中移除。</li></ol> 
+<p>从上面描述就可以看出，select主要工作：<code>维护所有socket的监听（添加【步骤1】和移除【步骤三】）、判定是否有I/O事件就绪的socket</code>。<br> 该方式虽相比基于阻塞I/O的多进程/线程方式能更便捷的实现与多个客户端维持长连接了，但缺点多多：</p> 
+<ol><li>由于无法准确识别哪些socket描述符I/O事件就绪，所以会进行无差别轮询，时间复杂度O(N)；</li><li>Linux下readfds、writefds、exceptfds这三个集合大小默认1024，所以维持长连接的客户端数量是有限的，源码如下：<br> <a href="https://github.com/torvalds/linux/blob/v6.7/include/linux/types.h#L20">typedef __kernel_fd_set fd_set</a><br> <a href="https://github.com/torvalds/linux/blob/v6.7/include/uapi/linux/posix_types.h#L27">__kernel_fd_set</a></li></ol> 
+<pre><code class="prism language-c"><span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">undef</span> <span class="token expression">__FD_SETSIZE</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name">__FD_SETSIZE</span>	<span class="token expression"><span class="token number">1024</span></span></span>
+
+<span class="token keyword">typedef</span> <span class="token keyword">struct</span> <span class="token punctuation">{<!-- --></span>
+	<span class="token keyword">unsigned</span> <span class="token keyword">long</span> fds_bits<span class="token punctuation">[</span>__FD_SETSIZE <span class="token operator">/</span> <span class="token punctuation">(</span><span class="token number">8</span> <span class="token operator">*</span> <span class="token keyword">sizeof</span><span class="token punctuation">(</span><span class="token keyword">long</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">]</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span> __kernel_fd_set<span class="token punctuation">;</span>
+</code></pre> 
+<p>可以看到无论32位还是64位<a href="https://www.jb51.net/article/228793.htm" rel="nofollow">操作系统</a>下fds_bits大小都是1024位，注意fd_set集合是通过位图表示第几个scoket描述符有无I/O事件。</p> 
+<ol start="3"><li>每次调用select函数，都需要把所有fd_set从用户空间拷贝到内核空间，如果fd_set比较大，对性能影响就非常大；</li></ol> 
+<p>优点：</p> 
+<ol><li>相比基于阻塞I/O的多进程/线程方式，更便捷的实现与多个客户端维持长连接；</li><li>相比非阻塞I/O，主动轮询socket是否有I/O事件，调整为等待内核通知，这样一次系统调用就实现多个client事件的管理，更有优势。</li></ol> 
+<p>综合来看相比基于阻塞I/O的多进程/线程方式优势并不大。</p> 
+<h3><a id="poll_257"></a>三、poll</h3> 
+<p>随着社会发展，对网络服务能力要求越来越高，<code>select最大连接数的限制这一弊端已经不适应了，于是诞生了poll</code>。<br> poll api函数：</p> 
+<pre><code class="prism language-c"><span class="token keyword">struct</span> <span class="token class-name">pollfd</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">int</span>   fd<span class="token punctuation">;</span>        <span class="token comment">//要监听的文件描述符</span>
+    <span class="token keyword">short</span> events<span class="token punctuation">;</span>    <span class="token comment">//要监听的事件</span>
+    <span class="token keyword">short</span> revents<span class="token punctuation">;</span>   <span class="token comment">//事件结果</span>
+<span class="token punctuation">}</span><span class="token punctuation">;</span>
+<span class="token keyword">int</span> <span class="token function">poll</span><span class="token punctuation">(</span><span class="token keyword">struct</span> <span class="token class-name">pollfd</span> <span class="token operator">*</span>fds<span class="token punctuation">,</span> <span class="token class-name">nfds_t</span> nfds<span class="token punctuation">,</span> <span class="token keyword">int</span> timeout<span class="token punctuation">)</span><span class="token punctuation">;</span>
+</code></pre> 
+<blockquote> 
+ <p>参数：<br> fds：这是一个数组，每一个数组元素表示要监听的文件描述符以及相应的事件<br> nfds：数组的个数<br> timeout：超时时间<br> 返回值：<br> 大于0：表示结构体数组fds中有fd描述符的状态发生变化，或可以读取、或可以写入、或出错。并且返回的值表示这些状态有变化的socket描述符的总数量；此时可以对fds数组进行遍历，以寻找那些revents不空的描述符，然后判断这个里面有哪些事件以读取数据。<br> 等于0：表示没有描述符有状态变化，并且调用超时。<br> 小于0：此时表示有错误发生，此时全局变量errno保存错误码。</p> 
+</blockquote> 
+<p>我们使用Glibc库poll函数时，会走Linux内核<a href="https://github.com/torvalds/linux/blob/v6.7/fs/select.c#L974">do_sys_poll和do_poll</a>函数，可以看到：</p> 
+<ul><li>do_sys_poll函数会将fds数组转化为<code>struct poll_list</code>链表，根据代码可知结构如下图：<br> <img src="https://images2.imgbox.com/bc/c4/wuvdYdBY_o.png" alt="poll_list结构图"></li><li>do_poll函数被 do_sys_poll调用，其核心逻辑与do_select差不多，每次被调用会轮询两次：<br> 1）：第一次会将当前进程(本质是I/O事件就绪时的回调函数)加入到<code>struct poll_list</code>链表中socket的等待队列中（socket有I/O事件就会触发回调函数），然后就通过poll_schedule_timeout函数挂起；<br> 2）：一旦有某个socket描述符I/O事件就绪，会立即通知进程，就会开始第二次轮询，本次轮询会确定<code>struct poll_list</code>链表中到底是哪些socket描述符有就绪的I/O事件。</li><li>do_sys_poll调用do_poll函数结束后，还有一次循环，即<code>poll_freewait</code>函数，此时会将当前进程从<code>struct poll_list</code>链表中socket的等待队列中移除。</li></ul> 
+<blockquote> 
+ <p>从上面描述就可以看出，相比select,唯一改进的地方在于没有了最大连接数的限制，但相应的也需要关注随着客户端连接数增加，轮询的效率和会急剧下降的问题。</p> 
+</blockquote> 
+<h3><a id="epoll_289"></a>四、epoll</h3> 
+<p>随着社会发展，对网络服务能力要求更高了，<code>poll性能也不够看了，它的缺点已经无法视而不见了，于是诞生了epoll</code>。<br> epoll全名event poll,其api函数有：</p> 
+<ol><li>epoll_create，创建一个epoll实例<code>struct eventpoll</code>，其实其返回一个int值，可以称之为epoll描述符，Linux内核会管理该值与具体epoll实例的映射关系。<a href="https://github.com/torvalds/linux/blob/v6.7/fs/eventpoll.c#L2030">对应内核源码do_epoll_create</a></li></ol> 
+<pre><code class="prism language-c"><span class="token comment">//epoll 结构体，即epoll实例</span>
+<span class="token keyword">struct</span> <span class="token class-name">eventpoll</span> <span class="token punctuation">{<!-- --></span>
+   <span class="token comment">/* 等待队列头，被sys_epoll_wait使用 */</span>
+   <span class="token class-name">wait_queue_head_t</span> wq<span class="token punctuation">;</span>
+   <span class="token comment">/* 保准准备就绪的文件描述符的一个链表 */</span>
+   <span class="token keyword">struct</span> <span class="token class-name">list_head</span> rdllist<span class="token punctuation">;</span>
+   <span class="token comment">/* 红黑树节点，epoll使用红黑树存储事件信息 */</span>
+   <span class="token keyword">struct</span> <span class="token class-name">rb_root</span> rbr<span class="token punctuation">;</span>
+           <span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+<span class="token punctuation">}</span><span class="token punctuation">;</span>
+<span class="token keyword">int</span> <span class="token function">epoll_create</span><span class="token punctuation">(</span><span class="token keyword">int</span> size<span class="token punctuation">)</span><span class="token punctuation">;</span>
+</code></pre> 
+<blockquote> 
+ <p>参数：<br> size:一个int值，实际没有任何用，只要不小于等于0即可；<br> 返回值：<br> 小于0表示错误，此时全局变量errno保存错误码</p> 
+</blockquote> 
+<ol start="2"><li>epoll_ctl，添加、删除、修改事件。<a href="https://github.com/torvalds/linux/blob/v6.7/fs/eventpoll.c#L2111">对应内核源码do_epoll_ctl</a></li></ol> 
+<pre><code class="prism language-c"><span class="token keyword">int</span> <span class="token function">epoll_ctl</span><span class="token punctuation">(</span><span class="token keyword">int</span> epfd<span class="token punctuation">,</span> <span class="token keyword">int</span> op<span class="token punctuation">,</span> <span class="token keyword">int</span> fd<span class="token punctuation">,</span> <span class="token keyword">struct</span> <span class="token class-name">epoll_event</span> <span class="token operator">*</span>event<span class="token punctuation">)</span><span class="token punctuation">;</span>
+</code></pre> 
+<blockquote> 
+ <p>参数：<br> epfd：epoll_create函数的返回值，即epoll描述符；<br> op：事件类型，EPOLL_CTL_ADD(添加事件)、EPOLL_CTL_MOD(修改事件)、EPOLL_CTL_DEL(删除事件)；<br> fd: socket描述符；<br> event：告诉内核需要监听哪个事件。<br> 返回值：<br> 小于0表示错误，此时全局变量errno保存错误码</p> 
+</blockquote> 
+<ol start="3"><li>epoll_wait，等待I/O事件。<a href="https://github.com/torvalds/linux/blob/v6.7/fs/eventpoll.c#L2283">对应内核源码do_epoll_wait</a></li></ol> 
+<pre><code class="prism language-c"><span class="token keyword">int</span> <span class="token function">epoll_wait</span><span class="token punctuation">(</span><span class="token keyword">int</span> epfd<span class="token punctuation">,</span> <span class="token keyword">struct</span> <span class="token class-name">epoll_event</span> <span class="token operator">*</span>events<span class="token punctuation">,</span><span class="token keyword">int</span> maxevents<span class="token punctuation">,</span> <span class="token keyword">int</span> timeout<span class="token punctuation">)</span><span class="token punctuation">;</span>
+</code></pre> 
+<blockquote> 
+ <p>参数：<br> epfd：epoll_create函数的返回值，即epoll描述符；<br> events：表示准备就绪的事件数组；<br> maxevents: 要等待的最大事件数；<br> timeout：超时时间。<br> 返回值：<br> 大于0：表示事件就绪的socket个数。<br> 等于0：表示没有描述符有状态变化，并且调用超时。<br> 小于0：此时表示有错误发生，此时全局变量errno保存错误码。</p> 
+</blockquote> 
+<p>根据api就可以观察出，相比select和poll，epoll拆成了三个，实际上是两个epoll_ctl和epoll_wait。即select和poll是将<code>维护监听scoket描述符</code>和<code>等待I/O事件</code>合为一体的，epoll拆开了，epoll_ctl来<code>维护监听scoket描述符</code>，epoll_wait来<code>等待I/O事件</code>。</p> 
+<p>为什么要这样做呢，在分析select和epoll缺点时，其实主要集中两点：</p> 
+<blockquote> 
+ <p>1：轮询：每次调用select或poll时都需要将进程加入到所有socket的等待队列中，等到socket有I/O事件立马唤醒进程，此时会轮询整个socket列表以确定哪些socket有I/O事件，最后会将进程从每个socket等队列中移除。这里涉及到对socket列表的三次轮询，随着socket列表的增加，会造成性能急剧下降的。<br> 2：复制：每次调用select或poll时都要将整个socket列表从用户区复制到内核区，也是有一定开销的。</p> 
+</blockquote> 
+<p>知道了缺点，该如何解决呢？</p> 
+<blockquote> 
+ <p>1：针对每次调用需要将将进程加入到所有socket的等待队列中，最后将进程从每个socket等队列中移除的操作，这部分交由epoll_ctl处理，按需对某个socket进行EPOLL_CTL_ADD、EPOLL_CTL_MOD、EPOLL_CTL_DEL操作;<br> 2：针对每次调用都要将整个socket列表从用户区复制到内核区的问题，这部分交由epoll_create创建的epoll实例替代，epoll_ctl通过EPOLL_CTL_ADD操作，会被插入到epoll实例的红黑树中，也就是说只会被复制一次；<br> 3：针对进程被唤醒后，还需要轮询整个socket列表以确定哪些socket有I/O事件的问题（即不知道哪些socket的I/O事件就绪，只能一个个遍历），调整成每个socket有I/O事件时会将该socket加入到epoll实例的rdllink双向链表中，进程调用epoll_wait时只需判断rdllink双向链表长度即可，大于0立即返回，等于0就挂起进程，等待被某个socketI/O事件唤醒。</p> 
+</blockquote> 
+<p>所以说epoll通过对select/poll功能的拆分，解决了前两者的缺点，相对于前两者优点如下：</p> 
+<ol><li>没有最大并发连接的限制，当然了还受操作系统限制，比如资源、配置等等；</li><li>性能高，没有了轮询，不会随着socket数量的增加而导致性能下降。</li><li>epoll支持边缘触发（EPOLLET）和水平触发（EPOLLLT），前两者仅支持水平触发。</li></ol> 
+<p>缺点：<br> 目前缺点就是进程去读写I/O事件就绪的socket时，还需要将数据从内核区复制到用户区，当然了select/poll也有该问题，这一点需要<a href="https://blog.csdn.net/weixin_38597669/article/details/136022419">异步I/O</a>去解决了。目前epoll是够用的，Nginx,Redis都是基于epoll的，足以应对处理C10K,C100K问题。</p> 
+<blockquote> 
+ <p>LT(level triggered) 是 缺省 的工作方式 ，并且同时支持 block 和 no-block I/O。 在这种做法中，内核告诉你一个文件描述符是否就绪了，然后你可以对这个就绪的 fd 进行 IO 操作。如果你不作任何操作，下次内核还会继续通知你的，所以，这种模式编程出错误可能性要小一点。 select/poll 都是这种模型的代表。<br> ET(edge-triggered) 是高速工作方式 ，只支持 no-block I/O 。在这种模式下，当描述符从未就绪变为就绪时，内核通过 epoll 告诉你，然后它会假设你知道文件描述符已经就绪，并且不会再为那个文件描述符发送更多的就绪通知，直到你做了某些操作导致那个文件描述符不再为就绪状态了 ( 比如，你在发送，接收或者接收请求，或者发送接收的数据少于一定量时导致了一个 EWOULDBLOCK 错误）。但是请注意，如果一直不对这个 socket做 IO 操作 ( 从而使它再次变成未就绪 ) ，内核不会发送更多的通知 (only once), 不过在 TCP 协议中， ET 模式的加速效用仍需要更多的 benchmark 确认。<br> Epoll 工作在 ET 模式的时候，必须使用非阻塞I/O，以避免由于一个文件句柄的阻塞读 / 阻塞写操作把处理多个文件描述符的任务饿死。</p> 
+</blockquote> 
+<h3><a id="_365"></a>五、小结</h3> 
+<p><img src="https://images2.imgbox.com/96/8c/zeNBGl38_o.png" alt="select&amp;poll&amp;epoll区别"><br> 从整体来看，epoll的实现性能是比select/poll更好的，但是在连接数少并且连接都十分活跃的情况下，select和poll的性能可能比epoll好，毕竟epoll的通知机制需要很多函数回调，一般情况下选epoll就对了。</p> 
+<blockquote> 
+ <p>本人研究Redis相关源码时，观察到其在Linux下就是通过epoll+EPOLLET+非阻塞I/O+Reactor设计模式组合来处理I/O事件，是其高性能的一个关键点。</p> 
+</blockquote> 
+<h3><a id="_371"></a>六、参考</h3> 
+<p>1]:<a href="https://blog.csdn.net/weixin_43729127/article/details/131578334">Linux下实现单客户连接的tcp服务端</a><br> 2]:<a href="https://www.51cto.com/article/645464.html" rel="nofollow">从网络I/O模型到Netty，先深入了解下I/O多路复用</a><br> 3]:<a href="https://zhuanlan.zhihu.com/p/64138532" rel="nofollow">epoll的本质</a><br> 4]:<a href="https://zhuanlan.zhihu.com/p/427512269" rel="nofollow">深入了解epoll模型</a><br> 5]:<a href="https://www.dandelioncloud.cn/article/details/1469931847462526978" rel="nofollow">Linux epoll内核源码剖析</a></p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/8c7d1b7a062c62aeba920ea7fc0cb519/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">C语言程序设计详细教程（完整版）</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/8c60d1a8de7f1c8abef141d60654a09d/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">学生宿舍管理小程序|基于微信小程序的学生宿舍管理系统设计与实现(源码&#43;数据库&#43;文档)</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

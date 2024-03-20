@@ -1,0 +1,399 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>（一）Andfix热修复原理 - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="（一）Andfix热修复原理" />
+<meta property="og:description" content="AndFix，全称是Android hot-fix。是阿里开源的一个Android热补丁框架，允许APP在不重新发布版本的情况下修复线上的bug。支持Android 2.3 到 7.0。
+一、动态加载 热修复、热更新、插件化都是利用动态加载的原理（相关知识：类加载机制、虚拟机）
+二、热修复 Andfix（最轻量级的热修复，只能改方法）Android热修复的先驱，通过动态加载dex文件，在native层进行方法替换实现热修复，局限性：兼容性问题，每个Android版本都需要维护一套Andfix的实现代码，维护麻烦，现该开源库已停止维护了。优点：即时生效。
+Tink dex替换，是在java层实现，不足：冷启动后生效
+三、源码追踪 要通过方法替换实现热修复，那么就需要去了解一下底层的类加载机制，特别是方法加载这一块的具体实现流程。
+大概流程就是先加载类，然后再将类中的method和field加载到class中，具体如下：
+1、env-&gt;FindClass jni函数中找到类的函数（方法在类里面，根据类加载找到方法加载的途径）
+2、ClassLinker::FindClass 是env-&gt;FindClass的主要实现的函数。
+3、DefineClass 是ClassLinker::FindClass 中返回的类的类型。
+4、LoadClass 在DefineClass 中调用，此函数是加载类的主要函数。
+5、LoadClassMembers 在LoadClass中调用，此函数是加载方法的函数。
+6、LinkCode 在LoadClassMembers中调用，此函数是加载字节码的函数。
+7、LinkMethod 在LinkCode中调用，此函数设置方法的执行入口（两种：SetEntryPointFromPortableCompiledCode 和 SetEntryPointFromQuickCompiledCode）。
+8、NeedsInterpreter 在LinkCode中调用，此函数设置是否需要解释器。
+9、UnregisterNative 在LinkCode中调用，此函数中设置了访问权限和入口。
+10、UpdateMethodsCode 在LinkCode中调用，此函数刷新方法的字节码。
+11、UpdateEntrypoints 在UpdateMethodsCode中调用，此函数更新方法入口。
+四、源码分析： 这里只列出关键代码片段，想直接看源码的话可以点每个方法的链接进去网页看
+/art/runtime/mirror/art_method.h
+art_method 方法的结构体
+592 struct PACKED(4) PtrSizedFields { 593 // Method dispatch from the interpreter invokes this pointer which may cause a bridge into 594 // compiled code." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/1566c500ec4d9745521ef4b2e36e43d7/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2019-09-04T14:19:49+08:00" />
+<meta property="article:modified_time" content="2019-09-04T14:19:49+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">（一）Andfix热修复原理</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <blockquote> 
+ <p>AndFix，全称是<strong>And</strong>roid hot-<strong>fix</strong>。是阿里开源的一个Android热补丁框架，允许APP在不重新发布版本的情况下修复线上的bug。支持Android 2.3 到 7.0。</p> 
+</blockquote> 
+<h5><a id="_2"></a>一、动态加载</h5> 
+<p>热修复、热更新、插件化都是利用动态加载的原理（相关知识：类加载机制、虚拟机）</p> 
+<h5><a id="_6"></a>二、热修复</h5> 
+<p><strong>Andfix</strong>（最轻量级的热修复，只能改方法）Android热修复的先驱，通过动态加载dex文件，在native层进行方法替换实现热修复，局限性：兼容性问题，每个Android版本都需要维护一套Andfix的实现代码，维护麻烦，现该开源库已停止维护了。优点：即时生效。<br> <img src="https://images2.imgbox.com/6f/1e/aDUTgqNG_o.png" alt="Andfix principle"></p> 
+<p><strong>Tink</strong> dex替换，是在java层实现，不足：冷启动后生效</p> 
+<h5><a id="_13"></a>三、源码追踪</h5> 
+<p>要通过方法替换实现热修复，那么就需要去了解一下底层的类加载机制，特别是方法加载这一块的具体实现流程。</p> 
+<p>大概流程就是先加载类，然后再将类中的<strong>method</strong>和<strong>field</strong>加载到<strong>class</strong>中，具体如下：</p> 
+<p>1、<strong>env-&gt;FindClass</strong> jni函数中找到类的函数（方法在类里面，根据类加载找到方法加载的途径）</p> 
+<p>2、<strong>ClassLinker::FindClass</strong> 是env-&gt;FindClass的主要实现的函数。</p> 
+<p>3、<strong>DefineClass</strong> 是ClassLinker::FindClass 中返回的类的类型。</p> 
+<p>4、<strong>LoadClass</strong> 在DefineClass 中调用，此函数是加载类的主要函数。</p> 
+<p>5、<strong>LoadClassMembers</strong> 在LoadClass中调用，此函数是加载方法的函数。</p> 
+<p>6、<strong>LinkCode</strong> 在LoadClassMembers中调用，此函数是加载字节码的函数。</p> 
+<p>7、<strong>LinkMethod</strong> 在LinkCode中调用，此函数设置方法的执行入口（两种：SetEntryPointFromPortableCompiledCode 和 SetEntryPointFromQuickCompiledCode）。</p> 
+<p>8、<strong>NeedsInterpreter</strong> 在LinkCode中调用，此函数设置是否需要解释器。</p> 
+<p>9、<strong>UnregisterNative</strong> 在LinkCode中调用，此函数中设置了访问权限和入口。</p> 
+<p>10、<strong>UpdateMethodsCode</strong> 在LinkCode中调用，此函数刷新方法的字节码。</p> 
+<p>11、<strong>UpdateEntrypoints</strong> 在UpdateMethodsCode中调用，此函数更新方法入口。</p> 
+<h5><a id="_41"></a>四、源码分析：</h5> 
+<blockquote> 
+ <p>这里只列出关键代码片段，想直接看源码的话可以点每个方法的链接进去网页看</p> 
+</blockquote> 
+<p>/<a href="http://androidxref.com/5.1.1_r6/xref/art/" rel="nofollow">art</a>/<a href="http://androidxref.com/5.1.1_r6/xref/art/runtime/" rel="nofollow">runtime</a>/<a href="http://androidxref.com/5.1.1_r6/xref/art/runtime/mirror/" rel="nofollow">mirror</a>/<a href="http://androidxref.com/5.1.1_r6/xref/art/runtime/mirror/art_method.h" rel="nofollow">art_method.h</a></p> 
+<p><strong>art_method</strong> 方法的结构体</p> 
+<pre><code class="prism language-c"><span class="token number">592</span>  <span class="token keyword">struct</span> <span class="token function">PACKED</span><span class="token punctuation">(</span><span class="token number">4</span><span class="token punctuation">)</span> PtrSizedFields <span class="token punctuation">{<!-- --></span>
+<span class="token number">593</span>    <span class="token comment">// Method dispatch from the interpreter invokes this pointer which may cause a bridge into</span>
+<span class="token number">594</span>    <span class="token comment">// compiled code.解释器模式（JIT）方法入口指针</span>
+<span class="token number">595</span>    <span class="token keyword">void</span><span class="token operator">*</span> entry_point_from_interpreter_<span class="token punctuation">;</span>
+<span class="token number">596</span>
+<span class="token number">597</span>    <span class="token comment">// Pointer to JNI function registered to this method, or a function to resolve the JNI function.jni方法入口指针</span>
+<span class="token number">598</span>    <span class="token keyword">void</span><span class="token operator">*</span> entry_point_from_jni_<span class="token punctuation">;</span>
+<span class="token number">599</span>
+<span class="token number">600</span>    <span class="token comment">// Method dispatch from quick compiled code invokes this pointer which may cause bridging into</span>
+<span class="token number">601</span>    <span class="token comment">// portable compiled code or the interpreter.快速模式，预编译模式AOT（ahead of time）AOT：Ahead Of Time，指在运行前编译，比如普通的静态编译 JIT：Just In Time，指在运行时编译，边运行边编译，比如java虚拟机在运行时就用到JIT技术 </span>
+<span class="token number">602</span>    <span class="token keyword">void</span><span class="token operator">*</span> entry_point_from_quick_compiled_code_<span class="token punctuation">;</span>
+</code></pre> 
+<p>/<a href="http://androidxref.com/5.1.1_r6/xref/art/" rel="nofollow">art</a>/<a href="http://androidxref.com/5.1.1_r6/xref/art/runtime/" rel="nofollow">runtime</a>/<a href="http://androidxref.com/5.1.1_r6/xref/art/runtime/jni_internal.cc" rel="nofollow">jni_internal.cc</a></p> 
+<p><strong>FindClass</strong> （env-&gt;FindClass） 寻找类</p> 
+<pre><code class="prism language-c"><span class="token number">589</span>  <span class="token keyword">static</span> jclass <span class="token function">FindClass</span><span class="token punctuation">(</span>JNIEnv<span class="token operator">*</span> env<span class="token punctuation">,</span> <span class="token keyword">const</span> <span class="token keyword">char</span><span class="token operator">*</span> name<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+<span class="token number">590</span>    <span class="token function">CHECK_NON_NULL_ARGUMENT</span><span class="token punctuation">(</span>name<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token number">591</span>    Runtime<span class="token operator">*</span> runtime <span class="token operator">=</span> Runtime<span class="token punctuation">:</span><span class="token punctuation">:</span><span class="token function">Current</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token number">592</span>    ClassLinker<span class="token operator">*</span> class_linker <span class="token operator">=</span> runtime<span class="token operator">-&gt;</span><span class="token function">GetClassLinker</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span><span class="token comment">//类的链接器</span>
+<span class="token number">593</span>    std<span class="token punctuation">:</span><span class="token punctuation">:</span>string <span class="token function">descriptor</span><span class="token punctuation">(</span><span class="token function">NormalizeJniClassDescriptor</span><span class="token punctuation">(</span>name<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token number">594</span>    ScopedObjectAccess <span class="token function">soa</span><span class="token punctuation">(</span>env<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token number">595</span>    mirror<span class="token punctuation">:</span><span class="token punctuation">:</span>Class<span class="token operator">*</span> c <span class="token operator">=</span> nullptr<span class="token punctuation">;</span>
+<span class="token number">596</span>    <span class="token keyword">if</span> <span class="token punctuation">(</span>runtime<span class="token operator">-&gt;</span><span class="token function">IsStarted</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span><span class="token comment">//是否已经初始化完成</span>
+<span class="token number">597</span>      StackHandleScope<span class="token operator">&lt;</span><span class="token number">1</span><span class="token operator">&gt;</span> <span class="token function">hs</span><span class="token punctuation">(</span>soa<span class="token punctuation">.</span><span class="token function">Self</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token number">598</span>      Handle<span class="token operator">&lt;</span>mirror<span class="token punctuation">:</span><span class="token punctuation">:</span>ClassLoader<span class="token operator">&gt;</span> <span class="token function">class_loader</span><span class="token punctuation">(</span>hs<span class="token punctuation">.</span><span class="token function">NewHandle</span><span class="token punctuation">(</span><span class="token function">GetClassLoader</span><span class="token punctuation">(</span>soa<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token number">599</span>      c <span class="token operator">=</span> class_linker<span class="token operator">-&gt;</span><span class="token function">FindClass</span><span class="token punctuation">(</span>soa<span class="token punctuation">.</span><span class="token function">Self</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span> descriptor<span class="token punctuation">.</span><span class="token function">c_str</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span> class_loader<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token comment">//调用classLinker的findClass，（参数1:来自env，参数2:来自类名，参数3:类加载器）</span>
+<span class="token number">600</span>    <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+<span class="token number">601</span>      c <span class="token operator">=</span> class_linker<span class="token operator">-&gt;</span><span class="token function">FindSystemClass</span><span class="token punctuation">(</span>soa<span class="token punctuation">.</span><span class="token function">Self</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span> descriptor<span class="token punctuation">.</span><span class="token function">c_str</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token number">602</span>    <span class="token punctuation">}</span>
+<span class="token number">603</span>    <span class="token keyword">return</span> soa<span class="token punctuation">.</span>AddLocalReference<span class="token operator">&lt;</span>jclass<span class="token operator">&gt;</span><span class="token punctuation">(</span>c<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token number">604</span>  <span class="token punctuation">}</span>
+</code></pre> 
+<p>/<a href="http://androidxref.com/5.1.1_r6/xref/art/" rel="nofollow">art</a>/<a href="http://androidxref.com/5.1.1_r6/xref/art/runtime/" rel="nofollow">runtime</a>/<a href="http://androidxref.com/5.1.1_r6/xref/art/runtime/class_linker.cc" rel="nofollow">class_linker.cc</a></p> 
+<p><strong>ClassLinker::FindClass</strong> FindClass的具体实现，根据返回的DefineClass继续追踪代码</p> 
+<pre><code class="prism language-c"><span class="token comment">//参数self:线程，参数descriptor：类名的标识，参数class_loader：类加载器</span>
+<span class="token number">2117</span>  mirror<span class="token punctuation">:</span><span class="token punctuation">:</span>Class<span class="token operator">*</span> ClassLinker<span class="token punctuation">:</span><span class="token punctuation">:</span><span class="token function">FindClass</span><span class="token punctuation">(</span>Thread<span class="token operator">*</span> self<span class="token punctuation">,</span> <span class="token keyword">const</span> <span class="token keyword">char</span><span class="token operator">*</span> descriptor<span class="token punctuation">,</span>
+<span class="token number">2118</span>                                      Handle<span class="token operator">&lt;</span>mirror<span class="token punctuation">:</span><span class="token punctuation">:</span>ClassLoader<span class="token operator">&gt;</span> class_loader<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+  <span class="token comment">//此处省略code</span>
+  <span class="token comment">//双亲委托机制，类加载过就不会再加载</span>
+<span class="token number">2128</span>  <span class="token comment">// Find the class in the loaded classes table.</span>
+<span class="token number">2129</span>  mirror<span class="token punctuation">:</span><span class="token punctuation">:</span>Class<span class="token operator">*</span> klass <span class="token operator">=</span> <span class="token function">LookupClass</span><span class="token punctuation">(</span>descriptor<span class="token punctuation">,</span> hash<span class="token punctuation">,</span> class_loader<span class="token punctuation">.</span><span class="token function">Get</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token number">2130</span>  <span class="token keyword">if</span> <span class="token punctuation">(</span>klass <span class="token operator">!=</span> nullptr<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+<span class="token number">2131</span>    <span class="token keyword">return</span> <span class="token function">EnsureResolved</span><span class="token punctuation">(</span>self<span class="token punctuation">,</span> descriptor<span class="token punctuation">,</span> klass<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token number">2132</span>  <span class="token punctuation">}</span>
+<span class="token number">2133</span>  <span class="token comment">// Class is not yet loaded.</span>
+<span class="token number">2134</span>  <span class="token keyword">if</span> <span class="token punctuation">(</span>descriptor<span class="token punctuation">[</span><span class="token number">0</span><span class="token punctuation">]</span> <span class="token operator">==</span> <span class="token string">'['</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+<span class="token number">2135</span>    <span class="token keyword">return</span> <span class="token function">CreateArrayClass</span><span class="token punctuation">(</span>self<span class="token punctuation">,</span> descriptor<span class="token punctuation">,</span> hash<span class="token punctuation">,</span> class_loader<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token number">2136</span>  <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token keyword">if</span> <span class="token punctuation">(</span>class_loader<span class="token punctuation">.</span><span class="token function">Get</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">==</span> nullptr<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span><span class="token comment">//判断类加载器是否为空，这里是类加载器为空的处理</span>
+  <span class="token comment">//从系统启动类里找，若找到，返回一个DefineClass</span>
+<span class="token number">2137</span>    <span class="token comment">// The boot class loader, search the boot class path.</span>
+<span class="token number">2138</span>    ClassPathEntry pair <span class="token operator">=</span> <span class="token function">FindInClassPath</span><span class="token punctuation">(</span>descriptor<span class="token punctuation">,</span> hash<span class="token punctuation">,</span> boot_class_path_<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token number">2139</span>    <span class="token keyword">if</span> <span class="token punctuation">(</span>pair<span class="token punctuation">.</span>second <span class="token operator">!=</span> nullptr<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+<span class="token number">2140</span>      <span class="token keyword">return</span> <span class="token function">DefineClass</span><span class="token punctuation">(</span>self<span class="token punctuation">,</span> descriptor<span class="token punctuation">,</span> hash<span class="token punctuation">,</span> NullHandle<span class="token operator">&lt;</span>mirror<span class="token punctuation">:</span><span class="token punctuation">:</span>ClassLoader<span class="token operator">&gt;</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token operator">*</span>pair<span class="token punctuation">.</span>first<span class="token punctuation">,</span>
+<span class="token number">2141</span>                         <span class="token operator">*</span>pair<span class="token punctuation">.</span>second<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token number">2142</span>    <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span><span class="token comment">//报错，ClassNotFoundException</span>
+<span class="token number">2146</span>      mirror<span class="token punctuation">:</span><span class="token punctuation">:</span>Throwable<span class="token operator">*</span> pre_allocated <span class="token operator">=</span> Runtime<span class="token punctuation">:</span><span class="token punctuation">:</span><span class="token function">Current</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token operator">-&gt;</span><span class="token function">GetPreAllocatedNoClassDefFoundError</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token number">2147</span>      self<span class="token operator">-&gt;</span><span class="token function">SetException</span><span class="token punctuation">(</span><span class="token function">ThrowLocation</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span> pre_allocated<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token number">2148</span>      <span class="token keyword">return</span> nullptr<span class="token punctuation">;</span>
+<span class="token number">2149</span>    <span class="token punctuation">}</span>
+<span class="token number">2150</span>  <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token keyword">if</span> <span class="token punctuation">(</span>Runtime<span class="token punctuation">:</span><span class="token punctuation">:</span><span class="token function">Current</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token operator">-&gt;</span><span class="token function">UseCompileTimeClassPath</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span><span class="token comment">//这里是类加载器不为空的处理</span>
+<span class="token number">2151</span>    <span class="token comment">//此处省略code</span>
+<span class="token number">2216</span><span class="token punctuation">}</span>
+</code></pre> 
+<p>/<a href="http://androidxref.com/5.1.1_r6/xref/art/" rel="nofollow">art</a>/<a href="http://androidxref.com/5.1.1_r6/xref/art/runtime/" rel="nofollow">runtime</a>/<a href="http://androidxref.com/5.1.1_r6/xref/art/runtime/class_linker.cc" rel="nofollow">class_linker.cc</a></p> 
+<p><strong>ClassLinker::DefineClass</strong> 对kclass进行赋值，其中LoadClass方法实现了类加载的主要功能。</p> 
+<pre><code class="prism language-c"><span class="token number">2218</span>mirror<span class="token punctuation">:</span><span class="token punctuation">:</span>Class<span class="token operator">*</span> ClassLinker<span class="token punctuation">:</span><span class="token punctuation">:</span><span class="token function">DefineClass</span><span class="token punctuation">(</span>Thread<span class="token operator">*</span> self<span class="token punctuation">,</span> <span class="token keyword">const</span> <span class="token keyword">char</span><span class="token operator">*</span> descriptor<span class="token punctuation">,</span> size_t hash<span class="token punctuation">,</span>
+<span class="token number">2219</span>                                        Handle<span class="token operator">&lt;</span>mirror<span class="token punctuation">:</span><span class="token punctuation">:</span>ClassLoader<span class="token operator">&gt;</span> class_loader<span class="token punctuation">,</span>
+<span class="token number">2220</span>                                        <span class="token keyword">const</span> DexFile<span class="token operator">&amp;</span> dex_file<span class="token punctuation">,</span>
+<span class="token number">2221</span>                                        <span class="token keyword">const</span> DexFile<span class="token punctuation">:</span><span class="token punctuation">:</span>ClassDef<span class="token operator">&amp;</span> dex_class_def<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+  <span class="token comment">//此处省略code</span>
+<span class="token number">2225</span>  <span class="token comment">// Load the class from the dex file.</span>
+  <span class="token comment">//类未加载就对kclass进行赋值</span>
+<span class="token number">2226</span>  <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">UNLIKELY</span><span class="token punctuation">(</span><span class="token operator">!</span>init_done_<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+<span class="token number">2227</span>    <span class="token comment">// finish up init of hand crafted class_roots_</span>
+<span class="token number">2228</span>    <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">strcmp</span><span class="token punctuation">(</span>descriptor<span class="token punctuation">,</span> <span class="token string">"Ljava/lang/Object;"</span><span class="token punctuation">)</span> <span class="token operator">==</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+<span class="token number">2229</span>      klass<span class="token punctuation">.</span><span class="token function">Assign</span><span class="token punctuation">(</span><span class="token function">GetClassRoot</span><span class="token punctuation">(</span>kJavaLangObject<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token number">2230</span>    <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">strcmp</span><span class="token punctuation">(</span>descriptor<span class="token punctuation">,</span> <span class="token string">"Ljava/lang/Class;"</span><span class="token punctuation">)</span> <span class="token operator">==</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+<span class="token number">2231</span>     <span class="token comment">//此处省略code</span>
+<span class="token number">2243</span>  <span class="token punctuation">}</span>
+<span class="token number">2244</span>
+<span class="token number">2245</span>  <span class="token keyword">if</span> <span class="token punctuation">(</span>klass<span class="token punctuation">.</span><span class="token function">Get</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">==</span> nullptr<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+  <span class="token comment">//申请空间</span>
+<span class="token number">2250</span>    klass<span class="token punctuation">.</span><span class="token function">Assign</span><span class="token punctuation">(</span><span class="token function">AllocClass</span><span class="token punctuation">(</span>self<span class="token punctuation">,</span> <span class="token function">SizeOfClassWithoutEmbeddedTables</span><span class="token punctuation">(</span>dex_file<span class="token punctuation">,</span> dex_class_def<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token comment">//此处省略code</span>
+  <span class="token comment">//加载类</span>
+<span class="token number">2257</span>  <span class="token function">LoadClass</span><span class="token punctuation">(</span>dex_file<span class="token punctuation">,</span> dex_class_def<span class="token punctuation">,</span> klass<span class="token punctuation">,</span> class_loader<span class="token punctuation">.</span><span class="token function">Get</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+   <span class="token comment">//此处省略code</span>
+<span class="token number">2320</span><span class="token punctuation">}</span>
+</code></pre> 
+<p>/<a href="http://androidxref.com/5.1.1_r6/xref/art/" rel="nofollow">art</a>/<a href="http://androidxref.com/5.1.1_r6/xref/art/runtime/" rel="nofollow">runtime</a>/<a href="http://androidxref.com/5.1.1_r6/xref/art/runtime/class_linker.cc" rel="nofollow">class_linker.cc</a></p> 
+<p><strong>ClassLinker::LoadClass</strong> 把dex文件的信息初始化后放到class中，其中LoadClassMembers方法将类的成员加载到类中</p> 
+<pre><code class="prism language-c"><span class="token comment">//DexFile：dex文件对象，DexFile::ClassDef：要加载的类在dex中的描述信息</span>
+<span class="token number">2727</span>  <span class="token keyword">void</span> ClassLinker<span class="token punctuation">:</span><span class="token punctuation">:</span><span class="token function">LoadClass</span><span class="token punctuation">(</span><span class="token keyword">const</span> DexFile<span class="token operator">&amp;</span> dex_file<span class="token punctuation">,</span>
+<span class="token number">2728</span>                            <span class="token keyword">const</span> DexFile<span class="token punctuation">:</span><span class="token punctuation">:</span>ClassDef<span class="token operator">&amp;</span> dex_class_def<span class="token punctuation">,</span>
+<span class="token number">2729</span>                            Handle<span class="token operator">&lt;</span>mirror<span class="token punctuation">:</span><span class="token punctuation">:</span>Class<span class="token operator">&gt;</span> klass<span class="token punctuation">,</span>
+<span class="token number">2730</span>                            mirror<span class="token punctuation">:</span><span class="token punctuation">:</span>ClassLoader<span class="token operator">*</span> class_loader<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+  <span class="token comment">//初始化</span>
+<span class="token number">2734</span>  <span class="token keyword">const</span> <span class="token keyword">char</span><span class="token operator">*</span> descriptor <span class="token operator">=</span> dex_file<span class="token punctuation">.</span><span class="token function">GetClassDescriptor</span><span class="token punctuation">(</span>dex_class_def<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token number">2735</span>  <span class="token function">CHECK</span><span class="token punctuation">(</span>descriptor <span class="token operator">!=</span> nullptr<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token number">2736</span>
+<span class="token number">2737</span>  klass<span class="token operator">-&gt;</span><span class="token function">SetClass</span><span class="token punctuation">(</span><span class="token function">GetClassRoot</span><span class="token punctuation">(</span>kJavaLangClass<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token comment">//此处省略kclass的一些赋值操作</span>
+<span class="token number">2747</span>	<span class="token comment">//拿到类的索引放入class中</span>
+<span class="token number">2748</span>  klass<span class="token operator">-&gt;</span><span class="token function">SetDexClassDefIndex</span><span class="token punctuation">(</span>dex_file<span class="token punctuation">.</span><span class="token function">GetIndexForClassDef</span><span class="token punctuation">(</span>dex_class_def<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token comment">//此处省略kclass的一些赋值操作</span>
+<span class="token number">2757</span>  OatFile<span class="token punctuation">:</span><span class="token punctuation">:</span>OatClass oat_class<span class="token punctuation">;</span>
+<span class="token number">2758</span>  <span class="token keyword">if</span> <span class="token punctuation">(</span>Runtime<span class="token punctuation">:</span><span class="token punctuation">:</span><span class="token function">Current</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token operator">-&gt;</span><span class="token function">IsStarted</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+<span class="token number">2759</span>      <span class="token operator">&amp;&amp;</span> <span class="token operator">!</span>Runtime<span class="token punctuation">:</span><span class="token punctuation">:</span><span class="token function">Current</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token operator">-&gt;</span><span class="token function">UseCompileTimeClassPath</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+<span class="token number">2760</span>      <span class="token operator">&amp;&amp;</span> <span class="token function">FindOatClass</span><span class="token punctuation">(</span>dex_file<span class="token punctuation">,</span> klass<span class="token operator">-&gt;</span><span class="token function">GetDexClassDefIndex</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token operator">&amp;</span>oat_class<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+<span class="token number">2761</span>    <span class="token function">LoadClassMembers</span><span class="token punctuation">(</span>dex_file<span class="token punctuation">,</span> class_data<span class="token punctuation">,</span> klass<span class="token punctuation">,</span> class_loader<span class="token punctuation">,</span> <span class="token operator">&amp;</span>oat_class<span class="token punctuation">)</span><span class="token punctuation">;</span><span class="token comment">//加载class的成员</span>
+<span class="token number">2762</span>  <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+<span class="token number">2763</span>    <span class="token function">LoadClassMembers</span><span class="token punctuation">(</span>dex_file<span class="token punctuation">,</span> class_data<span class="token punctuation">,</span> klass<span class="token punctuation">,</span> class_loader<span class="token punctuation">,</span> nullptr<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token number">2764</span>  <span class="token punctuation">}</span>
+<span class="token number">2765</span><span class="token punctuation">}</span>
+</code></pre> 
+<p>/<a href="http://androidxref.com/5.1.1_r6/xref/art/" rel="nofollow">art</a>/<a href="http://androidxref.com/5.1.1_r6/xref/art/runtime/" rel="nofollow">runtime</a>/<a href="http://androidxref.com/5.1.1_r6/xref/art/runtime/class_linker.cc" rel="nofollow">class_linker.cc</a></p> 
+<p><strong>ClassLinker::LoadClassMembers</strong> 加载类的静态、实例成员变量和方法到类中，最后执行LinkCode方法，链接字节码</p> 
+<pre><code class="prism language-c"><span class="token number">2767</span>  <span class="token keyword">void</span> ClassLinker<span class="token punctuation">:</span><span class="token punctuation">:</span><span class="token function">LoadClassMembers</span><span class="token punctuation">(</span><span class="token keyword">const</span> DexFile<span class="token operator">&amp;</span> dex_file<span class="token punctuation">,</span>
+<span class="token number">2768</span>                                   <span class="token keyword">const</span> byte<span class="token operator">*</span> class_data<span class="token punctuation">,</span>
+<span class="token number">2769</span>                                   Handle<span class="token operator">&lt;</span>mirror<span class="token punctuation">:</span><span class="token punctuation">:</span>Class<span class="token operator">&gt;</span> klass<span class="token punctuation">,</span>
+<span class="token number">2770</span>                                   mirror<span class="token punctuation">:</span><span class="token punctuation">:</span>ClassLoader<span class="token operator">*</span> class_loader<span class="token punctuation">,</span>
+<span class="token number">2771</span>                                   <span class="token keyword">const</span> OatFile<span class="token punctuation">:</span><span class="token punctuation">:</span>OatClass<span class="token operator">*</span> oat_class<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+<span class="token number">2772</span>  <span class="token comment">// Load fields.</span>
+<span class="token number">2773</span>  ClassDataItemIterator <span class="token function">it</span><span class="token punctuation">(</span>dex_file<span class="token punctuation">,</span> class_data<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token number">2774</span>  Thread<span class="token operator">*</span> self <span class="token operator">=</span> Thread<span class="token punctuation">:</span><span class="token punctuation">:</span><span class="token function">Current</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+  <span class="token comment">//静态成员变量</span>
+<span class="token number">2775</span>  <span class="token keyword">if</span> <span class="token punctuation">(</span>it<span class="token punctuation">.</span><span class="token function">NumStaticFields</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">!=</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+  <span class="token comment">//ArtField</span>
+<span class="token number">2776</span>    mirror<span class="token punctuation">:</span><span class="token punctuation">:</span>ObjectArray<span class="token operator">&lt;</span>mirror<span class="token punctuation">:</span><span class="token punctuation">:</span>ArtField<span class="token operator">&gt;</span><span class="token operator">*</span> statics <span class="token operator">=</span> <span class="token function">AllocArtFieldArray</span><span class="token punctuation">(</span>self<span class="token punctuation">,</span> it<span class="token punctuation">.</span><span class="token function">NumStaticFields</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token number">2777</span>    <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">UNLIKELY</span><span class="token punctuation">(</span>statics <span class="token operator">==</span> nullptr<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+<span class="token number">2778</span>      <span class="token function">CHECK</span><span class="token punctuation">(</span>self<span class="token operator">-&gt;</span><span class="token function">IsExceptionPending</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>  <span class="token comment">// OOME.</span>
+<span class="token number">2779</span>      <span class="token keyword">return</span><span class="token punctuation">;</span>
+<span class="token number">2780</span>    <span class="token punctuation">}</span>
+  <span class="token comment">//添加到kclass</span>
+<span class="token number">2781</span>    klass<span class="token operator">-&gt;</span><span class="token function">SetSFields</span><span class="token punctuation">(</span>statics<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token number">2782</span>  <span class="token punctuation">}</span>
+  <span class="token comment">//实例成员变量</span>
+<span class="token number">2783</span>  <span class="token keyword">if</span> <span class="token punctuation">(</span>it<span class="token punctuation">.</span><span class="token function">NumInstanceFields</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">!=</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+<span class="token number">2784</span>    mirror<span class="token punctuation">:</span><span class="token punctuation">:</span>ObjectArray<span class="token operator">&lt;</span>mirror<span class="token punctuation">:</span><span class="token punctuation">:</span>ArtField<span class="token operator">&gt;</span><span class="token operator">*</span> fields <span class="token operator">=</span>
+<span class="token number">2785</span>        <span class="token function">AllocArtFieldArray</span><span class="token punctuation">(</span>self<span class="token punctuation">,</span> it<span class="token punctuation">.</span><span class="token function">NumInstanceFields</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token number">2786</span>    <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">UNLIKELY</span><span class="token punctuation">(</span>fields <span class="token operator">==</span> nullptr<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+<span class="token number">2787</span>      <span class="token function">CHECK</span><span class="token punctuation">(</span>self<span class="token operator">-&gt;</span><span class="token function">IsExceptionPending</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>  <span class="token comment">// OOME.</span>
+<span class="token number">2788</span>      <span class="token keyword">return</span><span class="token punctuation">;</span>
+<span class="token number">2789</span>    <span class="token punctuation">}</span>
+<span class="token number">2790</span>    klass<span class="token operator">-&gt;</span><span class="token function">SetIFields</span><span class="token punctuation">(</span>fields<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token number">2791</span>  <span class="token punctuation">}</span>
+<span class="token comment">//此处省略kclass 的 filed 赋值操作</span>
+  
+<span class="token number">2813</span>  <span class="token comment">// Load methods.</span>
+<span class="token number">2814</span>  <span class="token keyword">if</span> <span class="token punctuation">(</span>it<span class="token punctuation">.</span><span class="token function">NumDirectMethods</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">!=</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+  <span class="token comment">//ArtMethod </span>
+<span class="token number">2816</span>    mirror<span class="token punctuation">:</span><span class="token punctuation">:</span>ObjectArray<span class="token operator">&lt;</span>mirror<span class="token punctuation">:</span><span class="token punctuation">:</span>ArtMethod<span class="token operator">&gt;</span><span class="token operator">*</span> directs <span class="token operator">=</span>
+<span class="token number">2817</span>         <span class="token function">AllocArtMethodArray</span><span class="token punctuation">(</span>self<span class="token punctuation">,</span> it<span class="token punctuation">.</span><span class="token function">NumDirectMethods</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token comment">//此处省略kclass的一些method赋值操作</span>
+  <span class="token comment">//链接code字节码</span>
+<span class="token number">2845</span>    <span class="token function">LinkCode</span><span class="token punctuation">(</span>method<span class="token punctuation">,</span> oat_class<span class="token punctuation">,</span> dex_file<span class="token punctuation">,</span> it<span class="token punctuation">.</span><span class="token function">GetMemberIndex</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span> class_def_method_index<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token comment">//此处省略code</span>
+<span class="token number">2870</span><span class="token punctuation">}</span>
+</code></pre> 
+<p>/<a href="http://androidxref.com/5.1.1_r6/xref/art/" rel="nofollow">art</a>/<a href="http://androidxref.com/5.1.1_r6/xref/art/runtime/" rel="nofollow">runtime</a>/<a href="http://androidxref.com/5.1.1_r6/xref/art/runtime/class_linker.cc" rel="nofollow">class_linker.cc</a></p> 
+<p><strong>LinkCode</strong> 根据之前存入kclass的索引，找到方法，然后设置方法执行入口（）</p> 
+<pre><code class="prism language-c"><span class="token number">2627</span>  <span class="token keyword">void</span> ClassLinker<span class="token punctuation">:</span><span class="token punctuation">:</span><span class="token function">LinkCode</span><span class="token punctuation">(</span>Handle<span class="token operator">&lt;</span>mirror<span class="token punctuation">:</span><span class="token punctuation">:</span>ArtMethod<span class="token operator">&gt;</span> method<span class="token punctuation">,</span> <span class="token keyword">const</span> OatFile<span class="token punctuation">:</span><span class="token punctuation">:</span>OatClass<span class="token operator">*</span> oat_class<span class="token punctuation">,</span>
+<span class="token number">2628</span>                           <span class="token keyword">const</span> DexFile<span class="token operator">&amp;</span> dex_file<span class="token punctuation">,</span> uint32_t dex_method_index<span class="token punctuation">,</span>
+<span class="token number">2629</span>                           uint32_t method_index<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+<span class="token comment">//此处省略code</span>
+  <span class="token comment">//GetOatMethod 通过方法索引找到方法</span>
+<span class="token number">2642</span>    <span class="token keyword">const</span> OatFile<span class="token punctuation">:</span><span class="token punctuation">:</span>OatMethod oat_method <span class="token operator">=</span> oat_class<span class="token operator">-&gt;</span><span class="token function">GetOatMethod</span><span class="token punctuation">(</span>method_index<span class="token punctuation">)</span><span class="token punctuation">;</span>
+  <span class="token comment">//LinkMethod</span>
+<span class="token number">2643</span>    oat_method<span class="token punctuation">.</span><span class="token function">LinkMethod</span><span class="token punctuation">(</span>method<span class="token punctuation">.</span><span class="token function">Get</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token number">2644</span>  <span class="token punctuation">}</span>
+<span class="token number">2645</span>
+<span class="token number">2646</span>  <span class="token comment">// Install entry point from interpreter.</span>
+  <span class="token comment">//NeedsInterpreter 是否需要解释器（native方法和代理方法没有dex字节码，不需要解释器执行）</span>
+ <span class="token comment">//设置方法执行入口，方式与LinkMethod中设置的方式相同EntryPointFromQuickCompiledCode 和 EntryPointFromPortableCompiledCode</span>
+<span class="token number">2647</span>  bool enter_interpreter <span class="token operator">=</span> <span class="token function">NeedsInterpreter</span><span class="token punctuation">(</span>method<span class="token punctuation">.</span><span class="token function">Get</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span>
+<span class="token number">2648</span>                                            method<span class="token operator">-&gt;</span><span class="token function">GetEntryPointFromQuickCompiledCode</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span>
+<span class="token number">2649</span>#<span class="token keyword">if</span> <span class="token function">defined</span><span class="token punctuation">(</span>ART_USE_PORTABLE_COMPILER<span class="token punctuation">)</span>
+<span class="token number">2650</span>                                            method<span class="token operator">-&gt;</span><span class="token function">GetEntryPointFromPortableCompiledCode</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token comment">//此处省略code</span>
+<span class="token comment">//UnregisterNative 函数中设置了访问权限和入口</span>
+<span class="token number">2705</span>    method<span class="token operator">-&gt;</span><span class="token function">UnregisterNative</span><span class="token punctuation">(</span>Thread<span class="token punctuation">:</span><span class="token punctuation">:</span><span class="token function">Current</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token comment">//此处省略code</span>
+  <span class="token comment">//将结构体数据赋值，并更新函数执行的入口 UpdateEntryPoints</span>
+<span class="token number">2717</span>  runtime<span class="token operator">-&gt;</span><span class="token function">GetInstrumentation</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token operator">-&gt;</span><span class="token function">UpdateMethodsCode</span><span class="token punctuation">(</span>method<span class="token punctuation">.</span><span class="token function">Get</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span>
+<span class="token number">2718</span>                                                   method<span class="token operator">-&gt;</span><span class="token function">GetEntryPointFromQuickCompiledCode</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span>
+<span class="token number">2719</span>#<span class="token keyword">if</span> <span class="token function">defined</span><span class="token punctuation">(</span>ART_USE_PORTABLE_COMPILER<span class="token punctuation">)</span>
+<span class="token number">2720</span>                                                   method<span class="token operator">-&gt;</span><span class="token function">GetEntryPointFromPortableCompiledCode</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span>
+<span class="token number">2721</span>#<span class="token keyword">else</span>
+<span class="token number">2722</span>                                                   nullptr<span class="token punctuation">,</span>
+<span class="token number">2723</span>#endif
+<span class="token number">2724</span>                                                   have_portable_code<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token number">2725</span><span class="token punctuation">}</span>
+</code></pre> 
+<p>/<a href="http://androidxref.com/5.1.1_r6/xref/art/" rel="nofollow">art</a>/<a href="http://androidxref.com/5.1.1_r6/xref/art/runtime/" rel="nofollow">runtime</a>/<a href="http://androidxref.com/5.1.1_r6/xref/art/runtime/oat_file.cc" rel="nofollow">oat_file.cc</a></p> 
+<p>**OatFile::OatMethod::LinkMethod ** 设置两种方法执行入口</p> 
+<pre><code class="prism language-c"><span class="token number">595</span>void OatFile<span class="token punctuation">:</span><span class="token punctuation">:</span>OatMethod<span class="token punctuation">:</span><span class="token punctuation">:</span><span class="token function">LinkMethod</span><span class="token punctuation">(</span>mirror<span class="token punctuation">:</span><span class="token punctuation">:</span>ArtMethod<span class="token operator">*</span> method<span class="token punctuation">)</span> <span class="token keyword">const</span> <span class="token punctuation">{<!-- --></span>
+<span class="token number">596</span>  <span class="token function">CHECK</span><span class="token punctuation">(</span>method <span class="token operator">!=</span> <span class="token constant">NULL</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token number">597</span>#<span class="token keyword">if</span> <span class="token function">defined</span><span class="token punctuation">(</span>ART_USE_PORTABLE_COMPILER<span class="token punctuation">)</span>
+  <span class="token comment">//设置两种方法执行入口</span>
+<span class="token number">598</span>  method<span class="token operator">-&gt;</span><span class="token function">SetEntryPointFromPortableCompiledCode</span><span class="token punctuation">(</span><span class="token function">GetPortableCode</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token number">599</span>#endif
+<span class="token number">600</span>  method<span class="token operator">-&gt;</span><span class="token function">SetEntryPointFromQuickCompiledCode</span><span class="token punctuation">(</span><span class="token function">GetQuickCode</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token number">601</span><span class="token punctuation">}</span>
+</code></pre> 
+<p>/<a href="http://androidxref.com/5.1.1_r6/xref/art/" rel="nofollow">art</a>/<a href="http://androidxref.com/5.1.1_r6/xref/art/runtime/" rel="nofollow">runtime</a>/<a href="http://androidxref.com/5.1.1_r6/xref/art/runtime/mirror/" rel="nofollow">mirror</a>/<a href="http://androidxref.com/5.1.1_r6/xref/art/runtime/mirror/art_method.cc" rel="nofollow">art_method.cc</a></p> 
+<p><strong>ArtMethod::UnregisterNative</strong> 注册方法</p> 
+<pre><code class="prism language-c"><span class="token number">353</span> <span class="token keyword">void</span> ArtMethod<span class="token punctuation">:</span><span class="token punctuation">:</span><span class="token function">RegisterNative</span><span class="token punctuation">(</span>Thread<span class="token operator">*</span> self<span class="token punctuation">,</span> <span class="token keyword">const</span> <span class="token keyword">void</span><span class="token operator">*</span> native_method<span class="token punctuation">,</span> bool is_fast<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+<span class="token comment">//此处省略code</span>
+<span class="token number">358</span>  <span class="token keyword">if</span> <span class="token punctuation">(</span>is_fast<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+  <span class="token comment">//设置访问权限</span>
+<span class="token number">359</span>    <span class="token function">SetAccessFlags</span><span class="token punctuation">(</span><span class="token function">GetAccessFlags</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">|</span> kAccFastNative<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token number">360</span>  <span class="token punctuation">}</span>
+  <span class="token comment">//设置方法的入口</span>
+<span class="token number">361</span>  <span class="token function">SetEntryPointFromJni</span><span class="token punctuation">(</span>native_method<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token number">362</span><span class="token punctuation">}</span>
+<span class="token number">363</span>
+  <span class="token comment">//UnregisterNative 函数内部调用了 RegisterNative</span>
+<span class="token number">364</span>void ArtMethod<span class="token punctuation">:</span><span class="token punctuation">:</span><span class="token function">UnregisterNative</span><span class="token punctuation">(</span>Thread<span class="token operator">*</span> self<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+<span class="token number">365</span>  <span class="token function">CHECK</span><span class="token punctuation">(</span><span class="token function">IsNative</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">&amp;&amp;</span> <span class="token operator">!</span><span class="token function">IsFastNative</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token operator">&lt;&lt;</span> <span class="token function">PrettyMethod</span><span class="token punctuation">(</span>this<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token number">366</span>  <span class="token comment">// restore stub to lookup native pointer via dlsym</span>
+<span class="token number">367</span>  <span class="token function">RegisterNative</span><span class="token punctuation">(</span>self<span class="token punctuation">,</span> <span class="token function">GetJniDlsymLookupStub</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span> false<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token number">368</span><span class="token punctuation">}</span>
+</code></pre> 
+<p>/<a href="http://androidxref.com/5.1.1_r6/xref/art/" rel="nofollow">art</a>/<a href="http://androidxref.com/5.1.1_r6/xref/art/runtime/" rel="nofollow">runtime</a>/<a href="http://androidxref.com/5.1.1_r6/xref/art/runtime/instrumentation.cc" rel="nofollow">instrumentation.cc</a></p> 
+<p><strong>Instrumentation::UpdateMethodsCode</strong> 刷新方法的字节码</p> 
+<pre><code class="prism language-c"><span class="token number">679</span>void Instrumentation<span class="token punctuation">:</span><span class="token punctuation">:</span><span class="token function">UpdateMethodsCode</span><span class="token punctuation">(</span>mirror<span class="token punctuation">:</span><span class="token punctuation">:</span>ArtMethod<span class="token operator">*</span> method<span class="token punctuation">,</span> <span class="token keyword">const</span> <span class="token keyword">void</span><span class="token operator">*</span> quick_code<span class="token punctuation">,</span>
+<span class="token number">680</span>                                        <span class="token keyword">const</span> <span class="token keyword">void</span><span class="token operator">*</span> portable_code<span class="token punctuation">,</span> bool have_portable_code<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+<span class="token comment">//此处省略code</span>
+  <span class="token comment">//更新方法入口</span>
+<span class="token number">724</span>  <span class="token function">UpdateEntrypoints</span><span class="token punctuation">(</span>method<span class="token punctuation">,</span> new_quick_code<span class="token punctuation">,</span> new_portable_code<span class="token punctuation">,</span> new_have_portable_code<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token number">725</span><span class="token punctuation">}</span>
+</code></pre> 
+<h5><a id="_321"></a>五、虚拟机的启动入口</h5> 
+<p>虚拟机的入口函数：</p> 
+<p>/<a href="http://androidxref.com/5.1.1_r6/xref/frameworks/" rel="nofollow">frameworks</a>/<a href="http://androidxref.com/5.1.1_r6/xref/frameworks/base/" rel="nofollow">base</a>/<a href="http://androidxref.com/5.1.1_r6/xref/frameworks/base/core/" rel="nofollow">core</a>/<a href="http://androidxref.com/5.1.1_r6/xref/frameworks/base/core/jni/" rel="nofollow">jni</a>/<a href="http://androidxref.com/5.1.1_r6/xref/frameworks/base/core/jni/AndroidRuntime.cpp" rel="nofollow">AndroidRuntime.cpp</a></p> 
+<p><strong>AndroidRuntime::start</strong></p> 
+<p>Android执行的第一个方法：</p> 
+<p>/<a href="http://androidxref.com/5.1.1_r6/xref/frameworks/" rel="nofollow">frameworks</a>/<a href="http://androidxref.com/5.1.1_r6/xref/frameworks/base/" rel="nofollow">base</a>/<a href="http://androidxref.com/5.1.1_r6/xref/frameworks/base/core/" rel="nofollow">core</a>/<a href="http://androidxref.com/5.1.1_r6/xref/frameworks/base/core/java/" rel="nofollow">java</a>/<a href="http://androidxref.com/5.1.1_r6/xref/frameworks/base/core/java/com/" rel="nofollow">com</a>/<a href="http://androidxref.com/5.1.1_r6/xref/frameworks/base/core/java/com/android/" rel="nofollow">android</a>/<a href="http://androidxref.com/5.1.1_r6/xref/frameworks/base/core/java/com/android/internal/" rel="nofollow">internal</a>/<a href="http://androidxref.com/5.1.1_r6/xref/frameworks/base/core/java/com/android/internal/os/" rel="nofollow">os</a>/<a href="http://androidxref.com/5.1.1_r6/xref/frameworks/base/core/java/com/android/internal/os/ZygoteInit.java" rel="nofollow">ZygoteInit.java</a></p> 
+<p>public static void main(String argv[])</p> 
+<p>java虚拟机加载的第一个类是string，但是Android的入口方法在 ZygoteInit.java 类中</p> 
+<p><strong>底层调用Android入口方法流程：</strong></p> 
+<p>1、找类 ZygoteInit.java</p> 
+<p>2、找方法 public static void main(String argv[])</p> 
+<p>3、调用方法 public static void main(String argv[])</p> 
+<h5><a id="art_method_345"></a>六、art_method结构体</h5> 
+<p>art_method结构体用来存储java方法相关信息，所以我们只需要修改art_method结构体中相关信息和java方法入口指针即可实现方法的替换，即Andfix热修复。这是Andfix热修复的核心。</p> 
+<h5><a id="_349"></a>七、兼容性问题</h5> 
+<p>兼容性问题原因：原理是修改art_method结构体，每个Android版本不一样，art_method都可能不一样，所以每个版本都要做个版本维护，兼容性差。</p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/b6a3fa856bc64f178818ead51edd1cc4/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">js中 $的意思和用法</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/d25e1a365375530c60b2e526f0207f99/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">（二）Andfix的手写实现</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

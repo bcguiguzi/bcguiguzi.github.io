@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>PHY芯片 AR8033 学习笔记 - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="PHY芯片 AR8033 学习笔记" />
+<meta property="og:description" content="【芯片简介】
+AR8033是Atheros公司的第4代10/100/1000Mbps速率以太网PHY芯片，可用于家庭网关、企业交换机、移动基站、光模块等设备。该芯片采用RGMII协议或SGMII协议与MAC芯片进行通信，只需要单一3.3V电源供电，可自行整流变换出片内电路所需其它电源。AR8033还内置了一个工作频率为1.25GHz的SerDes接口，可以直接与光纤收发模块连接，将光信号转换为适用于1000BASE-X/100 BASE-FX传输模式的电信号或用于与MAC芯片通信的SGMII协议电信号。
+PHY芯片在OSI协议栈中属于最底层的物理层，与其它层的关系图如下：
+图1 PHY芯片的工作位置处于OSI底层
+从硬件上来说，一般PHY芯片为模数混合电路，负责接收电、光这类模拟信号，经过解调和A/D转换后通过MII接口将信号交给MAC芯片进行处理。一般MAC芯片为纯数字电路。
+【SerDes接口】
+SerDes是SERializer（串行器）/DESerializer（解串器）的简称。它是一种主流的时分多路复用（TDM）、点对点（P2P）的串行通信技术，即在发送端多路低速并行信号被转换成高速串行信号，经过传输媒体（光缆或铜线），最后在接收端高速串行信号重新转换成低速并行信号。
+【RGMII接口】
+RGMII即Reduced GMII，是GMII的简化版本。它的接口信号线数量为14根（COL/CRS端口状态指示信号，这里没有画出），时钟频率为125MHz，TX/RX数据宽度为4位，为了保持1000Mbps的传输速率不变，RGMII接口在时钟的上升沿和下降沿都采样数据。在参考时钟的上升沿发送GMII接口中的TXD[3:0]/RXD[3:0]，在参考时钟的下降沿发送GMII接口中的TXD[7:4]/RXD[7:4]。RGMII兼容100Mbps和10Mbps两种速率，此时参考时钟速率分别为25MHz和2.5MHz。
+图2 RGMII接口
+TX_EN信号线上传送TX_EN和TX_ER两种信息，在TX_CLK的上升沿发送TX_EN，下降沿发送TX_ER；同样的，RX_DV信号线上也传送RX_DV和RX_ER两种信息，在RX_CLK的上升沿发送RX_DV，下降沿发送RX_ER。
+【SGMII接口】
+SGMII即Serial GMII，是PHY与MAC之间的接口，时钟频率625MHz，收发各一对差分信号线，所以总的数据速率为1.25Gbps = 625Mbps* 2。GMII和RGMII都是并行的，而且需要随路时钟，PCB布线相对麻烦，不适于背板应用；而SGMII是串行的，不需要提供另外的时钟，MAC和PHY使用CDR来恢复时钟。参考时钟RX_CLK由PHY提供，是可选的，在时钟信号的上升沿和下降沿均发生采样，主要用于MAC侧没有时钟的情况，一般情况下，RX_CLK不使用，收发都可以从数据中恢复出时钟。
+图3 SGMII接口图
+在TXD发送的串行数据中，每8bits数据会插入TX_EN/TX_ER 的2bits控制信息，同样，在RXD接收数据中，每8bits数据会插入RX_DV/RX_ER 的2bits控制信息，称作8B/10B编码。
+【MDC/MDIO接口】
+接口有MDC和MDIO两条线。其中MDC上是由MAC提供的参考时钟信号，MDIO则是可双向传输的配置数据线，配合MDC时钟进行异步传输。AR8033的MDIO接口是开漏输出，所以在使用时需要外部上拉1.5k电阻。MDIO数据帧的组成如下：
+图4 MDIO数据帧结构
+各字段的含义如下：
+PRE 对MDC时钟信号的回复，用于校正异步传输时钟，内容为32个数字1。
+ST 数据帧开始标识。
+OP 操作码，10表示读数据，01表示写数据。
+PHYAD PHY芯片的物理地址，共5位，其中3位可以在AR8033内部进行配置。
+REGAD 寄存器地址，共5位，用于选中PHY芯片内的32个寄存器之一。
+TA 用于防止在数据传输期间建立新的连接，共2位。读操作期间第1位为高阻态，第2位为0；写操作期间第1位为1，第2位为0.
+DATA 表示 从寄存器读到的数据 或 向寄存器写入的数据，共16位。从高位开始传输。
+IDLE 帧间空闲信号，呈高阻态。相邻两个数据帧之间至少要有1个时钟的空闲信号。
+【工作模式配置】
+AR8033可以工作在3种模式类别下：电口模式、光口模式、光电转换器模式。根据4根模式选择引脚上电平的不同可以将AR8033配置到不同的工作模式。官方文档描述如下：
+图5 模式选择引脚
+图6 光口模式的引脚电平情况
+从文档中可以看到，当我们希望AR8033工作在1000Mbps光口模式时，应该把RX_DV、RXD2、RX_CLK、RXD3这4个引脚的电平下拉和上拉为0010的情况。同理，要工作在100Mbps光口模式则可以将电平设置为0110或1110。
+【应用示例】
+我们可以使用AR8033对光口进行管理。根据官方数据手册描述，可以采用如下结构：
+图7 AR8033光纤模块系统框图
+从框图中可以看出，当AR8033芯片用于光纤模块管理时，需要配置成100BASE-FX模式或1000BASE-X模式，与交换机芯片之间的数据传输采用RGMII协议。实际应用时，AR8033的工作模式直接由主控芯片通过MDC/MDIO总线进行配置；数据传输路径是AR8033传递给交换芯片，再由交换芯片传递给主控芯片。示意图如下：
+图8 AR8033应用示意图
+在示意图中可以看到，光模块芯片AR8033与交换芯片之间的数据传输使用RGMII协议，交换芯片与主控芯片之间的数据传输使用SGMII协议。
+【代码分析】
+关于 AR8033 的设备和驱动注册流程和代码之前是写在这里的，但是感觉内容与标题相互比较独立，所以单独拿出来作一篇文章《PHY芯片 AR8033驱动代码分析》。" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/995b8287b5fdd65749fd1f928b859406/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2016-05-12T22:23:24+08:00" />
+<meta property="article:modified_time" content="2016-05-12T22:23:24+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">PHY芯片 AR8033 学习笔记</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p>【芯片简介】</p> 
+<p>    AR8033是Atheros公司的第4代10/100/1000Mbps速率以太网PHY芯片，可用于家庭网关、企业交换机、移动基站、光模块等设备。该芯片采用RGMII协议或SGMII协议与MAC芯片进行通信，只需要单一3.3V电源供电，可自行整流变换出片内电路所需其它电源。AR8033还内置了一个工作频率为1.25GHz的SerDes接口，可以直接与光纤收发模块连接，将光信号转换为适用于1000BASE-X/100 BASE-FX传输模式的电信号或用于与MAC芯片通信的SGMII协议电信号。</p> 
+<p>PHY芯片在OSI协议栈中属于最底层的物理层，与其它层的关系图如下：</p> 
+<p align="center"><img src="https://images2.imgbox.com/08/b1/kCsBbiOT_o.png" alt=""></p> 
+<p align="center">图1 PHY芯片的工作位置处于OSI底层</p> 
+<p>    从硬件上来说，一般PHY芯片为模数混合电路，负责接收电、光这类模拟信号，经过解调和A/D转换后通过MII接口将信号交给MAC芯片进行处理。一般MAC芯片为纯数字电路。</p> 
+<p> </p> 
+<p> </p> 
+<p>【SerDes接口】</p> 
+<p>    SerDes是SERializer（串行器）/DESerializer（解串器）的简称。它是一种主流的时分多路复用（TDM）、点对点（P2P）的串行通信技术，即在发送端多路低速并行信号被转换成高速串行信号，经过传输媒体（光缆或铜线），最后在接收端高速串行信号重新转换成低速并行信号。</p> 
+<p> </p> 
+<p> </p> 
+<p>【RGMII接口】</p> 
+<p>    RGMII即Reduced GMII，是GMII的简化版本。它的接口信号线数量为14根（COL/CRS端口状态指示信号，这里没有画出），时钟频率为125MHz，TX/RX数据宽度为4位，为了保持1000Mbps的传输速率不变，RGMII接口在时钟的上升沿和下降沿都采样数据。在参考时钟的上升沿发送GMII接口中的TXD[3:0]/RXD[3:0]，在参考时钟的下降沿发送GMII接口中的TXD[7:4]/RXD[7:4]。RGMII兼容100Mbps和10Mbps两种速率，此时参考时钟速率分别为25MHz和2.5MHz。</p> 
+<p align="center"><img src="https://images2.imgbox.com/24/1c/v6ImtIOo_o.jpg" alt=""></p> 
+<p align="center">图2 RGMII接口</p> 
+<p>    TX_EN信号线上传送TX_EN和TX_ER两种信息，在TX_CLK的上升沿发送TX_EN，下降沿发送TX_ER；同样的，RX_DV信号线上也传送RX_DV和RX_ER两种信息，在RX_CLK的上升沿发送RX_DV，下降沿发送RX_ER。</p> 
+<p> </p> 
+<p> </p> 
+<p>【SGMII接口】</p> 
+<p>    SGMII即Serial GMII，是PHY与MAC之间的接口，时钟频率625MHz，收发各一对差分信号线，所以总的数据速率为1.25Gbps = 625Mbps* 2。GMII和RGMII都是并行的，而且需要随路时钟，PCB布线相对麻烦，不适于背板应用；而SGMII是串行的，不需要提供另外的时钟，MAC和PHY使用CDR来恢复时钟。参考时钟RX_CLK由PHY提供，是可选的，在时钟信号的上升沿和下降沿均发生采样，主要用于MAC侧没有时钟的情况，一般情况下，RX_CLK不使用，收发都可以从数据中恢复出时钟。</p> 
+<p align="center"><img src="https://images2.imgbox.com/6f/6b/Z47ZAWIh_o.jpg" alt=""></p> 
+<p align="center">图3 SGMII接口图</p> 
+<p>    在TXD发送的串行数据中，每8bits数据会插入TX_EN/TX_ER 的2bits控制信息，同样，在RXD接收数据中，每8bits数据会插入RX_DV/RX_ER 的2bits控制信息，称作8B/10B编码。</p> 
+<p> </p> 
+<p> </p> 
+<p>【MDC/MDIO接口】</p> 
+<p>    接口有MDC和MDIO两条线。其中MDC上是由MAC提供的参考时钟信号，MDIO则是可双向传输的配置数据线，配合MDC时钟进行异步传输。AR8033的MDIO接口是开漏输出，所以在使用时需要外部上拉1.5k电阻。MDIO数据帧的组成如下：</p> 
+<p align="center"><img src="https://images2.imgbox.com/61/f3/6HrdOkuS_o.png" alt=""></p> 
+<p align="center">图4 MDIO数据帧结构</p> 
+<p>各字段的含义如下：</p> 
+<p>PRE        对MDC时钟信号的回复，用于校正异步传输时钟，内容为32个数字1。</p> 
+<p>ST          数据帧开始标识。</p> 
+<p>OP          操作码，10表示读数据，01表示写数据。</p> 
+<p>PHYAD   PHY芯片的物理地址，共5位，其中3位可以在AR8033内部进行配置。</p> 
+<p>REGAD  寄存器地址，共5位，用于选中PHY芯片内的32个寄存器之一。</p> 
+<p>TA                 用于防止在数据传输期间建立新的连接，共2位。读操作期间第1位为高阻态，第2位为0；写操作期间第1位为1，第2位为0.</p> 
+<p>DATA     表示 从寄存器读到的数据 或 向寄存器写入的数据，共16位。从高位开始传输。</p> 
+<p>IDLE      帧间空闲信号，呈高阻态。相邻两个数据帧之间至少要有1个时钟的空闲信号。</p> 
+<p> </p> 
+<p> </p> 
+<p>【工作模式配置】</p> 
+<p>    AR8033可以工作在3种模式类别下：电口模式、光口模式、光电转换器模式。根据4根模式选择引脚上电平的不同可以将AR8033配置到不同的工作模式。官方文档描述如下：</p> 
+<p align="center"><img src="https://images2.imgbox.com/67/be/pRwMDry7_o.png" alt=""></p> 
+<p align="center">图5 模式选择引脚</p> 
+<p align="center"><img src="https://images2.imgbox.com/74/3b/2KqLJdYc_o.png" alt=""></p> 
+<p align="center"><img src="https://images2.imgbox.com/1c/bc/cFaN2IfL_o.png" alt=""><br> </p> 
+<p align="center"></p> 
+<p align="center">图6 光口模式的引脚电平情况</p> 
+<p>    从文档中可以看到，当我们希望AR8033工作在1000Mbps光口模式时，应该把RX_DV、RXD2、RX_CLK、RXD3这4个引脚的电平下拉和上拉为0010的情况。同理，要工作在100Mbps光口模式则可以将电平设置为0110或1110。</p> 
+<p> </p> 
+<p> </p> 
+<p>【应用示例】</p> 
+<p>    我们可以使用AR8033对光口进行管理。根据官方数据手册描述，可以采用如下结构：</p> 
+<p align="center"><img src="https://images2.imgbox.com/c9/84/3d5yO0Q9_o.png" alt=""></p> 
+<p align="center">图7 AR8033光纤模块系统框图</p> 
+<p>    从框图中可以看出，当AR8033芯片用于光纤模块管理时，需要配置成100BASE-FX模式或1000BASE-X模式，与交换机芯片之间的数据传输采用RGMII协议。实际应用时，AR8033的工作模式直接由主控芯片通过MDC/MDIO总线进行配置；数据传输路径是AR8033传递给交换芯片，再由交换芯片传递给主控芯片。示意图如下：</p> 
+<p align="center"><img src="https://images2.imgbox.com/ff/15/MW1vnAk5_o.png" alt=""></p> 
+<p align="center">图8 AR8033应用示意图</p> 
+<p>    在示意图中可以看到，光模块芯片AR8033与交换芯片之间的数据传输使用RGMII协议，交换芯片与主控芯片之间的数据传输使用SGMII协议。</p> 
+<p> </p> 
+<p> </p> 
+<p>【代码分析】</p> 
+<p>    关于 AR8033 的设备和驱动注册流程和代码之前是写在这里的，但是感觉内容与标题相互比较独立，所以单独拿出来作一篇文章<a target="_blank" href="http://blog.csdn.net/qidi_huang/article/details/51398729" rel="noopener noreferrer">《PHY芯片 AR8033驱动代码分析》</a>。</p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/8f6c06c6eb041dc26a958ed685df03a0/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">startActivity报错</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/ecd6196c02793be4118d0474accf0a85/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">记一次apache访问无响应问题</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

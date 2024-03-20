@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>图解Linux虚拟文件系统(VFS)之关系篇 - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="图解Linux虚拟文件系统(VFS)之关系篇" />
+<meta property="og:description" content="目录
+1.什么是虚拟文件系统？
+2.Linux系统文件树
+3.文件系统注册
+4.文件系统挂载
+4.1 索引挂载点
+4.2 创建新文件系统挂载实例
+4.3 新旧挂载实例对接
+总结：
+大家好，今天和大家探讨一下Linux虚拟文件系统，虚拟文件系统是我一直想要去聊的一个知识点，如果你想从事Linux开发相关的工作，一定要了解虚拟文件系统。
+1.什么是虚拟文件系统？ Linux虚拟文件系统（Virtual File System，VFS）是Linux操作系统中的一个重要组成部分，它提供了一个统一的接口，使得用户和应用程序可以通过相同的方式访问不同类型的文件系统。
+VFS的设计目标是将不同类型的文件系统抽象为一个统一的接口，使得用户和应用程序无需关心底层文件系统的具体实现细节。通过VFS用户可以使用相同的系统调用（如open、read、write等）来访问不同类型的文件系统，包括本地文件系统（如ext4、XFS等）、网络文件系统（如NFS、CIFS等）以及虚拟文件系统（如procfs、sysfs等）。
+VFS由以下几个主要组件组成：
+虚拟文件系统接口：VFS定义了一组通用的文件系统操作接口。
+超级块（super_block）：每个文件系统都有一个超级块，它包含了文件系统的元数据信息，如文件系统类型、块大小、inode表等，超级块提供了对文件系统的整体描述和管理。
+目录项（dentry）：dentry是目录项的缩写，用于表示文件系统中的目录和文件，dentry包含了目录和文件对应的inode指针，通过它可以快速定位到目录下的文件或子目录。
+文件节点（inode）：inode是文件系统中的一个数据结构，用于存储文件或目录的元数据信息，如文件大小、权限、所有者等，每个文件或目录都对应一个唯一的inode。
+文件对象（file）：file是表示打开文件的数据结构，它包含了对应的inode指针、当前读写位置等信息，通过file可以进行文件的读写操作。
+2.Linux系统文件树 对于一个普通的Linux用户或者运维人员，Linux系统文件树通常的样子如下图，以根文件系统根目录为起点，通过根目录遍历整个文件树。
+而在系统开发人员眼中，Linux系统文件树则变成这样一个结构，每个文件和目录都对应一个dentry结构体。
+dentry到底是什么？
+dentry结构体的主要作用是提供文件系统层次结构的表示，它们通过形成一个树状结构来组织目录和文件，每个dentry都有一个唯一的路径名，可以通过遍历dentry树来找到特定文件或目录。
+struct dentry结构体定义：
+struct dentry { struct dentry *d_parent; struct qstr d_name; struct inode *d_inode; const struct dentry_operations *d_op; struct super_block *d_sb; struct list_head d_child; struct list_head d_subdirs; .... }; struct dentry结构体通过d_parent，d_child，d_subdirs等成员将文件系统组成一颗文件树，要了解Linux文件系统，我们得学会运用dentry。
+小节：dentry是VFS重要的组成部分，要理解VFS先从dentry开始。
+3.文件系统注册 通过前面的学习，我们了解到dentry结构的重要性，接下来围绕dentry结构体来解析文件VFS各组件之间的关系，我们先来看一下整体架构图：
+Linux文件系统对应一个file_system_type结构体对象，file_system_type结构体定义如下：
+struct file_system_type { const char *name; int fs_flags; int (*init_fs_context)(struct fs_context *); const struct fs_parameter_spec *parameters; struct dentry *(*mount) (struct file_system_type *, int, const char *, void *); void (*kill_sb) (struct super_block *); ." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/0146c807635c82a8adcb96a21ddd8c22/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2024-02-02T10:54:11+08:00" />
+<meta property="article:modified_time" content="2024-02-02T10:54:11+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">图解Linux虚拟文件系统(VFS)之关系篇</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p id="main-toc"><strong>目录</strong></p> 
+<p id="1.%E4%BB%80%E4%B9%88%E6%98%AF%E8%99%9A%E6%8B%9F%E6%96%87%E4%BB%B6%E7%B3%BB%E7%BB%9F%EF%BC%9F-toc" style="margin-left:0px;"><a href="#1.%E4%BB%80%E4%B9%88%E6%98%AF%E8%99%9A%E6%8B%9F%E6%96%87%E4%BB%B6%E7%B3%BB%E7%BB%9F%EF%BC%9F" rel="nofollow">1.什么是虚拟文件系统？</a></p> 
+<p id="2.Linux%E7%B3%BB%E7%BB%9F%E6%96%87%E4%BB%B6%E6%A0%91-toc" style="margin-left:0px;"><a href="#2.Linux%E7%B3%BB%E7%BB%9F%E6%96%87%E4%BB%B6%E6%A0%91" rel="nofollow">2.Linux系统文件树</a></p> 
+<p id="3.%E6%96%87%E4%BB%B6%E7%B3%BB%E7%BB%9F%E6%B3%A8%E5%86%8C-toc" style="margin-left:0px;"><a href="#3.%E6%96%87%E4%BB%B6%E7%B3%BB%E7%BB%9F%E6%B3%A8%E5%86%8C" rel="nofollow">3.文件系统注册</a></p> 
+<p id="4.%E6%96%87%E4%BB%B6%E7%B3%BB%E7%BB%9F%E6%8C%82%E8%BD%BD-toc" style="margin-left:0px;"><a href="#4.%E6%96%87%E4%BB%B6%E7%B3%BB%E7%BB%9F%E6%8C%82%E8%BD%BD" rel="nofollow">4.文件系统挂载</a></p> 
+<p id="4.1%20%E7%B4%A2%E5%BC%95%E6%8C%82%E8%BD%BD%E7%82%B9-toc" style="margin-left:40px;"><a href="#4.1%20%E7%B4%A2%E5%BC%95%E6%8C%82%E8%BD%BD%E7%82%B9" rel="nofollow">4.1 索引挂载点</a></p> 
+<p id="4.2%C2%A0%E5%88%9B%E5%BB%BA%E6%96%B0%E6%96%87%E4%BB%B6%E7%B3%BB%E7%BB%9F%E6%8C%82%E8%BD%BD%E5%AE%9E%E4%BE%8B-toc" style="margin-left:40px;"><a href="#4.2%C2%A0%E5%88%9B%E5%BB%BA%E6%96%B0%E6%96%87%E4%BB%B6%E7%B3%BB%E7%BB%9F%E6%8C%82%E8%BD%BD%E5%AE%9E%E4%BE%8B" rel="nofollow">4.2 创建新文件系统挂载实例</a></p> 
+<p id="4.3%C2%A0%E6%96%B0%E6%97%A7%E6%8C%82%E8%BD%BD%E5%AE%9E%E4%BE%8B%E5%AF%B9%E6%8E%A5-toc" style="margin-left:40px;"><a href="#4.3%C2%A0%E6%96%B0%E6%97%A7%E6%8C%82%E8%BD%BD%E5%AE%9E%E4%BE%8B%E5%AF%B9%E6%8E%A5" rel="nofollow">4.3 新旧挂载实例对接</a></p> 
+<p id="%E6%80%BB%E7%BB%93%EF%BC%9A-toc" style="margin-left:0px;"><a href="#%E6%80%BB%E7%BB%93%EF%BC%9A" rel="nofollow">总结：</a></p> 
+<hr id="hr-toc"> 
+<p></p> 
+<p>大家好，今天和大家探讨一下Linux虚拟文件系统，虚拟文件系统是我一直想要去聊的一个知识点，如果你想从事Linux开发相关的工作，一定要了解虚拟文件系统。</p> 
+<h2 id="1.%E4%BB%80%E4%B9%88%E6%98%AF%E8%99%9A%E6%8B%9F%E6%96%87%E4%BB%B6%E7%B3%BB%E7%BB%9F%EF%BC%9F">1.什么是虚拟文件系统？</h2> 
+<p>Linux虚拟文件系统（Virtual File System，VFS）是Linux操作系统中的一个重要组成部分，它提供了一个统一的接口，使得用户和应用程序可以通过相同的方式访问不同类型的文件系统。</p> 
+<p style="text-align:center;"><img alt="" src="https://images2.imgbox.com/f2/b2/VpR7kG2v_o.png"></p> 
+<p>VFS的设计目标是将不同类型的文件系统抽象为一个统一的接口，使得用户和应用程序无需关心底层文件系统的具体实现细节。通过VFS用户可以使用相同的系统调用（如open、read、write等）来访问不同类型的文件系统，包括本地文件系统（如ext4、XFS等）、网络文件系统（如NFS、CIFS等）以及虚拟文件系统（如procfs、sysfs等）。</p> 
+<p>VFS由以下几个主要组件组成：</p> 
+<ul><li> <p>虚拟文件系统接口：VFS定义了一组通用的文件系统操作接口。</p> </li><li> <p>超级块（super_block）：每个文件系统都有一个超级块，它包含了文件系统的元数据信息，如文件系统类型、块大小、inode表等，超级块提供了对文件系统的整体描述和管理。</p> </li><li> <p>目录项（dentry）：dentry是目录项的缩写，用于表示文件系统中的目录和文件，dentry包含了目录和文件对应的inode指针，通过它可以快速定位到目录下的文件或子目录。</p> </li><li> <p>文件节点（inode）：inode是文件系统中的一个数据结构，用于存储文件或目录的元数据信息，如文件大小、权限、所有者等，每个文件或目录都对应一个唯一的inode。</p> </li><li> <p>文件对象（file）：file是表示打开文件的数据结构，它包含了对应的inode指针、当前读写位置等信息，通过file可以进行文件的读写操作。</p> </li></ul> 
+<h2 id="2.Linux%E7%B3%BB%E7%BB%9F%E6%96%87%E4%BB%B6%E6%A0%91">2.Linux系统文件树</h2> 
+<p>对于一个普通的Linux用户或者运维人员，Linux系统文件树通常的样子如下图，以根文件系统根目录为起点，通过根目录遍历整个文件树。</p> 
+<p style="text-align:center;"><img alt="" src="https://images2.imgbox.com/cb/0b/mzFSxNtA_o.png"></p> 
+<p>而在系统开发人员眼中，Linux系统文件树则变成这样一个结构，每个文件和目录都对应一个dentry结构体。</p> 
+<p style="text-align:center;"><img alt="" src="https://images2.imgbox.com/ec/3a/O58DERtQ_o.png"></p> 
+<p><strong>dentry到底是什么？</strong></p> 
+<p>dentry结构体的主要作用是提供文件系统层次结构的表示，它们通过形成一个树状结构来组织目录和文件，每个dentry都有一个唯一的路径名，可以通过遍历dentry树来找到特定文件或目录。</p> 
+<p>struct dentry结构体定义：</p> 
+<pre><code class="language-cpp">struct dentry {
+    struct dentry *d_parent;
+    struct qstr d_name;
+    struct inode *d_inode;
+   
+    const struct dentry_operations *d_op;
+    struct super_block *d_sb; 
+    struct list_head d_child;
+    struct list_head d_subdirs;
+    ....
+};</code></pre> 
+<p>struct dentry结构体通过d_parent，d_child，d_subdirs等成员将文件系统组成一颗文件树，要了解Linux文件系统，我们得学会运用dentry。</p> 
+<p><strong>小节：dentry是VFS重要的组成部分，要理解VFS先从dentry开始。</strong></p> 
+<h2 id="3.%E6%96%87%E4%BB%B6%E7%B3%BB%E7%BB%9F%E6%B3%A8%E5%86%8C">3.文件系统注册</h2> 
+<p>通过前面的学习，我们了解到dentry结构的重要性，接下来围绕dentry结构体来解析文件VFS各组件之间的关系，我们先来看一下整体架构图：</p> 
+<p style="text-align:center;"><img alt="" src="https://images2.imgbox.com/43/38/CVe9GYK4_o.png"></p> 
+<p></p> 
+<p>Linux文件系统对应一个file_system_type结构体对象，file_system_type结构体定义如下：</p> 
+<pre><code class="language-cpp">struct file_system_type {
+    const char *name;
+    int fs_flags;
+    int (*init_fs_context)(struct fs_context *);
+    const struct fs_parameter_spec *parameters;
+    struct dentry *(*mount) (struct file_system_type *, int,
+                 const char *, void *);
+    void (*kill_sb) (struct super_block *);
+    ......
+};</code></pre> 
+<p>ramfs文件系统定义如下，name表示文件系统类型，当ramfs文件系统需要实例化，需要通过name查找全局文件系统链表头找到对应的已注册文件系统，再通过已注册文件系统创建超级块（super block）。</p> 
+<pre><code class="language-cs">static struct file_system_type ramfs_fs_type = {
+      .name = "ramfs",
+      .init_fs_context = ramfs_init_fs_context,
+      .parameters = ramfs_fs_parameters,
+      .kill_sb = ramfs_kill_sb,
+      .fs_flags = FS_USERNS_MOUNT,
+};</code></pre> 
+<p>定义好文件系统后，通过register_filesystem函数将文件系统注册至Linux系统，注册成功的文件系统会插入全局文件系统链表，已注册的文件系统能够用来创建超级块（super block）。</p> 
+<p>通过cat /proc/filesystems查看系统所有已注册文件系统</p> 
+<p class="img-center"><img alt="图片" height="363" src="https://images2.imgbox.com/a3/2c/xyS8kMvV_o.png" width="1036"></p> 
+<h2 id="4.%E6%96%87%E4%BB%B6%E7%B3%BB%E7%BB%9F%E6%8C%82%E8%BD%BD">4.文件系统挂载</h2> 
+<p><strong>文件系统挂载</strong><strong>就是新文件系统生成一个挂载实例（struct mount），让新挂载实例和父文件系统的挂载实例建立父子关系。</strong></p> 
+<p>一个新的挂载实例包括几个重要部分：</p> 
+<ul><li> <p>超级块（super_block）</p> </li></ul> 
+<p>超级块用来指示新的文件系统对应的设备。</p> 
+<ul><li> <p>父挂载实例（mount）</p> </li></ul> 
+<p>父挂载实例表示挂载点所处的文件系统挂载实例。</p> 
+<ul><li> <p>挂载点（mountpoint）</p> </li></ul> 
+<p>挂载点是新文件系统和父文件系统之间连接的纽带。</p> 
+<ul><li> <p>文件系统根目录（dentry）</p> </li></ul> 
+<p>每个文件系统都有一个根目录，当索引一个文件路径进入到一个新的文件系统后，会从新的文件系统根目录开始索引。</p> 
+<h3 id="4.1%20%E7%B4%A2%E5%BC%95%E6%8C%82%E8%BD%BD%E7%82%B9"><strong>4.1 索引挂载点</strong></h3> 
+<p>索引挂载点的目的是为了获取挂载点的struct path记录信息，挂载点索引的过程就是struct path记录信息不断被替换的过程。</p> 
+<p style="text-align:center;"><img alt="" src="https://images2.imgbox.com/bc/a2/SUwlfzOR_o.png"></p> 
+<p>以挂载点/mnt/test/dir为例来讲解：</p> 
+<ol><li> <p>索引/目录，获取/目录的path记录信息。</p> </li><li> <p>索引mnt目录，获取mnt目录的path记录信息，并覆盖/目录的path记录信息。</p> </li><li> <p>索引test目录，获取test目录的path记录信息，并覆盖mnt目录的path记录信息。</p> </li><li> <p>索引dir目录，获取dir目录的path记录信息，并覆盖test目录的path记录信息。</p> </li><li> <p>最终获取到挂载点dir的struct path记录信息。</p> </li></ol> 
+<p>struct path结构体定义如下：</p> 
+<pre><code class="language-cpp">struct path {
+      struct vfsmount *mnt;
+      struct dentry *dentry;
+};</code></pre> 
+<p>mnt：记录挂载点所在文件系统的挂载实例。</p> 
+<p>dentry：挂载点目录dentry。</p> 
+<h3 id="4.2%C2%A0%E5%88%9B%E5%BB%BA%E6%96%B0%E6%96%87%E4%BB%B6%E7%B3%BB%E7%BB%9F%E6%8C%82%E8%BD%BD%E5%AE%9E%E4%BE%8B"><strong>4.2 创建新文件系统挂载实例</strong></h3> 
+<ul><li> <p>创建超级块</p> </li></ul> 
+<p>要创建超级块首先要知道文件系统类型，mount命令通过-t参数指定文件系统类型，通过mount命令传入的文件系统类型，可以遍历全局文件系统链表找到已注册的文件系统，通过已注册的文件系统创建超级块。</p> 
+<ul><li> <p>创建新文件系统挂载实例</p> </li></ul> 
+<p>创建超级块后，通过超级块的信息创建新文件系统挂载实例。</p> 
+<ul><li> <p>创建挂载点</p> </li></ul> 
+<p>通过挂载点dentry创建一个挂载点。</p> 
+<h3 id="4.3%C2%A0%E6%96%B0%E6%97%A7%E6%8C%82%E8%BD%BD%E5%AE%9E%E4%BE%8B%E5%AF%B9%E6%8E%A5"><strong>4.3 新旧挂载实例对接</strong></h3> 
+<p>通过前面的过程，我们已经具备文件系统挂载三要素：</p> 
+<ul><li> <p>新文件系统挂载实例。</p> </li><li> <p>父文件系统挂载实例。</p> </li><li> <p>挂载点。</p> </li></ul> 
+<p>通过挂载三要素，我们就能完成新旧挂载实例对接，完成对接后，新文件系统挂载实例的mnt_parent指向父挂载实例，整个挂载过程就已经完成。</p> 
+<p>新文件系统挂载成功后，Linux系统文件树将新文件系统嫁接进来，如下图：</p> 
+<p style="text-align:center;"><img alt="" src="https://images2.imgbox.com/08/c5/APN7TaaJ_o.png"></p> 
+<p>此时我们想要操作新文件系统中的文件，只需要根据路径名层层索引获取文件path信息，path信息记录dentry信息，dentry绑定了inode对象。</p> 
+<p>最终获取到inode文件节点就能操作文件了。</p> 
+<hr> 
+<h2 id="%E6%80%BB%E7%BB%93%EF%BC%9A">总结：</h2> 
+<p><strong>如果你想系统学习Linux软件开发，我这里有两套完整的Linux编程课程（图解Linux环境编程和图解Linux网络编程）</strong></p> 
+<p><strong>课程总共近150课时，时长近60小时，课程都是以图解的方式进行讲解，希望能帮助到你。</strong></p> 
+<p style="text-align:center;"><strong><img alt="" src="https://images2.imgbox.com/be/ad/ArWoUMYq_o.png"></strong></p> 
+<p><strong>点击文末卡片，获取相关资料</strong><br><img alt="" src="https://images2.imgbox.com/98/2e/mWh02ce3_o.gif"></p> 
+<p></p> 
+<p></p> 
+<p></p> 
+<p></p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/f20c88bda5de078e394ed31220440999/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">Kotlin 的 Flow 简单使用</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/252fe4df62a762858a4c5e79e8416695/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">vue3上传文件到服务器</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

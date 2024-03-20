@@ -1,0 +1,377 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>网络编程难点之select、poll与epoll详解 - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="网络编程难点之select、poll与epoll详解" />
+<meta property="og:description" content="前言 为什么需要I/O多路复用技术？ 首先，I/O多路复用技术主要被应用在需要高性能的网络服务器程序中。
+高性能网络服务器程序需要做的事情就是供多个客户端同时进行连接并处理客户端传送过来的数据请求：
+对于这种情况，很多人自然而然想到使用多线程的方式来处理，这当然是正确的想法，但这里我们并不讨论它，只探讨我们为什么需要I/O多路复用技术以及它到底能解决什么问题，因此多线程情况我们不作分析，下面都只探讨单线程情况下的程序情况。
+在单线程情况下，多个客户端发起连接请求时，同一时间下服务器程序只能处理一个客户端的数据请求：
+假设服务器程序接受了客户端1号的数据请求，那么单线程情况下该服务器程序就只能和客户端1号进行数据传输，此时若有客户端2号、3号发起连接请求，那么它们只能被阻塞（注意，后续客户端请求只是阻塞起来排起了队，并非数据就不要了，而这种技术是通过DMA控制器实现的，在计算机组成原理中有详细介绍这种技术）。
+因此单线程服务器程序为了服务到位所有的客户端程序，我们理所当然的在写服务器端程序的数据处理代码时会有如下的逻辑：
+//数据处理 while(1){ //Fdx是建立通信连接的文件描述符 //FdA~FdE表示已经建立通信连接的文件描述符数组 for(Fdx in (FdA~FdE)){ if(Fdx 有数据){ 读数据; 处理数据; } } } 即循环遍历各个已经建立通信连接的文件描述符，每遍历到一个就进行一次是否有数据的判断，然后进行数据处理。
+这种方式简单粗暴，其实效率上也并不低，但是它确实有改进的地方，其缺陷如下：
+1、时间复杂度高，很明显第二重循环是每次都要从头遍历的
+2、每次都需要判断文件描述符中是否有数据，这个过程涉及到内核，用户态与内核态的频繁切换是其性能低下的原因之一
+那么在单线程程序中，我们就可以使用I/O多路复用技术来提高单线程下在面对上述程序所面对的问题时的执行效率，也就是下面要说的select、poll和epoll技术（当然多线程下同样适用，但只要明白了单线程下的情况，多线程的情况也就是照猫画虎）。
+select 首先来看一段代码，注意其中注释里的内容：
+sockfd = socket(AF_INET, SOCK_STREAM, 0); memset(&amp;addr, 0, sizeof (addr)); addr.sin_family = AF_INET; addr.sin_port = htons(2000); addr.sin_addr.s_addr = INADDR_ANY; bind(sockfd,(struct sockaddr*)&amp;addr ,sizeof(addr)); listen (sockfd, 5); for (i=0;i&lt;5;i&#43;&#43;) { memset(&amp;client, 0, sizeof (client)); addrlen = sizeof(client); fds[i] = accept(sockfd,(struct sockaddr*)&amp;client, &amp;addrlen); if(fds[i] &gt; max) max = fds[i]; } // 上面是在准备下面代码要使用的已经建立通信连接的套接字文件描述符数组 //---------------------------------------------------------------- // 下面是处理连接请求的代码 while(1){ FD_ZERO(&amp;rset); for (i = 0; i&lt; 5; i&#43;&#43; ) { FD_SET(fds[i],&amp;rset); } //select的第一个参数表示监视对象文件描述符数量 //第二个表示读操作的文件描述符监听集合 //第三个表示写操作的文件描述符监听集合 //第四个表示异常操作的文件描述符监听集合 //第五个表示超时时间 select(max&#43;1, &amp;rset, NULL, NULL, NULL); for(i=0;i&lt;5;i&#43;&#43;) { if (FD_ISSET(fds[i], &amp;rset)){ memset(buffer,0,MAXBUF); read(fds[i], buffer, MAXBUF); puts(buffer); } }	} 对于select函数最常用的也就是前面两个参数，现在来看下面两个问题：" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/15cccc49c2bceea3bfd3519ae13215b7/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2024-02-29T22:56:06+08:00" />
+<meta property="article:modified_time" content="2024-02-29T22:56:06+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">网络编程难点之select、poll与epoll详解</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <h2><a id="_0"></a>前言</h2> 
+<h3><a id="IO_1"></a>为什么需要I/O多路复用技术？</h3> 
+<p>首先，I/O多路复用技术主要被应用在需要高性能的网络服务器程序中。</p> 
+<p>高性能网络服务器程序需要做的事情就是供多个客户端同时进行连接并处理客户端传送过来的数据请求：</p> 
+<p><img src="https://images2.imgbox.com/cb/b4/WuVUkLfl_o.png" alt="在这里插入图片描述"></p> 
+<p>对于这种情况，很多人自然而然想到使用多线程的方式来处理，这当然是正确的想法，但这里我们并不讨论它，只探讨我们为什么需要I/O多路复用技术以及它到底能解决什么问题，因此多线程情况我们不作分析，下面都只探讨单线程情况下的程序情况。</p> 
+<p>在单线程情况下，多个客户端发起连接请求时，同一时间下服务器程序只能处理一个客户端的数据请求：</p> 
+<blockquote> 
+ <p>假设服务器程序接受了客户端1号的数据请求，那么单线程情况下该服务器程序就只能和客户端1号进行数据传输，此时若有客户端2号、3号发起连接请求，那么它们只能被阻塞（注意，后续客户端请求只是阻塞起来排起了队，并非数据就不要了，而这种技术是通过DMA控制器实现的，在计算机组成原理中有详细介绍这种技术）。</p> 
+</blockquote> 
+<p>因此单线程服务器程序为了服务到位所有的客户端程序，我们理所当然的在写服务器端程序的数据处理代码时会有如下的逻辑：</p> 
+<pre><code class="prism language-c"><span class="token comment">//数据处理</span>
+<span class="token keyword">while</span><span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">{<!-- --></span>
+	<span class="token comment">//Fdx是建立通信连接的文件描述符</span>
+	<span class="token comment">//FdA~FdE表示已经建立通信连接的文件描述符数组</span>
+	<span class="token keyword">for</span><span class="token punctuation">(</span>Fdx <span class="token function">in</span> <span class="token punctuation">(</span>FdA<span class="token operator">~</span>FdE<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">{<!-- --></span>
+		<span class="token keyword">if</span><span class="token punctuation">(</span>Fdx 有数据<span class="token punctuation">)</span><span class="token punctuation">{<!-- --></span>
+			读数据<span class="token punctuation">;</span>
+			处理数据<span class="token punctuation">;</span>
+		<span class="token punctuation">}</span>
+	<span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>即循环遍历各个已经建立通信连接的文件描述符，每遍历到一个就进行一次是否有数据的判断，然后进行数据处理。</p> 
+<p>这种方式简单粗暴，其实效率上也并不低，但是它确实有改进的地方，其缺陷如下：</p> 
+<p>1、时间复杂度高，很明显第二重循环是每次都要从头遍历的<br> 2、每次都需要判断文件描述符中是否有数据，这个过程涉及到内核，用户态与内核态的频繁切换是其性能低下的原因之一</p> 
+<p>那么在单线程程序中，我们就可以使用I/O多路复用技术来提高单线程下在面对上述程序所面对的问题时的执行效率，也就是下面要说的select、poll和epoll技术（当然多线程下同样适用，但只要明白了单线程下的情况，多线程的情况也就是照猫画虎）。</p> 
+<h2><a id="select_36"></a>select</h2> 
+<p>首先来看一段代码，注意其中注释里的内容：</p> 
+<pre><code class="prism language-c">  sockfd <span class="token operator">=</span> <span class="token function">socket</span><span class="token punctuation">(</span>AF_INET<span class="token punctuation">,</span> SOCK_STREAM<span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+  <span class="token function">memset</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>addr<span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">,</span> <span class="token keyword">sizeof</span> <span class="token punctuation">(</span>addr<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+  addr<span class="token punctuation">.</span>sin_family <span class="token operator">=</span> AF_INET<span class="token punctuation">;</span>
+  addr<span class="token punctuation">.</span>sin_port <span class="token operator">=</span> <span class="token function">htons</span><span class="token punctuation">(</span><span class="token number">2000</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+  addr<span class="token punctuation">.</span>sin_addr<span class="token punctuation">.</span>s_addr <span class="token operator">=</span> INADDR_ANY<span class="token punctuation">;</span>
+  <span class="token function">bind</span><span class="token punctuation">(</span>sockfd<span class="token punctuation">,</span><span class="token punctuation">(</span><span class="token keyword">struct</span> <span class="token class-name">sockaddr</span><span class="token operator">*</span><span class="token punctuation">)</span><span class="token operator">&amp;</span>addr <span class="token punctuation">,</span><span class="token keyword">sizeof</span><span class="token punctuation">(</span>addr<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+  <span class="token function">listen</span> <span class="token punctuation">(</span>sockfd<span class="token punctuation">,</span> <span class="token number">5</span><span class="token punctuation">)</span><span class="token punctuation">;</span> 
+
+  <span class="token keyword">for</span> <span class="token punctuation">(</span>i<span class="token operator">=</span><span class="token number">0</span><span class="token punctuation">;</span>i<span class="token operator">&lt;</span><span class="token number">5</span><span class="token punctuation">;</span>i<span class="token operator">++</span><span class="token punctuation">)</span> 
+  <span class="token punctuation">{<!-- --></span>
+    <span class="token function">memset</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>client<span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">,</span> <span class="token keyword">sizeof</span> <span class="token punctuation">(</span>client<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    addrlen <span class="token operator">=</span> <span class="token keyword">sizeof</span><span class="token punctuation">(</span>client<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    fds<span class="token punctuation">[</span>i<span class="token punctuation">]</span> <span class="token operator">=</span> <span class="token function">accept</span><span class="token punctuation">(</span>sockfd<span class="token punctuation">,</span><span class="token punctuation">(</span><span class="token keyword">struct</span> <span class="token class-name">sockaddr</span><span class="token operator">*</span><span class="token punctuation">)</span><span class="token operator">&amp;</span>client<span class="token punctuation">,</span> <span class="token operator">&amp;</span>addrlen<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">if</span><span class="token punctuation">(</span>fds<span class="token punctuation">[</span>i<span class="token punctuation">]</span> <span class="token operator">&gt;</span> max<span class="token punctuation">)</span>
+    	max <span class="token operator">=</span> fds<span class="token punctuation">[</span>i<span class="token punctuation">]</span><span class="token punctuation">;</span>
+  <span class="token punctuation">}</span>
+<span class="token comment">// 上面是在准备下面代码要使用的已经建立通信连接的套接字文件描述符数组</span>
+<span class="token comment">//----------------------------------------------------------------</span>
+<span class="token comment">// 下面是处理连接请求的代码  </span>
+  <span class="token keyword">while</span><span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">{<!-- --></span>
+	<span class="token function">FD_ZERO</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>rset<span class="token punctuation">)</span><span class="token punctuation">;</span>
+  	<span class="token keyword">for</span> <span class="token punctuation">(</span>i <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span> i<span class="token operator">&lt;</span> <span class="token number">5</span><span class="token punctuation">;</span> i<span class="token operator">++</span> <span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+  		<span class="token function">FD_SET</span><span class="token punctuation">(</span>fds<span class="token punctuation">[</span>i<span class="token punctuation">]</span><span class="token punctuation">,</span><span class="token operator">&amp;</span>rset<span class="token punctuation">)</span><span class="token punctuation">;</span>
+  	<span class="token punctuation">}</span>
+  	<span class="token comment">//select的第一个参数表示监视对象文件描述符数量</span>
+  	<span class="token comment">//第二个表示读操作的文件描述符监听集合</span>
+  	<span class="token comment">//第三个表示写操作的文件描述符监听集合</span>
+  	<span class="token comment">//第四个表示异常操作的文件描述符监听集合</span>
+  	<span class="token comment">//第五个表示超时时间</span>
+	<span class="token function">select</span><span class="token punctuation">(</span>max<span class="token operator">+</span><span class="token number">1</span><span class="token punctuation">,</span> <span class="token operator">&amp;</span>rset<span class="token punctuation">,</span> <span class="token constant">NULL</span><span class="token punctuation">,</span> <span class="token constant">NULL</span><span class="token punctuation">,</span> <span class="token constant">NULL</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+	<span class="token keyword">for</span><span class="token punctuation">(</span>i<span class="token operator">=</span><span class="token number">0</span><span class="token punctuation">;</span>i<span class="token operator">&lt;</span><span class="token number">5</span><span class="token punctuation">;</span>i<span class="token operator">++</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">FD_ISSET</span><span class="token punctuation">(</span>fds<span class="token punctuation">[</span>i<span class="token punctuation">]</span><span class="token punctuation">,</span> <span class="token operator">&amp;</span>rset<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">{<!-- --></span>
+			<span class="token function">memset</span><span class="token punctuation">(</span>buffer<span class="token punctuation">,</span><span class="token number">0</span><span class="token punctuation">,</span>MAXBUF<span class="token punctuation">)</span><span class="token punctuation">;</span>
+			<span class="token function">read</span><span class="token punctuation">(</span>fds<span class="token punctuation">[</span>i<span class="token punctuation">]</span><span class="token punctuation">,</span> buffer<span class="token punctuation">,</span> MAXBUF<span class="token punctuation">)</span><span class="token punctuation">;</span>
+			<span class="token function">puts</span><span class="token punctuation">(</span>buffer<span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token punctuation">}</span>
+	<span class="token punctuation">}</span>	
+  <span class="token punctuation">}</span>
+</code></pre> 
+<p>对于select函数最常用的也就是前面两个参数，现在来看下面两个问题：</p> 
+<p>1、为什么select第一个参数是 max+1？</p> 
+<blockquote> 
+ <p>select函数要求通过第一个参数传递监视对象文件描述符的数量。因此需要得到注册在rset变量中的文件描述符数。<br> 又因为每次新建文件描述符时其值都会加1（文件描述符的值从小往大递增），所以只需要将最大的文件描述符加1再传递到select函数即可。加1是因为文件描述符的值从0开始。<br> 如：需要监视的文件描述符数组为： 0,1,2,3,4,5，虽然最大的文件描述符值为5但总共的文件描述符的数量为6.</p> 
+</blockquote> 
+<p>2、第二个参数监听文件描述符集合的作用是什么？</p> 
+<p>监听文件描述符集合本质上就是一个位图，它用来表征集合中的哪一个文件描述符触发了监听事件被置位，示例如下：</p> 
+<blockquote> 
+ <p>假设上述程序中，文件描述符数组中的文件描述符分别为：1 、2、 5、 7、 9；<br> 对于监听集合rset，其作为位图这种数据结构，一开始其内存数据为：0、 0、 0、 0、 0 …<br> 在经过上述程序中的FD_SET(fds[i],&amp;rset)代码后，其内存数据变更为：0、1、1、0、0、1、0、1、0、1 …</p> 
+</blockquote> 
+<p>另外在select函数中，rset的大小为 1024，这是系统内核决定的。</p> 
+<p>在select函数执行过程中，该函数会将rset集合拷贝一份放到内核态中，由内核态来帮我们完成之前简单粗暴的程序示例中的判断文件描述符是否有数据的过程，毫无疑问，内核程序进行判断会比我们自己写 if 要来的快，因为我们的if判断也是要询问内核的，询问内核的过程会涉及用户态与内核态的反复切换，效率低下。</p> 
+<p><img src="https://images2.imgbox.com/58/05/CfTZm4Un_o.png" alt="在这里插入图片描述"></p> 
+<p>如果所有的文件描述符都没有数据需要读取的话，那么 select会陷入阻塞。</p> 
+<p>当有数据需要读取的时候，监听集合rset中产生读取数据的文件描述符就会被置位（相当于被做了标记告诉select函数它要有数据需要读取），此时select就不再阻塞，程序得以进入到下一步。</p> 
+<p>下一步则就是我们所熟悉的了，因为select函数并未告知我们是哪些、有多少文件描述符有数据需要读取（被置位），因此我们只能继续使用之前的简单粗暴的方法进行循环遍历，通过宏函数FD_ISSET来判断是哪些文件描述符有数据需要读取，然后进行数据处理。</p> 
+<p>因此其提高效率最主要的一点在于select函数将rset这个文件描述符的集合拷贝到了内核态中让内核来帮我们判断文件描述符是否有数据需要读取，与此同时select函数也依然存在一些缺陷：</p> 
+<p>1、FD_SET这个位图数据结构最大为1024，上限太低<br> 2、FD_SET在有数据读取时会发生置位，会改变对应文件描述符原来的位值，这意味着每一次select函数返回之后我们都需要将rset监听集合给恢复到一开始的情况，这同样会造成效率低下的问题<br> 3、将rset集合从用户态拷贝到内核态一样是巨大的时空开销，即使它比我们一开始选择每次循环判断进入内核方式的开销要小，但还有提升的空间<br> 4、在已经从select函数返回的情况下，因不知道是哪个或者哪几个文件描述符产生读取数据而导致的循环遍历所带来的时间开销</p> 
+<p>这基本就是select的全部内容了。</p> 
+<h2><a id="poll_115"></a>poll</h2> 
+<h3><a id="poll_116"></a>poll的简单介绍</h3> 
+<p>poll 是 UNIX 系统中的一个系统调用，用于实现 IO 多路复用。IO 多路复用允许单个进程或线程同时监视多个文件描述符（sockets、pipes、files等），并在这些文件描述符中的任何一个变得可读、可写或有异常条件时，获得通知。</p> 
+<p>poll 函数提供了一种机制，使得程序可以在不阻塞的情况下，同时等待多个文件描述符上的事件。</p> 
+<p>因为poll是方言，大家可能对其并非特别了解，因此介绍其函数原型如下：</p> 
+<pre><code class="prism language-c"><span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;poll.h&gt;</span>  </span>
+  
+<span class="token keyword">int</span> <span class="token function">poll</span><span class="token punctuation">(</span><span class="token keyword">struct</span> <span class="token class-name">pollfd</span> <span class="token operator">*</span>fds<span class="token punctuation">,</span> <span class="token class-name">nfds_t</span> nfds<span class="token punctuation">,</span> <span class="token keyword">int</span> timeout<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+</code></pre> 
+<p>参数说明如下：</p> 
+<blockquote> 
+ <p>fds：一个指向 pollfd 结构数组的指针，数组中每个元素代表一个要监视的文件描述符。<br> nfds：fds 数组中元素的数量，也即是程序想要监视的文件描述符的数量。<br> timeout：等待事件发生的超时时间，单位是毫秒。如果设置为 -1，则 poll 会无限期地等待；如果设置为 0，则 poll 会立即返回，不等待任何事件。</p> 
+</blockquote> 
+<p>pollfd 结构体的定义如下：</p> 
+<pre><code class="prism language-c"><span class="token keyword">struct</span> <span class="token class-name">pollfd</span> <span class="token punctuation">{<!-- --></span>  
+    <span class="token keyword">int</span>   fd<span class="token punctuation">;</span>         <span class="token comment">/* 文件描述符 */</span>  
+    <span class="token keyword">short</span> events<span class="token punctuation">;</span>     <span class="token comment">/* 等待的事件 */</span>  
+    <span class="token keyword">short</span> revents<span class="token punctuation">;</span>    <span class="token comment">/* 实际发生的事件 */</span>  
+<span class="token punctuation">}</span><span class="token punctuation">;</span>
+</code></pre> 
+<p>变量的解释说明：</p> 
+<blockquote> 
+ <p>fd：要监视的文件描述符。<br> events：程序关心的事件集合，可以是 POLLIN（数据可读）、POLLOUT（数据可写）、POLLERR（发生错误）、POLLHUP（连接挂起）等事件的一个或多个的组合。<br> revents：poll 返回时，这个字段会被设置为实际发生的事件集合。</p> 
+</blockquote> 
+<p>返回值如下：</p> 
+<blockquote> 
+ <p>如果成功，poll 返回发生事件的文件描述符的数量。<br> 如果发生错误，poll 返回 -1，并设置全局变量 errno 以指示错误类型。</p> 
+</blockquote> 
+<h3><a id="poll_152"></a>poll的深入分析</h3> 
+<p>同样的，先来看一段代码：</p> 
+<pre><code class="prism language-c"><span class="token keyword">for</span> <span class="token punctuation">(</span>i<span class="token operator">=</span><span class="token number">0</span><span class="token punctuation">;</span>i<span class="token operator">&lt;</span><span class="token number">5</span><span class="token punctuation">;</span>i<span class="token operator">++</span><span class="token punctuation">)</span> 
+  <span class="token punctuation">{<!-- --></span>
+    <span class="token function">memset</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>client<span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">,</span> <span class="token keyword">sizeof</span> <span class="token punctuation">(</span>client<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    addrlen <span class="token operator">=</span> <span class="token keyword">sizeof</span><span class="token punctuation">(</span>client<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    pollfds<span class="token punctuation">[</span>i<span class="token punctuation">]</span><span class="token punctuation">.</span>fd <span class="token operator">=</span> <span class="token function">accept</span><span class="token punctuation">(</span>sockfd<span class="token punctuation">,</span><span class="token punctuation">(</span><span class="token keyword">struct</span> <span class="token class-name">sockaddr</span><span class="token operator">*</span><span class="token punctuation">)</span><span class="token operator">&amp;</span>client<span class="token punctuation">,</span> <span class="token operator">&amp;</span>addrlen<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    pollfds<span class="token punctuation">[</span>i<span class="token punctuation">]</span><span class="token punctuation">.</span>events <span class="token operator">=</span> POLLIN<span class="token punctuation">;</span>
+  <span class="token punctuation">}</span>
+  <span class="token function">sleep</span><span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+  <span class="token keyword">while</span><span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">{<!-- --></span>
+  	<span class="token function">puts</span><span class="token punctuation">(</span><span class="token string">"round again"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+  	
+	<span class="token function">poll</span><span class="token punctuation">(</span>pollfds<span class="token punctuation">,</span> <span class="token number">5</span><span class="token punctuation">,</span> <span class="token number">50000</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+	<span class="token keyword">for</span><span class="token punctuation">(</span>i<span class="token operator">=</span><span class="token number">0</span><span class="token punctuation">;</span>i<span class="token operator">&lt;</span><span class="token number">5</span><span class="token punctuation">;</span>i<span class="token operator">++</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token comment">//revents才是真正被内核置位的部分</span>
+		<span class="token comment">//因此判断该文件描述符是否被置位</span>
+		<span class="token keyword">if</span> <span class="token punctuation">(</span>pollfds<span class="token punctuation">[</span>i<span class="token punctuation">]</span><span class="token punctuation">.</span>revents <span class="token operator">&amp;</span> POLLIN<span class="token punctuation">)</span><span class="token punctuation">{<!-- --></span>
+			<span class="token comment">//当其被内核置为1表示有数据读取后，我们注意必须要将其置回0</span>
+			<span class="token comment">//就像select中重新更新位图一样</span>
+			pollfds<span class="token punctuation">[</span>i<span class="token punctuation">]</span><span class="token punctuation">.</span>revents <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+			<span class="token function">memset</span><span class="token punctuation">(</span>buffer<span class="token punctuation">,</span><span class="token number">0</span><span class="token punctuation">,</span>MAXBUF<span class="token punctuation">)</span><span class="token punctuation">;</span>
+			<span class="token function">read</span><span class="token punctuation">(</span>pollfds<span class="token punctuation">[</span>i<span class="token punctuation">]</span><span class="token punctuation">.</span>fd<span class="token punctuation">,</span> buffer<span class="token punctuation">,</span> MAXBUF<span class="token punctuation">)</span><span class="token punctuation">;</span>
+			<span class="token function">puts</span><span class="token punctuation">(</span>buffer<span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token punctuation">}</span>
+	<span class="token punctuation">}</span>
+  <span class="token punctuation">}</span>
+</code></pre> 
+<p>poll相比于select的改进都基于其第一个参数的pollfd结构体展开，它和select一样，会将要监听事件的文件描述符集合从用户态拷贝一份到内核态中，让内核态来帮忙判断是否存在待读取数据。</p> 
+<p>poll函数也是阻塞函数，如果监听集合中没有文件描述符存在待读取数据 ，那么就会陷入阻塞；而当有待读取数据时内核依然会进行一个置位操作，但这里就与select函数不同了，内核置位置的是pollfd结构体中的revents字段，该字段初始值为0。因此我们在通过其进行状态判断过后需要将其置位回原样，以便pollfd数组的下次循环监听。</p> 
+<p>接下来我们看poll函数相对于select函数作了哪些改进以及不足的地方有哪些：</p> 
+<p>优点：</p> 
+<blockquote> 
+ <p>1、poll 相对于早期的 select 来说，没有文件描述符数量的限制（虽然实际系统中可能仍然有限制，但通常更高）。<br> 2、poll 提供了更灵活的事件集合。<br> 3、pollfd相比于FD_SET来说重用性要高，因为不必每回更新整个监听事件的文件描述符集合</p> 
+</blockquote> 
+<p>缺点：</p> 
+<blockquote> 
+ <p>因为poll的工作原理与select基本一样，所以剩下的缺点是一样的：<br> 1、将pollfd数组从用户态拷贝到内核态一样是巨大的时空开销，即使它比我们一开始选择每次循环判断进入内核方式的开销要小，但还有提升的空间<br> 2、在已经从poll函数返回的情况下，因不知道是哪个或者哪几个文件描述符产生读取数据而导致的循环遍历所带来的时间开销</p> 
+</blockquote> 
+<p>这基本就是poll的全部内容了。</p> 
+<h2><a id="epoll_200"></a>epoll</h2> 
+<p>因为epoll是最常用的IO多路复用技术，因此我将花最大的篇幅来解释。</p> 
+<h3><a id="epoll_202"></a>epoll的简单介绍</h3> 
+<p>epoll 是 Linux 系统中的一个 I/O 多路复用机制，它是 select 和 poll 的后续改进版本。相比于 select 和 poll，epoll 提供了更高的性能，特别是在处理大量并发连接时。epoll 的主要优势在于其基于事件驱动的设计，它只关注那些真正活跃的文件描述符，而不是像 select 和 poll 那样轮询所有文件描述符。</p> 
+<p>epoll 相关的函数主要有三个：epoll_create、epoll_ctl 和 epoll_wait。</p> 
+<h4><a id="epoll_create__epoll__207"></a>epoll_create: 创建一个新的 epoll 实例。</h4> 
+<p>函数原型如下：</p> 
+<pre><code class="prism language-c"><span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;sys/epoll.h&gt;</span>  </span>
+  
+<span class="token keyword">int</span> <span class="token function">epoll_create</span><span class="token punctuation">(</span><span class="token keyword">int</span> size<span class="token punctuation">)</span><span class="token punctuation">;</span>
+</code></pre> 
+<p>参数说明如下：</p> 
+<blockquote> 
+ <p>size 参数通常设置为需要监视的文件描述符的最大数量，但这个参数并不是严格的限制，只是内核初始化 epoll 实例时的一个提示（现在没啥用了，就随便填个数就行）。</p> 
+</blockquote> 
+<h4><a id="epoll_ctl__epoll__217"></a>epoll_ctl: 向 epoll 实例中添加、删除或修改文件描述符及其相关事件。</h4> 
+<p>函数原型如下：</p> 
+<pre><code class="prism language-c"><span class="token keyword">int</span> <span class="token function">epoll_ctl</span><span class="token punctuation">(</span><span class="token keyword">int</span> epfd<span class="token punctuation">,</span> <span class="token keyword">int</span> op<span class="token punctuation">,</span> <span class="token keyword">int</span> fd<span class="token punctuation">,</span> <span class="token keyword">struct</span> <span class="token class-name">epoll_event</span> <span class="token operator">*</span>event<span class="token punctuation">)</span><span class="token punctuation">;</span>
+</code></pre> 
+<p>参数说明如下：</p> 
+<blockquote> 
+ <p>epfd 是 epoll_create 返回的 epoll 实例的文件描述符。<br> op 表示操作类型，可以是 EPOLL_CTL_ADD（添加）、EPOLL_CTL_DEL（删除）或 EPOLL_CTL_MOD（修改）。<br> fd 是要添加、删除或修改的文件描述符。<br> event 是一个指向 epoll_event 结构体的指针，用于指定要关注的事件和回调函数。</p> 
+</blockquote> 
+<h4><a id="epoll_event__230"></a>epoll_event 结构体</h4> 
+<p>其定义如下：</p> 
+<pre><code class="prism language-c"><span class="token keyword">struct</span> <span class="token class-name">epoll_event</span> <span class="token punctuation">{<!-- --></span>  
+    __uint32_t events<span class="token punctuation">;</span>    <span class="token comment">/* Epoll events */</span>  
+    <span class="token class-name">epoll_data_t</span> data<span class="token punctuation">;</span>    <span class="token comment">/* User data variable */</span>  
+<span class="token punctuation">}</span><span class="token punctuation">;</span>
+</code></pre> 
+<p>其成员部分说明如下：</p> 
+<blockquote> 
+ <p>events 字段表示感兴趣的事件类型，如 EPOLLIN（数据可读）、EPOLLOUT（数据可写）、EPOLLERR（发生错误）等。<br> data 字段是一个联合体，可以用于存储用户自定义的数据，通常用于在事件发生时关联文件描述符和用户数据。</p> 
+</blockquote> 
+<h4><a id="epoll_data_t_242"></a>epoll_data_t联合体</h4> 
+<p>epoll_data_t 是一个联合体（union）类型，用于在 epoll 事件处理中存储与文件描述符相关的用户数据。这个联合体在 epoll_event 结构体中被用作 data 成员的类型，而 epoll_event 结构体用于描述 epoll 事件和相关的数据。</p> 
+<p>联合体（union）的特性是，在其所有成员中，任意时刻只允许一个成员拥有值，而其它成员的值是未定义的。这意味着，如果你给联合体的一个成员赋值，那么之前存储在其他成员中的值就会被覆盖。</p> 
+<p>其定义如下：</p> 
+<pre><code class="prism language-c"><span class="token keyword">typedef</span> <span class="token keyword">union</span> epoll_data <span class="token punctuation">{<!-- --></span>  
+    <span class="token keyword">void</span> <span class="token operator">*</span>ptr<span class="token punctuation">;</span>  
+    <span class="token keyword">int</span> fd<span class="token punctuation">;</span>  
+    <span class="token class-name">uint32_t</span> u32<span class="token punctuation">;</span>  
+    <span class="token class-name">uint64_t</span> u64<span class="token punctuation">;</span>  
+<span class="token punctuation">}</span> <span class="token class-name">epoll_data_t</span><span class="token punctuation">;</span>
+</code></pre> 
+<p>其成员部分说明如下：</p> 
+<blockquote> 
+ <p>ptr：一个指向 void 的指针，可以用来存储任意类型的指针。这通常用于指向与文件描述符相关的用户数据。<br> fd：一个 int 类型的成员，用来直接存储文件描述符本身。这是最常用的成员，因为很多时候我们需要知道哪个文件描述符触发了事件。<br> u32 和 u64：分别是 32 位和 64 位的无符号整数。这些成员可以用来存储用户自定义的整数值，但使用它们的情况相对较少。</p> 
+</blockquote> 
+<p>由于 epoll_data_t 是一个联合体，我们不能同时使用 ptr 和 fd 成员。如果我们想要通过 ptr 成员来存储用户数据，并且同时还需要访问文件描述符，那么我们需要放弃使用 epoll_data_t 中的 fd 成员，并在 ptr 指向的用户数据中包含文件描述符。这通常是通过定义一个包含文件描述符和其他用户数据的结构体，并将该结构体的指针存储在 ptr 中来实现的。</p> 
+<p>在 epoll 的使用中，当注册一个文件描述符来监听事件时，我们可以通过 epoll_event 结构体的 data 成员来设置 epoll_data_t 的值。然后，当事件发生时，epoll_wait 函数会填充 epoll_event 结构体中的 data 成员，以便我们能够检索我们之前设置的数据，并知道是哪个文件描述符触发了事件。</p> 
+<h4><a id="epoll_wait__epoll__266"></a>epoll_wait: 等待 epoll 实例中的文件描述符上的事件发生。</h4> 
+<p>函数原型如下：</p> 
+<pre><code class="prism language-c"><span class="token keyword">int</span> <span class="token function">epoll_wait</span><span class="token punctuation">(</span><span class="token keyword">int</span> epfd<span class="token punctuation">,</span> <span class="token keyword">struct</span> <span class="token class-name">epoll_event</span> <span class="token operator">*</span>events<span class="token punctuation">,</span> <span class="token keyword">int</span> maxevents<span class="token punctuation">,</span> <span class="token keyword">int</span> timeout<span class="token punctuation">)</span><span class="token punctuation">;</span>
+</code></pre> 
+<p>参数说明如下：</p> 
+<blockquote> 
+ <p>epfd 是 epoll 实例的文件描述符。<br> events 是一个指向 epoll_event 结构数组的指针，用于存储就绪的事件。<br> maxevents 指定 events 数组的大小。<br> timeout 指定等待事件的超时时间，单位为毫秒。</p> 
+</blockquote> 
+<h3><a id="epoll_278"></a>epoll的深入分析</h3> 
+<p>同样的，先来看一段代码：</p> 
+<pre><code class="prism language-c">  <span class="token keyword">struct</span> <span class="token class-name">epoll_event</span> events<span class="token punctuation">[</span><span class="token number">5</span><span class="token punctuation">]</span><span class="token punctuation">;</span>
+  <span class="token comment">//epoll_create的参数没有意义，随便填</span>
+  <span class="token keyword">int</span> epfd <span class="token operator">=</span> <span class="token function">epoll_create</span><span class="token punctuation">(</span><span class="token number">10</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+  <span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+  <span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+  <span class="token comment">//循环添加要监听事件的文件描述符进入监听集合events[5]</span>
+  <span class="token keyword">for</span> <span class="token punctuation">(</span>i<span class="token operator">=</span><span class="token number">0</span><span class="token punctuation">;</span>i<span class="token operator">&lt;</span><span class="token number">5</span><span class="token punctuation">;</span>i<span class="token operator">++</span><span class="token punctuation">)</span> 
+  <span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">static</span> <span class="token keyword">struct</span> <span class="token class-name">epoll_event</span> ev<span class="token punctuation">;</span>
+    <span class="token function">memset</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>client<span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">,</span> <span class="token keyword">sizeof</span> <span class="token punctuation">(</span>client<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    addrlen <span class="token operator">=</span> <span class="token keyword">sizeof</span><span class="token punctuation">(</span>client<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    ev<span class="token punctuation">.</span>data<span class="token punctuation">.</span>fd <span class="token operator">=</span> <span class="token function">accept</span><span class="token punctuation">(</span>sockfd<span class="token punctuation">,</span><span class="token punctuation">(</span><span class="token keyword">struct</span> <span class="token class-name">sockaddr</span><span class="token operator">*</span><span class="token punctuation">)</span><span class="token operator">&amp;</span>client<span class="token punctuation">,</span> <span class="token operator">&amp;</span>addrlen<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    ev<span class="token punctuation">.</span>events <span class="token operator">=</span> EPOLLIN<span class="token punctuation">;</span>
+    <span class="token function">epoll_ctl</span><span class="token punctuation">(</span>epfd<span class="token punctuation">,</span> EPOLL_CTL_ADD<span class="token punctuation">,</span> ev<span class="token punctuation">.</span>data<span class="token punctuation">.</span>fd<span class="token punctuation">,</span> <span class="token operator">&amp;</span>ev<span class="token punctuation">)</span><span class="token punctuation">;</span> 
+  <span class="token punctuation">}</span>
+  <span class="token comment">//处理数据，可以看出比之前的所有select和poll函数都要简洁  </span>
+  <span class="token keyword">while</span><span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">{<!-- --></span>
+  	<span class="token function">puts</span><span class="token punctuation">(</span><span class="token string">"round again"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+  	nfds <span class="token operator">=</span> <span class="token function">epoll_wait</span><span class="token punctuation">(</span>epfd<span class="token punctuation">,</span> events<span class="token punctuation">,</span> <span class="token number">5</span><span class="token punctuation">,</span> <span class="token number">10000</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	
+	<span class="token keyword">for</span><span class="token punctuation">(</span>i<span class="token operator">=</span><span class="token number">0</span><span class="token punctuation">;</span>i<span class="token operator">&lt;</span>nfds<span class="token punctuation">;</span>i<span class="token operator">++</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+			<span class="token function">memset</span><span class="token punctuation">(</span>buffer<span class="token punctuation">,</span><span class="token number">0</span><span class="token punctuation">,</span>MAXBUF<span class="token punctuation">)</span><span class="token punctuation">;</span>
+			<span class="token function">read</span><span class="token punctuation">(</span>events<span class="token punctuation">[</span>i<span class="token punctuation">]</span><span class="token punctuation">.</span>data<span class="token punctuation">.</span>fd<span class="token punctuation">,</span> buffer<span class="token punctuation">,</span> MAXBUF<span class="token punctuation">)</span><span class="token punctuation">;</span>
+			<span class="token function">puts</span><span class="token punctuation">(</span>buffer<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+  <span class="token punctuation">}</span>
+</code></pre> 
+<p>使用epoll完成IO多路复用分三步走，首先使用epoll_create()创建一个epfd，即epoll实例，它是第二步epoll_ctl()函数以及第三步epoll_wait()函数的第一个参数，我们可以将这个epoll实例理解成一块白板，稍后还会再提这个。然后第二步使用epoll_ctl()函数来配置需要监听事件的文件描述符，从上述代码中我们可以知道我们是在使用epoll_ctl()往epfd这块白板上添加受监听的文件描述符与其对应的监听事件：<br> <img src="https://images2.imgbox.com/2a/cf/UPEFhaAz_o.png" alt="在这里插入图片描述"><br> 至此epfd相当于装填完毕，然后来到第三步调用epoll_wait()函数，在这里epoll函数将与select和poll函数不同，epoll中监听集合也就是刚刚提到的epfd不会再被整个从用户态拷贝到内核态，而是用户态和内核态一起操作这块空间，是共享的：</p> 
+<p><img src="https://images2.imgbox.com/68/a3/fkymMdkC_o.png" alt="在这里插入图片描述"></p> 
+<p>内核态依然是帮助我们判断哪一个文件描述符是否有数据到来，但我们不再会有从用户态到内核态进行数据拷贝产生的时空开销了，这相对于之前的select和poll函数而言是一个巨大的性能提升。</p> 
+<p>在没有数据的时候（在水平触发Level Trigger下），epoll与之前的select和poll一样会被阻塞。</p> 
+<p>而有数据的时候，epoll同样会进行置位的操作，但它不像之前一样需要位图这样的数据结构来进行标记，在epoll底层是使用红黑树进行了一个重排的操作：</p> 
+<blockquote> 
+ <p>假如以上图为例，从左往右第四个文件描述符有数据到来，那么它就会被置位然后进行重排，在重排后将会排到整个epfd队列的首位，如果有多个文件描述符同时有数据到来的话，那么就多个文件描述符一起重排，同样会被排到epfd队列的前面依序排列。</p> 
+</blockquote> 
+<p>然后epoll_wait()函数便会返回，其返回值为被重排了位置的且有数据读取的文件描述符的数量，最后我们只要拿到这个数量然后依次循环遍历epfd队列前面相应数量的文件描述符（因为被重排到了epfd队列的首部嘛，所以只要遍历相应数量大小就可以处理完所有触发了数据读事件的文件描述符对象）即可完成数据的处理。</p> 
+<p>值得一提的是，被内核态置位了的文件描述符也不需要我们像之前那样进行重置了，系统会自动帮我们重置。</p> 
+<p>而且此时由于红黑树的高性能优势，循环的时间复杂度也从原来的O(n)降低成了O(1)。</p> 
+<p>epoll的优点总结如下：</p> 
+<blockquote> 
+ <p>高效的事件处理：epoll 采用基于事件驱动的设计，只关注活跃的文件描述符，而不是像 select 和 poll 那样轮询所有文件描述符。<br> 支持大量文件描述符：epoll 没有 select 和 poll 中文件描述符数量的限制，可以处理数十万甚至上百万的文件描述符。<br> 水平触发和边缘触发模式：epoll 支持水平触发（level-triggered）和边缘触发（edge-triggered）两种模式，可以根据不同的使用场景选择。<br> 内存使用效率：epoll 在内核中使用了红黑树来存储文件描述符，这使得文件描述符的查找、插入和删除操作都非常高效。</p> 
+</blockquote> 
+<p>缺点的话，等出了更牛逼的IO复用技术再说吧。</p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/496b531f816b1a50b2d6265a253b143a/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">【探索AI】十三 深度学习之第2周：深度神经网络（二）参数初始化策略</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/49b3705474b13ba65b5d64898f0e8b46/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">Redis主从复制和哨兵模式详解</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>抖音大型直播的画质优化实践 - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="抖音大型直播的画质优化实践" />
+<meta property="og:description" content="面临挑战 随着抖音内容生态的不断丰富，越来越多的大型赛事在抖音平台进行直播，世界杯/春晚/亚运会等各项赛事节目引来大量用户观看。卡塔尔世界杯期间，抖音提供的稳定高质直播画面为观众带来了完美的观赛体验，决赛的 PCU 高达 3700W&#43;。不同赛事节目涉及链路众多，且不同赛事之间存在差异，如何保障各链路的画质稳定并进一步提升画质，是一个巨大的挑战。
+如何应对挑战？ 画质优化链路 大型赛事直播涉及链路较长，不同赛事链路存在一些差异，整体可简化为下图流程，现场信号经过演播室的制作传输给 CDN 再进一步分发到用户侧。从画质角度来看整个链路可分为画质检测与画质优化两个部分，对于 CDN 之前的链路以画质监测为主，以发现问题/定位问题/推动对应链路人员解决问题为目的。画质优化在 CDN 和客户端两侧进行，下面的内容主要介绍画质优化部分。
+随着赛事录制技术的提升，越来越多的大型赛事都用上了4K HDR录制标准，画质清晰度也不断提升，随之而来的是更大的带宽压力。同时为了兼容消费端不同的看播设备和不同的带宽条件，服务端需要转出多种不同分辨率不同码率的版本供看播端选择，为了保障用户在不同带宽与设备下都能取得最佳的画质体验，我们做了大量的优化工作。团队通过自研的自适应 ToneMapping，视频降噪，ROI编码，视频插帧，BAS采样，端上超分等算法有效地提升了赛事画质。
+自适应ToneMapping： 目前大型赛事大都使用HDR（高动态范围）设备录制，团队对支持 HDR 看播的设备增加了 HDR 档位，同时提供了多种不同分辨率/帧率的档位。HDR 拍摄的片源拥有更广的色域，更大的动态范围。但对很多终端显示设备而言，并不支持 HDR 信号播放，所以通过 ToneMapping 算法将 HDR 信号转换为 SDR（标准动态范围）信号是十分必要的。
+相比 SDR 信号，HDR 信号拥有更广的色域和更大的动态范围，在转换到 SDR 信号的过程中不可避免会产生一些信息损失。常用的一些 ToneMapping 方法，不论是 Reinhard，Filmic 或者 Hable，其本质都是设计固定的映射曲线实现从 HDR信号 到 SDR信号的转换，同时尽量保持对 HDR 效果的还原。但直播赛事场景多变，且现场动态范围跨度极大，如世界杯比赛中场馆的灯光/草地/球员亮度差异明显，不同镜头跨度极大，而在亚运会游戏类比赛中的CG画面较为稳定，现有的ToneMaping算法无法在多变的场景中取得优秀稳定的效果，而手动调节每场比赛的转换参数也不现实。为了解决这一问题，团队提出了内容自适应 ToneMapping 算法，通过统计视频内容的实际光照情况动态地进行 ToneMapping，从而得到更优效果。
+左: 内容自适应 ToneMapping，右: Hable 算法
+在主观众测中优化之后的内容自适应 ToneMapping 算法遥遥领先于现有的TonaMpaping算法结果（对照任务为团队自研结果）
+BAS 采样： BAS（Byte AI Scaling）算法是字节自研的一种基于深度学习的图片/视频下采样算法，近些年来，深度学习驱动的视频处理算法已经广泛应用于各类点播、直播服务中，涵盖抖音、西瓜视频等诸多业务线。在实际的流媒体传输链路中，依据用户实际网络延迟、终端性能等因素，源流将通过自适应码率（Adaptive Bit-Rate）策略传输到终端设备，优化用户实际体验。其中，视频流往往会被采样到多个标准分辨率，例如蓝光（1080p）、高清（720p）、标清（480p）等。随着音视频行业和摄影设备的发展，高分辨率的视频源占比日益增多，大部分视频需要在服务端进行降采样来配合自适应码率策略，因此降采样算法的优化也是提升QoE的关键。在过去的业界实践中，视频处理算法往往专注于提高分辨率（如超分算法）或者保持分辨率（如降噪算法）的处理范式，而几乎忽视了对降低分辨率方法的研究。不同于固定算子的bicubic等降采样算法，BAS算法基于深度学习使用高精度数据训练模型，缓解传统方法带来的频域混叠与频域截断问题，降低锯齿感、减少细节丢失。如下图所示，对于4K的超高清图源降采样到480p分辨率的任务，左图为BAS算法处理结果，右图为传统bicubic算法处理结果。可以明显看到，BAS算法处理结果中缓解了边缘锯齿（左下），消除了摩尔纹（右下），并且灯牌、观众席等方面的细节纹理更加清晰，视觉观感更好。
+左图为BAS采样结果，右图为Bicubic采样结果
+在与bicubic算法的定量对比中，BAS基于PSNR指标取得了-20.32%的BD-Rate收益，意味着相同重建误差水平下可以节省20%以上码率，而同等码率下则可以提升画质水平。而对于更符合人眼感知特性的VMAF指标，BAS同样取得了-20.89%的BD-Rate收益。
+在常用的编码条件下，BAS算法在UGC视频上能做到在降低6.12%平均码率的同时，提升多项关键主客观画质指标，既可以降低一部分传输带宽，也可以带来画质上的提升，取得成本和体验上的双赢。
+视频插帧： 抖音大型赛事实践中会遇到各种不同的录制标准，其中也存在1080P 25fps的录制标准，现在消费者已经习惯高帧率的流畅视频体验，对于低帧率的视频会明显感受到画面的流畅度降低，影响用户观看体验。针对低帧率场景，我们使用了智能插帧技术，通过对前后帧的内容进行光流估计，根据光流信息将前后帧像素都转换到中间帧，然后进行整合，生成中间帧，提升视频帧率，减少观看时的卡顿感。而针对电竞类对帧率要求较高的场景，我们做了以下的额外优化。" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/b50f6f640282308bcace9adf2a6ed5b7/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-11-03T10:30:22+08:00" />
+<meta property="article:modified_time" content="2023-11-03T10:30:22+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">抖音大型直播的画质优化实践</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <div id="js_content"> 
+ <h3>面临挑战</h3> 
+ <p>随着抖音内容生态的不断丰富，越来越多的大型赛事在抖音平台进行直播，世界杯/春晚/亚运会等各项赛事节目引来大量用户观看。卡塔尔世界杯期间，抖音提供的稳定高质直播画面为观众带来了完美的观赛体验，决赛的 PCU 高达 3700W+。不同赛事节目涉及链路众多，且不同赛事之间存在差异，如何保障各链路的画质稳定并进一步提升画质，是一个巨大的挑战。</p> 
+ <h3>如何应对挑战？</h3> 
+ <h4>画质优化链路</h4> 
+ <p>大型赛事直播涉及链路较长，不同赛事链路存在一些差异，整体可简化为下图流程，现场信号经过演播室的制作传输给 CDN 再进一步分发到用户侧。从画质角度来看整个链路可分为画质检测与画质优化两个部分，对于 CDN 之前的链路以画质监测为主，以发现问题/定位问题/推动对应链路人员解决问题为目的。画质优化在 CDN 和客户端两侧进行，下面的内容主要介绍画质优化部分。</p> 
+ <img src="https://images2.imgbox.com/70/c8/0rIX5XH7_o.png" alt="ac2703d341f0d10a18f86f1ad5f92833.png"> 
+ <p>随着赛事录制技术的提升，越来越多的大型赛事都用上了4K HDR录制标准，画质清晰度也不断提升，随之而来的是更大的带宽压力。同时为了兼容消费端不同的看播设备和不同的带宽条件，服务端需要转出多种不同分辨率不同码率的版本供看播端选择，为了保障用户在不同带宽与设备下都能取得最佳的画质体验，我们做了大量的优化工作。团队通过自研的自适应 ToneMapping，视频降噪，ROI编码，视频插帧，BAS采样，端上超分等算法有效地提升了赛事画质。</p> 
+ <p><strong>自适应ToneMapping：</strong> 目前大型赛事大都使用HDR（高动态范围）设备录制，团队对支持 HDR 看播的设备增加了 HDR 档位，同时提供了多种不同分辨率/帧率的档位。HDR 拍摄的片源拥有更广的色域，更大的动态范围。但对很多终端显示设备而言，并不支持 HDR 信号播放，所以通过 ToneMapping 算法将 HDR 信号转换为 SDR（标准动态范围）信号是十分必要的。</p> 
+ <img src="https://images2.imgbox.com/7a/55/SZE0owjj_o.png" alt="cd9c238f45d83813e0b41ebf9cf39312.png"> 
+ <p>相比 SDR 信号，HDR 信号拥有更广的色域和更大的动态范围，在转换到 SDR 信号的过程中不可避免会产生一些信息损失。常用的一些 ToneMapping 方法，不论是 Reinhard，Filmic 或者 Hable，其本质都是设计固定的映射曲线实现从 HDR信号 到 SDR信号的转换，同时尽量保持对 HDR 效果的还原。但直播赛事场景多变，且现场动态范围跨度极大，如世界杯比赛中场馆的灯光/草地/球员亮度差异明显，不同镜头跨度极大，而在亚运会游戏类比赛中的CG画面较为稳定，现有的ToneMaping算法无法在多变的场景中取得优秀稳定的效果，而手动调节每场比赛的转换参数也不现实。为了解决这一问题，团队提出了内容自适应 ToneMapping 算法，通过统计视频内容的实际光照情况动态地进行 ToneMapping，从而得到更优效果。</p> 
+ <blockquote> 
+  <p>左: 内容自适应 ToneMapping，右: Hable 算法</p> 
+ </blockquote> 
+ <img src="https://images2.imgbox.com/f1/87/AqBWtKKO_o.png" alt="66ea1fa307b302f1a34b79d2f0e3ccfd.png"> 
+ <img src="https://images2.imgbox.com/8a/18/M1EZx37y_o.png" alt="96f32696110b32e2a57353ed0afb3f9d.png"> 
+ <p>在主观众测中优化之后的内容自适应 ToneMapping 算法遥遥领先于现有的TonaMpaping算法结果（对照任务为团队自研结果）</p> 
+ <img src="https://images2.imgbox.com/43/8e/FIuehoER_o.png" alt="c3e97eb66e04db405737d6c4df1a46d6.png"> 
+ <p><strong>BAS 采样：</strong> BAS（Byte AI Scaling）算法是字节自研的一种基于深度学习的图片/视频下采样算法，近些年来，深度学习驱动的视频处理算法已经广泛应用于各类点播、直播服务中，涵盖抖音、西瓜视频等诸多业务线。在实际的流媒体传输链路中，依据用户实际网络延迟、终端性能等因素，源流将通过自适应码率（Adaptive Bit-Rate）策略传输到终端设备，优化用户实际体验。其中，视频流往往会被采样到多个标准分辨率，例如蓝光（1080p）、高清（720p）、标清（480p）等。随着音视频行业和摄影设备的发展，高分辨率的视频源占比日益增多，大部分视频需要在服务端进行降采样来配合自适应码率策略，因此降采样算法的优化也是提升QoE的关键。在过去的业界实践中，视频处理算法往往专注于提高分辨率（如超分算法）或者保持分辨率（如降噪算法）的处理范式，而几乎忽视了对降低分辨率方法的研究。不同于固定算子的bicubic等降采样算法，BAS算法基于深度学习使用高精度数据训练模型，缓解传统方法带来的频域混叠与频域截断问题，降低锯齿感、减少细节丢失。如下图所示，对于4K的超高清图源降采样到480p分辨率的任务，左图为BAS算法处理结果，右图为传统bicubic算法处理结果。可以明显看到，BAS算法处理结果中缓解了边缘锯齿（左下），消除了摩尔纹（右下），并且灯牌、观众席等方面的细节纹理更加清晰，视觉观感更好。</p> 
+ <blockquote> 
+  <p>左图为BAS采样结果，右图为Bicubic采样结果</p> 
+ </blockquote> 
+ <img src="https://images2.imgbox.com/24/17/1m47KCYt_o.png" alt="48be67076a2122369ead85a80a9cdcd6.png"> 
+ <p>在与bicubic算法的定量对比中，BAS基于PSNR指标取得了-20.32%的BD-Rate收益，意味着相同重建误差水平下可以节省20%以上码率，而同等码率下则可以提升画质水平。而对于更符合人眼感知特性的VMAF指标，BAS同样取得了-20.89%的BD-Rate收益。</p> 
+ <img src="https://images2.imgbox.com/3b/91/g1ppGjON_o.png" alt="fecf6b47a4401478dd6e0ffe571f4ec3.png"> 
+ <p>在常用的编码条件下，BAS算法在UGC视频上能做到在降低6.12%平均码率的同时，提升多项关键主客观画质指标，既可以降低一部分传输带宽，也可以带来画质上的提升，取得成本和体验上的双赢。</p> 
+ <p style="text-align:center;"><img src="https://images2.imgbox.com/99/36/w45XayoF_o.png" alt="51db69ca13806d229abc620f8f421132.png"></p> 
+ <p><strong>视频插帧：</strong> 抖音大型赛事实践中会遇到各种不同的录制标准，其中也存在1080P 25fps的录制标准，现在消费者已经习惯高帧率的流畅视频体验，对于低帧率的视频会明显感受到画面的流畅度降低，影响用户观看体验。针对低帧率场景，我们使用了智能插帧技术，通过对前后帧的内容进行光流估计，根据光流信息将前后帧像素都转换到中间帧，然后进行整合，生成中间帧，提升视频帧率，减少观看时的卡顿感。而针对电竞类对帧率要求较高的场景，我们做了以下的额外优化。</p> 
+ <img src="https://images2.imgbox.com/cd/1b/irBYtSo2_o.png" alt="c526af172db6a3ba1adcd5148ad7e5d3.png"> 
+ <p>faster光流模块和faster修正模块使用partial conv代替普通卷积，能在保持效果的同时减少卷积运算；在计算光流时，采用内容自适应下采样去对输入进行下采样，用于计算光流、残差和遮挡掩码， 再将其上采回原分辨率，用于原始输入的warp和整合 ，由于光流模块和修正模块这两个运算较多的模块接收的是较小的分辨率，从而达到进一步减少计算量的效果；工程上，团队通过算子融合、半精度的方式，减少IO和浮点运算，相比工程化前加速1倍多。同时，通过多GPU部署的方式拓展了智能插帧的能力，使得在更高分辨率（4k）的场景下能实施部署。另一方面，电竞场景中，比如王者荣耀，每个英雄上面都会有选手的名字，而这些文字较小，文字会随着英雄的复杂运动而运动，也就是会导致出现小文字的复杂运动，智能插帧通常会在这些复杂运动的小文字上因为光流估计不够准确而导致插出来的帧文字的位置不够准确，导致伪像出现，我们在训练过程中加入更多的随意移动或者静止的较小文字，使得模型能够在训练过程中更多地注意处理小文字的复杂运动，从而达到更好的插帧效果，如下图所示，左边为优化后的插帧结果。</p> 
+ <blockquote> 
+  <p>左边为优化后结果，右边为优化前结果</p> 
+ </blockquote> 
+ <img src="https://images2.imgbox.com/aa/e7/8QQZ0NGD_o.png" alt="6721088f36d6af6e07df8f2ce11d7809.png"> 
+ <p><strong>ROI 编码：</strong> 为了兼顾视频码率和主观画质，团队使用了基于 LSTM（长短期记忆网络）的时域 ROI 技术，通过人眼显著性区域检测和编码相结合的方式，让码率在画面上的分配更加合理。除了模型设计之外，ROI算法中另一大难点是saliency(显著性物体检测)数据的获取，通用的saliency数据集在大型赛事中的表现并不理想。针对这一问题，团队收集制作了自己的专用数据集，并且对一些大型赛事做了专用数据集，例如针对世界杯赛事，团队专门制作了足球场景的 saliency 数据集，通过眼动仪追踪球迷观看球赛时的关注区域得到足球比赛的专用 saliency 数据集，从而极大增加了模型的准确性。针对足球场景中显著性物体较多，显著性区域分散的特点，团队对检测模型进行了专门的优化，在保证检测速度的前提下，提高了模型的召回率和不同场景的鲁棒性，从而实现更优的主观质量。</p> 
+ <blockquote> 
+  <p>注：红色框内表示 ROI 区域，左边为通用方案结果，右边为优化结果</p> 
+ </blockquote> 
+ <img src="https://images2.imgbox.com/97/b2/xuzKkEtr_o.png" alt="5d335881db7db4d99aa0e5d828bf4de4.png"> 
+ <img src="https://images2.imgbox.com/dc/17/ciZAyRxW_o.png" alt="ef8f28dad645bd8c76a40eea1bb71183.png"> 
+ <p>同时团队使用视频降噪算法，根据视频信息对其进行空域、时域噪声的去除，将带有噪声的视频处理成干净、没有噪声的视频。由于去除了视频的噪声，在提升视频质量的基础上同时降低了传输的码率。由于用户侧网速的限制，端上存在多个档位，当看播端网速较慢时，可能会切换到 480P/720P 等低分辨档位，此时会触发端上超分算法提升画面清晰度。超分辨率技术指的是，基于机器学习/深度学习方法，根据视频信息对其进行空域、时域建模重构出缺失的细节，将低分辨率的视频重建出高分辨率视频的技术。这样即使是在低分辨档位也能体验到更清晰的画质。</p> 
+ <blockquote> 
+  <p>左：视频降噪前，右：视频降噪后</p> 
+ </blockquote> 
+ <img src="https://images2.imgbox.com/5e/ce/edx1kx9z_o.png" alt="cafa26630eea4f92d8b1a39d2466e106.png"> 
+ <p>除此之外团队还提供大分辨率、高帧率、广色域，并使用色彩增强、自适应锐化等多种画质增强技术，呈现更加沉浸感的超高清画面。</p> 
+ <blockquote> 
+  <p>左：未过端上超分，右：经过端上超分</p> 
+ </blockquote> 
+ <img src="https://images2.imgbox.com/29/ae/hY5jRLPG_o.png" alt="bb068718232cc593222b65542a296bf4.png"> 
+</div>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/1a30a069b8d171ae731b28d9a30cc6b2/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">京东平台3个热门API接口的分享【附代码实例】</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/0edc2be317622442ae154a4b468c039d/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">快递鸟荣获全球电子商务创业创新大赛总决赛一等奖</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

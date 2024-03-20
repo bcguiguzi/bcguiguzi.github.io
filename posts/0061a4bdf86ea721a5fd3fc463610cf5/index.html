@@ -1,0 +1,548 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>wifi 概率性自动断线（IpReachabilityMonitor） - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="wifi 概率性自动断线（IpReachabilityMonitor）" />
+<meta property="og:description" content="描述：该文主要介绍基于Android 7.0 的IpReachabilityMonitor机制，有时候会遇到用户反馈wifi 会概率性自动断线，最后发现是系统有开启IpReachabilityMonitor 机制，可能是在干扰严重环境下或相对弱信号下让系统误判导致下断线。
+如下只要针对IpReachabilityMonitor机制描述说明
+IpReachabilityMonitor功能描述及作用 a. IpReachabilityMonitor的代码实现逻辑不关心为什么一个neighbour网络变为不可达。相反，他主要反映在内核层面中每一个neighbour网络的IP可达性概念或状态。我们知道这个IP可达性状态对于正常网络连接来说是关键重要的。因此IpReachabilityMonitor通常仅是“信使”：它警告neighbours网络已经被内核kernel视为不可达。
+b.IpReachabilityMonitor 机制是在Android 7.0中新增,主要是要确认gateway or DNS server是否可以为unreachable,此机制会 定期(大约18s~22s timer到就会做一次)trigger 上层发送arp req,若发送三笔arp req未收到对应arp rsp IpReachabilityMonitor 会fail,trigger上层下断线
+c. 下断线条件:arp req三笔都发出去后,第三笔隔一秒后还是没有收到arp rsp就trigger断线, driver log可以看到明确的1s发送 一个arp req, 但送到air时间未必会是一秒就tx 1笔(可以看sniffer log）
+d.Android是透过 Linux netlink socket机制去获得 kernel neighbor 信息,(NETLINK_ROUTE 的 neighbor , 利用 kernel ARP cache) :https://blog.csdn.net/qy532846454/article/details/6806197, 所以当ARP table 没有该信息时, 应该会用 broadcast 方式.在干扰较大的环境下, 可以调整参数来增加发 ARP 的次数：http://man7.org/linux/man-pages/man7/arp.7.html
+如何规避因IpReachabilityMonitor导致系统下断线 1.在系统frameworks\base\core\res\res\values\config.xml中关闭“IpReachabilityMonitor”,
+参考如下：
+也可参考链接：https://github.com/ngoquang2708/android_device_samsung_vivalto3gvn/commit/773986dabc49a8cb550be657f9f78f61994109f8
+2. 可以通过下指令调整参数来增加 ARP req发送次数, cmd如下(关于mcast_solicit和ucast_solicit) #echo 10 &gt; /proc/sys/net/ipv4/neigh/wlan0/mcast_solicit #echo 10 &gt; /proc/sys/net/ipv4/neigh/wlan0/ucast_solicit" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/0061a4bdf86ea721a5fd3fc463610cf5/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2019-11-26T11:03:45+08:00" />
+<meta property="article:modified_time" content="2019-11-26T11:03:45+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">wifi 概率性自动断线（IpReachabilityMonitor）</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p>描述：该文主要介绍基于Android 7.0 的IpReachabilityMonitor机制，有时候会遇到用户反馈wifi 会概率性自动断线，最后发现是系统有开启IpReachabilityMonitor 机制，可能是在干扰严重环境下或相对弱信号下让系统误判导致下断线。</p> 
+<p>如下只要针对IpReachabilityMonitor机制描述说明</p> 
+<ul><li> <h3>IpReachabilityMonitor功能描述及作用</h3> </li></ul> 
+<p style="text-indent:33px;">    a. IpReachabilityMonitor的代码实现逻辑不关心为什么一个neighbour网络变为不可达。相反，他主要反映在内核层面中每一个neighbour网络的IP可达性概念或状态。我们知道这个IP可达性状态对于正常网络连接来说是关键重要的。因此IpReachabilityMonitor通常仅是“信使”：它警告neighbours网络已经被内核kernel视为不可达。</p> 
+<p style="text-indent:33px;">   b.IpReachabilityMonitor 机制是在Android 7.0中新增,主要是要确认gateway or DNS server是否可以为unreachable,此机制会  定期(大约18s~22s timer到就会做一次)trigger 上层发送arp req,若发送三笔arp req未收到对应arp rsp IpReachabilityMonitor  会fail,trigger上层下断线</p> 
+<p> </p> 
+<p style="text-indent:33px;">    c. 下断线条件:arp req三笔都发出去后,第三笔隔一秒后还是没有收到arp rsp就trigger断线, driver log可以看到明确的1s发送    一个arp req,   但送到air时间未必会是一秒就tx 1笔(可以看sniffer log）</p> 
+<p style="text-indent:33px;">    d.Android是透过 Linux netlink socket机制去获得 kernel neighbor 信息,(NETLINK_ROUTE 的 neighbor , 利用 kernel ARP    cache) :<a href="https://blog.csdn.net/qy532846454/article/details/6806197">https://blog.csdn.net/qy532846454/article/details/6806197</a>, 所以当ARP table 没有该信息时, 应该会用 broadcast 方式.在干扰较大的环境下, 可以调整参数来增加发 ARP 的次数：<a href="http://man7.org/linux/man-pages/man7/arp.7.html" rel="nofollow">http://man7.org/linux/man-pages/man7/arp.7.html</a></p> 
+<ul><li> <h3>如何规避因IpReachabilityMonitor导致系统下断线</h3> </li></ul> 
+<p>       1.在系统frameworks\base\core\res\res\values\config.xml中关闭“IpReachabilityMonitor”,</p> 
+<p>参考如下：<br>         <img alt="" class="has" height="222" src="https://images2.imgbox.com/79/0e/0yOG9hIX_o.png" width="615"></p> 
+<p>也可参考链接：<a href="https://github.com/ngoquang2708/android_device_samsung_vivalto3gvn/commit/773986dabc49a8cb550be657f9f78f61994109f8">https://github.com/ngoquang2708/android_device_samsung_vivalto3gvn/commit/773986dabc49a8cb550be657f9f78f61994109f8</a></p> 
+<p>    2. 可以通过下指令调整参数来增加 ARP  req发送次数, cmd如下(关于mcast_solicit和ucast_solicit)               </p> 
+<p>           #echo 10 &gt; /proc/sys/net/ipv4/neigh/wlan0/mcast_solicit </p> 
+<p>           #echo 10 &gt; /proc/sys/net/ipv4/neigh/wlan0/ucast_solicit</p> 
+<p>     可参考：<a href="http://man7.org/linux/man-pages/man7/arp.7.html" rel="nofollow">http://man7.org/linux/man-pages/man7/arp.7.html</a></p> 
+<p> </p> 
+<p> </p> 
+<p> </p> 
+<ul><li> <h3>介绍基于Android 7.0 的IpReachabilityMonitor机制</h3> </li></ul> 
+<p><strong>     1. IpReachabilityMonitor简介</strong></p> 
+<pre class="has"><code>* Monitors on-link IP reachability and notifies callers whenever any on-link addresses of interest appear to have become unresponsive.
+//监视链路IP的可达性；无论任何时候，一旦所关注的链路地址变的不响应时，就会通知调用者。
+
+*This code does not concern itself with "why" a neighbour might have become unreachable. Instead, it primarily reacts to the kernel's notion of IP reachability for each of the neighbours we know to be critically important to normal network connectivity. As such, it is often "just the messenger":the neighbours about which it warns are already deemed by the kernel to have become unreachable.
+
+//IpReachabilityMonitor的代码实现逻辑不关心为什么一个neighbour网络变为不可达。相反，他主要反映在内核层面中每一个neighbour网络的IP可达性概念或状态。我们知道这个IP可达性状态对于正常网络连接来说是关键重要的。因此，IpReachabilityMonitor通常仅是“信使”：它警告neighbours网络已经被内核kernel视为不可达。
+</code></pre> 
+<p><strong> 2. IpReachabilityMonitor工作方式</strong></p> 
+<p>  </p> 
+<pre class="has"><code>1). The "on-link neighbours of interest" found in a given LinkProperties instance are added to a "watch list" via #updateLinkProperties().This usually means all default gateways and any on-link DNS servers.
+
+//在给定的LinkProperties实例中找到关注的链路neighbours网络，这些neighbours网络被通过updateLinkProperties()方法添加到一个"watch list"中。这通常意味着所有默认网关和链路DNS服务器。
+</code></pre> 
+<p> </p> 
+<pre class="has"><code>2). We listen continuously for netlink neighbour messages (RTM_NEWNEIGH,RTM_DELNEIGH), watching only for neighbours in the watch list.
+
+//我们连续不断地监听netlink消息（RTM_NEWNEIGH,RTM_DELNEIGH），仅仅关注在watch list中的neighbours网络。
+
+   - A neighbour going into NUD_REACHABLE, NUD_STALE, NUD_DELAY, and even NUD_PROBE is perfectly normal; we merely record the new state.
+   //一个neighbour网络进入NUD_REACHABLE, NUD_STALE, NUD_DELAY和NUD_PROBE状态，均是完全正常现象，我们只是记录最新的状态。
+
+  - A neighbour's entry may be deleted (RTM_DELNEIGH), for example due to garbage collection.  This is not necessarily of immediate concern; we record the neighbour as moving to NUD_NONE.
+  //一个neighbour条目可能被删除（RTM_DELNEIGH），例如由于垃圾回收。这个没有必要进行立即关联。我们记录被搬移到NUD_NONE状态的neighbour网络。
+
+  - A neighbour transitioning to NUD_FAILED (for any reason) is  critically important and is handled as described below in #4.
+  //一个neighbour网络被转移到NUD_FAILED（任何原因）是极其重要的，这个相应的操作将会在下面#4描述。
+</code></pre> 
+<pre class="has"><code>3). All on-link neighbours in the watch list can be forcibly "probed" by calling #probeAll(). This should be called whenever it is important to verify that critical neighbours on the link are still reachable, e.g. when roaming between BSSIDs.
+//可以通过调用probeAll()方法来强制执行probed所有在watch list 中的链路neighbours网络。不管什么时候，对于想验证链路上关键neighbour网络依然可达，这个方法是重要的，应该被调用，比如当在不同的BSSID之间Roaming的时候。
+
+  - The kernel will send unicast ARP requests for IPv4 neighbours and unicast NS packets for IPv6 neighbours.  The expected replies will likely be unicast.
+ //内核kernel将为IPv4 neighbour 网络发送单播ARP请求和为IPv6 neighbour网络发送单播NS数据包。预期的答复可能是单播。
+
+- The forced probing is done holding a wakelock. The kernel may,however, initiate probing of a neighbor on its own, i.e. whenever a neighbour has expired from NUD_DELAY.
+ //强制probing 必须持有一个wakelock才可以执行。然而，内核kernel也许引发自己的一个neighbor
+网络的probing，比如一个neighbour网络已经过期了（在进入NUD_DELAY状态后过期）。
+
+- The kernel sends:
+   /proc/sys/net/ipv{4,6}/neigh/&lt;ifname&gt;/ucast_solicit number of probes (usually 3)every:
+   /proc/sys/net/ipv{4,6}/neigh/&lt;ifname&gt;/retrans_time_ms number of milliseconds (usually 1000ms). 
+  This normally results in 3 unicast packets, 1 per second.
+  //内核Kernel每&amp;2秒发送&amp;1次Probe 单播请求。通常结果是每1秒发送3次单播请求。
+
+ - If no response is received to any of the probe packets, the kernel marks the neighbour as being in state NUD_FAILED, and the listening process in #2 will learn of it.
+ //如果对于所有的Probe 请求，都没有接受到响应，内核kernel会将neighbour网络标记为NUD_FAILED状态，在#2中描述的监听进程将会学习它。
+</code></pre> 
+<pre class="has"><code>4). We call the supplied Callback#notifyLost() function if the loss of a neighbour in NUD_FAILED would cause IPv4 or IPv6 configuration to become incomplete (a loss of provisioning).
+//如果处于NUD_FAILED状态的neighbour网络的丢失将会导致Ipv4 或者Ipv6配置变得不完整(配置丢失)，我们将会调用提供的Callback#notifyLost()函数。
+
+- For example, losing all our IPv4 on-link DNS servers (or losing our only IPv6 default gateway) constitutes a loss of IPv4 (IPv6) provisioning; Callback#notifyLost() would be called.
+//比如丢失所有IPv4链路DNS服务器（或者丢失仅有的Ipv6默认网关）会构成Ipv4(Ipv6)配置丢失。
+Callback#notifyLost()函数将会被调用。
+
+- Since it can be non-trivial to reacquire certain IP provisioning state it may be best for the link to disconnect completely and reconnect afresh.
+//因为重新获取特定的IP配置状态是非常重要的。最好的方式是完全断开连接，然后进行重连。
+
+</code></pre> 
+<p><strong>3. IpReachabilityMonitor实现</strong></p> 
+<p> （1).在给定的LinkProperties实例中找到关注的链路neighbours网络，这些neighbours网络被通过updateLinkProperties()方法添加到一个"watch list"中。这通常意味着所有默认网关和链路DNS服务器。</p> 
+<pre class="has"><code class="language-java"> public void updateLinkProperties(LinkProperties lp) {
+        if (!mInterfaceName.equals(lp.getInterfaceName())) {
+            // TODO: figure out whether / how to cope with interface changes.
+            Log.wtf(TAG, "requested LinkProperties interface '" + lp.getInterfaceName() +
+                    "' does not match: " + mInterfaceName);
+            return;
+        }
+
+        synchronized (mLock) {
+            mLinkProperties = new LinkProperties(lp);
+            Map&lt;InetAddress, Short&gt; newIpWatchList = new HashMap&lt;&gt;();
+
+            final List&lt;RouteInfo&gt; routes = mLinkProperties.getRoutes();
+          //将处于链接状态的默认网关加入IpWatchList
+            for (RouteInfo route : routes) {
+                if (route.hasGateway()) {
+                    InetAddress gw = route.getGateway();
+                    if (isOnLink(routes, gw)) {
+                        newIpWatchList.put(gw, getNeighborStateLocked(gw));
+                    }
+                }
+            }
+            //将处于链接状态的DNS服务器加入IpWatchList
+            for (InetAddress nameserver : lp.getDnsServers()) {
+                if (isOnLink(routes, nameserver)) {
+                    newIpWatchList.put(nameserver, getNeighborStateLocked(nameserver));
+                }
+            }
+
+            mIpWatchList = newIpWatchList;
+            mIpWatchListVersion++;
+        }
+      
+</code></pre> 
+<p>(2).我们连续不断地监听netlink消息（RTM_NEWNEIGH,RTM_DELNEIGH），仅仅关注在watch list中的neighbours网络。</p> 
+<pre class="has"><code class="language-java">   public IpReachabilityMonitor(Context context, String ifName, Callback callback,
+            MultinetworkPolicyTracker tracker) throws IllegalArgumentException {
+        mInterfaceName = ifName;
+        int ifIndex = -1;
+        try {
+            NetworkInterface netIf = NetworkInterface.getByName(ifName);
+            mInterfaceIndex = netIf.getIndex();
+        } catch (SocketException | NullPointerException e) {
+            throw new IllegalArgumentException("invalid interface '" + ifName + "': ", e);
+        }
+        mWakeLock = ((PowerManager) context.getSystemService(Context.POWER_SERVICE)).newWakeLock(
+                PowerManager.PARTIAL_WAKE_LOCK, TAG + "." + mInterfaceName);
+        mCallback = callback;
+        mMultinetworkPolicyTracker = tracker;
+    //NetlinkSocketObserver类是用来建立Socket连接，不断地接受来自kernel的netlink消息，并并解析消息，判读是否加入IpWatchList中。具体信息可以参考下面NetlinkSocketObserver部分解析
+        mNetlinkSocketObserver = new NetlinkSocketObserver();
+        mObserverThread = new Thread(mNetlinkSocketObserver);
+        mObserverThread.start();
+    }
+</code></pre> 
+<p>（3）可以通过调用probeAll()方法来强制执行probed所有在watch list中的链路neighbours网络。不管什么时候，对于想验证链路上关键neighbour网络依然可达，这个方法是重要的，应该被调用，比如当在不同的BSSID之间Roaming的时候</p> 
+<pre class="has"><code class="language-java">//将IpWatchList中Key集合取出来，然后通过调用probeNeighbor(int ifIndex, InetAddress ip)验证相应的neighbour是否可达。 
+  public void probeAll() {
+        //将IpWatchList中Key集合赋值给ipProbeList
+        final List&lt;InetAddress&gt; ipProbeList;
+        synchronized (mLock) {
+            ipProbeList = new ArrayList&lt;&gt;(mIpWatchList.keySet());
+        }
+
+        if (!ipProbeList.isEmpty() &amp;&amp; mRunning) {
+            // Keep the CPU awake long enough to allow all ARP/ND
+            // probes a reasonable chance at success. See b/23197666.
+            //
+            // The wakelock we use is (by default) refcounted, and this version
+            // of acquire(timeout) queues a release message to keep acquisitions
+            // and releases balanced.
+            mWakeLock.acquire(getProbeWakeLockDuration());
+        }
+
+        for (InetAddress target : ipProbeList) {
+            if (!mRunning) {
+                break;
+            }
+            final int returnValue = probeNeighbor(mInterfaceIndex, target);
+            logEvent(IpReachabilityEvent.PROBE, returnValue);
+        }
+        mLastProbeTimeMs = SystemClock.elapsedRealtime();
+    }</code></pre> 
+<p>private static int probeNeighbor(int ifIndex, InetAddress ip)：</p> 
+<p>对于具体接口Index号上的给定Ip地址，使内核Kernel执行neighbour网络可达性检测（IPv4 ARP或 IPv6 ND）。</p> 
+<p>如果网络可达性检测请求成功传输到内核kernel，返回0; 其他返回一个非0的错误码。</p> 
+<pre class="has"><code class="language-java">    /**
+     * Make the kernel perform neighbor reachability detection (IPv4 ARP or IPv6 ND)
+     * for the given IP address on the specified interface index.
+     *
+     * @return 0 if the request was successfully passed to the kernel; otherwise return
+     *         a non-zero error code.
+     */
+    private static int probeNeighbor(int ifIndex, InetAddress ip){
+        final String msgSnippet = "probing ip=" + ip.getHostAddress() + "%" + ifIndex;
+        if (DBG) { Log.d(TAG, msgSnippet); }
+         //将ip地址和相应的接口号ifIndex封装到PROBE消息中
+        final byte[] msg = RtNetlinkNeighborMessage.newNewNeighborMessage(
+                1, ip, StructNdMsg.NUD_PROBE, ifIndex, null);
+
+        int errno = -OsConstants.EPROTO;
+     //创建NetlinkSocket，成功后进行连接kernel, 然后发送消息；最后接收消息，并通过Netlink对消息进行解析。
+        try (NetlinkSocket nlSocket = new NetlinkSocket(OsConstants.NETLINK_ROUTE)) {
+            final long IO_TIMEOUT = 300L;
+            nlSocket.connectToKernel();
+            nlSocket.sendMessage(msg, 0, msg.length, IO_TIMEOUT);
+            final ByteBuffer bytes = nlSocket.recvMessage(IO_TIMEOUT);
+            // recvMessage() guaranteed to not return null if it did not throw.
+            final NetlinkMessage response = NetlinkMessage.parse(bytes);
+            //后面依据不同的response 返回不同的值。
+            if (response != null &amp;&amp; response instanceof NetlinkErrorMessage &amp;&amp;
+                    (((NetlinkErrorMessage) response).getNlMsgError() != null)) {
+                errno = ((NetlinkErrorMessage) response).getNlMsgError().error;
+                if (errno != 0) {
+                    // TODO: consider ignoring EINVAL (-22), which appears to be
+                    // normal when probing a neighbor for which the kernel does
+                    // not already have / no longer has a link layer address.
+                    Log.e(TAG, "Error " + msgSnippet + ", errmsg=" + response.toString());
+                }
+            } else {
+                String errmsg;
+                if (response == null) {
+                    bytes.position(0);
+                    errmsg = "raw bytes: " + NetlinkConstants.hexify(bytes);
+                } else {
+                    errmsg = response.toString();
+                }
+                Log.e(TAG, "Error " + msgSnippet + ", errmsg=" + errmsg);
+            }
+        } catch (ErrnoException e) {
+            Log.e(TAG, "Error " + msgSnippet, e);
+            errno = -e.errno;
+        } catch (InterruptedIOException e) {
+            Log.e(TAG, "Error " + msgSnippet, e);
+            errno = -OsConstants.ETIMEDOUT;
+        } catch (SocketException e) {
+            Log.e(TAG, "Error " + msgSnippet, e);
+            errno = -OsConstants.EIO;
+        }
+        return errno;
+    }</code></pre> 
+<p>（4）如果处于NUD_FAILED状态的neighbour网络的丢失将会导致Ipv4 或者Ipv6配置变得不完整(配置丢失)，我们将会调用提供的Callback#notifyLost()函数。</p> 
+<pre class="has"><code>    private void handleNeighborLost(String msg) {
+        InetAddress ip = null;
+        final ProvisioningChange delta;
+        synchronized (mLock) {
+            LinkProperties whatIfLp = new LinkProperties(mLinkProperties);
+
+            for (Map.Entry&lt;InetAddress, Short&gt; entry : mIpWatchList.entrySet()) {
+                 //遍历IpWatchList中的所有neighbor，寻找value状态为NUD_FAILED的
+                if (entry.getValue() != StructNdMsg.NUD_FAILED) {
+                    continue;
+                }
+                 //从IpWatchList找到了value状态为NUD_FAILED的neighbor, 获取其IP地址；
+                  //遍历mLinkProperties中路由Routes的网关是否有跟该IP地址一致的，如果有，则从当前的whatIfLp 中移除相应的路由Routes。
+                ip = entry.getKey();
+                for (RouteInfo route : mLinkProperties.getRoutes()) {
+                    if (ip.equals(route.getGateway())) {
+                        whatIfLp.removeRoute(route);
+                    }
+                } 
+                //如果该IP地址不是IPv6 地址或者使能了避免badLink连接的性能，则从whatIfLp中移除Ip地址对应的DNS服务器。
+                if (avoidingBadLinks() || !(ip instanceof Inet6Address)) {
+                    // We should do this unconditionally, but alas we cannot: b/31827713.
+                    whatIfLp.removeDnsServer(ip);
+                }
+            }
+             //调用LinkProperties的compareProvisioning函数得到whatIfLp与原始的mLinkProperties的区别。
+            delta = LinkProperties.compareProvisioning(mLinkProperties, whatIfLp);
+        }
+        //如果delta值为ProvisioningChange.LOST_PROVISIONING，则回调函数notifyLost进行配置丢失的处理；该回调函数的实现是在IpManager中，详见IpManger中的分析。
+        if (delta == ProvisioningChange.LOST_PROVISIONING) {
+            final String logMsg = "FAILURE: LOST_PROVISIONING, " + msg;
+            Log.w(TAG, logMsg);
+            if (mCallback != null) {
+                // TODO: remove |ip| when the callback signature no longer has
+                // an InetAddress argument.
+                mCallback.notifyLost(ip, logMsg);
+            }
+        }
+        logNudFailed(delta);
+    }</code></pre> 
+<p> </p> 
+<h3> </h3> 
+<h3><strong>Android - NetlinkSocketObserver</strong></h3> 
+<ul><li> <h3><strong>NetlinkSocketObserver简介</strong></h3> </li></ul> 
+<p>在IpReachabilityMonitor类中有一个子类NetlinkSocketObserver类。</p> 
+<p>在IpReachiabilityMonitor 构造函数中会创建NetlinkSocketObserver对象，并对该对象进行封装，创建一个Thread类 对象，并调用Thread类对象的Start方法，启动线程。</p> 
+<blockquote> 
+ <p>mNetlinkSocketObserver = new NetlinkSocketObserver();</p> 
+ <p>mObserverThread = new Thread(mNetlinkSocketObserver);</p> 
+ <p>mObserverThread.start();</p> 
+</blockquote> 
+<p> </p> 
+<ul><li> <h3><strong>NetlinkSocketObserver作用</strong></h3> </li></ul> 
+<p>NetlinkSocketObserver 类主要和Android Netlink 进行交互。</p> 
+<blockquote> 
+ <p><em>Android netlink :frameworks/base/services/net/java/android/net/netlink/...</em></p> 
+</blockquote> 
+<p>该类的作用主要是建立NETLINK_ROUTE Socket，绑定相应的NetlinkSocketAddress。然后无限循环接收kernelReply信息并对该消息进行解析。</p> 
+<p> </p> 
+<ul><li> <h3><strong>NetlinkSocketObserver实现</strong></h3> </li></ul> 
+<p>//通过实现Runnable接口创建线程，重写run方法；</p> 
+<p>该类的作用就是建立NETLINK_ROUTE Socket，绑定相应的NetlinkSocketAddress。然后无限循环接收kernelReply信息并对该消息进行解析。</p> 
+<p>关键接口实现：</p> 
+<pre class="has"><code class="language-java">//建立NETLINK_ROUTE Socket，绑定相应的NetlinkSocketAddress。然后无限循环接收kernelReply信息并对该消息进行解析。
+ // TODO: simplify the number of objects by making this extend Thread.
+    private final class NetlinkSocketObserver implements Runnable{
+        private NetlinkSocket mSocket;
+
+        @Override
+        public void run() {
+            if (VDBG) { Log.d(TAG, "Starting observing thread."); }
+            mRunning = true;
+
+            try {//1、建立NETLINK_ROUTE Socket，并绑定bind 相应的NetlinkSocketAddress
+                setupNetlinkSocket();
+            } catch (ErrnoException | SocketException e) {
+                Log.e(TAG, "Failed to suitably initialize a netlink socket", e);
+                mRunning = false;
+            }
+
+            while (mRunning) {
+                final ByteBuffer byteBuffer;
+                try {//2、接收Kernel的Reply信息
+                    byteBuffer = recvKernelReply();
+                } catch (ErrnoException e) {
+                    if (mRunning) { Log.w(TAG, "ErrnoException: ", e); }
+                    break;
+                }
+                final long whenMs = SystemClock.elapsedRealtime();
+                if (byteBuffer == null) {
+                    continue;
+                }//3、对接收到的KernelReply信息进行解析
+                parseNetlinkMessageBuffer(byteBuffer, whenMs);
+            }
+
+            clearNetlinkSocket();
+
+            mRunning = false; // Not a no-op when ErrnoException happened.
+            if (VDBG) { Log.d(TAG, "Finishing observing thread."); }
+        }
+
+        private void clearNetlinkSocket() {
+            if (mSocket != null) {
+                mSocket.close();
+            }
+        }
+
+          // TODO: Refactor the main loop to recreate the socket upon recoverable errors.
+        private void setupNetlinkSocket() throws ErrnoException, SocketException {
+            clearNetlinkSocket();
+            mSocket = new NetlinkSocket(OsConstants.NETLINK_ROUTE);
+
+            final NetlinkSocketAddress listenAddr = new NetlinkSocketAddress(
+                    0, OsConstants.RTMGRP_NEIGH);
+            mSocket.bind(listenAddr);
+
+            if (VDBG) {
+                final NetlinkSocketAddress nlAddr = mSocket.getLocalAddress();
+                Log.d(TAG, "bound to sockaddr_nl{"
+                        + ((long) (nlAddr.getPortId() &amp; 0xffffffff)) + ", "
+                        + nlAddr.getGroupsMask()
+                        + "}");
+            }
+        }
+
+        private ByteBuffer recvKernelReply() throws ErrnoException {
+            try {
+                return mSocket.recvMessage(0);
+            } catch (InterruptedIOException e) {
+          // Interruption or other error, e.g. another thread closed our file descriptor.
+            } catch (ErrnoException e) {
+                if (e.errno != OsConstants.EAGAIN) {
+                    throw e;
+                }
+            }
+            return null;
+        }
+   //将ByteBuffer解析为NetlinkMessage格式消息，并判断消息类型，调用评估消息是否更新相应ipadress的IpWatchList。
+        private void parseNetlinkMessageBuffer(ByteBuffer byteBuffer, long whenMs) {
+            while (byteBuffer.remaining() &gt; 0) {
+                final int position = byteBuffer.position();
+          //1、通过调用NetlinkMessage类将ByteBuffer解析为NetlinkMessage格式消息
+                final NetlinkMessage nlMsg = NetlinkMessage.parse(byteBuffer);
+                if (nlMsg == null || nlMsg.getHeader() == null) {
+                    byteBuffer.position(position);
+                    Log.e(TAG, "unparsable netlink msg: " + NetlinkConstants.hexify(byteBuffer));
+                    break;
+                }
+
+                final int srcPortId = nlMsg.getHeader().nlmsg_pid;
+                if (srcPortId !=  0) {
+                    Log.e(TAG, "non-kernel source portId: " + ((long) (srcPortId &amp; 0xffffffff)));
+                    break;
+                }
+           //2、判断解析出现的NetlinkMessage消息类型，确保是RtNetlinkNeighborMessage消息才继续进行评估；如果是NetlinkErrorMessage或不是RtNetlinkNeighborMessage消息直接退出。
+                if (nlMsg instanceof NetlinkErrorMessage) {
+                    Log.e(TAG, "netlink error: " + nlMsg);
+                    continue;
+                } else if (!(nlMsg instanceof RtNetlinkNeighborMessage)) {
+                    if (DBG) {
+                        Log.d(TAG, "non-rtnetlink neighbor msg: " + nlMsg);
+                    }
+                    continue;
+                }
+           //3、调用evaluateRtNetlinkNeighborMessage对RtNetlinkNeighborMessage消息进行评估。
+                evaluateRtNetlinkNeighborMessage((RtNetlinkNeighborMessage) nlMsg, whenMs);
+            }
+        }
+         //依据从RtNetlinkNeighborMessage获取的msgType和nudState，对IpWatchList中相应的InetAddress的nudState 进行更新。
+        private void evaluateRtNetlinkNeighborMessage(
+                RtNetlinkNeighborMessage neighMsg, long whenMs) {
+            final StructNdMsg ndMsg = neighMsg.getNdHeader();
+            if (ndMsg == null || ndMsg.ndm_ifindex != mInterfaceIndex) {
+                return;
+            }
+            //1、从neighMsg取目的IP地址，并判断该IP地址是否在IpWatchList中，不在则直接退出函数返回
+            final InetAddress destination = neighMsg.getDestination();
+            if (!isWatching(destination)) {
+                return;
+            }
+           //2、从neighMsg取msgType和nudState，并根据他们进行IpWatchList 的更新
+            final short msgType = neighMsg.getHeader().nlmsg_type;
+            final short nudState = ndMsg.ndm_state;
+            final String eventMsg = "NeighborEvent{"
+                    + "elapsedMs=" + whenMs + ", "
+                    + destination.getHostAddress() + ", "
+                    + "[" + NetlinkConstants.hexify(neighMsg.getLinkLayerAddress()) + "], "
+                    + NetlinkConstants.stringForNlMsgType(msgType) + ", "
+                    + StructNdMsg.stringForNudState(nudState)
+                    + "}";
+
+            if (VDBG) {
+                Log.d(TAG, neighMsg.toString());
+            } else if (DBG) {
+                Log.d(TAG, eventMsg);
+            }
+
+            synchronized (mLock) {
+                if (mIpWatchList.containsKey(destination)) {
+                    final short value =
+                            (msgType == NetlinkConstants.RTM_DELNEIGH)
+                            ? StructNdMsg.NUD_NONE
+                            : nudState;
+                    mIpWatchList.put(destination, value);
+                }
+            }
+          //3、如果nudState为NUD_FAILED状态，则执行handleNeighborLost动作
+            if (nudState == StructNdMsg.NUD_FAILED) {
+                Log.w(TAG, "ALERT: " + eventMsg);
+                handleNeighborLost(eventMsg);//这个详见IpReachiabilityMonitor的实现方式的第4部分。
+            }
+        }
+    }
+}</code></pre> 
+<p style="text-indent:33px;"> </p> 
+<p> </p> 
+<p> </p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/9feb22ef3a393c3f6b4d0564e2de26ef/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">ubuntu 18.04 图形配置中， 有线网卡 有线网络 消失 找不到</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/4b87ce29758efc2b8783c2b8b57256a0/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">PC-Linux上如何安装并兼容多kernel 版本</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

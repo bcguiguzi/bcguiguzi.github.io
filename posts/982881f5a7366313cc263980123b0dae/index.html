@@ -1,0 +1,602 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Mysql GTID 模式详解 - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="Mysql GTID 模式详解" />
+<meta property="og:description" content="一、GTID的概述：
+1、全局事物标识：global transaction identifieds。
+2、GTID事物是全局唯一性的，且一个事务对应一个GTID。
+3、一个GTID在一个服务器上只执行一次，避免重复执行导致数据混乱或者主从不一致。
+4、GTID用来代替classic的复制方法，不在使用binlog&#43;pos开启复制。而是使用master_auto_postion=1的方式自动匹配GTID断点进行复制。
+5、MySQL-5.6.5开始支持的，MySQL-5.6.10后开始完善。
+6、在传统的slave端，binlog是不用开启的，但是在GTID中，slave端的binlog是必须开启的，目的是记录执行过的GTID（强制）。
+二、GTID的组成部分：
+前面是server_uuid：后面是一个序列号
+例如：server_uuid：sequence number
+7800a22c-95ae-11e4-983d-080027de205a:10
+UUID：每个mysql实例的唯一ID，由于会传递到slave，所以也可以理解为源ID。
+Sequence number：在每台MySQL服务器上都是从1开始自增长的序列，一个数值对应一个事务。
+三、GTID比传统复制的优势：
+1、更简单的实现failover，不用以前那样在需要找log_file和log_Pos。
+2、更简单的搭建主从复制。
+3、比传统复制更加安全。
+4、GTID是连续没有空洞的，因此主从库出现数据冲突时，可以用添加空事物的方式进行跳过。
+四、GTID的工作原理：
+1、master更新数据时，会在事务前产生GTID，一同记录到binlog日志中。 2、slave端的i/o 线程将变更的binlog，写入到本地的relay log中。 3、sql线程从relay log中获取GTID，然后对比slave端的binlog是否有记录。 4、如果有记录，说明该GTID的事务已经执行，slave会忽略。 5、如果没有记录，slave就会从relay log中执行该GTID的事务，并记录到binlog。 6、在解析过程中会判断是否有主键，如果没有就用二级索引，如果没有就用全部扫描。 要点：
+1、slave在接受master的binlog时，会校验master的GTID是否已经执行过（一个服务器只能执行一次）。
+2、为了保证主从数据的一致性，多线程只能同时执行一个GTID。
+六、使用GTID搭建mysql的主从复制的主要参数：
+[mysqld] #GTID: gtid_mode=on enforce_gtid_consistency=on server_id=2003306 #每天实例的server_id都要不一样 #binlog log-bin=mysqlbin log-slave-updates=1 #允许下端接入slave binlog_format=row #强烈建议，其他格式可能造成数据不一致 #relay log skip_slave_start=1 注意：建议使用mysql-5.6.5以上的最新版本。
+（二）、启动GTID的两种方法：
+方法一、
+1、如果是在已经跑的服务器，你需要重启一下mysql server。
+2、启动之前，一定要先关闭master的写入，保证所有slave端都已经和master端数据保持同步。
+3、所有slave需要加上skip_slave_start=1的配置参数，避免启动后还是使用老的复制协议。
+方法二、
+1、如果是新搭建的服务器，直接启动就行了。
+七、master-slave搭建的注意事项：
+（一）、使用GTID的方式，把salve端挂载master端：
+1、启动以后最好不要立即执行事务，而是先change master上。
+2、然后在执行事务，当然知不是必须的。
+3、使用下面的sql切换slave到新的master。
+stop slave;" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/982881f5a7366313cc263980123b0dae/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2016-11-14T16:11:19+08:00" />
+<meta property="article:modified_time" content="2016-11-14T16:11:19+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Mysql GTID 模式详解</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p style="margin:10px auto; padding-top:0px; padding-bottom:0px; line-height:1.5; font-size:13px; font-family:Verdana,Arial,Helvetica,sans-serif; background-color:rgb(254,254,242)"> <span style="margin:0px; padding:0px; line-height:1.5; font-size:14pt"><span style="margin:0px; padding:0px">一、GTID的概述：</span></span></p> 
+<p style="margin:10px auto; padding-top:0px; padding-bottom:0px; line-height:1.5; font-size:13px; font-family:Verdana,Arial,Helvetica,sans-serif; background-color:rgb(254,254,242)"> 1、全局事物标识：global transaction identifieds。</p> 
+<p style="margin:10px auto; padding-top:0px; padding-bottom:0px; line-height:1.5; font-size:13px; font-family:Verdana,Arial,Helvetica,sans-serif; background-color:rgb(254,254,242)"> 2、GTID事物是全局唯一性的，且一个事务对应一个GTID。</p> 
+<p style="margin:10px auto; padding-top:0px; padding-bottom:0px; line-height:1.5; font-size:13px; font-family:Verdana,Arial,Helvetica,sans-serif; background-color:rgb(254,254,242)"> 3、一个GTID在一个服务器上只执行一次，避免重复执行导致数据混乱或者主从不一致。</p> 
+<p style="margin:10px auto; padding-top:0px; padding-bottom:0px; line-height:1.5; font-size:13px; font-family:Verdana,Arial,Helvetica,sans-serif; background-color:rgb(254,254,242)"> 4、GTID用来代替classic的复制方法，不在使用binlog+pos开启复制。而是使用master_auto_postion=1的方式自动匹配GTID断点进行复制。</p> 
+<p style="margin:10px auto; padding-top:0px; padding-bottom:0px; line-height:1.5; font-size:13px; font-family:Verdana,Arial,Helvetica,sans-serif; background-color:rgb(254,254,242)"> 5、MySQL-5.6.5开始支持的，MySQL-5.6.10后开始完善。</p> 
+<p style="margin:10px auto; padding-top:0px; padding-bottom:0px; line-height:1.5; font-size:13px; font-family:Verdana,Arial,Helvetica,sans-serif; background-color:rgb(254,254,242)"> 6、在传统的slave端，binlog是不用开启的，但是在GTID中，slave端的binlog是必须开启的，目的是记录执行过的GTID（强制）。</p> 
+<p style="margin:10px auto; padding-top:0px; padding-bottom:0px; line-height:1.5; font-size:13px; font-family:Verdana,Arial,Helvetica,sans-serif; background-color:rgb(254,254,242)">  </p> 
+<p style="margin:10px auto; padding-top:0px; padding-bottom:0px; line-height:1.5; font-size:13px; font-family:Verdana,Arial,Helvetica,sans-serif; background-color:rgb(254,254,242)">  </p> 
+<p style="margin:10px auto; padding-top:0px; padding-bottom:0px; line-height:1.5; font-size:13px; font-family:Verdana,Arial,Helvetica,sans-serif; background-color:rgb(254,254,242)"> 二、GTID的组成部分：</p> 
+<p style="margin:10px auto; padding-top:0px; padding-bottom:0px; line-height:1.5; font-size:13px; font-family:Verdana,Arial,Helvetica,sans-serif; background-color:rgb(254,254,242)"> 前面是server_uuid：后面是一个序列号</p> 
+<p style="margin:10px auto; padding-top:0px; padding-bottom:0px; line-height:1.5; font-size:13px; font-family:Verdana,Arial,Helvetica,sans-serif; background-color:rgb(254,254,242)"> 例如：server_uuid：sequence number</p> 
+<p style="margin:10px auto; padding-top:0px; padding-bottom:0px; line-height:1.5; font-size:13px; font-family:Verdana,Arial,Helvetica,sans-serif; background-color:rgb(254,254,242)"> 7800a22c-95ae-11e4-983d-080027de205a:10</p> 
+<p style="margin:10px auto; padding-top:0px; padding-bottom:0px; line-height:1.5; font-size:13px; font-family:Verdana,Arial,Helvetica,sans-serif; background-color:rgb(254,254,242)"> UUID：每个mysql实例的唯一ID，由于会传递到slave，所以也可以理解为源ID。</p> 
+<p style="margin:10px auto; padding-top:0px; padding-bottom:0px; line-height:1.5; font-size:13px; font-family:Verdana,Arial,Helvetica,sans-serif; background-color:rgb(254,254,242)"> Sequence number：在每台MySQL服务器上都是从1开始自增长的序列，一个数值对应一个事务。</p> 
+<p style="margin:10px auto; padding-top:0px; padding-bottom:0px; line-height:1.5; font-size:13px; font-family:Verdana,Arial,Helvetica,sans-serif; background-color:rgb(254,254,242)">  </p> 
+<p style="margin:10px auto; padding-top:0px; padding-bottom:0px; line-height:1.5; font-size:13px; font-family:Verdana,Arial,Helvetica,sans-serif; background-color:rgb(254,254,242)"> 三、GTID比传统复制的优势：</p> 
+<p style="margin:10px auto; padding-top:0px; padding-bottom:0px; line-height:1.5; font-size:13px; font-family:Verdana,Arial,Helvetica,sans-serif; background-color:rgb(254,254,242)"> 1、更简单的实现failover，不用以前那样在需要找log_file和log_Pos。</p> 
+<p style="margin:10px auto; padding-top:0px; padding-bottom:0px; line-height:1.5; font-size:13px; font-family:Verdana,Arial,Helvetica,sans-serif; background-color:rgb(254,254,242)"> 2、更简单的搭建主从复制。</p> 
+<p style="margin:10px auto; padding-top:0px; padding-bottom:0px; line-height:1.5; font-size:13px; font-family:Verdana,Arial,Helvetica,sans-serif; background-color:rgb(254,254,242)"> 3、比传统复制更加安全。</p> 
+<p style="margin:10px auto; padding-top:0px; padding-bottom:0px; line-height:1.5; font-size:13px; font-family:Verdana,Arial,Helvetica,sans-serif; background-color:rgb(254,254,242)"> 4、GTID是连续没有空洞的，因此主从库出现数据冲突时，可以用添加空事物的方式进行跳过。</p> 
+<p style="margin:10px auto; padding-top:0px; padding-bottom:0px; line-height:1.5; font-size:13px; font-family:Verdana,Arial,Helvetica,sans-serif; background-color:rgb(254,254,242)">  </p> 
+<p style="margin:10px auto; padding-top:0px; padding-bottom:0px; line-height:1.5; font-size:13px; font-family:Verdana,Arial,Helvetica,sans-serif; background-color:rgb(254,254,242)"> <span style="margin:0px; padding:0px; line-height:1.5; background-color:rgb(255,255,0)">四、GTID的工作原理：</span></p> 
+<div style="margin:0px; padding:0px; font-family:Verdana,Arial,Helvetica,sans-serif; font-size:13px; background-color:rgb(254,254,242)">
+  1、master更新数据时，会在事务前产生GTID，一同记录到binlog日志中。 
+</div> 
+<div style="margin:0px; padding:0px; font-family:Verdana,Arial,Helvetica,sans-serif; font-size:13px; background-color:rgb(254,254,242)">
+  2、slave端的i/o 线程将变更的binlog，写入到本地的relay log中。 
+</div> 
+<div style="margin:0px; padding:0px; font-family:Verdana,Arial,Helvetica,sans-serif; font-size:13px; background-color:rgb(254,254,242)">
+  3、sql线程从relay log中获取GTID，然后对比slave端的binlog是否有记录。 
+</div> 
+<div style="margin:0px; padding:0px; font-family:Verdana,Arial,Helvetica,sans-serif; font-size:13px; background-color:rgb(254,254,242)">
+  4、如果有记录，说明该GTID的事务已经执行，slave会忽略。 
+</div> 
+<div style="margin:0px; padding:0px; font-family:Verdana,Arial,Helvetica,sans-serif; font-size:13px; background-color:rgb(254,254,242)">
+  5、如果没有记录，slave就会从relay log中执行该GTID的事务，并记录到binlog。 
+</div> 
+<div style="margin:0px; padding:0px; font-family:Verdana,Arial,Helvetica,sans-serif; font-size:13px; background-color:rgb(254,254,242)">
+  6、在解析过程中会判断是否有主键，如果没有就用二级索引，如果没有就用全部扫描。 
+</div> 
+<p style="margin:10px auto; padding-top:0px; padding-bottom:0px; line-height:1.5; font-size:13px; font-family:Verdana,Arial,Helvetica,sans-serif; background-color:rgb(254,254,242)">  </p> 
+<p style="margin:10px auto; padding-top:0px; padding-bottom:0px; line-height:1.5; font-size:13px; font-family:Verdana,Arial,Helvetica,sans-serif; background-color:rgb(254,254,242)">  </p> 
+<p style="margin:10px auto; padding-top:0px; padding-bottom:0px; line-height:1.5; font-size:13px; font-family:Verdana,Arial,Helvetica,sans-serif; background-color:rgb(254,254,242)"> <span style="margin:0px; padding:0px; line-height:1.5; color:rgb(153,51,102)">要点：</span></p> 
+<p style="margin:10px auto; padding-top:0px; padding-bottom:0px; line-height:1.5; font-size:13px; font-family:Verdana,Arial,Helvetica,sans-serif; background-color:rgb(254,254,242)"> <span style="margin:0px; padding:0px; line-height:1.5; color:rgb(153,51,102)">1、slave在接受master的binlog时，会校验master的GTID是否已经执行过（一个服务器只能执行一次）。</span></p> 
+<p style="margin:10px auto; padding-top:0px; padding-bottom:0px; line-height:1.5; font-size:13px; font-family:Verdana,Arial,Helvetica,sans-serif; background-color:rgb(254,254,242)"> <span style="margin:0px; padding:0px; line-height:1.5; color:rgb(153,51,102)">2、为了保证主从数据的一致性，多线程只能同时执行一个GTID。</span></p> 
+<p style="margin:10px auto; padding-top:0px; padding-bottom:0px; line-height:1.5; font-size:13px; font-family:Verdana,Arial,Helvetica,sans-serif; background-color:rgb(254,254,242)">  </p> 
+<p style="margin:10px auto; padding-top:0px; padding-bottom:0px; line-height:1.5; font-size:13px; font-family:Verdana,Arial,Helvetica,sans-serif; background-color:rgb(254,254,242)">  </p> 
+<p style="margin:10px auto; padding-top:0px; padding-bottom:0px; line-height:1.5; font-size:13px; font-family:Verdana,Arial,Helvetica,sans-serif; background-color:rgb(254,254,242)"> 六、使用GTID搭建mysql的主从复制的主要参数：</p> 
+<div style="margin:0px; padding:0px; font-family:Verdana,Arial,Helvetica,sans-serif; font-size:13px; background-color:rgb(254,254,242)">
+  [mysqld] 
+</div> 
+<div style="margin:0px; padding:0px; font-family:Verdana,Arial,Helvetica,sans-serif; font-size:13px; background-color:rgb(254,254,242)">
+  #GTID: 
+</div> 
+<div style="margin:0px; padding:0px; font-family:Verdana,Arial,Helvetica,sans-serif; font-size:13px; background-color:rgb(254,254,242)">
+  gtid_mode=on 
+</div> 
+<div style="margin:0px; padding:0px; font-family:Verdana,Arial,Helvetica,sans-serif; font-size:13px; background-color:rgb(254,254,242)">
+  enforce_gtid_consistency=on 
+</div> 
+<div style="margin:0px; padding:0px; font-family:Verdana,Arial,Helvetica,sans-serif; font-size:13px; background-color:rgb(254,254,242)">
+  server_id=2003306    #每天实例的server_id都要不一样 
+</div> 
+<div style="margin:0px; padding:0px; font-family:Verdana,Arial,Helvetica,sans-serif; font-size:13px; background-color:rgb(254,254,242)">
+    
+</div> 
+<div style="margin:0px; padding:0px; font-family:Verdana,Arial,Helvetica,sans-serif; font-size:13px; background-color:rgb(254,254,242)">
+  #binlog 
+</div> 
+<div style="margin:0px; padding:0px; font-family:Verdana,Arial,Helvetica,sans-serif; font-size:13px; background-color:rgb(254,254,242)">
+  log-bin=mysqlbin 
+</div> 
+<div style="margin:0px; padding:0px; font-family:Verdana,Arial,Helvetica,sans-serif; font-size:13px; background-color:rgb(254,254,242)">
+  log-slave-updates=1   #允许下端接入slave 
+</div> 
+<div style="margin:0px; padding:0px; font-family:Verdana,Arial,Helvetica,sans-serif; font-size:13px; background-color:rgb(254,254,242)"> 
+ <span style="margin:0px; padding:0px; line-height:1.5; color:rgb(255,0,0)">binlog_format=row  </span>    #强烈建议，其他格式可能造成数据不一致 
+</div> 
+<div style="margin:0px; padding:0px; font-family:Verdana,Arial,Helvetica,sans-serif; font-size:13px; background-color:rgb(254,254,242)">
+    
+</div> 
+<div style="margin:0px; padding:0px; font-family:Verdana,Arial,Helvetica,sans-serif; font-size:13px; background-color:rgb(254,254,242)"> 
+ <div style="margin:0px; padding:0px">
+   #relay log 
+ </div> 
+ <div style="margin:0px; padding:0px">
+   skip_slave_start=1 
+ </div> 
+</div> 
+<p style="margin:10px auto; padding-top:0px; padding-bottom:0px; line-height:1.5; font-size:13px; font-family:Verdana,Arial,Helvetica,sans-serif; background-color:rgb(254,254,242)"> 注意：建议使用mysql-5.6.5以上的最新版本。</p> 
+<p style="margin:10px auto; padding-top:0px; padding-bottom:0px; line-height:1.5; font-size:13px; font-family:Verdana,Arial,Helvetica,sans-serif; background-color:rgb(254,254,242)">  </p> 
+<p style="margin:10px auto; padding-top:0px; padding-bottom:0px; line-height:1.5; font-size:13px; font-family:Verdana,Arial,Helvetica,sans-serif; background-color:rgb(254,254,242)"> （二）、启动GTID的两种方法：</p> 
+<p style="margin:10px auto; padding-top:0px; padding-bottom:0px; line-height:1.5; font-size:13px; font-family:Verdana,Arial,Helvetica,sans-serif; background-color:rgb(254,254,242)"> 方法一、</p> 
+<p style="margin:10px auto; padding-top:0px; padding-bottom:0px; line-height:1.5; font-size:13px; font-family:Verdana,Arial,Helvetica,sans-serif; background-color:rgb(254,254,242)"> 1、如果是在已经跑的服务器，你需要重启一下mysql server。</p> 
+<p style="margin:10px auto; padding-top:0px; padding-bottom:0px; line-height:1.5; font-size:13px; font-family:Verdana,Arial,Helvetica,sans-serif; background-color:rgb(254,254,242)"> 2、启动之前，一定要先关闭master的写入，保证所有slave端都已经和master端数据保持同步。</p> 
+<p style="margin:10px auto; padding-top:0px; padding-bottom:0px; line-height:1.5; font-size:13px; font-family:Verdana,Arial,Helvetica,sans-serif; background-color:rgb(254,254,242)"> 3、所有slave需要加上skip_slave_start=1的配置参数，避免启动后还是使用老的复制协议。</p> 
+<p style="margin:10px auto; padding-top:0px; padding-bottom:0px; line-height:1.5; font-size:13px; font-family:Verdana,Arial,Helvetica,sans-serif; background-color:rgb(254,254,242)">  </p> 
+<p style="margin:10px auto; padding-top:0px; padding-bottom:0px; line-height:1.5; font-size:13px; font-family:Verdana,Arial,Helvetica,sans-serif; background-color:rgb(254,254,242)"> 方法二、</p> 
+<p style="margin:10px auto; padding-top:0px; padding-bottom:0px; line-height:1.5; font-size:13px; font-family:Verdana,Arial,Helvetica,sans-serif; background-color:rgb(254,254,242)"> 1、如果是新搭建的服务器，直接启动就行了。</p> 
+<p style="margin:10px auto; padding-top:0px; padding-bottom:0px; line-height:1.5; font-size:13px; font-family:Verdana,Arial,Helvetica,sans-serif; background-color:rgb(254,254,242)">  </p> 
+<p style="margin:10px auto; padding-top:0px; padding-bottom:0px; line-height:1.5; font-size:13px; font-family:Verdana,Arial,Helvetica,sans-serif; background-color:rgb(254,254,242)">  </p> 
+<p style="margin:10px auto; padding-top:0px; padding-bottom:0px; line-height:1.5; font-size:13px; font-family:Verdana,Arial,Helvetica,sans-serif; background-color:rgb(254,254,242)">  </p> 
+<p style="margin:10px auto; padding-top:0px; padding-bottom:0px; line-height:1.5; font-size:13px; font-family:Verdana,Arial,Helvetica,sans-serif; background-color:rgb(254,254,242)"> 七、master-slave搭建的注意事项：</p> 
+<p style="margin:10px auto; padding-top:0px; padding-bottom:0px; line-height:1.5; font-size:13px; font-family:Verdana,Arial,Helvetica,sans-serif; background-color:rgb(254,254,242)"> （一）、使用GTID的方式，把salve端挂载master端：</p> 
+<p style="margin:10px auto; padding-top:0px; padding-bottom:0px; line-height:1.5; font-size:13px; font-family:Verdana,Arial,Helvetica,sans-serif; background-color:rgb(254,254,242)"> 1、启动以后最好不要立即执行事务，而是先change master上。</p> 
+<p style="margin:10px auto; padding-top:0px; padding-bottom:0px; line-height:1.5; font-size:13px; font-family:Verdana,Arial,Helvetica,sans-serif; background-color:rgb(254,254,242)"> 2、然后在执行事务，当然知不是必须的。</p> 
+<p style="margin:10px auto; padding-top:0px; padding-bottom:0px; line-height:1.5; font-size:13px; font-family:Verdana,Arial,Helvetica,sans-serif; background-color:rgb(254,254,242)"> 3、使用下面的sql切换slave到新的master。</p> 
+<p style="margin:10px auto; padding-top:0px; padding-bottom:0px; line-height:1.5; font-size:13px; font-family:Verdana,Arial,Helvetica,sans-serif; background-color:rgb(254,254,242)"> stop slave;</p> 
+<p style="margin:10px auto; padding-top:0px; padding-bottom:0px; line-height:1.5; font-size:13px; font-family:Verdana,Arial,Helvetica,sans-serif; background-color:rgb(254,254,242)"> change master to</p> 
+<p style="margin:10px auto; padding-top:0px; padding-bottom:0px; line-height:1.5; font-size:13px; font-family:Verdana,Arial,Helvetica,sans-serif; background-color:rgb(254,254,242)"> master_host = 192.168.100.200,</p> 
+<p style="margin:10px auto; padding-top:0px; padding-bottom:0px; line-height:1.5; font-size:13px; font-family:Verdana,Arial,Helvetica,sans-serif; background-color:rgb(254,254,242)"> master_port = 3306,</p> 
+<p style="margin:10px auto; padding-top:0px; padding-bottom:0px; line-height:1.5; font-size:13px; font-family:Verdana,Arial,Helvetica,sans-serif; background-color:rgb(254,254,242)"> master_user = abobo,</p> 
+<p style="margin:10px auto; padding-top:0px; padding-bottom:0px; line-height:1.5; font-size:13px; font-family:Verdana,Arial,Helvetica,sans-serif; background-color:rgb(254,254,242)"> master_password=123,</p> 
+<p style="margin:10px auto; padding-top:0px; padding-bottom:0px; line-height:1.5; font-size:13px; font-family:Verdana,Arial,Helvetica,sans-serif; background-color:rgb(254,254,242)"> master_auto_position = 1;</p> 
+<p style="margin:10px auto; padding-top:0px; padding-bottom:0px; line-height:1.5; font-size:13px; font-family:Verdana,Arial,Helvetica,sans-serif; background-color:rgb(254,254,242)">  </p> 
+<p style="margin:10px auto; padding-top:0px; padding-bottom:0px; line-height:1.5; font-size:13px; font-family:Verdana,Arial,Helvetica,sans-serif; background-color:rgb(254,254,242)"> (二)、如果给已经运行的GTID的master端添加一个新的slave</p> 
+<p style="margin:10px auto; padding-top:0px; padding-bottom:0px; line-height:1.5; font-size:13px; font-family:Verdana,Arial,Helvetica,sans-serif; background-color:rgb(254,254,242)">  有两种方法：</p> 
+<p style="margin:10px auto; padding-top:0px; padding-bottom:0px; line-height:1.5; font-size:13px; font-family:Verdana,Arial,Helvetica,sans-serif; background-color:rgb(254,254,242)"> <span style="margin:0px; padding:0px; line-height:1.5; color:rgb(255,0,0)">方法一、适用于master也是新建不久的情况。</span></p> 
+<p style="margin:10px auto; padding-top:0px; padding-bottom:0px; line-height:1.5; font-size:13px; font-family:Verdana,Arial,Helvetica,sans-serif; background-color:rgb(254,254,242)"> 1、如果你的master所有的binlog还在。可以选择类似于上面的方法，安装slave，直接change master to到master端。</p> 
+<p style="margin:10px auto; padding-top:0px; padding-bottom:0px; line-height:1.5; font-size:13px; font-family:Verdana,Arial,Helvetica,sans-serif; background-color:rgb(254,254,242)"> 2、原理是直接获取master所有的GTID并执行。</p> 
+<p style="margin:10px auto; padding-top:0px; padding-bottom:0px; line-height:1.5; font-size:13px; font-family:Verdana,Arial,Helvetica,sans-serif; background-color:rgb(254,254,242)"> 3、优点：简单方便。</p> 
+<p style="margin:10px auto; padding-top:0px; padding-bottom:0px; line-height:1.5; font-size:13px; font-family:Verdana,Arial,Helvetica,sans-serif; background-color:rgb(254,254,242)"> 4、缺点：如果binlog太多，数据完全同步需要时间较长，并且master一开始就启用了GTUD。</p> 
+<p style="margin:10px auto; padding-top:0px; padding-bottom:0px; line-height:1.5; font-size:13px; font-family:Verdana,Arial,Helvetica,sans-serif; background-color:rgb(254,254,242)">  </p> 
+<p style="margin:10px auto; padding-top:0px; padding-bottom:0px; line-height:1.5; font-size:13px; font-family:Verdana,Arial,Helvetica,sans-serif; background-color:rgb(254,254,242)">  </p> 
+<p style="margin:10px auto; padding-top:0px; padding-bottom:0px; line-height:1.5; font-size:13px; font-family:Verdana,Arial,Helvetica,sans-serif; background-color:rgb(254,254,242)"> <span style="margin:0px; padding:0px; line-height:1.5; color:rgb(255,0,0)">方法二、适用于拥有较大数据的情况。（推荐）</span></p> 
+<p style="margin:10px auto; padding-top:0px; padding-bottom:0px; line-height:1.5; font-size:13px; font-family:Verdana,Arial,Helvetica,sans-serif; background-color:rgb(254,254,242)"> 1、通过master或者其他slave的备份搭建新的slave。（看第三部分）</p> 
+<p style="margin:10px auto; padding-top:0px; padding-bottom:0px; line-height:1.5; font-size:13px; font-family:Verdana,Arial,Helvetica,sans-serif; background-color:rgb(254,254,242)"> 2、原理：获取master的数据和这些数据对应的GTID范围，然后通过slave设置@@global.gtid_purged跳过备份包含的gtid。</p> 
+<p style="margin:10px auto; padding-top:0px; padding-bottom:0px; line-height:1.5; font-size:13px; font-family:Verdana,Arial,Helvetica,sans-serif; background-color:rgb(254,254,242)"> 3、优点：是可以避免第一种方法的不足。</p> 
+<p style="margin:10px auto; padding-top:0px; padding-bottom:0px; line-height:1.5; font-size:13px; font-family:Verdana,Arial,Helvetica,sans-serif; background-color:rgb(254,254,242)"> 4、缺点：相对来说有点复杂。</p> 
+<p style="margin:10px auto; padding-top:0px; padding-bottom:0px; line-height:1.5; font-size:13px; font-family:Verdana,Arial,Helvetica,sans-serif; background-color:rgb(254,254,242)">  </p> 
+<p style="margin:10px auto; padding-top:0px; padding-bottom:0px; line-height:1.5; font-size:13px; font-family:Verdana,Arial,Helvetica,sans-serif; background-color:rgb(254,254,242)"> （三）、通过备份搭建新的slave：（方法二的扩展）</p> 
+<p style="margin:10px auto; padding-top:0px; padding-bottom:0px; line-height:1.5; font-size:13px; font-family:Verdana,Arial,Helvetica,sans-serif; background-color:rgb(254,254,242)"> 两种方法：</p> 
+<p style="margin:10px auto; padding-top:0px; padding-bottom:0px; line-height:1.5; font-size:13px; font-family:Verdana,Arial,Helvetica,sans-serif; background-color:rgb(254,254,242)"> <span style="margin:0px; padding:0px; line-height:1.5; color:rgb(255,0,0)">方法一、mysqldump的方式：</span></p> 
+<p style="margin:10px auto; padding-top:0px; padding-bottom:0px; line-height:1.5; font-size:13px; font-family:Verdana,Arial,Helvetica,sans-serif; background-color:rgb(254,254,242)"> 1、在备份的时候指定--master-data=2（来保存binlog的文件号和位置的命令）。</p> 
+<p style="margin:10px auto; padding-top:0px; padding-bottom:0px; line-height:1.5; font-size:13px; font-family:Verdana,Arial,Helvetica,sans-serif; background-color:rgb(254,254,242)"> 2、使用mysqldump的命令在dump文件里可以看到下面两个信息：</p> 
+<p style="margin:10px auto; padding-top:0px; padding-bottom:0px; line-height:1.5; font-size:13px; font-family:Verdana,Arial,Helvetica,sans-serif; background-color:rgb(254,254,242)"> SET @@SESSION.SQL_LOG_BIN=0;</p> 
+<p style="margin:10px auto; padding-top:0px; padding-bottom:0px; line-height:1.5; font-size:13px; font-family:Verdana,Arial,Helvetica,sans-serif; background-color:rgb(254,254,242)"> SET @@GLOBAL.GTID_PURGED='7800a22c-95ae-11e4-983d-080027de205a:1-8';</p> 
+<p style="margin:10px auto; padding-top:0px; padding-bottom:0px; line-height:1.5; font-size:13px; font-family:Verdana,Arial,Helvetica,sans-serif; background-color:rgb(254,254,242)"> 3、将备份还原到slave后，使用change master to命令挂载master端。</p> 
+<p style="margin:10px auto; padding-top:0px; padding-bottom:0px; line-height:1.5; font-size:13px; font-family:Verdana,Arial,Helvetica,sans-serif; background-color:rgb(254,254,242)">  </p> 
+<p style="margin:10px auto; padding-top:0px; padding-bottom:0px; line-height:1.5; font-size:13px; font-family:Verdana,Arial,Helvetica,sans-serif; background-color:rgb(254,254,242)"> <span style="margin:0px; padding:0px; line-height:1.5; color:rgb(255,0,0)">注意：在mysql5.6.9以后的命令才支持这个功能。</span></p> 
+<p style="margin:10px auto; padding-top:0px; padding-bottom:0px; line-height:1.5; font-size:13px; font-family:Verdana,Arial,Helvetica,sans-serif; background-color:rgb(254,254,242)">  </p> 
+<p style="margin:10px auto; padding-top:0px; padding-bottom:0px; line-height:1.5; font-size:13px; font-family:Verdana,Arial,Helvetica,sans-serif; background-color:rgb(254,254,242)"> <span style="margin:0px; padding:0px; line-height:1.5; color:rgb(255,0,0)">方法二、percona Xtrabackup</span></p> 
+<p style="margin:10px auto; padding-top:0px; padding-bottom:0px; line-height:1.5; font-size:13px; font-family:Verdana,Arial,Helvetica,sans-serif; background-color:rgb(254,254,242)"> 1、Xtrabackup_binlog_info文件中，包含global.gtid_purged='XXXXXX:XXXX'的信息。</p> 
+<p style="margin:10px auto; padding-top:0px; padding-bottom:0px; line-height:1.5; font-size:13px; font-family:Verdana,Arial,Helvetica,sans-serif; background-color:rgb(254,254,242)"> 2、然后到slave去手工的 <span style="margin:0px; padding:0px; line-height:1.5; color:rgb(255,0,0)">SET GLOBAL.GTID_PURGED='XXXXXX:XXXX'</span>。</p> 
+<p style="margin:10px auto; padding-top:0px; padding-bottom:0px; line-height:1.5; font-size:13px; font-family:Verdana,Arial,Helvetica,sans-serif; background-color:rgb(254,254,242)"> 3、恢复备份，开启change master to 命令。</p> 
+<p style="margin:10px auto; padding-top:0px; padding-bottom:0px; line-height:1.5; font-size:13px; font-family:Verdana,Arial,Helvetica,sans-serif; background-color:rgb(254,254,242)">  </p> 
+<p style="margin:10px auto; padding-top:0px; padding-bottom:0px; line-height:1.5; font-size:13px; font-family:Verdana,Arial,Helvetica,sans-serif; background-color:rgb(254,254,242)"> 注意：如果系统运行了很久，无法找到GTID的变好了，可以通过上面的方式进行查找。</p> 
+<p style="margin:10px auto; padding-top:0px; padding-bottom:0px; line-height:1.5; font-size:13px; font-family:Verdana,Arial,Helvetica,sans-serif; background-color:rgb(254,254,242)">  </p> 
+<p style="margin:10px auto; padding-top:0px; padding-bottom:0px; line-height:1.5; font-size:13px; font-family:Verdana,Arial,Helvetica,sans-serif; background-color:rgb(254,254,242)">  </p> 
+<p style="margin:10px auto; padding-top:0px; padding-bottom:0px; line-height:1.5; font-size:13px; font-family:Verdana,Arial,Helvetica,sans-serif; background-color:rgb(254,254,242)"> 八、GTID如何跳过事务冲突：</p> 
+<p style="margin:10px auto; padding-top:0px; padding-bottom:0px; line-height:1.5; font-size:13px; font-family:Verdana,Arial,Helvetica,sans-serif; background-color:rgb(254,254,242)"> 1、这个功能主要跳过事务，代替原来的set global sql_slave_skip_counter = 1。</p> 
+<p style="margin:10px auto; padding-top:0px; padding-bottom:0px; line-height:1.5; font-size:13px; font-family:Verdana,Arial,Helvetica,sans-serif; background-color:rgb(254,254,242)"> 2、由于在这个GTID必须是连续的，正常情况同一个服务器产生的GTID是不会存在空缺的。所以不能简单的skip掉一个事务，只能通过注入空事物的方法替换掉一个实际操作事务。</p> 
+<p style="margin:10px auto; padding-top:0px; padding-bottom:0px; line-height:1.5; font-size:13px; font-family:Verdana,Arial,Helvetica,sans-serif; background-color:rgb(254,254,242)"> 3、注入空事物的方法：</p> 
+<p style="margin:10px auto; padding-top:0px; padding-bottom:0px; line-height:1.5; font-size:13px; font-family:Verdana,Arial,Helvetica,sans-serif; background-color:rgb(254,254,242)"> stop slave;</p> 
+<p style="margin:10px auto; padding-top:0px; padding-bottom:0px; line-height:1.5; font-size:13px; font-family:Verdana,Arial,Helvetica,sans-serif; background-color:rgb(254,254,242)"> set gtid_next='xxxxxxx:N';</p> 
+<p style="margin:10px auto; padding-top:0px; padding-bottom:0px; line-height:1.5; font-size:13px; font-family:Verdana,Arial,Helvetica,sans-serif; background-color:rgb(254,254,242)"> begin;commit;</p> 
+<p style="margin:10px auto; padding-top:0px; padding-bottom:0px; line-height:1.5; font-size:13px; font-family:Verdana,Arial,Helvetica,sans-serif; background-color:rgb(254,254,242)"> set gtid_next='AUTOMAIC';</p> 
+<p style="margin:10px auto; padding-top:0px; padding-bottom:0px; line-height:1.5; font-size:13px; font-family:Verdana,Arial,Helvetica,sans-serif; background-color:rgb(254,254,242)"> start slave;</p> 
+<p style="margin:10px auto; padding-top:0px; padding-bottom:0px; line-height:1.5; font-size:13px; font-family:Verdana,Arial,Helvetica,sans-serif; background-color:rgb(254,254,242)"> 4、这里的xxxxx:N 也就是你的slave sql thread报错的GTID，或者说是你想要跳过的GTID。</p> 
+<p style="margin:10px auto; padding-top:0px; padding-bottom:0px; line-height:1.5; font-size:13px; font-family:Verdana,Arial,Helvetica,sans-serif; background-color:rgb(254,254,242)">  </p> 
+<p style="margin:10px auto; padding-top:0px; padding-bottom:0px; line-height:1.5; font-size:13px; font-family:Verdana,Arial,Helvetica,sans-serif; background-color:rgb(254,254,242)">  </p> 
+<div style="margin:0px; padding:0px; font-family:Verdana,Arial,Helvetica,sans-serif; font-size:13px; background-color:rgb(254,254,242)">
+  九、GTID的参数注释： 
+</div> 
+<div style="margin:0px; padding:0px; font-family:Verdana,Arial,Helvetica,sans-serif; font-size:13px; background-color:rgb(254,254,242)"> 
+ <div style="margin:0px; padding:0px">
+   [master]&gt;show global variables like '%gtid%'; 
+ </div> 
+ <div style="margin:0px; padding:0px">
+   1、enforce_gtid_consistency：开启gtid的一些安全限制（介意开启）。 
+ </div> 
+ <div style="margin:0px; padding:0px">
+     
+ </div> 
+ <div style="margin:0px; padding:0px">
+   2、gtid_executed：全局和seeeion级别都可以用。用来保存已经执行过的GTIDs。 
+ </div> 
+ <div style="margin:0px; padding:0px">
+   贴士：show  master status\G;输出结果中的Executed_Gtid_Set和gitd_executed一致。reset master时，此值会被清空。 
+ </div> 
+ <div style="margin:0px; padding:0px">
+     
+ </div> 
+ <div style="margin:0px; padding:0px">
+   3、gtid_owned：全局和session级别都可用，全局表示所有服务器拥有GTIDs 
+  <span style='margin:0px; padding:0px; line-height:1.5; font-family:"Microsoft YaHei UI"'>，session级别表示当前client拥有所有GTIDs。（此功能用的少）</span> 
+ </div> 
+ <div style="margin:0px; padding:0px">
+     
+ </div> 
+ <div style="margin:0px; padding:0px">
+   4、gtid_mode：是否开启GTID功能。 
+ </div> 
+ <div style="margin:0px; padding:0px">
+     
+ </div> 
+ <div style="margin:0px; padding:0px">
+   5、gtid_purged：全局参数，设置在binlog中，已经purged的GTIDs，并且purged掉的GTIDs会包含到gtid_executed中。 
+ </div> 
+ <div style="margin:0px; padding:0px">
+   贴士：从而导致slave不会再去master请求这些GTIDs，并且Executed_Gtid_Set为空时，才可以设置此值。 
+ </div> 
+ <div style="margin:0px; padding:0px">
+     
+ </div> 
+ <div style="margin:0px; padding:0px">
+   6、gtid_next：这个时session级别的参数： 
+ </div> 
+</div> 
+<div style="margin:0px; padding:0px; font-family:Verdana,Arial,Helvetica,sans-serif; font-size:13px; background-color:rgb(254,254,242)">
+  [master]&gt;show session variables like '%gtid_next%'; 
+</div> 
+<p style="margin:10px auto; padding-top:0px; padding-bottom:0px; line-height:1.5; font-size:13px; font-family:Verdana,Arial,Helvetica,sans-serif; background-color:rgb(254,254,242)">  </p> 
+<p style="margin:10px auto; padding-top:0px; padding-bottom:0px; line-height:1.5; font-size:13px; font-family:Verdana,Arial,Helvetica,sans-serif; background-color:rgb(254,254,242)">  </p> 
+<p style="margin:10px auto; padding-top:0px; padding-bottom:0px; line-height:1.5; font-size:13px; font-family:Verdana,Arial,Helvetica,sans-serif; background-color:rgb(254,254,242)">  </p> 
+<div style="margin:0px; padding:0px; font-family:Verdana,Arial,Helvetica,sans-serif; font-size:13px; background-color:rgb(254,254,242)">
+  十、关于GTID的一些功能限制： 
+</div> 
+<div style="margin:0px; padding:0px; font-family:Verdana,Arial,Helvetica,sans-serif; font-size:13px; background-color:rgb(254,254,242)">
+  （一）、更新非事务引擎： 
+</div> 
+<div style="margin:0px; padding:0px; font-family:Verdana,Arial,Helvetica,sans-serif; font-size:13px; background-color:rgb(254,254,242)">
+  1、Case重现： 
+</div> 
+<div style="margin:0px; padding:0px; font-family:Verdana,Arial,Helvetica,sans-serif; font-size:13px; background-color:rgb(254,254,242)">
+  master：对一个innodb表做一个多sql更新的事物，效果是产生一个GTID。 
+</div> 
+<div style="margin:0px; padding:0px; font-family:Verdana,Arial,Helvetica,sans-serif; font-size:13px; background-color:rgb(254,254,242)">
+  slave：对应的表是MYISAM引擎，执行这个GTID的第一个语句后就会报错，因为非事务引擎一个sql就是一个事务。 
+</div> 
+<div style="margin:0px; padding:0px; font-family:Verdana,Arial,Helvetica,sans-serif; font-size:13px; background-color:rgb(254,254,242)">
+    
+</div> 
+<div style="margin:0px; padding:0px; font-family:Verdana,Arial,Helvetica,sans-serif; font-size:13px; background-color:rgb(254,254,242)">
+  2、错误编号： 
+</div> 
+<div style="margin:0px; padding:0px; font-family:Verdana,Arial,Helvetica,sans-serif; font-size:13px; background-color:rgb(254,254,242)">
+  last_Errno:1756 
+</div> 
+<div style="margin:0px; padding:0px; font-family:Verdana,Arial,Helvetica,sans-serif; font-size:13px; background-color:rgb(254,254,242)">
+    
+</div> 
+<div style="margin:0px; padding:0px; font-family:Verdana,Arial,Helvetica,sans-serif; font-size:13px; background-color:rgb(254,254,242)">
+  3、异常恢复方案： 
+</div> 
+<div style="margin:0px; padding:0px; font-family:Verdana,Arial,Helvetica,sans-serif; font-size:13px; background-color:rgb(254,254,242)">
+  （1）、简单的stop slave; start slave;就能够忽略错误。但是这个时候主从的一致性已经出现问题。需要手工的把slave差的数据补上。 
+</div> 
+<div style="margin:0px; padding:0px; font-family:Verdana,Arial,Helvetica,sans-serif; font-size:13px; background-color:rgb(254,254,242)">
+  （2）、首先将引擎调整为一样的，slave也改为事务引擎。 
+</div> 
+<div style="margin:0px; padding:0px; font-family:Verdana,Arial,Helvetica,sans-serif; font-size:13px; background-color:rgb(254,254,242)">
+    
+</div> 
+<div style="margin:0px; padding:0px; font-family:Verdana,Arial,Helvetica,sans-serif; font-size:13px; background-color:rgb(254,254,242)">
+    
+</div> 
+<div style="margin:0px; padding:0px; font-family:Verdana,Arial,Helvetica,sans-serif; font-size:13px; background-color:rgb(254,254,242)">
+    
+</div> 
+<div style="margin:0px; padding:0px; font-family:Verdana,Arial,Helvetica,sans-serif; font-size:13px; background-color:rgb(254,254,242)">
+    
+</div> 
+<div style="margin:0px; padding:0px; font-family:Verdana,Arial,Helvetica,sans-serif; font-size:13px; background-color:rgb(254,254,242)">
+  （二）、create table ....select statements 
+</div> 
+<div style="margin:0px; padding:0px; font-family:Verdana,Arial,Helvetica,sans-serif; font-size:13px; background-color:rgb(254,254,242)">
+  1、case重现： 
+</div> 
+<div style="margin:0px; padding:0px; font-family:Verdana,Arial,Helvetica,sans-serif; font-size:13px; background-color:rgb(254,254,242)">
+   master：直接执行一个create table select * from table;的sql 
+</div> 
+<div style="margin:0px; padding:0px; font-family:Verdana,Arial,Helvetica,sans-serif; font-size:13px; background-color:rgb(254,254,242)">
+    
+</div> 
+<div style="margin:0px; padding:0px; font-family:Verdana,Arial,Helvetica,sans-serif; font-size:13px; background-color:rgb(254,254,242)">
+  2、报错： 
+</div> 
+<div style="margin:0px; padding:0px; font-family:Verdana,Arial,Helvetica,sans-serif; font-size:13px; background-color:rgb(254,254,242)">
+  error 1786 
+</div> 
+<div style="margin:0px; padding:0px; font-family:Verdana,Arial,Helvetica,sans-serif; font-size:13px; background-color:rgb(254,254,242)">
+    
+</div> 
+<div style="margin:0px; padding:0px; font-family:Verdana,Arial,Helvetica,sans-serif; font-size:13px; background-color:rgb(254,254,242)">
+  3、原理： 
+</div> 
+<div style="margin:0px; padding:0px; font-family:Verdana,Arial,Helvetica,sans-serif; font-size:13px; background-color:rgb(254,254,242)">
+  由于create table ...select语句会生成两个sql，一个是DDL创建表SQL，一个是insert into 插入数据的sql。由于DDL会导致自动提交，所以这个sql至少需要两个GTID，但是GTID模式下，只能给这个sql生成一个GTID，如果强制执行会导致和上面更新非事务引擎一样的结果。 
+</div> 
+<div style="margin:0px; padding:0px; font-family:Verdana,Arial,Helvetica,sans-serif; font-size:13px; background-color:rgb(254,254,242)">
+    
+</div> 
+<div style="margin:0px; padding:0px; font-family:Verdana,Arial,Helvetica,sans-serif; font-size:13px; background-color:rgb(254,254,242)">
+    
+</div> 
+<div style="margin:0px; padding:0px; font-family:Verdana,Arial,Helvetica,sans-serif; font-size:13px; background-color:rgb(254,254,242)">
+  （三）、一个sql同事操作innodb引擎和myisam引擎： 
+</div> 
+<div style="margin:0px; padding:0px; font-family:Verdana,Arial,Helvetica,sans-serif; font-size:13px; background-color:rgb(254,254,242)">
+  case重现：t1表是innodb，t2表是myisam 
+</div> 
+<div style="margin:0px; padding:0px; font-family:Verdana,Arial,Helvetica,sans-serif; font-size:13px; background-color:rgb(254,254,242)">
+  1、update t1,t2 set t1.id=1000,t2.id=1000 where t1.id=t2.id; 
+</div> 
+<div style="margin:0px; padding:0px; font-family:Verdana,Arial,Helvetica,sans-serif; font-size:13px; background-color:rgb(254,254,242)">
+  2、报错：1785 
+</div> 
+<div style="margin:0px; padding:0px; font-family:Verdana,Arial,Helvetica,sans-serif; font-size:13px; background-color:rgb(254,254,242)">
+  3、原理和第二个相同。 
+</div> 
+<div style="margin:0px; padding:0px; font-family:Verdana,Arial,Helvetica,sans-serif; font-size:13px; background-color:rgb(254,254,242)">
+    
+</div> 
+<div style="margin:0px; padding:0px; font-family:Verdana,Arial,Helvetica,sans-serif; font-size:13px; background-color:rgb(254,254,242)">
+    
+</div> 
+<div style="margin:0px; padding:0px; font-family:Verdana,Arial,Helvetica,sans-serif; font-size:13px; background-color:rgb(254,254,242)">
+    
+</div> 
+<div style="margin:0px; padding:0px; font-family:Verdana,Arial,Helvetica,sans-serif; font-size:13px; background-color:rgb(254,254,242)">
+  （四）、在一个replication grouop 中，所有的mysql必须要统一开启或者关闭GTID功能。 
+</div> 
+<div style="margin:0px; padding:0px; font-family:Verdana,Arial,Helvetica,sans-serif; font-size:13px; background-color:rgb(254,254,242)">
+  1、case重现： 
+</div> 
+<div style="margin:0px; padding:0px; font-family:Verdana,Arial,Helvetica,sans-serif; font-size:13px; background-color:rgb(254,254,242)">
+  将一个未开启gtid的slave通过原始的binlog和pos方式连接到开启GTID的master。 
+</div> 
+<div style="margin:0px; padding:0px; font-family:Verdana,Arial,Helvetica,sans-serif; font-size:13px; background-color:rgb(254,254,242)">
+    
+</div> 
+<div style="margin:0px; padding:0px; font-family:Verdana,Arial,Helvetica,sans-serif; font-size:13px; background-color:rgb(254,254,242)">
+  2、报错： 
+</div> 
+<div style="margin:0px; padding:0px; font-family:Verdana,Arial,Helvetica,sans-serif; font-size:13px; background-color:rgb(254,254,242)">
+  The slave IO thread stops because the master has @@GLOBAL.GTID_MODE ON and this server has @@GLOBAL.GTID_MODE OFF。 
+</div> 
+<div style="margin:0px; padding:0px; font-family:Verdana,Arial,Helvetica,sans-serif; font-size:13px; background-color:rgb(254,254,242)">
+    
+</div> 
+<div style="margin:0px; padding:0px; font-family:Verdana,Arial,Helvetica,sans-serif; font-size:13px; background-color:rgb(254,254,242)">
+    
+</div> 
+<div style="margin:0px; padding:0px; font-family:Verdana,Arial,Helvetica,sans-serif; font-size:13px; background-color:rgb(254,254,242)">
+    
+</div> 
+<div style="margin:0px; padding:0px; font-family:Verdana,Arial,Helvetica,sans-serif; font-size:13px; background-color:rgb(254,254,242)"> 
+ <span style="margin:0px; padding:0px; line-height:1.5"><span style='margin:0px; padding:0px; line-height:1.5; font-family:"Microsoft Tai Le"'>（五）、在一个replication group中，如果开启GTID以后，就不再允许使用classic的复制方式：</span></span> 
+</div> 
+<div style="margin:0px; padding:0px; font-family:Verdana,Arial,Helvetica,sans-serif; font-size:13px; background-color:rgb(254,254,242)"> 
+ <span style="margin:0px; padding:0px; line-height:1.5"><span style='margin:0px; padding:0px; line-height:1.5; font-family:"Microsoft Tai Le"'>1、case重现：</span></span> 
+</div> 
+<div style="margin:0px; padding:0px; font-family:Verdana,Arial,Helvetica,sans-serif; font-size:13px; background-color:rgb(254,254,242)"> 
+ <span style="margin:0px; padding:0px; line-height:1.5"><span style='margin:0px; padding:0px; line-height:1.5; font-family:"Microsoft Tai Le"'>将一个开启gtid的slave通过原始的binlog和pos方式连接到开启GTID的master。</span></span> 
+</div> 
+<div style="margin:0px; padding:0px; font-family:Verdana,Arial,Helvetica,sans-serif; font-size:13px; background-color:rgb(254,254,242)"> 
+ <span style="margin:0px; padding:0px; line-height:1.5"><span style='margin:0px; padding:0px; line-height:1.5; font-family:"Microsoft Tai Le"'> </span></span> 
+</div> 
+<div style="margin:0px; padding:0px; font-family:Verdana,Arial,Helvetica,sans-serif; font-size:13px; background-color:rgb(254,254,242)"> 
+ <span style='margin:0px; padding:0px; line-height:1.5; font-family:"Microsoft Tai Le"'>2、报错：</span> 
+</div> 
+<div style="margin:0px; padding:0px; font-family:Verdana,Arial,Helvetica,sans-serif; font-size:13px; background-color:rgb(254,254,242)"> 
+ <span style='margin:0px; padding:0px; line-height:1.5; font-family:"Microsoft Tai Le"'>ERROR 1776(HY000)：Parameters MASTER_LOG_FILE，MASTER_LOG_POS，RELAY_LOG_FILE and RELAY_LOG_POS cannot be set when MASTER_AUTO_POSITION is active。</span> 
+</div> 
+<div style="margin:0px; padding:0px; font-family:Verdana,Arial,Helvetica,sans-serif; font-size:13px; background-color:rgb(254,254,242)"> 
+ <span style='margin:0px; padding:0px; line-height:1.5; font-family:"Microsoft Tai Le"'> </span> 
+</div> 
+<div style="margin:0px; padding:0px; font-family:Verdana,Arial,Helvetica,sans-serif; font-size:13px; background-color:rgb(254,254,242)"> 
+ <span style="margin:0px; padding:0px; line-height:1.5"><span style='margin:0px; padding:0px; line-height:1.5; font-family:"Microsoft Tai Le"'> </span></span> 
+</div> 
+<div style="margin:0px; padding:0px; font-family:Verdana,Arial,Helvetica,sans-serif; font-size:13px; background-color:rgb(254,254,242)">
+    
+</div> 
+<div style="margin:0px; padding:0px; font-family:Verdana,Arial,Helvetica,sans-serif; font-size:13px; background-color:rgb(254,254,242)"> 
+ <span style='margin:0px; padding:0px; line-height:1.5; font-family:"Microsoft Tai Le"'>（六）、GTID_MODE是not online的：</span> 
+</div> 
+<div style="margin:0px; padding:0px; font-family:Verdana,Arial,Helvetica,sans-serif; font-size:13px; background-color:rgb(254,254,242)"> 
+ <span style='margin:0px; padding:0px; line-height:1.5; font-family:"Microsoft Tai Le"'>需要重启才能生效，官方暂时不支持平滑的从classic replication切换到GTID replication。</span> 
+</div> 
+<div style="margin:0px; padding:0px; font-family:Verdana,Arial,Helvetica,sans-serif; font-size:13px; background-color:rgb(254,254,242)"> 
+ <span style='margin:0px; padding:0px; line-height:1.5; font-family:"Microsoft Tai Le"'>贴士：</span> 
+</div> 
+<div style="margin:0px; padding:0px; font-family:Verdana,Arial,Helvetica,sans-serif; font-size:13px; background-color:rgb(254,254,242)"> 
+ <span style='margin:0px; padding:0px; line-height:1.5; font-family:"Microsoft Tai Le"'>由于GTID开启需要重启系统，一个复制组中所有的实例必须统一开启或者关闭GTID,开启GTID以后不能在使用classic复制。</span> 
+</div> 
+<div style="margin:0px; padding:0px; font-family:Verdana,Arial,Helvetica,sans-serif; font-size:13px; background-color:rgb(254,254,242)"> 
+ <span style='margin:0px; padding:0px; line-height:1.5; font-family:"Microsoft Tai Le"'>问题：</span> 
+</div> 
+<div style="margin:0px; padding:0px; font-family:Verdana,Arial,Helvetica,sans-serif; font-size:13px; background-color:rgb(254,254,242)"> 
+ <span style='margin:0px; padding:0px; line-height:1.5; font-family:"Microsoft Tai Le"'>也就是说在线业务必须统一关闭，然后再启动，会导致服务中断。</span> 
+</div> 
+<div style="margin:0px; padding:0px; font-family:Verdana,Arial,Helvetica,sans-serif; font-size:13px; background-color:rgb(254,254,242)">
+    
+</div> 
+<div style="margin:0px; padding:0px; font-family:Verdana,Arial,Helvetica,sans-serif; font-size:13px; background-color:rgb(254,254,242)"> 
+ <span style='margin:0px; padding:0px; line-height:1.5; font-family:"Microsoft Tai Le"'>解决方案：</span> 
+</div> 
+<div style="margin:0px; padding:0px; font-family:Verdana,Arial,Helvetica,sans-serif; font-size:13px; background-color:rgb(254,254,242)"> 
+ <span style='margin:0px; padding:0px; line-height:1.5; font-family:"Microsoft Tai Le"'>1、针对这种情况，社区有两种对应的平滑升级的方案：</span> 
+</div> 
+<div style="margin:0px; padding:0px; font-family:Verdana,Arial,Helvetica,sans-serif; font-size:13px; background-color:rgb(254,254,242)"> 
+ <span style='margin:0px; padding:0px; line-height:1.5; font-family:"Microsoft Tai Le"'>一种是booking.com出品，这两个差别在淘宝9月份数据库月报里有说明，加了一个桥接的服务器，既可以运行GTID模式下，也可以运行classic模式下。</span> 
+</div> 
+<div style="margin:0px; padding:0px; font-family:Verdana,Arial,Helvetica,sans-serif; font-size:13px; background-color:rgb(254,254,242)">
+  另外一种是facebook.com出品。所有的slave可以在开启GTID模式的情况下，可以连接到没有开启GTID模式的master。 
+ <span style='margin:0px; padding:0px; line-height:1.5; font-family:"Microsoft Tai Le"'><br style="margin:0px; padding:0px"> </span> 
+</div> 
+<div style="margin:0px; padding:0px; font-family:Verdana,Arial,Helvetica,sans-serif; font-size:13px; background-color:rgb(254,254,242)"> 
+ <span style='margin:0px; padding:0px; line-height:1.5; font-family:"Microsoft Tai Le"'> </span> 
+</div> 
+<div style="margin:0px; padding:0px; font-family:Verdana,Arial,Helvetica,sans-serif; font-size:13px; background-color:rgb(254,254,242)"> 
+ <span style='margin:0px; padding:0px; line-height:1.5; font-family:"Microsoft Tai Le"'>2、可以关闭一个部分，停止写操作，但是读不用，将另一部分改成GTID模式。</span> 
+</div> 
+<div style="margin:0px; padding:0px; font-family:Verdana,Arial,Helvetica,sans-serif; font-size:13px; background-color:rgb(254,254,242)"> 
+ <span style='margin:0px; padding:0px; line-height:1.5; font-family:"Microsoft Tai Le"'> </span> 
+</div> 
+<div style="margin:0px; padding:0px; font-family:Verdana,Arial,Helvetica,sans-serif; font-size:13px; background-color:rgb(254,254,242)"> 
+ <span style='margin:0px; padding:0px; line-height:1.5; font-family:"Microsoft Tai Le"'> </span> 
+</div> 
+<div style="margin:0px; padding:0px; font-family:Verdana,Arial,Helvetica,sans-serif; font-size:13px; background-color:rgb(254,254,242)"> 
+ <span style='margin:0px; padding:0px; line-height:1.5; font-family:"Microsoft Tai Le"'>（七）、Temporary tables。</span> 
+</div> 
+<div style="margin:0px; padding:0px; font-family:Verdana,Arial,Helvetica,sans-serif; font-size:13px; background-color:rgb(254,254,242)"> 
+ <span style='margin:0px; padding:0px; line-height:1.5; font-family:"Microsoft Tai Le"'>1、create temporary table和drop temporary table语句一样在GTID环境下不支持。</span> 
+</div> 
+<div style="margin:0px; padding:0px; font-family:Verdana,Arial,Helvetica,sans-serif; font-size:13px; background-color:rgb(254,254,242)"> 
+ <span style='margin:0px; padding:0px; line-height:1.5; font-family:"Microsoft Tai Le"'>如果--</span>enforce_gtid_consistency参数开启，并且autocommit=1，那么可以使用。 
+</div> 
+<div style="margin:0px; padding:0px; font-family:Verdana,Arial,Helvetica,sans-serif; font-size:13px; background-color:rgb(254,254,242)">
+    
+</div> 
+<div style="margin:0px; padding:0px; font-family:Verdana,Arial,Helvetica,sans-serif; font-size:13px; background-color:rgb(254,254,242)">
+    
+</div> 
+<div style="margin:0px; padding:0px; font-family:Verdana,Arial,Helvetica,sans-serif; font-size:13px; background-color:rgb(254,254,242)"> 
+ <span style='margin:0px; padding:0px; line-height:1.5; font-family:"Microsoft Tai Le"'>（八）、关于Errant transaction</span> 
+</div> 
+<div style="margin:0px; padding:0px; font-family:Verdana,Arial,Helvetica,sans-serif; font-size:13px; background-color:rgb(254,254,242)"> 
+ <span style='margin:0px; padding:0px; line-height:1.5; font-family:"Microsoft Tai Le"'>1、Errant transaction：所谓的errant transaction也就是没有规范的从master执行，而是直接从slave执行的事务。</span> 
+</div> 
+<div style="margin:0px; padding:0px; font-family:Verdana,Arial,Helvetica,sans-serif; font-size:13px; background-color:rgb(254,254,242)"> 
+ <span style='margin:0px; padding:0px; line-height:1.5; font-family:"Microsoft Tai Le"'>2、由于GTID协议的原因，最开始已经提过（参见GTID architecture）。</span> 
+</div> 
+<div style="margin:0px; padding:0px; font-family:Verdana,Arial,Helvetica,sans-serif; font-size:13px; background-color:rgb(254,254,242)">
+  3、如果slave有errant transaction产生，由于GTID协议中的规则，很容易导致failover失败。主要有两种情况： 
+</div> 
+<div style="margin:0px; padding:0px; font-family:Verdana,Arial,Helvetica,sans-serif; font-size:13px; background-color:rgb(254,254,242)"> 
+ <span style='margin:0px; padding:0px; line-height:1.5; font-family:"Microsoft Tai Le"'> </span> 
+</div> 
+<div style="margin:0px; padding:0px; font-family:Verdana,Arial,Helvetica,sans-serif; font-size:13px; background-color:rgb(254,254,242)"> 
+ <span style='margin:0px; padding:0px; line-height:1.5; font-family:"Microsoft Tai Le"'>a、在slave上做了无用的或者临时的errant transaction操作，如果该slave升级成为master的话，连接到它的所有数据库都会获取到这个事务。如果一样就会产生冲突。</span> 
+</div> 
+<div style="margin:0px; padding:0px; font-family:Verdana,Arial,Helvetica,sans-serif; font-size:13px; background-color:rgb(254,254,242)"> 
+ <span style='margin:0px; padding:0px; line-height:1.5; font-family:"Microsoft Tai Le"'> </span> 
+</div> 
+<div style="margin:0px; padding:0px; font-family:Verdana,Arial,Helvetica,sans-serif; font-size:13px; background-color:rgb(254,254,242)">
+  b、由于做了这个errant transaction这个事务以后，其他的slave还没有获取这个errant transaction的GTID，需要从master上发同步给其他的slave，但是主的binlog又被删掉了，这时将会报错。 
+</div> 
+<div style="margin:0px; padding:0px; font-family:Verdana,Arial,Helvetica,sans-serif; font-size:13px; background-color:rgb(254,254,242)">
+    
+</div> 
+<div style="margin:0px; padding:0px; font-family:Verdana,Arial,Helvetica,sans-serif; font-size:13px; background-color:rgb(254,254,242)"> 
+ <span style='margin:0px; padding:0px; line-height:1.5; font-family:"Microsoft Tai Le"'>4、总之：尽量避免产生errant transaction。可以通过：set sql_log_bin=off的方式在slave执行sql，但是也要考虑到数据一致性。</span> 
+</div>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/552b03ba3cbb775b8782da5668b3f6af/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">如何查看Android的ANR（无响应）异常</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/5ae108d988b7cb8b04f963838c398534/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">Android中的五大数据存储方式之一——文件存储</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>LIO-SAM学习笔记-整体框架 - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="LIO-SAM学习笔记-整体框架" />
+<meta property="og:description" content="开源SLAM系统：LIO-SAM源码解析 | 攻城狮の家
+LIO-SAM在LEGO-LOAM上的改进
+1. 由于支持手持设备，因此没有对地面点进行特殊处理
+2. 紧耦合的lidar&#43;imu融合模块，充分利用了imu数据，对快速旋转的场景有更好的鲁棒性
+3. 融合GPS，全局地图可以在没有回环的情况下有更好的全局一致性
+4. 框架易于扩展
+其代码的组织结构来看，和LEGO-LOAM区别不大：
+imageProjection.cpp：点云投影成深度图，并分类，利用ring和time给每个点去畸变。featureExtraction.cpp：提取边缘点和平面点特征。mapOptmization.cpp：基于因子图，构建点线、点面约束，回环，GPS等各种因子，最后增量平滑全图位姿。imuPreintegration.cpp：联合优化激光odom和imu数据，估计IMU偏差，进行实时的里程计估算。 大多数IMU坐标系为NED（北、东、下），robot_localization假定的IMU数据使用ENU坐标系
+当k时刻的状态发生变化，则通过imu积分得到的k&#43;1时刻的状态也会发生相应变化，而基于滑动窗口的后端优化或者因子图优化中，这些状态量会经常进行调整，如果每次状态调整都要重新计算imu积分，计算量太大。发现预积分量和k以及k&#43;1时刻的状态无关，因此当k时刻状态发生变化时，不需要将imu数据重新积分。
+由于imu的零偏会随时间发生变化，因此零偏也是系统的优化变量之一，虽然预积分量与两帧之间的速度和姿态无关，但与零偏相关。为了避免零偏的变化导致预积分重新积分，考虑到零偏的变化在段时间内变化非常小，因此将零偏一阶泰勒展开近似。
+预积分量关于零偏的雅克比矩阵会在预积分计算的时候一起计算，因此，当零偏被优化调整之后，根据计算好的雅克比矩阵对预积分量进行更新即可。
+实际系统是离散的，因此，每收到一帧新的imu数据后更新一次预积分量，这是一个求和的过程
+预积分如何使用？
+预积分约束了相邻两帧的状态量，两帧之间的零偏几乎相等。imu累计会漂移，在VIO中imu预积分和重投影误差共同约束两帧之间的状态量。
+蓝色圆圈代表关键帧位姿,蓝色矩形代表关键帧速度和零偏,橙色矩形代表 IMU 预积分约束,可
+以看到,它可以约束相邻帧的位姿、速度和零偏,绿色矩形代表 lidar 里程记的帧间约束,其约束相邻两帧的位置和姿态
+imu标定方法
+【学习总结】Lidar与IMU标定_larry_dongy的博客-CSDN博客_lidar和imu标定
+lidar坐标系与imu坐标系不一致。手眼标定算法，即使先计算出两帧 lidar 之间的旋转(通过 ICP 、 NDT 等点云配准算法),然后计算出两帧 IMU 之间的旋转( IMU 陀螺仪积分),然后通过手眼标定的方式求解出外参
+lidar和imu之间的旋转外参比平移外参对性能的影响更大 。
+以带有IMU加速计和gps信号的小车为例，用EKF滤波和图优化方法求解某一时刻小车行驶的位置（t=0时，位置为0）
+EKF：
+假设已知IMU和gps传感器的噪声方差
+预测。 假设已知t-1时刻小车的位置（后验），将其与（t-1）~t时间段内imu的积分相加，可以预测t时刻小车的位置（先验）更新。 计算卡尔曼增益，用t时刻的gps数据更新预测的位置，得到t时刻的位置（后验）。 （这里有点递归的感jio。。。）
+图优化：
+小车在t-1时刻的位置加上（t-1）~t时间段内的imu积分，得到t时刻预测的小车位置。将该值与t时刻gps观测数据相减后做平方和，得到一个代价函数，其中，小车位置是待优化变量。最后用最优化方法求解即可。" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/3d0cf992abf0d60f2100b18a4861943d/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2022-06-09T17:44:09+08:00" />
+<meta property="article:modified_time" content="2022-06-09T17:44:09+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">LIO-SAM学习笔记-整体框架</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p><a href="http://xchu.net/2020/08/19/51liosam/" rel="nofollow" title="开源SLAM系统：LIO-SAM源码解析 | 攻城狮の家">开源SLAM系统：LIO-SAM源码解析 | 攻城狮の家</a></p> 
+<p>LIO-SAM在LEGO-LOAM上的改进</p> 
+<p>1. 由于支持手持设备，因此没有对地面点进行特殊处理</p> 
+<p>2. 紧耦合的lidar+imu融合模块，充分利用了imu数据，对快速旋转的场景有更好的鲁棒性</p> 
+<p>3. 融合GPS，全局地图可以在没有回环的情况下有更好的全局一致性</p> 
+<p>4. 框架易于扩展</p> 
+<p><img alt="" height="485" src="https://images2.imgbox.com/0f/00/ax4OFIwz_o.png" width="847"></p> 
+<p> <img alt="" height="416" src="https://images2.imgbox.com/08/5c/9GDvgRlG_o.png" width="847"></p> 
+<p>其代码的组织结构来看，和LEGO-LOAM区别不大：</p> 
+<ul><li>imageProjection.cpp：点云投影成深度图，并分类，利用ring和time给每个点去畸变。</li><li>featureExtraction.cpp：提取边缘点和平面点特征。</li><li>mapOptmization.cpp：基于因子图，构建点线、点面约束，回环，GPS等各种因子，最后增量平滑全图位姿。</li><li>imuPreintegration.cpp：联合优化激光odom和imu数据，估计IMU偏差，进行实时的里程计估算。</li></ul> 
+<p>大多数IMU坐标系为NED（北、东、下），robot_localization假定的IMU数据使用ENU坐标系</p> 
+<p>当k时刻的状态发生变化，则通过imu积分得到的k+1时刻的状态也会发生相应变化，而基于滑动窗口的后端优化或者因子图优化中，这些状态量会经常进行调整，如果每次状态调整都要重新计算imu积分，计算量太大。发现预积分量和k以及k+1时刻的状态无关，因此当k时刻状态发生变化时，不需要将imu数据重新积分。</p> 
+<p>由于imu的零偏会随时间发生变化，因此零偏也是系统的优化变量之一，虽然预积分量与两帧之间的速度和姿态无关，但与零偏相关。为了避免零偏的变化导致预积分重新积分，考虑到零偏的变化在段时间内变化非常小，因此将零偏一阶泰勒展开近似。</p> 
+<p>预积分量关于零偏的雅克比矩阵会在预积分计算的时候一起计算，因此，当零偏被优化调整之后，根据计算好的雅克比矩阵对预积分量进行更新即可。</p> 
+<p>实际系统是离散的，因此，每收到一帧新的imu数据后更新一次预积分量，这是一个求和的过程</p> 
+<p>预积分如何使用？</p> 
+<p>预积分约束了相邻两帧的状态量，两帧之间的零偏几乎相等。imu累计会漂移，在VIO中imu预积分和重投影误差共同约束两帧之间的状态量。</p> 
+<p><img alt="" height="648" src="https://images2.imgbox.com/5e/71/nsrqjsdD_o.png" width="829"></p> 
+<p> 蓝色圆圈代表关键帧位姿,蓝色矩形代表关键帧速度和零偏,橙色矩形代表 IMU 预积分约束,可<br> 以看到,它可以约束相邻帧的位姿、速度和零偏,绿色矩形代表 lidar 里程记的帧间约束,其约束相邻两帧的位置和姿态</p> 
+<p>imu标定方法</p> 
+<p><a href="https://blog.csdn.net/tfb760/article/details/108532974" title="【学习总结】Lidar与IMU标定_larry_dongy的博客-CSDN博客_lidar和imu标定">【学习总结】Lidar与IMU标定_larry_dongy的博客-CSDN博客_lidar和imu标定</a></p> 
+<p>lidar坐标系与imu坐标系不一致。手眼标定算法，即使先计算出两帧 lidar 之间的旋转(通过 ICP 、 NDT 等点云配准算法),然后计算出两帧 IMU 之间的旋转( IMU 陀螺仪积分),然后通过手眼标定的方式求解出外参</p> 
+<p><img alt="" height="68" src="https://images2.imgbox.com/5d/e7/atHALj96_o.png" width="373"></p> 
+<p></p> 
+<p>lidar和imu之间的旋转外参比平移外参对性能的影响更大 。</p> 
+<p style="margin-left:0;text-align:justify;">以带有IMU加速计和gps信号的小车为例，用EKF滤波和图优化方法求解某一时刻小车行驶的位置（t=0时，位置为0）</p> 
+<p style="margin-left:0;text-align:justify;">EKF：</p> 
+<p style="margin-left:0;text-align:justify;">假设已知IMU和gps传感器的噪声方差</p> 
+<ol><li style="text-align:justify;">预测。 假设已知t-1时刻小车的位置（后验），将其与（t-1）~t时间段内imu的积分相加，可以预测t时刻小车的位置（先验）</li><li style="text-align:justify;">更新。 计算卡尔曼增益，用t时刻的gps数据更新预测的位置，得到t时刻的位置（后验）。</li></ol> 
+<p style="margin-left:0;text-align:justify;">（这里有点递归的感jio。。。）</p> 
+<p style="margin-left:0;text-align:justify;">图优化：</p> 
+<p style="margin-left:0;text-align:justify;">小车在t-1时刻的位置加上（t-1）~t时间段内的imu积分，得到t时刻预测的小车位置。将该值与t时刻gps观测数据相减后做平方和，得到一个代价函数，其中，小车位置是待优化变量。最后用最优化方法求解即可。</p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/1581bf707ad2eb01bbdf8027e5699d24/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">信创操作系统--麒麟Kylin桌面操作系统（项目九 实用工具软件：截图、字体、扫描、打印机）</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/7aaad2bd6d07776fc9a770becec69a31/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">图解把云服务器和办公环境服务器组成局域网</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

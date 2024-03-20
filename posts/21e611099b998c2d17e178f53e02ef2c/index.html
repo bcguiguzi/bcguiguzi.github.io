@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>【Hbase】记一次磁盘空间写满后出现的事故及感想 - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="【Hbase】记一次磁盘空间写满后出现的事故及感想" />
+<meta property="og:description" content="持续稳定运行一年多的Hbase，就在前天晚上突然有RegionServer挂掉了，首先尝试了一下启动这个挂掉的RegionServer，执行指令：
+hbase-daemon.sh start regionserver 这个RegionServer还真的启动成功了，于是乎进行了一次手动balance，进入hbase shell，执行“balance”指令，一直返回false，打开Hbase管理页面后也发现region并没有balance，负载失败。索性把整个集群关闭重启吧（集群规模很小，重启速度很快，其实这种操作不太好）。重启Hbase之后，几个RegionServer都没有问题，并且region数已经平衡。问题搞定。
+然而问题真的搞定了吗？
+好景不长，第二天那个RegionServer又挂了，这里一定有事情，没办法看一下日志吧。下面是RegionServer中报的错，当我看到是Hadoop的错，我也相应的看了一下HDFS的日志，也出现同样的异常。
+org.apache.hadoop.ipc.RemoteException(java.io.IOException): File /hbase/data/default/T_ENV_EMISSION_HOUR2/001e47b6f14026e7b221c085d63febf4/recovered.edits/0000000000002862983.temp could only be replicated to 0 nodes instead of minReplication (=1). There are 2 datanode(s) running and no node(s) are excluded in this operation. at org.apache.hadoop.hdfs.server.blockmanagement.BlockManager.chooseTarget(BlockManager.java:1441) at org.apache.hadoop.hdfs.server.namenode.FSNamesystem.getAdditionalBlock(FSNamesystem.java:2702) at org.apache.hadoop.hdfs.server.namenode.NameNodeRpcServer.addBlock(NameNodeRpcServer.java:584) at org.apache.hadoop.hdfs.protocolPB.ClientNamenodeProtocolServerSideTranslatorPB.addBlock(ClientNamenodeProtocolServerSideTranslatorPB.java:440) at org.apache.hadoop.hdfs.protocol.proto.ClientNamenodeProtocolProtos$ClientNamenodeProtocol$2.callBlockingMethod(ClientNamenodeProtocolProtos.java) at org.apache.hadoop.ipc.ProtobufRpcEngine$Server$ProtoBufRpcInvoker.call(ProtobufRpcEngine.java:585) at org.apache.hadoop.ipc.RPC$Server.call(RPC.java:928) at org.apache.hadoop.ipc.Server$Handler$1.run(Server.java:2013) at org.apache.hadoop.ipc.Server$Handler$1.run(Server.java:2009) at java.security.AccessController.doPrivileged(Native Method) at javax.security.auth.Subject.doAs(Subject.java:415) at org.apache.hadoop.security.UserGroupInformation.doAs(UserGroupInformation.java:1556) at org.apache.hadoop.ipc.Server$Handler.run(Server.java:2007) at org.apache.hadoop.ipc.Client.call(Client.java:1410) at org.apache.hadoop.ipc.Client.call(Client.java:1363) at org.apache.hadoop.ipc.ProtobufRpcEngine$Invoker.invoke(ProtobufRpcEngine.java:206) at com." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/21e611099b998c2d17e178f53e02ef2c/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2019-03-06T19:56:25+08:00" />
+<meta property="article:modified_time" content="2019-03-06T19:56:25+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">【Hbase】记一次磁盘空间写满后出现的事故及感想</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p>持续稳定运行一年多的Hbase，就在前天晚上突然有RegionServer挂掉了，首先尝试了一下启动这个挂掉的RegionServer，执行指令：</p> 
+<pre class="has"><code>hbase-daemon.sh start regionserver</code></pre> 
+<p>这个RegionServer还真的启动成功了，于是乎进行了一次手动balance，进入hbase shell，执行“balance”指令，一直返回false，打开Hbase管理页面后也发现region并没有balance，负载失败。索性把整个集群关闭重启吧（集群规模很小，重启速度很快，其实这种操作不太好）。重启Hbase之后，几个RegionServer都没有问题，并且region数已经平衡。问题搞定。</p> 
+<p>然而问题真的搞定了吗？</p> 
+<p>好景不长，第二天那个RegionServer又挂了，这里一定有事情，没办法看一下日志吧。下面是RegionServer中报的错，当我看到是Hadoop的错，我也相应的看了一下HDFS的日志，也出现同样的异常。</p> 
+<pre class="has"><code>org.apache.hadoop.ipc.RemoteException(java.io.IOException): File /hbase/data/default/T_ENV_EMISSION_HOUR2/001e47b6f14026e7b221c085d63febf4/recovered.edits/0000000000002862983.temp could only be replicated to 0 nodes instead of minReplication (=1).  There are 2 datanode(s) running and no node(s) are excluded in this operation.
+	at org.apache.hadoop.hdfs.server.blockmanagement.BlockManager.chooseTarget(BlockManager.java:1441)
+	at org.apache.hadoop.hdfs.server.namenode.FSNamesystem.getAdditionalBlock(FSNamesystem.java:2702)
+	at org.apache.hadoop.hdfs.server.namenode.NameNodeRpcServer.addBlock(NameNodeRpcServer.java:584)
+	at org.apache.hadoop.hdfs.protocolPB.ClientNamenodeProtocolServerSideTranslatorPB.addBlock(ClientNamenodeProtocolServerSideTranslatorPB.java:440)
+	at org.apache.hadoop.hdfs.protocol.proto.ClientNamenodeProtocolProtos$ClientNamenodeProtocol$2.callBlockingMethod(ClientNamenodeProtocolProtos.java)
+	at org.apache.hadoop.ipc.ProtobufRpcEngine$Server$ProtoBufRpcInvoker.call(ProtobufRpcEngine.java:585)
+	at org.apache.hadoop.ipc.RPC$Server.call(RPC.java:928)
+	at org.apache.hadoop.ipc.Server$Handler$1.run(Server.java:2013)
+	at org.apache.hadoop.ipc.Server$Handler$1.run(Server.java:2009)
+	at java.security.AccessController.doPrivileged(Native Method)
+	at javax.security.auth.Subject.doAs(Subject.java:415)
+	at org.apache.hadoop.security.UserGroupInformation.doAs(UserGroupInformation.java:1556)
+	at org.apache.hadoop.ipc.Server$Handler.run(Server.java:2007)
+
+	at org.apache.hadoop.ipc.Client.call(Client.java:1410)
+	at org.apache.hadoop.ipc.Client.call(Client.java:1363)
+	at org.apache.hadoop.ipc.ProtobufRpcEngine$Invoker.invoke(ProtobufRpcEngine.java:206)
+	at com.sun.proxy.$Proxy15.addBlock(Unknown Source)
+	at sun.reflect.GeneratedMethodAccessor34.invoke(Unknown Source)
+	at sun.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:43)
+	at java.lang.reflect.Method.invoke(Method.java:606)
+	at org.apache.hadoop.io.retry.RetryInvocationHandler.invokeMethod(RetryInvocationHandler.java:190)
+	at org.apache.hadoop.io.retry.RetryInvocationHandler.invoke(RetryInvocationHandler.java:103)
+	at com.sun.proxy.$Proxy15.addBlock(Unknown Source)
+	at org.apache.hadoop.hdfs.protocolPB.ClientNamenodeProtocolTranslatorPB.addBlock(ClientNamenodeProtocolTranslatorPB.java:361)
+	at sun.reflect.GeneratedMethodAccessor33.invoke(Unknown Source)
+	at sun.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:43)
+	at java.lang.reflect.Method.invoke(Method.java:606)
+	at org.apache.hadoop.hbase.fs.HFileSystem$1.invoke(HFileSystem.java:294)
+	at com.sun.proxy.$Proxy16.addBlock(Unknown Source)
+	at org.apache.hadoop.hdfs.DFSOutputStream$DataStreamer.locateFollowingBlock(DFSOutputStream.java:1439)
+	at org.apache.hadoop.hdfs.DFSOutputStream$DataStreamer.nextBlockOutputStream(DFSOutputStream.java:1261)
+	at org.apache.hadoop.hdfs.DFSOutputStream$DataStreamer.run(DFSOutputStream.java:525)</code></pre> 
+<p>org.apache.hadoop.ipc.RemoteException(java.io.IOException): File could only be replicated to 0 nodes instead of minReplication (=1).  There are 2 datanode(s) running and no node(s) are excluded in this operation.</p> 
+<p>主要意思就是没有节点可以进行复制了。虽然有两个活着的datanode，但不能做操作。</p> 
+<p>在网上查了一下很多人说遇到这个异常是可以通过以下几个方面排查：</p> 
+<p>防火墙是否关闭</p> 
+<p>HDFS多次格式化clusterID不一致，删除/tmp和数据存放目录再重新格式化（我想问，那我之前的数据怎么办？？？）</p> 
+<p>按照上述的说法，检查了防火墙没有问题，又去/tmp/hadoop-root和存放数据的目录下的current文件夹下的VERSION文件一一对比了一下clusterID甚至是namespaceID，都是一致的。那问题会出在哪里呢？</p> 
+<p>想了一下，这个问题归根结底还是HDFS中出现的，再去HDFS监控页面看看HDFS的运行情况吧。进入界面一看，几乎没有剩余的磁盘空间，怪不得会说有两个Datanode活跃，但无法进行文件复制（也就是写入），原来是磁盘空间满了。再回想一下，已经运行一年多了，而且集群规模，存储空间又都很小，接入的数据多了，是会出现磁盘空间写满的情况。于是，扩容吧。。。扩节点吧。。。</p> 
+<p>自己的一些感想：日志，日志，日志。重要的事情说三遍，如果早一些看日志，就能早一些发现问题，前期的故障排查不能草草了事，即使当时启动起来了，也不见得就根治了这一故障，好好的运行这么久出现故障肯定是有它内在原因的。以后遇到问题，一定要追溯其根本所在，不可草草了事。</p> 
+<p> </p> 
+<p> </p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/58dd3557dc0ecd35a3e6e15a4912c947/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">解决HTTP 414“请求URI太长”的思路</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/65642ebcae628e2f6764a06194b7cfc2/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">微擎小程序 精美企业公司官网小程序33.0开源更新到16套风格</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

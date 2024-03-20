@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>深入了解下redis的acl - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="深入了解下redis的acl" />
+<meta property="og:description" content="介绍
+在Redis6之前的版本，我们只能使用requirepass参数给default用户配置登录密码，同一个redis集群的所有开发都共享default用户，难免会出现误操作把别人的key删掉或者数据泄露的情况，那之前我们也可以使用rename command的方式给一些危险函数重命名或禁用，但是这样也防止不了自己的key被其他人访问。
+登陆Redis Server只需要输入密码（前提配置了密码 requirepass ）即可，不需要输入用户名，而且密码也是明文配置到配置文件中，安全性不高。并且应用连接也使用该密码，导致应用有所有权限处理数据，风险也极高。在Redis6.0有了ACL之后，终于解决了这些不安全的因素，可以按照不同的需求设置相关的用户和权限。
+因此Redis6版本推出了ACL(Access Control List)访问控制权限的功能，基于此功能，我们可以设置多个用户，并且给每个用户单独设置命令权限和数据权限。 为了保证向下兼容，Redis6保留了default用户和使用requirepass的方式给default用户设置密码，默认情况下default用户拥有Redis最大权限，我们使用redis-cli连接时如果没有指定用户名，用户也是默认default。
+我们可以在配置文件中或者命令行中设置ACL，如果使用配置config文件的话需要重启服务，使用配置aclfile文件或者命令行授权的话无需重启Redis服务但需要及时将权限持久化到磁盘，否则下次重启的时候无法恢复该权限， 本文来介绍下Redis 6.0 ACL相关的配置和使用，具体的说明可以查看官方文档：ACL | Redis
+配置文件模式
+配置ACL的方式有两种，一种是在config文件中直接配置，另一种是在外部aclfile中配置。配置的命令是一样的，但是两种方式只能选择其中一种。
+ACL规则
+ACL是使用DSL（Domain specific language）定义的，该DSL描述了用户能够执行的操作。该规则始终从上到下，从左到右应用，因为规则的顺序对于理解用户的实际权限很重要。ACL规则可以在redis.conf文件以及users.acl文件中配置DSL，也可以在命令行中通过ACL命令配置。
+启用和禁用用户
+on：启用用户：可以以该用户身份进行认证。
+off：禁用用户：不再可以使用此用户进行身份验证，但是已经通过身份验证的连接仍然可以使用。
+允许和禁止调用命令
+&#43;&lt;command&gt;：将命令添加到用户可以调用的命令列表中。
+-&lt;command&gt;：将命令从用户可以调用的命令列表中移除。
+&#43;@&lt;category&gt;：允许用户调用 &lt;category&gt; 类别中的所有命令，有效类别为@admin，@set，@sortedset等，可通过调用ACL CAT命令查看完整列表。特殊类别@all表示所有命令，包括当前和未来版本中存在的所有命令。
+-@&lt;category&gt;：禁止用户调用&lt;category&gt; 类别中的所有命令。
+&#43;&lt;command&gt;|subcommand：允许使用已禁用命令的特定子命令。
+allcommands：&#43;@all的别名。包括当前存在的命令以及将来通过模块加载的所有命令。
+nocommands：-@all的别名，禁止调用所有命令。
+允许或禁止访问某些Key
+~&lt;pattern&gt;：添加可以在命令中提及的键模式。例如~*和* allkeys 允许所有键。
+* resetkeys：使用当前模式覆盖所有允许的模式。如： ~foo:* ~bar:* resetkeys ~objects:* ，客户端只能访问匹配 object:* 模式的 KEY。
+为用户配置有效密码
+&gt;&lt;password&gt;：将此密码添加到用户的有效密码列表中。例如，&gt;mypass将“mypass”添加到有效密码列表中。该命令会清除用户的nopass标记。每个用户可以有任意数量的有效密码。
+&lt;&lt;password&gt;：从有效密码列表中删除此密码。若该用户的有效密码列表中没有此密码则会返回错误信息。
+#&lt;hash&gt;：将此SHA-256哈希值添加到用户的有效密码列表中。该哈希值将与为ACL用户输入的密码的哈希值进行比较。允许用户将哈希存储在users.acl文件中，而不是存储明文密码。仅接受SHA-256哈希值，因为密码哈希必须为64个字符且小写的十六进制字符。
+!&lt;hash&gt;：从有效密码列表中删除该哈希值。当不知道哈希值对应的明文是什么时很有用。
+nopass：移除该用户已设置的所有密码，并将该用户标记为nopass无密码状态：任何密码都可以登录。resetpass命令可以清除nopass这种状态。
+resetpass：情况该用户的所有密码列表。而且移除nopass状态。resetpass之后用户没有关联的密码同时也无法使用无密码登录，因此resetpass之后必须添加密码或改为nopass状态才能正常登录。
+reset：重置用户状态为初始状态。执行以下操作resetpass，resetkeys，off，-@all。
+使用下面的命令查看help文档： ACL LIST 我们可以使用ACL LIST命令来查看当前活动的ACL，默认情况下，有一个“default”用户：
+其中user为关键词，default为用户名，后面的内容为ACL规则描述，on表示活跃的，nopass表示无密码， ~* 表示所有key，&#43;@all表示所有命令。所以上面的命令表示活跃用户default无密码且可以访问所有命令以及所有数据。
+授权方式：" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/4e310499da508d5ce59dfc8a0b440feb/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2022-09-01T19:45:22+08:00" />
+<meta property="article:modified_time" content="2022-09-01T19:45:22+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">深入了解下redis的acl</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p>介绍<br> 在Redis6之前的版本，我们只能使用requirepass参数给default用户配置登录密码，同一个redis集群的所有开发都共享default用户，难免会出现误操作把别人的key删掉或者数据泄露的情况，那之前我们也可以使用rename command的方式给一些危险函数重命名或禁用，但是这样也防止不了自己的key被其他人访问。</p> 
+<p>登陆Redis Server只需要输入密码（前提配置了密码 requirepass ）即可，不需要输入用户名，而且密码也是明文配置到配置文件中，安全性不高。并且应用连接也使用该密码，导致应用有所有权限处理数据，风险也极高。在Redis6.0有了<a href="https://redis.io/topics/acl" rel="nofollow" title="ACL">ACL</a>之后，终于解决了这些不安全的因素，可以按照不同的需求设置相关的用户和权限。</p> 
+<p>因此Redis6版本推出了ACL(Access Control List)访问控制权限的功能，基于此功能，我们可以设置多个用户，并且给每个用户单独设置命令权限和数据权限。 为了保证向下兼容，Redis6保留了default用户和使用requirepass的方式给default用户设置密码，默认情况下default用户拥有Redis最大权限，我们使用redis-cli连接时如果没有指定用户名，用户也是默认default。</p> 
+<p>我们可以在配置文件中或者命令行中设置ACL，如果使用配置config文件的话需要重启服务，使用配置aclfile文件或者命令行授权的话无需重启Redis服务但需要及时将权限持久化到磁盘，否则下次重启的时候无法恢复该权限， 本文来介绍下Redis 6.0 ACL相关的配置和使用，具体的说明可以查看官方文档：<a href="https://redis.io/docs/manual/security/acl/" rel="nofollow" title="ACL | Redis">ACL | Redis</a></p> 
+<p>配置文件模式<br> 配置ACL的方式有两种，一种是在config文件中直接配置，另一种是在外部aclfile中配置。配置的命令是一样的，但是两种方式只能选择其中一种。</p> 
+<p>ACL规则<br> ACL是使用DSL（Domain specific language）定义的，该DSL描述了用户能够执行的操作。该规则始终从上到下，从左到右应用，因为规则的顺序对于理解用户的实际权限很重要。ACL规则可以在redis.conf文件以及users.acl文件中配置DSL，也可以在命令行中通过ACL命令配置。<br> 启用和禁用用户<br> on：启用用户：可以以该用户身份进行认证。<br> off：禁用用户：不再可以使用此用户进行身份验证，但是已经通过身份验证的连接仍然可以使用。<br> 允许和禁止调用命令<br> +&lt;command&gt;：将命令添加到用户可以调用的命令列表中。<br> -&lt;command&gt;：将命令从用户可以调用的命令列表中移除。<br> +@&lt;category&gt;：允许用户调用 &lt;category&gt; 类别中的所有命令，有效类别为@admin，@set，@sortedset等，可通过调用ACL CAT命令查看完整列表。特殊类别@all表示所有命令，包括当前和未来版本中存在的所有命令。<br> -@&lt;category&gt;：禁止用户调用&lt;category&gt; 类别中的所有命令。<br> +&lt;command&gt;|subcommand：允许使用已禁用命令的特定子命令。<br> allcommands：+@all的别名。包括当前存在的命令以及将来通过模块加载的所有命令。<br> nocommands：-@all的别名，禁止调用所有命令。<br> 允许或禁止访问某些Key<br>  ~&lt;pattern&gt;：添加可以在命令中提及的键模式。例如~*和* allkeys 允许所有键。<br> * resetkeys：使用当前模式覆盖所有允许的模式。如： ~foo:* ~bar:*  resetkeys ~objects:* ，客户端只能访问匹配 object:* 模式的 KEY。<br> 为用户配置有效密码<br> &gt;&lt;password&gt;：将此密码添加到用户的有效密码列表中。例如，&gt;mypass将“mypass”添加到有效密码列表中。该命令会清除用户的nopass标记。每个用户可以有任意数量的有效密码。<br> &lt;&lt;password&gt;：从有效密码列表中删除此密码。若该用户的有效密码列表中没有此密码则会返回错误信息。<br> #&lt;hash&gt;：将此SHA-256哈希值添加到用户的有效密码列表中。该哈希值将与为ACL用户输入的密码的哈希值进行比较。允许用户将哈希存储在users.acl文件中，而不是存储明文密码。仅接受SHA-256哈希值，因为密码哈希必须为64个字符且小写的十六进制字符。<br> !&lt;hash&gt;：从有效密码列表中删除该哈希值。当不知道哈希值对应的明文是什么时很有用。<br> nopass：移除该用户已设置的所有密码，并将该用户标记为nopass无密码状态：任何密码都可以登录。resetpass命令可以清除nopass这种状态。<br> resetpass：情况该用户的所有密码列表。而且移除nopass状态。resetpass之后用户没有关联的密码同时也无法使用无密码登录，因此resetpass之后必须添加密码或改为nopass状态才能正常登录。<br> reset：重置用户状态为初始状态。执行以下操作resetpass，resetkeys，off，-@all。</p> 
+<h2><strong>使用下面的命令查看help文档：</strong></h2> 
+<p><img alt="" height="359" src="https://images2.imgbox.com/1e/94/Q9Yga7r6_o.png" width="693"></p> 
+<p> </p> 
+<h3 id="ACL%20LIST">ACL LIST</h3> 
+<p>我们可以使用ACL LIST命令来查看当前活动的ACL，默认情况下，有一个“<em>default</em>”用户：</p> 
+<p style="text-align:center;"><img alt="" src="https://images2.imgbox.com/22/59/ESba13o6_o.png"></p> 
+<p> 其中user为关键词，default为用户名，后面的内容为ACL规则描述，on表示活跃的，nopass表示无密码， ~* 表示所有key，+@all表示所有命令。所以上面的命令表示活跃用户default无密码且可以访问所有命令以及所有数据。</p> 
+<p><strong>授权方式：</strong></p> 
+<table><thead><tr><th> <p>参数</p> </th><th>说明</th></tr></thead><tbody><tr><td>+</td><td>授权用户操作命令权限</td></tr><tr><td>-</td><td>回收用户操作命令权限</td></tr><tr><td>+@</td><td>添加一类命令</td></tr><tr><td>-@</td><td>回收一类命令</td></tr><tr><td>allcommands/+@all</td><td>允许所有命令执行</td></tr><tr><td>nocommands/-@all</td><td>不运行所有命令操作执行</td></tr></tbody></table> 
+<p>由于Redis是高性能的数据库，正常情况下每秒可以接收百万级别的请求，因此我们的用户密码一定要是非常复杂的组合，否则很容易就会被暴利跑字典给破解了。</p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/e99b49173d891f1be0d9f77d2b19d928/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">浏览器-错误 未能加载 PDF 文档</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/f8f6151fa703a849cce154ca4ed001d2/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">LRF-解决MySQL安装到start servic出现安装未响应或超时未安装成功</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

@@ -1,0 +1,476 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>RabbitMQ系列（19）--实现在RabbitMQ宕机的情况下对消息进行处理 - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="RabbitMQ系列（19）--实现在RabbitMQ宕机的情况下对消息进行处理" />
+<meta property="og:description" content="前言：在生产环境中由于一些不明原因，导致RabbitMQ重启的情况下，在RabbitMQ重启期间生产者投递消息失败，生产者发送的消息会丢失，那这时候就需要去想在极端的情况下，RabbitMQ集群不可用的时候，如果去处理投递失败的消息。
+1、在config包里新建一个名为ConfirmConfig的类用于编写配置交换机、队列、routingkey的代码
+代码如下：
+package com.ken.springbootrqbbitmq.config; import org.springframework.amqp.core.*; import org.springframework.beans.factory.annotation.Qualifier; import org.springframework.context.annotation.Bean; import org.springframework.context.annotation.Configuration; @Configuration public class ConfirmConfig { //交换机 public static final String EXCHANGE_NAME = &#34;confirm_exchange&#34;; //队列 public static final String QUEUE_NAME = &#34;confirm_queue&#34;; //routingkey public static final String ROUTING_KEY = &#34;confirm&#34;; //声明交换机 @Bean(&#34;confirmExchange&#34;) public DirectExchange confirmExchange() { return new DirectExchange(EXCHANGE_NAME); } //声明队列 @Bean(&#34;confirmQueue&#34;) public Queue confirmQueue() { return QueueBuilder.durable(QUEUE_NAME).build(); } //绑定交换机和队列 @Bean public Binding queueBindingExchange(@Qualifier(&#34;confirmQueue&#34;) Queue confirmQueue, @Qualifier(&#34;confirmExchange&#34;) DirectExchange confirmExchange) { return BindingBuilder." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/b9148b037cc17f6687d55c8035ef117f/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-07-06T23:15:16+08:00" />
+<meta property="article:modified_time" content="2023-07-06T23:15:16+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">RabbitMQ系列（19）--实现在RabbitMQ宕机的情况下对消息进行处理</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p>前言：在生产环境中由于一些不明原因，导致RabbitMQ重启的情况下，在RabbitMQ重启期间生产者投递消息失败，生产者发送的消息会丢失，那这时候就需要去想在极端的情况下，RabbitMQ集群不可用的时候，如果去处理投递失败的消息。</p> 
+<p></p> 
+<p>1、在config包里新建一个名为ConfirmConfig的类用于编写配置交换机、队列、routingkey的代码</p> 
+<p><img alt="" height="651" src="https://images2.imgbox.com/1a/66/zmk0R3yB_o.png" width="417"></p> 
+<p>代码如下：</p> 
+<pre><code class="language-java">package com.ken.springbootrqbbitmq.config;
+
+import org.springframework.amqp.core.*;
+import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+
+@Configuration
+public class ConfirmConfig {
+
+    //交换机
+    public static final String EXCHANGE_NAME = "confirm_exchange";
+
+    //队列
+    public static final String QUEUE_NAME = "confirm_queue";
+
+    //routingkey
+    public static final String ROUTING_KEY = "confirm";
+
+    //声明交换机
+    @Bean("confirmExchange")
+    public DirectExchange confirmExchange() {
+        return new DirectExchange(EXCHANGE_NAME);
+    }
+
+    //声明队列
+    @Bean("confirmQueue")
+    public Queue confirmQueue() {
+        return QueueBuilder.durable(QUEUE_NAME).build();
+    }
+
+    //绑定交换机和队列
+    @Bean
+    public Binding queueBindingExchange(@Qualifier("confirmQueue") Queue confirmQueue,
+                                        @Qualifier("confirmExchange") DirectExchange confirmExchange) {
+        return BindingBuilder.bind(confirmQueue).to(confirmExchange).with(ROUTING_KEY);
+    }
+
+}</code></pre> 
+<p></p> 
+<p>2、在controller包里新建一个名为ProducerController的类用于编写充当生产者发送消息的代码</p> 
+<p><img alt="" height="588" src="https://images2.imgbox.com/6e/c0/QncOaSgC_o.png" width="416"></p> 
+<p>代码如下：</p> 
+<pre><code class="language-java">package com.ken.springbootrqbbitmq.controller;
+
+import com.ken.springbootrqbbitmq.config.ConfirmConfig;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.amqp.rabbit.core.RabbitTemplate;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
+
+@Slf4j
+@RestController
+@RequestMapping("/confirm")
+public class ProducerController {
+
+    @Autowired(required = false)
+    private RabbitTemplate rabbitTemplate;
+
+    //发消息
+    @GetMapping("/sendMessage/{message}")
+    public void sendMessage(@PathVariable String message) {
+        rabbitTemplate.convertAndSend(ConfirmConfig.EXCHANGE_NAME,
+                ConfirmConfig.ROUTING_KEY,message);
+        log.info("发送消息内容：{}",message);
+    }
+
+}</code></pre> 
+<p></p> 
+<p>3、在consumer包里新建一个名为Consumer的类用于编写充当消费者消费消息的代码</p> 
+<p><img alt="" height="613" src="https://images2.imgbox.com/38/12/M6fWyQm9_o.png" width="417"></p> 
+<p>代码如下：</p> 
+<pre><code class="language-java">package com.ken.springbootrqbbitmq.consumer;
+
+import com.ken.springbootrqbbitmq.config.ConfirmConfig;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.amqp.core.Message;
+import org.springframework.amqp.rabbit.annotation.RabbitListener;
+import org.springframework.stereotype.Component;
+
+@Slf4j
+@Component
+public class Consumer {
+
+    @RabbitListener(queues = ConfirmConfig.QUEUE_NAME)
+    public void receiveConfirmMessage(Message message) {
+        String msg = new String(message.getBody());
+        log.info("接收到队列的消息为：{}",msg);
+    }
+
+}</code></pre> 
+<p></p> 
+<p>4、启动项目，在浏览器地址栏调用发送消息的接口，查看生产者是否运行成功并能发送消息<a href="http://localhost:8080/confirm/sendMessage/%E6%88%91%E6%98%AF%E6%B6%88%E6%81%AF" rel="nofollow" title="http://localhost:8080/confirm/sendMessage/我是消息">http://localhost:8080/confirm/sendMessage/我是消息</a></p> 
+<p>例：</p> 
+<p><img alt="" height="45" src="https://images2.imgbox.com/5c/27/3SgmUAO0_o.png" width="463"></p> 
+<p>效果图： <img alt="" height="374" src="https://images2.imgbox.com/7f/8b/CCtebV0Y_o.png" width="1200"></p> 
+<p></p> 
+<p>5、前言里我们说过，怎么在RabbitMQ宕机的情况下，保证生产者发送的消息不丢失呢，这时候就需要用到回调函数了，交换机本身收到消息后会确认消息，如果交换机没有确认或者确认消息失败，都视为发送消息失败，然后触发回调接口，告诉生产者消息发送失败，这样，消息接收成功与否我们都能通过回调方法返回的消息知道了</p> 
+<p>(1)在config包里新建一个名为MyCallBack的类用于编写交换机的确认回调方法</p> 
+<p><img alt="" height="632" src="https://images2.imgbox.com/b4/25/9tR3h4GM_o.png" width="426"></p> 
+<p>代码如下：</p> 
+<pre><code class="language-java">package com.ken.springbootrqbbitmq.config;
+
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.amqp.rabbit.connection.CorrelationData;
+import org.springframework.amqp.rabbit.core.RabbitTemplate;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.stereotype.Component;
+
+import javax.annotation.PostConstruct;
+
+@Slf4j
+@Component
+public class MyCallBack implements RabbitTemplate.ConfirmCallback {
+
+    @Autowired(required = false)
+    private RabbitTemplate rabbitTemplate;
+
+    /**
+     * @PostConstruct注解,在对象加载完依赖注入后执行，它通常都是一些初始化的操作，但初始化可能依赖于注入的其他组件，所以要等依赖全部加载完再执行
+     */
+    @PostConstruct
+    public void init() {
+        //把当前实现类MyCallBack注入到RabbitTemplate类的ConfirmCallback接口里面
+        rabbitTemplate.setConfirmCallback(this);
+    }
+
+    /**
+     * 交换机确认回调方法
+     * 1、第一个参数：correlationData保存回调消息的ID以及相关信息
+     * 2、第二个参数：交换机收到消息就返回true，否则返回false
+     * 3、第三参数：原因（返回失败的原因，如果成功返回的是null）
+     */
+    @Override
+    public void confirm(CorrelationData correlationData, boolean ack, String cause) {
+        String id =  correlationData != null ? correlationData.getId() : "";
+        if(ack) {
+            log.info("交换机已经收到id为{}的消息",id);
+        }else {
+            log.info("交换机还未收到id为{}的消息，原因为{}",id,cause);
+        }
+
+    }
+}</code></pre> 
+<p></p> 
+<p>6、在上述步骤可得知confirm方法有一个类型为CorrelationData的参数correlationData，这个参数实际上是空的，并没有值，需要生产者发送，correlationData参数才会有值（connfirm方法的其余两个参数ack和cause默认有值）所以我们需要修改生产者的代码</p> 
+<p><img alt="" height="533" src="https://images2.imgbox.com/70/37/M6WFLlCj_o.png" width="1200"></p> 
+<p> 代码如下：</p> 
+<pre><code class="language-java">package com.ken.springbootrqbbitmq.controller;
+
+import com.ken.springbootrqbbitmq.config.ConfirmConfig;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.amqp.rabbit.connection.CorrelationData;
+import org.springframework.amqp.rabbit.core.RabbitTemplate;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
+
+@Slf4j
+@RestController
+@RequestMapping("/confirm")
+public class ProducerController {
+
+    @Autowired(required = false)
+    private RabbitTemplate rabbitTemplate;
+
+    //发消息
+    @GetMapping("/sendMessage/{message}")
+    public void sendMessage(@PathVariable String message) {
+        CorrelationData correlationData = new CorrelationData("1");
+        rabbitTemplate.convertAndSend(ConfirmConfig.EXCHANGE_NAME,
+                ConfirmConfig.ROUTING_KEY,message,correlationData);
+        log.info("发送消息内容：{}",message);
+    }
+
+}</code></pre> 
+<p></p> 
+<p>7、在配置文件加上以下配置开启交换机确认发布模式</p> 
+<pre><code class="language-java">spring.rabbitmq.publisher-confirm-type=correlated</code></pre> 
+<p>配置文件完整内容如下：</p> 
+<pre><code class="language-java">spring.rabbitmq.host=192.168.194.150
+spring.rabbitmq.port=5672
+spring.rabbitmq.username=admin
+spring.rabbitmq.password=123456
+#none(禁用发布确认模式，默认值)
+#correlated(发布消息成功到交换机后会触发回调方法)
+#simple(和correlated一样会触发回调方法，消息发布成功后使用rabbitTemplate调用waitForConfirms或waitForConfirmsOrDie方法，等待broker节点返回发送结果)
+spring.rabbitmq.publisher-confirm-type=correlated</code></pre> 
+<p>效果图：</p> 
+<p><img alt="" height="219" src="https://images2.imgbox.com/69/02/40QtZzts_o.png" width="1130"></p> 
+<p></p> 
+<p>8、启动项目，在浏览器地址栏调用发送消息的接口，可以看到生产者发送消息成功，交换机调用了回调接口，消费者成功消费消息</p> 
+<p><a href="http://localhost:8080/confirm/sendMessage/%E6%88%91%E6%98%AF%E6%B6%88%E6%81%AF" rel="nofollow" title="http://localhost:8080/confirm/sendMessage/我是消息">http://localhost:8080/confirm/sendMessage/我是消息</a></p> 
+<p>例：</p> 
+<p><img alt="" height="45" src="https://images2.imgbox.com/48/7c/K8dkUL5l_o.png" width="463"></p> 
+<p>效果图： </p> 
+<p><img alt="" height="406" src="https://images2.imgbox.com/f8/53/ASuZuDmz_o.png" width="1200"></p> 
+<p></p> 
+<p>9、把生产者要发送到的交换机改成不存在的，用以模拟交换机出问题的情景</p> 
+<pre><code class="language-java">package com.ken.springbootrqbbitmq.controller;
+
+import com.ken.springbootrqbbitmq.config.ConfirmConfig;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.amqp.rabbit.connection.CorrelationData;
+import org.springframework.amqp.rabbit.core.RabbitTemplate;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
+
+@Slf4j
+@RestController
+@RequestMapping("/confirm")
+public class ProducerController {
+
+    @Autowired(required = false)
+    private RabbitTemplate rabbitTemplate;
+
+    //发消息
+    @GetMapping("/sendMessage/{message}")
+    public void sendMessage(@PathVariable String message) {
+        CorrelationData correlationData = new CorrelationData("1");
+        rabbitTemplate.convertAndSend(ConfirmConfig.EXCHANGE_NAME + "1",
+                ConfirmConfig.ROUTING_KEY,message,correlationData);
+        log.info("发送消息内容：{}",message);
+    }
+
+}</code></pre> 
+<p>效果图：</p> 
+<p><img alt="" height="593" src="https://images2.imgbox.com/e5/51/GTCRaSnT_o.png" width="735"></p> 
+<p></p> 
+<p>10、重新启动项目，在浏览器地址栏调用发送消息的接口，可以看到生产者发送消息成功，交换机调用了回调接口并打印出了交换机接收消息失败的原因</p> 
+<p><a href="http://localhost:8080/confirm/sendMessage/%E6%88%91%E6%98%AF%E6%B6%88%E6%81%AF" rel="nofollow" title="http://localhost:8080/confirm/sendMessage/我是消息">http://localhost:8080/confirm/sendMessage/我是消息</a></p> 
+<p>例：</p> 
+<p><img alt="" height="45" src="https://images2.imgbox.com/45/43/Eyi9eoHf_o.png" width="463"></p> 
+<p>效果图： </p> 
+<p><img alt="" height="397" src="https://images2.imgbox.com/b6/98/y4h10wkc_o.png" width="1200"></p> 
+<p></p> 
+<p>11、把RoutingKey改成不存在的，用以模拟队列出问题的情景</p> 
+<pre><code class="language-java">package com.ken.springbootrqbbitmq.controller;
+
+import com.ken.springbootrqbbitmq.config.ConfirmConfig;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.amqp.rabbit.connection.CorrelationData;
+import org.springframework.amqp.rabbit.core.RabbitTemplate;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
+
+@Slf4j
+@RestController
+@RequestMapping("/confirm")
+public class ProducerController {
+
+    @Autowired(required = false)
+    private RabbitTemplate rabbitTemplate;
+
+    //发消息
+    @GetMapping("/sendMessage/{message}")
+    public void sendMessage(@PathVariable String message) {
+        CorrelationData correlationData = new CorrelationData("2");
+        rabbitTemplate.convertAndSend(ConfirmConfig.EXCHANGE_NAME,
+                ConfirmConfig.ROUTING_KEY + "2",message,correlationData);
+        log.info("发送消息内容：{}",message);
+    }
+
+}</code></pre> 
+<p>效果图：</p> 
+<p><img alt="" height="636" src="https://images2.imgbox.com/36/a2/xrEPEWBH_o.png" width="741"></p> 
+<p></p> 
+<p>12、重新启动项目，在浏览器地址栏调用发送消息的接口，可以看到生产者发送消息成功，交换机调用了回调接口并打印出交换机接收消息成功，但消费者没有消费成功的日志输出，因为RoutingKey错了，交换机没有把消息发送到队列里，队列里没消息，自然消费者也就没有消费到消息了，但这个结果不符合我们的预期，因为这次丢失了消息，丢失消息却没有回馈消息丢失，实际上应该调用回调接口反馈消息丢失，所以我们需要继续往下改进代码。</p> 
+<p><a href="http://localhost:8080/confirm/sendMessage/%E6%88%91%E6%98%AF%E6%B6%88%E6%81%AF" rel="nofollow" title="http://localhost:8080/confirm/sendMessage/我是消息">http://localhost:8080/confirm/sendMessage/我是消息</a></p> 
+<p>例：</p> 
+<p><img alt="" height="45" src="https://images2.imgbox.com/bb/5a/O8SpaQ4Q_o.png" width="463"></p> 
+<p>效果图： </p> 
+<p><img alt="" height="360" src="https://images2.imgbox.com/bd/70/FCPbmUXt_o.png" width="1200"></p> 
+<p></p> 
+<p>13、给配置文件加上以下配置，用以回退消息</p> 
+<pre><code class="language-java">spring.rabbitmq.publisher-returns=true</code></pre> 
+<p>配置文件完整内容如下：</p> 
+<pre><code class="language-java">spring.rabbitmq.host=192.168.194.150
+spring.rabbitmq.port=5672
+spring.rabbitmq.username=admin
+spring.rabbitmq.password=123456
+#none(禁用发布确认模式，默认值)
+#correlated(发布消息成功到交换机后会触发回调方法)
+#simple(和correlated一样会触发回调方法，消息发布成功后使用rabbitTemplate调用waitForConfirms或waitForConfirmsOrDie方法，等待broker节点返回发送结果)
+spring.rabbitmq.publisher-confirm-type=correlated
+#一旦投递消息失败或者路由失败，是否回退消息给生产者
+spring.rabbitmq.publisher-returns=true</code></pre> 
+<p></p> 
+<p>14、使用RabbitTemplate的内置接口回退消息</p> 
+<p>代码如下：</p> 
+<pre><code class="language-java">package com.ken.springbootrqbbitmq.config;
+
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.amqp.core.Message;
+import org.springframework.amqp.rabbit.connection.CorrelationData;
+import org.springframework.amqp.rabbit.core.RabbitTemplate;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.stereotype.Component;
+
+import javax.annotation.PostConstruct;
+
+@Slf4j
+@Component
+public class MyCallBack implements RabbitTemplate.ConfirmCallback,RabbitTemplate.ReturnCallback {
+
+    @Autowired(required = false)
+    private RabbitTemplate rabbitTemplate;
+
+    /**
+     * @PostConstruct注解,在对象加载完依赖注入后执行，它通常都是一些初始化的操作，但初始化可能依赖于注入的其他组件，所以要等依赖全部加载完再执行
+     */
+    @PostConstruct
+    public void init() {
+        //把当前实现类MyCallBack注入到RabbitTemplate类的ConfirmCallback接口里面
+        rabbitTemplate.setConfirmCallback(this);
+        //把当前实现类MyCallBack注入到RabbitTemplate类的ReturnCallback接口里面
+        rabbitTemplate.setReturnCallback(this);
+    }
+
+    /**
+     * 交换机确认回调方法
+     * 1、第一个参数：correlationData保存回调消息的ID以及相关信息
+     * 2、第二个参数：交换机收到消息就返回true，否则返回false
+     * 3、第三参数：原因（返回失败的原因，如果成功返回的是null）
+     */
+    @Override
+    public void confirm(CorrelationData correlationData, boolean ack, String cause) {
+        String id =  correlationData != null ? correlationData.getId() : "";
+        if(ack) {
+            log.info("交换机已经收到id为{}的消息",id);
+        }else {
+            log.info("交换机还未收到id为{}的消息，原因为{}",id,cause);
+        }
+
+    }
+
+    /**
+     * 可以在当消息传递过程中不可达目的地时将消息返回给生产者
+     * @param message
+     * @param replyCode
+     * @param replyText
+     * @param exchange
+     * @param routingKey
+     */
+    @Override
+    public void returnedMessage(Message message, int replyCode, String replyText, String exchange, String routingKey) {
+        log.error("消息{}，被交换机{}退回，退回原因：{}，路由routingkey:{}",
+                new String(message.getBody()),exchange,replyText,routingKey);
+    }
+
+}</code></pre> 
+<p>15、重新启动项目，在浏览器地址栏调用发送消息的接口，可以看到生产者发送消息成功，交换机收到消息发不过去队列后把消息回退了，保证了消息不丢失。</p> 
+<p><a href="http://localhost:8080/confirm/sendMessage/%E6%88%91%E6%98%AF%E6%B6%88%E6%81%AF" rel="nofollow" title="http://localhost:8080/confirm/sendMessage/我是消息">http://localhost:8080/confirm/sendMessage/我是消息</a></p> 
+<p>例：</p> 
+<p><img alt="" height="45" src="https://images2.imgbox.com/cd/22/LlIgzDXj_o.png" width="463"></p> 
+<p>效果图：</p> 
+<p><img alt="" height="411" src="https://images2.imgbox.com/c6/29/M6KXuB8N_o.png" width="1200"></p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/9222b4464b4e1e15221af08f4eb4f35e/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">如何在服务器上安装miniconda</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/06915c70f051f71167e5a77237443f38/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">k8s集群部署Prometheus和Grafana</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

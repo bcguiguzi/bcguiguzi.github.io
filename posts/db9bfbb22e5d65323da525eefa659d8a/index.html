@@ -1,0 +1,553 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>4412 audio 分析 - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="4412 audio 分析" />
+<meta property="og:description" content="文章目录 1. 音频基本概念1.1 原理图1.2 IIS通信时序1.3 了解几个概念 2. 主从模式分析3. 时钟分析3.1 Audio sub system3.2 epll3.3 IIS 4. 修改记录 1. 音频基本概念 1.1 原理图 SOC与codec之间通信分为控制接口I2C和数据接口I2S，I2S有三个时钟信号，MCLK，BCLK，LRCLK，这三个时钟尤为重要。
+1.2 IIS通信时序 1.3 了解几个概念 采样频率(FS)：一秒采集多少个声音“像素”，每采集一个点，左右声道切换一次，等于左右声道切换的频率，对应LRCLK采样深度：一个声音点的数据宽度，一般一个声道16bit（ADC DAC精度），一个声音点32bitIISCLK(BCLK)：bit clk，音频采集的最小粒度，IISCLK=FS声道采样深度CODECLK(MCLK)：master clk，这个比较特殊，在主模式 mclk 由 soc 产生，一般为BCLK和LRCLK的整数倍，这个是soc强制要求的，别无它选。
+其实soc是冤枉的，它之所以要求这个的目的，是为了满足codec的要求，比如44.1khz采样频率，采样深度16，bclk为1.4112M，codec要求MCLK=11.2896M，正好是8倍的BCLK，256倍的FS
+从模式时，MCLK往往都是一颗固定频率的晶振比如24M的晶振，codec拿这个时钟通过内部的pll算出一个sysclk，频率也得是256fs等等，就是不用你soc提供了，我自己算一个。一般来说，用从模式比较好，codec内部的pll算的时钟比较精确，soc单纯靠分频来弄一个类似于11.289600MHz太难了。
+2. 主从模式分析 首先来分析一下 tiny4412 网卡的硬件设计支不支持从模式，从模式时，CDCLK 也就是 codec clk 还叫 IISCLK 是什么都不接的，使用外部晶振作为mclk，
+但是 tiny4412 使用的是 cdclk作为master，因为 tiny4412 不支持从模式。
+3. 时钟分析 4412 音频的时钟分为三部分，第一部分系统时钟，第二部分音频子系统的时钟，第三部分IIS控制器的时钟。
+3.1 Audio sub system 音频子系统的时钟输入有多个，EPLL、XXTI、SCLK_AUDIO0、还有外部输入的 cdclock，建议使用EPLL作为时钟输入，因为EPLL可以输出的时钟精度比较高，其它时钟源通过简单的分频都无法满足要求。至于输出给IIS控制器的时钟选择 audio bus clk 还是 i2sclk都可以，我在代码中使用的是 audio bus clk" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/db9bfbb22e5d65323da525eefa659d8a/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2021-06-16T11:06:31+08:00" />
+<meta property="article:modified_time" content="2021-06-16T11:06:31+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">4412 audio 分析</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p></p> 
+<div class="toc"> 
+ <h4>文章目录</h4> 
+ <ul><li><ul><li><a href="#1__1" rel="nofollow">1. 音频基本概念</a></li><li><ul><li><a href="#11__3" rel="nofollow">1.1 原理图</a></li><li><a href="#12_IIS_9" rel="nofollow">1.2 IIS通信时序</a></li><li><a href="#13__15" rel="nofollow">1.3 了解几个概念</a></li></ul> 
+   </li><li><a href="#2__30" rel="nofollow">2. 主从模式分析</a></li><li><a href="#3__36" rel="nofollow">3. 时钟分析</a></li><li><ul><li><a href="#31_Audio_sub_system_39" rel="nofollow">3.1 Audio sub system</a></li><li><a href="#32_epll_55" rel="nofollow">3.2 epll</a></li><li><a href="#33_IIS_129" rel="nofollow">3.3 IIS</a></li></ul> 
+   </li><li><a href="#4__187" rel="nofollow">4. 修改记录</a></li></ul> 
+ </li></ul> 
+</div> 
+<p></p> 
+<h3><a id="1__1"></a>1. 音频基本概念</h3> 
+<hr> 
+<h4><a id="11__3"></a>1.1 原理图</h4> 
+<p><img src="https://images2.imgbox.com/89/b4/tLyf81aJ_o.png" alt="在这里插入图片描述"></p> 
+<hr> 
+<p>SOC与codec之间通信分为控制接口I2C和数据接口I2S，I2S有三个时钟信号，MCLK，BCLK，LRCLK，这三个时钟尤为重要。</p> 
+<h4><a id="12_IIS_9"></a>1.2 IIS通信时序</h4> 
+<p><img src="https://images2.imgbox.com/34/7d/z5o1Anu0_o.png" alt="在这里插入图片描述"></p> 
+<hr> 
+<h4><a id="13__15"></a>1.3 了解几个概念</h4> 
+<hr> 
+<ul><li>采样频率(FS)：一秒采集多少个声音“像素”，每采集一个点，左右声道切换一次，等于左右声道切换的频率，对应LRCLK</li><li>采样深度：一个声音点的数据宽度，一般一个声道16bit（ADC DAC精度），一个声音点32bit</li><li>IISCLK(BCLK)：bit clk，音频采集的最小粒度，IISCLK=FS<em>声道</em>采样深度</li><li>CODECLK(MCLK)：master clk，这个比较特殊，在主模式 mclk 由 soc 产生，一般为BCLK和LRCLK的整数倍，这个是soc强制要求的，别无它选。<br> <img src="https://images2.imgbox.com/bf/c3/toiWU3Lt_o.png" alt="在这里插入图片描述"></li></ul> 
+<p>其实soc是冤枉的，它之所以要求这个的目的，是为了满足codec的要求，比如44.1khz采样频率，采样深度16，bclk为1.4112M，codec要求MCLK=11.2896M，正好是8倍的BCLK，256倍的FS<br> <img src="https://images2.imgbox.com/42/e2/yk6Litnf_o.png" alt="在这里插入图片描述"></p> 
+<p>从模式时，MCLK往往都是一颗固定频率的晶振比如24M的晶振，codec拿这个时钟通过内部的pll算出一个sysclk，频率也得是256fs等等，就是不用你soc提供了，我自己算一个。一般来说，用从模式比较好，codec内部的pll算的时钟比较精确，soc单纯靠分频来弄一个类似于11.289600MHz太难了。<br> <img src="https://images2.imgbox.com/51/7d/6fXxbdTS_o.png" alt="在这里插入图片描述"></p> 
+<h3><a id="2__30"></a>2. 主从模式分析</h3> 
+<hr> 
+<p>首先来分析一下 tiny4412 网卡的硬件设计支不支持从模式，从模式时，CDCLK 也就是 codec clk 还叫 IISCLK 是什么都不接的，使用外部晶振作为mclk，<br> 但是 tiny4412 使用的是 cdclk作为master，因为 tiny4412 不支持从模式。<br> <img src="https://images2.imgbox.com/74/34/U0nAtpr5_o.png" alt="在这里插入图片描述"></p> 
+<h3><a id="3__36"></a>3. 时钟分析</h3> 
+<hr> 
+<p>4412 音频的时钟分为三部分，第一部分系统时钟，第二部分音频子系统的时钟，第三部分IIS控制器的时钟。</p> 
+<h4><a id="31_Audio_sub_system_39"></a>3.1 Audio sub system</h4> 
+<hr> 
+<p>音频子系统的时钟输入有多个，EPLL、XXTI、SCLK_AUDIO0、还有外部输入的 cdclock，建议使用EPLL作为时钟输入，因为EPLL可以输出的时钟精度比较高，其它时钟源通过简单的分频都无法满足要求。至于输出给IIS控制器的时钟选择 audio bus clk 还是 i2sclk都可以，我在代码中使用的是 audio bus clk<br> <img src="https://images2.imgbox.com/7a/35/1t0P2mZE_o.png" alt="在这里插入图片描述"></p> 
+<p>代码中关于父时钟的设置，I2SCLK的父时钟可以不设置，反正我们用BUSCLK</p> 
+<pre><code>&amp;clock_audss {
+        assigned-clocks = &lt;&amp;clock_audss EXYNOS_MOUT_AUDSS&gt;,
+                         &lt;&amp;clock_audss EXYNOS_MOUT_I2S&gt;,
+                         &lt;&amp;clock_audss EXYNOS_DOUT_SRP&gt;,
+                         &lt;&amp;clock_audss EXYNOS_DOUT_AUD_BUS&gt;;
+         assigned-clock-parents = &lt;&amp;clock CLK_FOUT_EPLL&gt;,
+                         &lt;&amp;clock_audss EXYNOS_MOUT_AUDSS&gt;;
+ };
+</code></pre> 
+<h4><a id="32_epll_55"></a>3.2 epll</h4> 
+<hr> 
+<p>由于不同采样率的音频文件需要的mclk不同，比如44.1khz的需要11.2896M的时钟，48khz的需要12.288M的时钟，因此我们需要在代码中根据采样率，动态的调整EPLL的频率，达到最佳的播放效果，如果硬件上设计成从模式，就不用费这么大劲了。</p> 
+<pre><code>--- a/sound/soc/samsung/i2s.c
++++ b/sound/soc/samsung/i2s.c
+@@ -701,7 +701,8 @@ static int i2s_hw_params(struct snd_pcm_substream *substream,
+        struct i2s_dai *i2s = to_info(dai);
+        u32 mod, mask = 0, val = 0;
+        unsigned long flags;
+-
++      unsigned long epll_out_rate;
++      struct clk *fout_epll;
+        WARN_ON(!pm_runtime_active(dai-&gt;dev));
+
+        if (!is_secondary(i2s))
+@@ -780,6 +781,42 @@ static int i2s_hw_params(struct snd_pcm_substream *substream,
+        snd_soc_dai_init_dma_data(dai, &amp;i2s-&gt;dma_playback, &amp;i2s-&gt;dma_capture);
+
+        i2s-&gt;frmclk = params_rate(params);
++
++      switch (i2s-&gt;frmclk) {
++              case 8000:
++              case 12000:
++              case 16000:
++              case 24000:
++              case 32000:
++              case 48000:
++              case 64000:
++              case 96000:
++                      epll_out_rate = 49151992;
++                      break;
++              case 11025:
++              case 22050:
++              case 44100:
++              case 88200:
++                      epll_out_rate = 67737602;
++                      break;
++              default:
++                      printk(KERN_ERR "%s:%d Sampling Rate %u not supported!\n",
++                                      __func__, __LINE__, i2s-&gt;frmclk);
++                      return -EINVAL;
++      }
++
++      fout_epll = devm_clk_get(dai-&gt;dev, "fout_epll");
++      if(IS_ERR(fout_epll)){
++              printk("get fout_epll err\n");
++      }
++
++      if (clk_get_rate(fout_epll) != epll_out_rate)
++              if(clk_set_rate(fout_epll, epll_out_rate) != 0){
++                      printk("set epll rate err\n");
++              }
++
++      i2s_set_sysclk(dai, SAMSUNG_I2S_CDCLK, 0, SND_SOC_CLOCK_OUT);
++      i2s-&gt;rclk_srcrate = clk_get_rate(i2s-&gt;op_clk);
+       return 0;
+}
+
+</code></pre> 
+<p>49151992 和 67737602 是所需频率的整数倍的近似值，为什么只是近似值呢？因为EPLL能输出的范围也是有限的，EPLL在内核里是以一个Table的形式注册的</p> 
+<pre><code>static const struct samsung_pll_rate_table exynos4210_epll_rates[] __initconst = {
+        PLL_4600_RATE(192000000, 48, 3, 1,    0, 0),
+        PLL_4600_RATE(180633605, 45, 3, 1, 10381, 0),
+        PLL_4600_RATE(180000000, 45, 3, 1,    0, 0),
+        PLL_4600_RATE( 73727996, 73, 3, 3, 47710, 1),
+        PLL_4600_RATE( 67737602, 90, 4, 3, 20762, 1),
+        PLL_4600_RATE( 49151992, 49, 3, 3,  9961, 0),
+        PLL_4600_RATE( 45158401, 45, 3, 3, 10381, 0),
+        { /* sentinel */ }
+};
+</code></pre> 
+<p>如果你clk_set_rate设置的值不在Table里，那么就会被设置成相邻的值，差距很大！！</p> 
+<h4><a id="33_IIS_129"></a>3.3 IIS</h4> 
+<p><img src="https://images2.imgbox.com/c4/05/rMmCtCYX_o.png" alt="在这里插入图片描述"></p> 
+<hr> 
+<p>IIS 这里有一个父时钟的选择，以及分频系数的计算，audio sub system 里边的分频器值都是默认值不分频，所以这里的输入时钟就等于EPLL的时钟<br> 当然，为了保险起见，还是i2s-&gt;rclk_srcrate = clk_get_rate(i2s-&gt;op_clk);获取时钟频率<br> 设置父时钟是在set_sysclk函数中，根据clk_id进行设置</p> 
+<pre><code>        case SAMSUNG_I2S_RCLKSRC_0: /* clock corrsponding to IISMOD[10] := 0 */
+        case SAMSUNG_I2S_RCLKSRC_1: /* clock corrsponding to IISMOD[10] := 1 */
+                mask = 1 &lt;&lt; i2s_regs-&gt;rclksrc_off;
+
+                if ((i2s-&gt;quirks &amp; QUIRK_NO_MUXPSR)
+                                || (clk_id == SAMSUNG_I2S_RCLKSRC_0))
+                        clk_id = 0;
+                else
+                        clk_id = 1;
+
+                if (!any_active(i2s)) {
+                        if (i2s-&gt;op_clk &amp;&amp; !IS_ERR(i2s-&gt;op_clk)) {
+                                if ((clk_id &amp;&amp; !(mod &amp; rsrc_mask)) ||
+                                        (!clk_id &amp;&amp; (mod &amp; rsrc_mask))) {
+                                        clk_disable_unprepare(i2s-&gt;op_clk);
+                                        clk_put(i2s-&gt;op_clk);
+                                } else {
+                                        i2s-&gt;rclk_srcrate =
+                                                clk_get_rate(i2s-&gt;op_clk);
+                                        goto done;
+                                }
+                        }
+
+                        if (clk_id)
+                                i2s-&gt;op_clk = clk_get(&amp;i2s-&gt;pdev-&gt;dev,
+                                                "i2s_opclk1");
+                        else
+                                i2s-&gt;op_clk = clk_get(&amp;i2s-&gt;pdev-&gt;dev,
+                                                "i2s_opclk0");
+
+</code></pre> 
+<p>SAMSUNG_I2S_RCLKSRC_0 的值为0，在 simple_card 中误打误撞设置了父时钟为BUSCLK</p> 
+<pre><code>int asoc_simple_card_init_dai(struct snd_soc_dai *dai,
+                              struct asoc_simple_dai *simple_dai)
+{
+        int ret;
+
+        if (simple_dai-&gt;sysclk) {
+                ret = snd_soc_dai_set_sysclk(dai, 0, simple_dai-&gt;sysclk,
+                                            simple_dai-&gt;clk_direction);
+                if (ret &amp;&amp; ret != -ENOTSUPP) {
+                        dev_err(dai-&gt;dev, "simple-card: set_sysclk error\n");
+                        return ret;
+                }
+        }
+
+</code></pre> 
+<p>关于分频系数的设置默认是在i2s.c config_setup中，这里没有改动，整个音频部分的改动如下</p> 
+<h3><a id="4__187"></a>4. 修改记录</h3> 
+<hr> 
+<pre><code>From 579b374467fe9085777ffd1cc0fb70f32376efbf Mon Sep 17 00:00:00 2001
+From: lizuobin &lt;271526143@qq.com&gt;
+Date: Tue, 7 Aug 2018 22:51:47 +0800
+Subject: [PATCH] 4412:wm8960
+
+---
+arch/arm/boot/dts/exynos4.dtsi            |  5 +-
+arch/arm/boot/dts/exynos4412-tiny4412.dts | 95 +++++++++++++++++++++++++++----
+arch/arm/configs/exynos_defconfig        | 10 +++-
+sound/soc/codecs/wm8960.c                | 18 ++++--
+sound/soc/samsung/i2s.c                  | 39 ++++++++++++-
+5 files changed, 144 insertions(+), 23 deletions(-)
+
+diff --git a/arch/arm/boot/dts/exynos4.dtsi b/arch/arm/boot/dts/exynos4.dtsi
+index 6d59cc8..d740d1d 100644
+--- a/arch/arm/boot/dts/exynos4.dtsi
++++ b/arch/arm/boot/dts/exynos4.dtsi
+@@ -66,8 +66,9 @@
+        reg = &lt;0x03830000 0x100&gt;;
+        clocks = &lt;&amp;clock_audss EXYNOS_I2S_BUS&gt;,
+              &lt;&amp;clock_audss EXYNOS_DOUT_AUD_BUS&gt;,
+-            &lt;&amp;clock_audss EXYNOS_SCLK_I2S&gt;;
+-        clock-names = "iis", "i2s_opclk0", "i2s_opclk1";
++            &lt;&amp;clock_audss EXYNOS_SCLK_I2S&gt;,
++            &lt;&amp;clock CLK_FOUT_EPLL&gt;;
++        clock-names = "iis", "i2s_opclk0", "i2s_opclk1", "fout_epll";
+        #clock-cells = &lt;1&gt;;
+        clock-output-names = "i2s_cdclk0";
+        dmas = &lt;&amp;pdma0 12&gt;, &lt;&amp;pdma0 11&gt;, &lt;&amp;pdma0 10&gt;;
+diff --git a/arch/arm/boot/dts/exynos4412-tiny4412.dts b/arch/arm/boot/dts/exynos4412-tiny4412.dts
+index bc0862f..587095f 100644
+--- a/arch/arm/boot/dts/exynos4412-tiny4412.dts
++++ b/arch/arm/boot/dts/exynos4412-tiny4412.dts
+@@ -14,6 +14,7 @@
+/dts-v1/;
+#include "exynos4412.dtsi"
+#include &lt;dt-bindings/gpio/gpio.h&gt;
++#include &lt;dt-bindings/sound/samsung-i2s.h&gt;
+
+/ {
+    model = "FriendlyARM TINY4412 board based on Exynos4412";
+@@ -99,6 +100,88 @@
+            };
+        };
+    };
++
++    sound {
++        compatible = "simple-audio-card";
++        simple-audio-card,name = "wm-sound";
++
++        simple-audio-card,format = "i2s";
++        simple-audio-card,bitclock-master = &lt;&amp;cpu&gt;;
++        simple-audio-card,frame-master = &lt;&amp;cpu&gt;;
++
++        simple-audio-card,widgets =
++            "Microphone", "Mic Jack",
++            "Line", "Line In",
++            "Line", "Line Out",
++            "Speaker", "Speaker",
++            "Headphone", "Headphone Jack";
++        simple-audio-card,routing =
++            "Headphone Jack", "HP_L",
++            "Headphone Jack", "HP_R",
++            "Speaker", "SPK_LP",
++            "Speaker", "SPK_LN",
++            "Speaker", "SPK_RP",
++            "Speaker", "SPK_RN",
++            "LINPUT1", "Mic Jack",
++            "LINPUT3", "Mic Jack",
++            "RINPUT1", "Mic Jack",
++            "RINPUT2", "Mic Jack";
++
++            cpu: simple-audio-card,cpu {
++            sound-dai = &lt;&amp;i2s0 0&gt;;
++        };
++
++        link0_codec: simple-audio-card,codec {
++            sound-dai = &lt;&amp;codec&gt;;
++            clocks = &lt;&amp;i2s0 CLK_I2S_CDCLK&gt;;
++        };
++    };
++    
++        xrtcxti: xrtcxti {
++        compatible = "fixed-clock";
++        clock-frequency = &lt;32768&gt;;
++        clock-output-names = "xrtcxti";
++        #clock-cells = &lt;0&gt;;
++    };
++    
++};
++
++&amp;clock_audss {
++    assigned-clocks = &lt;&amp;clock_audss EXYNOS_MOUT_AUDSS&gt;,
++            &lt;&amp;clock_audss EXYNOS_MOUT_I2S&gt;,
++            &lt;&amp;clock_audss EXYNOS_DOUT_SRP&gt;,
++            &lt;&amp;clock_audss EXYNOS_DOUT_AUD_BUS&gt;;
++    assigned-clock-parents = &lt;&amp;clock CLK_FOUT_EPLL&gt;,
++            &lt;&amp;clock_audss EXYNOS_MOUT_AUDSS&gt;;
++};
++
++&amp;i2s0 {
++    pinctrl-0 = &lt;&amp;i2s0_bus&gt;;
++    pinctrl-names = "default";
++    status = "okay";
++};
++
++&amp;rtc {
++    clocks = &lt;&amp;clock CLK_RTC&gt;, &lt;&amp;xrtcxti&gt;;
++    clock-names = "rtc","rtc_src";
++    status = "okay";
++};
++
++&amp;i2c_0 {
++    #address-cells = &lt;1&gt;;
++    #size-cells = &lt;0&gt;;
++    samsung,i2c-sda-delay = &lt;100&gt;;
++    samsung,i2c-max-bus-freq = &lt;100000&gt;;
++    pinctrl-0 = &lt;&amp;i2c0_bus&gt;;
++    pinctrl-names = "default";
++    status = "okay";
++
++        codec: wm8960@1a {
++        compatible = "wlf,wm8960";
++        reg = &lt;0x1a&gt;;
++        #sound-dai-cells = &lt;0&gt;;
++    };
+};
+
+&amp;i2c_1 {
+@@ -139,10 +222,6 @@
+    };
+};
+
+-&amp;rtc {
+-    status = "okay";
+-};
+-
+&amp;mshc_0 {
+    status = "okay";
+    non-removable;
+};
+diff --git a/arch/arm/configs/exynos_defconfig b/arch/arm/configs/exynos_defconfig
+index 7f10b66..ef37909 100644
+--- a/arch/arm/configs/exynos_defconfig
++++ b/arch/arm/configs/exynos_defconfig
+@@ -2711,7 +2711,8 @@ CONFIG_LOGO_LINUX_MONO=y
+CONFIG_LOGO_LINUX_VGA16=y
+CONFIG_LOGO_LINUX_CLUT224=y
+CONFIG_SOUND=y
+-# CONFIG_SOUND_OSS_CORE is not set
++CONFIG_SOUND_OSS_CORE=y
++CONFIG_SOUND_OSS_CORE_PRECLAIM=y
+CONFIG_SND=y
+CONFIG_SND_TIMER=y
+CONFIG_SND_PCM=y
+@@ -2720,7 +2721,10 @@ CONFIG_SND_PCM_IEC958=y
+CONFIG_SND_DMAENGINE_PCM=y
+CONFIG_SND_JACK=y
+CONFIG_SND_JACK_INPUT_DEV=y
+-# CONFIG_SND_OSSEMUL is not set
++CONFIG_SND_OSSEMUL=y
++CONFIG_SND_MIXER_OSS=y
++CONFIG_SND_PCM_OSS=y
++CONFIG_SND_PCM_OSS_PLUGINS=y
+CONFIG_SND_PCM_TIMER=y
+# CONFIG_SND_HRTIMER is not set
+# CONFIG_SND_DYNAMIC_MINORS is not set
+@@ -2896,7 +2900,7 @@ CONFIG_SND_SOC_MAX98095=y
+# CONFIG_SND_SOC_WM8804_I2C is not set
+# CONFIG_SND_SOC_WM8804_SPI is not set
+# CONFIG_SND_SOC_WM8903 is not set
+-# CONFIG_SND_SOC_WM8960 is not set
++CONFIG_SND_SOC_WM8960=y
+# CONFIG_SND_SOC_WM8962 is not set
+# CONFIG_SND_SOC_WM8974 is not set
+# CONFIG_SND_SOC_WM8978 is not set
+diff --git a/sound/soc/codecs/wm8960.c b/sound/soc/codecs/wm8960.c
+index 9ed4557..6fa1a6f 100644
+--- a/sound/soc/codecs/wm8960.c
++++ b/sound/soc/codecs/wm8960.c
+@@ -1396,6 +1396,7 @@ static int wm8960_i2c_probe(struct i2c_client *i2c,
+    struct wm8960_data *pdata = dev_get_platdata(&amp;i2c-&gt;dev);
+    struct wm8960_priv *wm8960;
+    int ret;
++    int retry;
+
+    wm8960 = devm_kzalloc(&amp;i2c-&gt;dev, sizeof(struct wm8960_priv),
+                  GFP_KERNEL);
+@@ -1417,12 +1418,19 @@ static int wm8960_i2c_probe(struct i2c_client *i2c,
+    else if (i2c-&gt;dev.of_node)
+        wm8960_set_pdata_from_of(i2c, &amp;wm8960-&gt;pdata);
+
+-    ret = wm8960_reset(wm8960-&gt;regmap);
+-    if (ret != 0) {
+-        dev_err(&amp;i2c-&gt;dev, "Failed to issue reset\n");
+-        return ret;
++    for (retry = 0; retry &lt; 5; retry++){
++        ret = wm8960_reset(wm8960-&gt;regmap);
++        if (ret != 0) {
++            if (retry == 5){
++                dev_err(&amp;i2c-&gt;dev, "Failed to issue reset\n");
++                return ret;
++            }
++        }
++        else{
++            break;
++        }
+    }
+-
++    
+    if (wm8960-&gt;pdata.shared_lrclk) {
+        ret = regmap_update_bits(wm8960-&gt;regmap, WM8960_ADDCTL2,
+                      0x4, 0x4);
+diff --git a/sound/soc/samsung/i2s.c b/sound/soc/samsung/i2s.c
+index aeba0ae..9d6ee86 100644
+--- a/sound/soc/samsung/i2s.c
++++ b/sound/soc/samsung/i2s.c
+@@ -701,7 +701,8 @@ static int i2s_hw_params(struct snd_pcm_substream *substream,
+    struct i2s_dai *i2s = to_info(dai);
+    u32 mod, mask = 0, val = 0;
+    unsigned long flags;
+-
++    unsigned long epll_out_rate;
++    struct clk *fout_epll;
+    WARN_ON(!pm_runtime_active(dai-&gt;dev));
+
+    if (!is_secondary(i2s))
+@@ -780,6 +781,42 @@ static int i2s_hw_params(struct snd_pcm_substream *substream,
+    snd_soc_dai_init_dma_data(dai, &amp;i2s-&gt;dma_playback, &amp;i2s-&gt;dma_capture);
+
+    i2s-&gt;frmclk = params_rate(params);
++    
++    switch (i2s-&gt;frmclk) {
++        case 8000:
++        case 12000:
++        case 16000:
++        case 24000:
++        case 32000:
++        case 48000:
++        case 64000:
++        case 96000:
++            epll_out_rate = 49151992;
++            break;
++        case 11025:
++        case 22050:
++        case 44100:
++        case 88200:
++            epll_out_rate = 67737602;
++            break;
++        default:
++            printk(KERN_ERR "%s:%d Sampling Rate %u not supported!\n",
++                    __func__, __LINE__, i2s-&gt;frmclk);
++            return -EINVAL;
++    }
++
++    fout_epll = devm_clk_get(dai-&gt;dev, "fout_epll");
++    if(IS_ERR(fout_epll)){
++        printk("get fout_epll err\n");
++    }    
++
++    if (clk_get_rate(fout_epll) != epll_out_rate)
++        if(clk_set_rate(fout_epll, epll_out_rate) != 0){
++            printk("set epll rate err\n");
++        }
++
++    i2s_set_sysclk(dai, SAMSUNG_I2S_CDCLK, 0, SND_SOC_CLOCK_OUT);
++    i2s-&gt;rclk_srcrate = clk_get_rate(i2s-&gt;op_clk);
+
+    return 0;
+}
+-- 
+1.9.1
+
+
+</code></pre>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/25afb24b2648caa344ee9ccd41f19184/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">必背的sql语句</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/c67ac7c6b25eb1c5b22f0d58221f2afe/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">微型计算机1G指的是1024字节,孙闻：1GB的流量等于多少mb</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

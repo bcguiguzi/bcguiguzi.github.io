@@ -1,0 +1,974 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>C&#43;&#43;线程封装与线程池实现 - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="C&#43;&#43;线程封装与线程池实现" />
+<meta property="og:description" content="基础 之前在Linux阶段学习APUE时，我们学过进程的相关概念、后面又学了线程的相关概念。而现在我们主要是来进行
+线程的进一步学习。之前在Linux里面使用的是C语言面向过程的思想，从现在开始我们需要使用C&#43;&#43;面向对象的思想进行封装，但是在封装之前我们先来回顾一下线程相关的API。
+线程的创建 #include &lt;pthread.h&gt; //函数原型 int pthread_create(pthread_t *thread, const pthread_attr_t *attr, void *(*start_routine) (void *), void *arg); //参数说明 thread：线程id attr：线程属性，默认为空 start_routine：线程入口函数 arg：线程入口函数的参数，默认可以使用空 线程终止 #include &lt;pthread.h&gt; //功能：线程终止(注意：进程终止是exit函数) //函数原型 void pthread_exit(void *value_ptr); //参数说明 参数value_ptr:value_ptr不要指向一个局部变量。 返回值：无返回值，跟进程一样，线程结束的时候无法返回到它的调用者（自身） 线程等待 #include &lt;pthread.h&gt; //函数原型 int pthread_join(pthread_t thread, void **value_ptr); //参数说明 参数thread:线程ID value_ptr:它指向一个指针，后者指向线程的返回值 返回值：成功返回0；失败返回错误码 为什么需要线程等待？ 1、已经退出的线程，其空间没有被释放，仍然在进程的地址空间内。
+2、创建新的线程不会复用刚才退出线程的地址空间。
+3、主线程需要知道所创建的新线程是否有完成任务，并且可以避免像僵尸进程的问题。
+线程取消 #include &lt;pthread.h&gt; //函数原型 int pthread_cancel(pthread_t thread); //参数说明 参数thread:线程ID 返回值：成功返回0；失败返回错误码 调用该函数的线程将挂起等待,直到 id 为 thread 的线程终止。
+thread线程以不同的方法终止,通过pthread_join得到的终止状态是不同的，总结如下:
+如果thread线程通过return返回，value_ ptr所指向的单元里存放的是thread线程函数的返回值。" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/c5fded645acb7d3283538c04a360738b/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2024-01-20T16:50:33+08:00" />
+<meta property="article:modified_time" content="2024-01-20T16:50:33+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">C&#43;&#43;线程封装与线程池实现</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <h2><a id="_0"></a>基础</h2> 
+<p>之前在Linux阶段学习APUE时，我们学过进程的相关概念、后面又学了线程的相关概念。而现在我们主要是来进行<br> 线程的进一步学习。之前在Linux里面使用的是C语言面向过程的思想，从现在开始我们需要使用C++面向对象的思想进行封装，但是在封装之前我们先来回顾一下线程相关的API。</p> 
+<h3><a id="_3"></a>线程的创建</h3> 
+<pre><code class="prism language-cpp"><span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;pthread.h&gt;</span></span>
+<span class="token comment">//函数原型</span>
+<span class="token keyword">int</span> <span class="token function">pthread_create</span><span class="token punctuation">(</span>pthread_t <span class="token operator">*</span>thread<span class="token punctuation">,</span> 
+		<span class="token keyword">const</span> pthread_attr_t <span class="token operator">*</span>attr<span class="token punctuation">,</span>
+		<span class="token keyword">void</span> <span class="token operator">*</span><span class="token punctuation">(</span><span class="token operator">*</span>start_routine<span class="token punctuation">)</span> <span class="token punctuation">(</span><span class="token keyword">void</span> <span class="token operator">*</span><span class="token punctuation">)</span><span class="token punctuation">,</span> 
+		<span class="token keyword">void</span> <span class="token operator">*</span>arg<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token comment">//参数说明</span>
+thread：线程id
+attr：线程属性，默认为空
+start_routine：线程入口函数
+arg：线程入口函数的参数，默认可以使用空
+</code></pre> 
+<h3><a id="_18"></a>线程终止</h3> 
+<pre><code class="prism language-cpp"><span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;pthread.h&gt;</span></span>
+<span class="token comment">//功能：线程终止(注意：进程终止是exit函数)</span>
+<span class="token comment">//函数原型</span>
+<span class="token keyword">void</span> <span class="token function">pthread_exit</span><span class="token punctuation">(</span><span class="token keyword">void</span> <span class="token operator">*</span>value_ptr<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+<span class="token comment">//参数说明</span>
+参数value_ptr<span class="token operator">:</span>value_ptr不要指向一个局部变量。
+返回值：无返回值，跟进程一样，线程结束的时候无法返回到它的调用者（自身）
+</code></pre> 
+<h3><a id="_30"></a>线程等待</h3> 
+<pre><code class="prism language-cpp"><span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;pthread.h&gt;</span></span>
+<span class="token comment">//函数原型</span>
+<span class="token keyword">int</span> <span class="token function">pthread_join</span><span class="token punctuation">(</span>pthread_t thread<span class="token punctuation">,</span> <span class="token keyword">void</span> <span class="token operator">*</span><span class="token operator">*</span>value_ptr<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+<span class="token comment">//参数说明</span>
+参数thread<span class="token operator">:</span>线程ID
+value_ptr<span class="token operator">:</span>它指向一个指针，后者指向线程的返回值
+返回值：成功返回<span class="token number">0</span>；失败返回错误码
+</code></pre> 
+<h3><a id="_42"></a>为什么需要线程等待？</h3> 
+<p>1、已经退出的线程，其空间没有被释放，仍然在进程的地址空间内。<br> 2、创建新的线程不会复用刚才退出线程的地址空间。<br> 3、主线程需要知道所创建的新线程是否有完成任务，并且可以避免像僵尸进程的问题。</p> 
+<h3><a id="_47"></a>线程取消</h3> 
+<pre><code class="prism language-cpp"><span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;pthread.h&gt;</span></span>
+<span class="token comment">//函数原型</span>
+<span class="token keyword">int</span> <span class="token function">pthread_cancel</span><span class="token punctuation">(</span>pthread_t thread<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+<span class="token comment">//参数说明</span>
+参数thread<span class="token operator">:</span>线程ID
+返回值：成功返回<span class="token number">0</span>；失败返回错误码
+</code></pre> 
+<p>调用该函数的线程将挂起等待,直到 id 为 thread 的线程终止。</p> 
+<p>thread线程以不同的方法终止,通过pthread_join得到的终止状态是不同的，总结如下:</p> 
+<blockquote> 
+ <p>如果thread线程通过return返回，value_ ptr所指向的单元里存放的是thread线程函数的返回值。</p> 
+</blockquote> 
+<blockquote> 
+ <p>如果thread线程被别的线程调用pthread_ cancel异常终掉,value_ ptr所指向的单元里存放的是常数<br> PTHREAD_ CANCELED（这是一个宏定义，本质就是-1）。</p> 
+</blockquote> 
+<blockquote> 
+ <p>如果thread线程是自己调用pthread_exit终止的,value_ptr所指向的单元存放的是传给<br> pthread_exit的参数</p> 
+</blockquote> 
+<blockquote> 
+ <p>如果对thread线程的终止状态不感兴趣,可以传NULL给value_ ptr参数</p> 
+</blockquote> 
+<h3><a id="_72"></a>线程分离</h3> 
+<pre><code class="prism language-cpp"><span class="token keyword">int</span> <span class="token function">pthread_detach</span><span class="token punctuation">(</span>pthread_t thread<span class="token punctuation">)</span><span class="token punctuation">;</span>
+</code></pre> 
+<h3><a id="_77"></a>为什么需要使用线程分离</h3> 
+<p>这是因为下面两点：</p> 
+<blockquote> 
+ <p>1、默认情况下，新创建的线程是joinable的，线程退出后，需要对其进行pthread_join操作，否则无<br> 法释放资源，从而造成系统泄漏。</p> 
+</blockquote> 
+<blockquote> 
+ <p>2、如果不关心线程的返回值，join是一种负担，这个时候，我们可以告诉系统，当线程退出时，自动<br> 释放线程资源。</p> 
+</blockquote> 
+<p>使用方法有下面两种：</p> 
+<p>可以是线程组内其他线程对目标线程进行分离，也可以是线程自己分离：pthread_detach(pthread_self());</p> 
+<p>使用效果：</p> 
+<p>线程分离以后，主线程以后就再也不需要关心这个线程了，在这个线程结束以后，会自动的进行资源释<br> 放。但是这里有一点要注意：如果这个分离的线程出现了问题，依旧会导致进程的退出。</p> 
+<h2><a id="_94"></a>面向对象与基于对象</h2> 
+<p>面向对象具有四大基本特征：抽象、封装、继承、多态，所以我们可以从面向对象的思想对线程进行封装。</p> 
+<h3><a id="_96"></a>面向对象的线程封装</h3> 
+<p>有了抽象的概念之后，现在我们将线程抽象成一个类，用类的观点来看线程。</p> 
+<p>然后用线程类去创建具体的对象，线程对象与线程对象之间进行交互，通信。</p> 
+<p>接下来就为线程类设置成员，每个线程会有线程号，可以设置为数据成员；线程是否开始运行、线程是否结束，对应会有start函数与join函数；</p> 
+<p>线程入口函数可以封装为一个函数threadFunc，然后具体需要执行的任务可以封装为一个run方法，具体的业务留给Thread的派生类去实现，所以run方法可以设置为虚方法，Thread类也就成为抽象类了。</p> 
+<p>为了实现具体的任务方法，可以在用一个类去继承抽象类Thread，并实现虚方法run，所以可以设置为下面的<br> 关系图：<br> <img src="https://images2.imgbox.com/bb/26/IhIzRF9y_o.png" alt="在这里插入图片描述"></p> 
+<h3><a id="_108"></a>代码实现</h3> 
+<p>目录结构如下：</p> 
+<p><img src="https://images2.imgbox.com/16/14/LUNXY2Zn_o.png" alt="在这里插入图片描述"></p> 
+<p>a.out是执行文件，TestThread.cc是测试文件，Thread.cc是实现文件，Thread.h是头文件。</p> 
+<p>Thread.h：</p> 
+<pre><code class="prism language-cpp"><span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">ifndef</span>  <span class="token expression">__Thread_H__</span></span>
+
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name">__Thread_H__</span></span>
+
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;pthread.h&gt;</span></span>
+
+<span class="token keyword">class</span> <span class="token class-name">Thread</span><span class="token punctuation">{<!-- --></span>
+<span class="token keyword">public</span><span class="token operator">:</span>
+	<span class="token function">Thread</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token keyword">virtual</span> <span class="token operator">~</span><span class="token function">Thread</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+	<span class="token comment">//线程开始运行函数</span>
+	<span class="token keyword">void</span> <span class="token function">start</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token comment">//线程结束函数</span>
+	<span class="token keyword">void</span> <span class="token function">join</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+<span class="token keyword">private</span><span class="token operator">:</span>
+	<span class="token comment">//线程入口函数被封装为一个threadFunc函数</span>
+	<span class="token keyword">static</span> <span class="token keyword">void</span><span class="token operator">*</span> <span class="token function">threadFunc</span><span class="token punctuation">(</span><span class="token keyword">void</span><span class="token operator">*</span> arg<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token comment">//具体执行的任务被封装为一个虚函数，由该类的派生类自行实现</span>
+	<span class="token keyword">virtual</span> <span class="token keyword">void</span> <span class="token function">run</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+<span class="token keyword">private</span><span class="token operator">:</span>
+	<span class="token comment">//线程标识符</span>
+	pthread_t _thid<span class="token punctuation">;</span>
+	<span class="token comment">//是否在运行</span>
+	<span class="token keyword">bool</span> _isRunning<span class="token punctuation">;</span>
+<span class="token punctuation">}</span><span class="token punctuation">;</span>
+
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+
+</code></pre> 
+<p>Test.cc：</p> 
+<pre><code class="prism language-cpp"><span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">"Thread.h"</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;pthread.h&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;stdio.h&gt;</span></span>
+
+<span class="token comment">//实现构造函数</span>
+<span class="token comment">//就是对数据成员进行一个初始化</span>
+<span class="token class-name">Thread</span><span class="token double-colon punctuation">::</span><span class="token function">Thread</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token operator">:</span><span class="token function">_thid</span><span class="token punctuation">(</span><span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">,</span><span class="token function">_isRunning</span><span class="token punctuation">(</span><span class="token boolean">false</span><span class="token punctuation">)</span><span class="token punctuation">{<!-- --></span>
+	
+<span class="token punctuation">}</span>
+
+<span class="token comment">//实现析构函数</span>
+<span class="token class-name">Thread</span><span class="token double-colon punctuation">::</span><span class="token operator">~</span><span class="token function">Thread</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">{<!-- --></span>
+	<span class="token comment">//析构函数在这里本身可写也可不写，因为已经有了pthread_join函数来进行资源回收了</span>
+	<span class="token comment">//这里就写一下，万一在进程或者叫主线程退出时线程还在运行，那么就执行线程分离</span>
+	<span class="token comment">//线程分离的意思就是让子线程告知主线程不用管该子线程资源回收的事情了</span>
+	<span class="token comment">//即从主线程的控制下剥离出来独自被系统回收</span>
+	<span class="token keyword">if</span><span class="token punctuation">(</span>_isRunning<span class="token punctuation">)</span><span class="token punctuation">{<!-- --></span>
+		<span class="token function">pthread_detach</span><span class="token punctuation">(</span>_thid<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+
+<span class="token comment">//start函数创建线程</span>
+<span class="token keyword">void</span> <span class="token class-name">Thread</span><span class="token double-colon punctuation">::</span><span class="token function">start</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">{<!-- --></span>
+	<span class="token comment">/*这里需要将threadFunc设置为静态的成员函数，不然会报错
+	 * 因为对于pthread_create函数的第三个线程入口函数地址参数而言
+	 * 其形式必须为void* (*funcName) (void*) 形式，即只能有一个void*类型的参数
+	 * 而C++类中的成员函数参数列表的第一个位置都会隐含一个this指针，不符合上述形式
+	 * 因此我们将threadFunc设置为静态的，消去this指针的存在
+	 * */</span>
+	<span class="token keyword">int</span> ret <span class="token operator">=</span> <span class="token function">pthread_create</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>_thid<span class="token punctuation">,</span><span class="token keyword">nullptr</span><span class="token punctuation">,</span>threadFunc<span class="token punctuation">,</span><span class="token keyword">this</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token keyword">if</span><span class="token punctuation">(</span>ret<span class="token punctuation">)</span><span class="token punctuation">{<!-- --></span>
+		<span class="token function">perror</span><span class="token punctuation">(</span><span class="token string">"pthread_create"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token keyword">return</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+	<span class="token comment">//线程创建成功</span>
+	<span class="token comment">//那么成员数据_isRunning就该设置为true真在运行</span>
+	_isRunning <span class="token operator">=</span> <span class="token boolean">true</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+<span class="token comment">//线程结束函数：主线程通过join来等待子线程的退出</span>
+<span class="token keyword">void</span> <span class="token class-name">Thread</span><span class="token double-colon punctuation">::</span><span class="token function">join</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">{<!-- --></span>
+	<span class="token comment">//子线程还存在的话我们才执行资源回收</span>
+	<span class="token keyword">if</span><span class="token punctuation">(</span>_isRunning<span class="token punctuation">)</span><span class="token punctuation">{<!-- --></span>
+		<span class="token function">pthread_join</span><span class="token punctuation">(</span>_thid<span class="token punctuation">,</span><span class="token keyword">nullptr</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token comment">//线程停止后修改状态</span>
+		_isRunning <span class="token operator">=</span> <span class="token boolean">false</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+
+<span class="token keyword">void</span><span class="token operator">*</span> <span class="token class-name">Thread</span><span class="token double-colon punctuation">::</span><span class="token function">threadFunc</span><span class="token punctuation">(</span><span class="token keyword">void</span><span class="token operator">*</span> arg<span class="token punctuation">)</span><span class="token punctuation">{<!-- --></span>
+	<span class="token comment">//静态成员函数threadFunc无法直接调用非静态成员函数run</span>
+	<span class="token comment">//所以我们通过pthread_create函数的第四个参数传进this指针即可</span>
+	<span class="token comment">//因为这第四个参数就是线程入口函数threadFunc的参数</span>
+	Thread<span class="token operator">*</span> t <span class="token operator">=</span> <span class="token generic-function"><span class="token function">static_cast</span><span class="token generic class-name"><span class="token operator">&lt;</span>Thread<span class="token operator">*</span><span class="token operator">&gt;</span></span></span><span class="token punctuation">(</span>arg<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token keyword">if</span><span class="token punctuation">(</span>t<span class="token punctuation">)</span><span class="token punctuation">{<!-- --></span>
+		<span class="token comment">//如果该指针不为空有值，那么就执行真正的线程任务</span>
+		t<span class="token operator">-&gt;</span><span class="token function">run</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+	<span class="token comment">//执行结束后执行线程终止函数结束线程即可</span>
+	<span class="token function">pthread_exit</span><span class="token punctuation">(</span><span class="token keyword">nullptr</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+</code></pre> 
+<p>TestThread.cc：</p> 
+<pre><code class="prism language-cpp"><span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;iostream&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;unistd.h&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;memory&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">"Thread.h"</span></span>
+
+<span class="token keyword">using</span> <span class="token keyword">namespace</span> std<span class="token punctuation">;</span>
+
+<span class="token keyword">class</span> <span class="token class-name">MyThread</span><span class="token operator">:</span><span class="token base-clause"><span class="token keyword">public</span> <span class="token class-name">Thread</span></span><span class="token punctuation">{<!-- --></span>
+<span class="token keyword">public</span><span class="token operator">:</span>
+	<span class="token comment">//MyThread类继承Thread类然后重写run方法</span>
+	<span class="token keyword">void</span> <span class="token function">run</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token keyword">override</span><span class="token punctuation">{<!-- --></span>
+		<span class="token keyword">while</span><span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">{<!-- --></span>
+			cout <span class="token operator">&lt;&lt;</span> <span class="token string">"The thread is running"</span> <span class="token operator">&lt;&lt;</span> endl<span class="token punctuation">;</span>
+			<span class="token function">sleep</span><span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token punctuation">}</span>
+	<span class="token punctuation">}</span>
+<span class="token punctuation">}</span><span class="token punctuation">;</span>
+
+<span class="token comment">//main就是主线程</span>
+<span class="token keyword">int</span> <span class="token function">main</span><span class="token punctuation">(</span><span class="token keyword">int</span> argc<span class="token punctuation">,</span><span class="token keyword">char</span><span class="token operator">*</span><span class="token operator">*</span> argv<span class="token punctuation">)</span><span class="token punctuation">{<!-- --></span>
+	<span class="token comment">//多态，基类类型型指针指向派生类类型对象</span>
+	<span class="token comment">//Thread* pthread = new MyThread(); 这样写时我们需要自己去回收这块堆空间</span>
+	<span class="token comment">//比较麻烦，所以我们使用智能指针让其自动回收</span>
+	unique_ptr<span class="token operator">&lt;</span>Thread<span class="token operator">&gt;</span> <span class="token function">pthread</span><span class="token punctuation">(</span><span class="token keyword">new</span> <span class="token function">MyThread</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token comment">//使用start函数启动线程</span>
+	pthread<span class="token operator">-&gt;</span><span class="token function">start</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token comment">//启动之后使用join函数等待子线程结束进行资源的回收</span>
+	pthread<span class="token operator">-&gt;</span><span class="token function">join</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+	<span class="token keyword">return</span> <span class="token number">0</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+</code></pre> 
+<p>运行结果：<br> <img src="https://images2.imgbox.com/f7/9f/mmq9FIkH_o.png" alt="在这里插入图片描述"></p> 
+<h3><a id="_253"></a>基于对象的线程封装</h3> 
+<p>解决问题的思维方式很多，除了之前C语言的面向过程的方法，以及上面的面向对象的方法之外，换一<br> 种方式。我们前面学习过，类和类之家的关系除了继承，还有一些其他的关系，所以可以食欲组合与依<br> 赖的方式，也就是基于对象的方法（不用使用继承）。因为没有继承，所以需要把Thread类中的抽象方<br> 法run()函数通过function与bind的方式进行修改即可。之前的run方法是一个返回类型是void参数为空<br> 的函数，现在直接使用bind改变函数的形态，将Thread变为一个非抽象类。然后将任务通过参数传给<br> Thread的构造函数，当然这个参数可以使用对应的数据成员进行接收，这个任务可以交给其他的类来完<br> 成，并且打包给Thread线程进行执行，设计如下：<br> <img src="https://images2.imgbox.com/f4/6b/3sgZVDmF_o.png" alt="在这里插入图片描述"></p> 
+<h3><a id="_262"></a>代码实现</h3> 
+<p>目录结构同上，代码略有差异。</p> 
+<p>Thread.h：</p> 
+<pre><code class="prism language-cpp"><span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">ifndef</span>  <span class="token expression">__Thread_H__</span></span>
+
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name">__Thread_H__</span></span>
+
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;pthread.h&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;functional&gt;</span></span>
+
+<span class="token keyword">using</span> <span class="token keyword">namespace</span> std<span class="token punctuation">;</span>
+
+<span class="token comment">//定义一个新的类型别名ThreadCllback，它代表一个没有参数(void ())和没有返回值(void)的可调用对象</span>
+<span class="token comment">//实际使用时我们可以这样使用：</span>
+<span class="token comment">//ThreadCallback myCallback = []{<!-- --></span>
+<span class="token comment">//     一些代码</span>
+<span class="token comment">//};</span>
+<span class="token comment">//</span>
+<span class="token comment">//调用时直接：myCallback();</span>
+<span class="token comment">//就跟函数对象一样</span>
+<span class="token keyword">using</span> ThreadCallback <span class="token operator">=</span> function<span class="token operator">&lt;</span><span class="token keyword">void</span> <span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token operator">&gt;</span><span class="token punctuation">;</span>
+
+<span class="token keyword">class</span> <span class="token class-name">Thread</span><span class="token punctuation">{<!-- --></span>
+<span class="token keyword">public</span><span class="token operator">:</span>
+	<span class="token function">Thread</span><span class="token punctuation">(</span>ThreadCallback<span class="token operator">&amp;&amp;</span> cb<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token keyword">virtual</span> <span class="token operator">~</span><span class="token function">Thread</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+	<span class="token comment">//线程开始运行函数</span>
+	<span class="token keyword">void</span> <span class="token function">start</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token comment">//线程结束函数</span>
+	<span class="token keyword">void</span> <span class="token function">join</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+<span class="token keyword">private</span><span class="token operator">:</span>
+	<span class="token comment">//线程入口函数被封装为一个threadFunc函数</span>
+	<span class="token keyword">static</span> <span class="token keyword">void</span><span class="token operator">*</span> <span class="token function">threadFunc</span><span class="token punctuation">(</span><span class="token keyword">void</span><span class="token operator">*</span> arg<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token keyword">private</span><span class="token operator">:</span>
+	<span class="token comment">//线程标识符</span>
+	pthread_t _thid<span class="token punctuation">;</span>
+	<span class="token comment">//是否在运行</span>
+	<span class="token keyword">bool</span> _isRunning<span class="token punctuation">;</span>
+	<span class="token comment">//要去实现的任务</span>
+	ThreadCallback _cb<span class="token punctuation">;</span>
+<span class="token punctuation">}</span><span class="token punctuation">;</span>
+
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+
+</code></pre> 
+<p>Thread.cc：</p> 
+<pre><code class="prism language-cpp"><span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">"Thread.h"</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;pthread.h&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;stdio.h&gt;</span></span>
+
+<span class="token comment">//实现构造函数</span>
+<span class="token comment">//就是对数据成员进行一个初始化</span>
+<span class="token class-name">Thread</span><span class="token double-colon punctuation">::</span><span class="token function">Thread</span><span class="token punctuation">(</span>ThreadCallback<span class="token operator">&amp;&amp;</span> cb<span class="token punctuation">)</span><span class="token operator">:</span><span class="token function">_thid</span><span class="token punctuation">(</span><span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">,</span><span class="token function">_isRunning</span><span class="token punctuation">(</span><span class="token boolean">false</span><span class="token punctuation">)</span><span class="token punctuation">,</span><span class="token function">_cb</span><span class="token punctuation">(</span><span class="token function">move</span><span class="token punctuation">(</span>cb<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">{<!-- --></span>
+	
+<span class="token punctuation">}</span>
+
+<span class="token comment">//实现析构函数</span>
+<span class="token class-name">Thread</span><span class="token double-colon punctuation">::</span><span class="token operator">~</span><span class="token function">Thread</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">{<!-- --></span>
+	<span class="token comment">//析构函数在这里本身可写也可不写，因为已经有了pthread_join函数来进行资源回收了</span>
+	<span class="token comment">//这里就写一下，万一在进程或者叫主线程退出时线程还在运行，那么就执行线程分离</span>
+	<span class="token comment">//线程分离的意思就是让子线程告知主线程不用管该子线程资源回收的事情了</span>
+	<span class="token comment">//即从主线程的控制下剥离出来独自被系统回收</span>
+	<span class="token keyword">if</span><span class="token punctuation">(</span>_isRunning<span class="token punctuation">)</span><span class="token punctuation">{<!-- --></span>
+		<span class="token function">pthread_detach</span><span class="token punctuation">(</span>_thid<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+
+<span class="token comment">//start函数创建线程</span>
+<span class="token keyword">void</span> <span class="token class-name">Thread</span><span class="token double-colon punctuation">::</span><span class="token function">start</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">{<!-- --></span>
+	<span class="token comment">/*这里需要将threadFunc设置为静态的成员函数，不然会报错
+	 * 因为对于pthread_create函数的第三个线程入口函数地址参数而言
+	 * 其形式必须为void* (*funcName) (void*) 形式，即只能有一个void*类型的参数
+	 * 而C++类中的成员函数参数列表的第一个位置都会隐含一个this指针，不符合上述形式
+	 * 因此我们将threadFunc设置为静态的，消去this指针的存在
+	 * */</span>
+	<span class="token keyword">int</span> ret <span class="token operator">=</span> <span class="token function">pthread_create</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>_thid<span class="token punctuation">,</span><span class="token keyword">nullptr</span><span class="token punctuation">,</span>threadFunc<span class="token punctuation">,</span><span class="token keyword">this</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token keyword">if</span><span class="token punctuation">(</span>ret<span class="token punctuation">)</span><span class="token punctuation">{<!-- --></span>
+		<span class="token function">perror</span><span class="token punctuation">(</span><span class="token string">"pthread_create"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token keyword">return</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+	<span class="token comment">//线程创建成功</span>
+	<span class="token comment">//那么成员数据_isRunning就该设置为true真在运行</span>
+	_isRunning <span class="token operator">=</span> <span class="token boolean">true</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+<span class="token comment">//线程结束函数：主线程通过join来等待子线程的退出</span>
+<span class="token keyword">void</span> <span class="token class-name">Thread</span><span class="token double-colon punctuation">::</span><span class="token function">join</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">{<!-- --></span>
+	<span class="token comment">//子线程还存在的话我们才执行资源回收</span>
+	<span class="token keyword">if</span><span class="token punctuation">(</span>_isRunning<span class="token punctuation">)</span><span class="token punctuation">{<!-- --></span>
+		<span class="token function">pthread_join</span><span class="token punctuation">(</span>_thid<span class="token punctuation">,</span><span class="token keyword">nullptr</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token comment">//线程停止后修改状态</span>
+		_isRunning <span class="token operator">=</span> <span class="token boolean">false</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+
+<span class="token keyword">void</span><span class="token operator">*</span> <span class="token class-name">Thread</span><span class="token double-colon punctuation">::</span><span class="token function">threadFunc</span><span class="token punctuation">(</span><span class="token keyword">void</span><span class="token operator">*</span> arg<span class="token punctuation">)</span><span class="token punctuation">{<!-- --></span>
+	Thread<span class="token operator">*</span> t <span class="token operator">=</span> <span class="token generic-function"><span class="token function">static_cast</span><span class="token generic class-name"><span class="token operator">&lt;</span>Thread<span class="token operator">*</span><span class="token operator">&gt;</span></span></span><span class="token punctuation">(</span>arg<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token keyword">if</span><span class="token punctuation">(</span>t<span class="token punctuation">)</span><span class="token punctuation">{<!-- --></span>
+		<span class="token comment">//基于对象的回调函数执行线程任务</span>
+		t<span class="token operator">-&gt;</span><span class="token function">_cb</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+
+	<span class="token comment">//执行结束后执行线程终止函数结束线程即可</span>
+	<span class="token function">pthread_exit</span><span class="token punctuation">(</span><span class="token keyword">nullptr</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+</code></pre> 
+<p>TestThread.cc:</p> 
+<pre><code class="prism language-cpp"><span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;iostream&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;unistd.h&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;memory&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">"Thread.h"</span></span>
+
+<span class="token keyword">using</span> <span class="token keyword">namespace</span> std<span class="token punctuation">;</span>
+
+<span class="token keyword">class</span> <span class="token class-name">MyThread</span><span class="token punctuation">{<!-- --></span>
+<span class="token keyword">public</span><span class="token operator">:</span>
+	<span class="token keyword">void</span> <span class="token function">process</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">{<!-- --></span>
+		<span class="token keyword">while</span><span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">{<!-- --></span>
+			cout <span class="token operator">&lt;&lt;</span> <span class="token string">"The thread is running"</span> <span class="token operator">&lt;&lt;</span> endl<span class="token punctuation">;</span>
+			<span class="token function">sleep</span><span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token punctuation">}</span>
+	<span class="token punctuation">}</span>
+<span class="token punctuation">}</span><span class="token punctuation">;</span>
+
+<span class="token comment">//main就是主线程</span>
+<span class="token keyword">int</span> <span class="token function">main</span><span class="token punctuation">(</span><span class="token keyword">int</span> argc<span class="token punctuation">,</span><span class="token keyword">char</span><span class="token operator">*</span><span class="token operator">*</span> argv<span class="token punctuation">)</span><span class="token punctuation">{<!-- --></span>
+	MyThread myThread<span class="token punctuation">;</span>
+	<span class="token comment">//基于Thread对象的形式执行我们需要的线程任务</span>
+	Thread <span class="token function">th</span><span class="token punctuation">(</span><span class="token function">bind</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>MyThread<span class="token double-colon punctuation">::</span>process<span class="token punctuation">,</span><span class="token operator">&amp;</span>myThread<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	th<span class="token punctuation">.</span><span class="token function">start</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	th<span class="token punctuation">.</span><span class="token function">join</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token keyword">return</span> <span class="token number">0</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+</code></pre> 
+<h2><a id="_407"></a>生产者与消费者问题</h2> 
+<h3><a id="_408"></a>问题概述</h3> 
+<p><img src="https://images2.imgbox.com/8c/fe/5vAVFdgl_o.png" alt="在这里插入图片描述"><br> 如上图所示，所谓的生产者和消费者都是一个线程，生产者与消费者之间需要进行交互，生产者生产数据往缓冲区内放，生产一个放一个，消费者则会从仓库里面拿数据，此时这个缓冲区就是一个共享资源。</p> 
+<p>生产者与消费者在进行对缓冲区的访问时，为了使得线程同步所以需要获得锁才可以，获得了锁的线程才能进行访问，访问完之后再释放掉锁等其它线程竞争获取。</p> 
+<p>那为什么还需要条件变量呢？</p> 
+<p>来看这么个情况，如果消费者竞争到了锁，然后进入了缓冲区，但此时缓冲区内并没有数据（这是一个没有意义的操作），是不是就造成了锁资源的浪费？（拿到了锁却没有做到该线程应该做的事情，若是生产者拿到了就可以生产数据了呀，而且万一一直都是消费者拿到锁呢？）所以此时就需要条件变量的存在，条件变量的作用就是告诉该线程缓冲区内是否存在数据，若是有数据那么条件变量的条件成立，此时消费者线程池才会真正地去拿锁上锁进行缓冲区的访问。</p> 
+<p>生产者与消费者问题，本质就是多个线程的问题，但是会涉及到线程之间对共享资源的互斥访问，所<br> 以需要有互斥锁与条件变量的准备知识，接下来我们先看看互斥锁与条件变量。</p> 
+<h3><a id="mutex_420"></a>复习：互斥锁mutex</h3> 
+<h4><a id="_421"></a>数据混乱的三个原因</h4> 
+<p>1、资源共享（独享资源则不会出现混乱）<br> 2、调度随机（意味着数据访问会出现竞争）<br> 3、线程间缺乏必要的同步机制</p> 
+<p>总结：前面两个条件是不能改变的，因此若想让数据井然有序，只能改变第三个原因。</p> 
+<h4><a id="_427"></a>互斥锁的创建</h4> 
+<pre><code class="prism language-cpp">pthread_mutex_t mutex<span class="token punctuation">;</span><span class="token comment">//直接定义一把互斥锁</span>
+</code></pre> 
+<h4><a id="_432"></a>互斥锁的初始化</h4> 
+<pre><code class="prism language-cpp"><span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;pthread.h&gt;</span></span>
+<span class="token keyword">int</span> <span class="token function">pthread_mutex_init</span><span class="token punctuation">(</span>pthread_mutex_t <span class="token operator">*</span>restrict mutex<span class="token punctuation">,</span>
+						<span class="token keyword">const</span> pthread_mutexattr_t <span class="token operator">*</span>restrict attr<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token comment">//功能： 初始化互斥锁</span>
+<span class="token comment">//参数解释</span>
+mutex：pthread_mutex_t类型的变量的地址，也就是互斥锁的名字。
+mutexattr：pthread_mutexattr_t类型的变量地址，用于设置锁的属性，默认可以设为<span class="token constant">NULL</span>；
+返回： 成功<span class="token number">0</span>，错误返回错误代码。
+静态初始化：pthread_mutex_t mutex <span class="token operator">=</span> PTHREAD_MUTEX_INITIALIZER<span class="token punctuation">;</span>
+动态初始化：<span class="token function">pthread_mutex_init</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>mutex<span class="token punctuation">,</span> <span class="token keyword">nullptr</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+</code></pre> 
+<h4><a id="_447"></a>互斥锁的销毁</h4> 
+<pre><code class="prism language-cpp"><span class="token keyword">int</span> <span class="token function">pthread_mutex_destroy</span><span class="token punctuation">(</span>pthread_mutex_t <span class="token operator">*</span>mutex<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+<span class="token comment">//功能： 销毁互斥锁</span>
+参数： mutex为要销毁的互斥锁的地址
+返回： 成功<span class="token number">0</span>，错误返回错误代码
+</code></pre> 
+<h4><a id="_456"></a>互斥锁的加锁</h4> 
+<pre><code class="prism language-cpp"><span class="token comment">//这个操作是阻塞调用的，如果这个锁此时正在被其它线程占用，那么函数调用会进入到这个锁的排队队</span>
+<span class="token comment">//列中，并会进入阻塞状态，直到拿到锁之后才会返回</span>
+<span class="token keyword">int</span> <span class="token function">pthread_mutex_lock</span><span class="token punctuation">(</span>pthread_mutex_t <span class="token operator">*</span>mutex<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token comment">//会尝试对互斥量加锁，如果该互斥量已经被锁住，函数调用失败，返回EBUSY，否则加锁成功返回0，</span>
+<span class="token comment">//线程不会被阻塞</span>
+<span class="token keyword">int</span> <span class="token function">pthread_mutex_trylock</span><span class="token punctuation">(</span>pthread_mutex_t <span class="token operator">*</span>mutex<span class="token punctuation">)</span><span class="token punctuation">;</span>
+</code></pre> 
+<h4><a id="_466"></a>互斥锁的解锁</h4> 
+<pre><code class="prism language-cpp"><span class="token keyword">int</span> <span class="token function">pthread_mutex_unlock</span><span class="token punctuation">(</span>pthread_mutex_t <span class="token operator">*</span>mutex<span class="token punctuation">)</span><span class="token punctuation">;</span>
+</code></pre> 
+<h3><a id="condition_471"></a>复习：条件变量condition</h3> 
+<h4><a id="_472"></a>条件变量的创建</h4> 
+<pre><code class="prism language-cpp">pthread_cond_t cond<span class="token punctuation">;</span><span class="token comment">//定义一个条件变量 1</span>
+</code></pre> 
+<h4><a id="_477"></a>条件变量的初始化</h4> 
+<pre><code class="prism language-cpp"><span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;pthread.h&gt;</span></span>
+<span class="token keyword">int</span> <span class="token function">pthread_cond_init</span><span class="token punctuation">(</span>pthread_cond_t <span class="token operator">*</span>restrict cond<span class="token punctuation">,</span>
+						<span class="token keyword">const</span> pthread_condattr_t <span class="token operator">*</span>restrict attr<span class="token punctuation">)</span><span class="token punctuation">;</span>
+功能：初始化条件变量
+cond：条件变量名的地址
+cond_attr：条件变量的属性
+返回： 成功<span class="token number">0</span>，错误返回错误编号
+静态初始化：pthread_cond_t cond <span class="token operator">=</span> PTHREAD_COND_INITIALIZER<span class="token punctuation">;</span>
+动态初始化：<span class="token function">pthread_cond_init</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>cond<span class="token punctuation">,</span> <span class="token keyword">nullptr</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+</code></pre> 
+<h4><a id="_490"></a>条件变量的销毁</h4> 
+<pre><code class="prism language-cpp"><span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;pthread.h&gt;</span></span>
+<span class="token keyword">int</span> <span class="token function">pthread_cond_destroy</span><span class="token punctuation">(</span>pthread_cond_t <span class="token operator">*</span>cond<span class="token punctuation">)</span><span class="token punctuation">;</span>
+功能：销毁条件变量
+cond：条件变量名的地址
+返回： 成功<span class="token number">0</span>，错误返回错误代码
+</code></pre> 
+<h4><a id="_500"></a>条件变量的等待</h4> 
+<pre><code class="prism language-cpp"><span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;pthread.h&gt;</span></span>
+<span class="token keyword">int</span> <span class="token function">pthread_cond_wait</span><span class="token punctuation">(</span>pthread_cond_t <span class="token operator">*</span>restrict cond<span class="token punctuation">,</span>
+						pthread_mutex_t <span class="token operator">*</span>restrict mutex<span class="token punctuation">)</span><span class="token punctuation">;</span>
+功能<span class="token operator">:</span>等待互斥锁mutex下的条件cond的发生
+cond<span class="token operator">:</span>要等待的条件变量
+mutex<span class="token operator">:</span>保护条件变量的互斥锁
+返回：成功<span class="token number">0</span>，错误返回错误代码
+<span class="token comment">//函数作用：</span>
+<span class="token comment">//1、阻塞等待条件变量cond满足。</span>
+<span class="token comment">//2、释放已掌握的互斥锁(解锁互斥量）相当于pthread_mutex_unlock(&amp;mutex); 第1,2步为一个原子操作</span>
+<span class="token comment">//3、当被唤醒，pthread_cond_wait函数返回，解除阻塞并重新获得互斥锁</span>
+<span class="token function">pthread_mutex_lock</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>mutex<span class="token punctuation">)</span>
+<span class="token keyword">int</span> <span class="token function">pthread_cond_timedwait</span><span class="token punctuation">(</span>pthread_cond_t <span class="token operator">*</span>restrict cond<span class="token punctuation">,</span>
+							pthread_mutex_t <span class="token operator">*</span>restrict mutex<span class="token punctuation">,</span>
+								<span class="token keyword">const</span> <span class="token keyword">struct</span> <span class="token class-name">timespec</span> <span class="token operator">*</span>restrict abstime<span class="token punctuation">)</span><span class="token punctuation">;</span>
+</code></pre> 
+<h4><a id="_519"></a>条件变量的唤醒</h4> 
+<pre><code class="prism language-cpp"><span class="token keyword">int</span> <span class="token function">pthread_cond_signal</span><span class="token punctuation">(</span>pthread_cond_t <span class="token operator">*</span>cond<span class="token punctuation">)</span><span class="token punctuation">;</span>
+功能：发送条件变量cond
+参数：cond为要发送的条件变量
+返回：成功<span class="token number">0</span>，否则返回错误编号
+备注：唤醒至少一个阻塞在条件变量上的线程
+<span class="token keyword">int</span> <span class="token function">pthread_cond_broadcast</span><span class="token punctuation">(</span>pthread_cond_t <span class="token operator">*</span>cond<span class="token punctuation">)</span><span class="token punctuation">;</span>
+功能：发送条件变量cond
+参数：cond为要发送的条件变量
+返回：成功<span class="token number">0</span>，否则返回错误编号
+备注： 通知所有等待该条件的线程
+</code></pre> 
+<h3><a id="_533"></a>生产者消费者模型</h3> 
+<h4><a id="_534"></a>建立模型</h4> 
+<p><img src="https://images2.imgbox.com/95/c1/2cv3i78F_o.png" alt="在这里插入图片描述"><br> 模型中的数据（即缓冲区中的数据）我们抽象为一个一个的int类型数据，push操作就是生产者线程往缓冲区内存放数据的行为，pop操作就是消费者线程从缓冲区中取走数据的行为。</p> 
+<p>仓库缓冲区我们采用图中 TaskQueue 任务队列的数据结构来进行设计，该数据结构的成员如上图所示，对应成员应该设计的比较好懂，不懂的话代码中会标有注释，这里不再赘述。</p> 
+<h4><a id="UML_541"></a>UML设计</h4> 
+<p><img src="https://images2.imgbox.com/db/ed/356ZsJua_o.png" alt="在这里插入图片描述"></p> 
+<h4><a id="_543"></a>代码实现</h4> 
+<p>注意这里的 Thread.cc 和 Thread.h 依然是复用前文的面向对象的线程封装那一节的两个文件，此处不再赘述。</p> 
+<p>这里插一个vim上的批量行处理的快捷键方式：<br> <img src="https://images2.imgbox.com/9f/8c/NSYDabln_o.png" alt="在这里插入图片描述"><br> 目录如下：<br> <img src="https://images2.imgbox.com/d0/9e/arMgffRD_o.png" alt="在这里插入图片描述"><br> Condition.h：</p> 
+<pre><code class="prism language-cpp"><span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">ifndef</span> <span class="token expression">__CONDITION_H__</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name">__CONDITION_H__</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;pthread.h&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">"NoCopyable.h"</span></span>
+
+<span class="token keyword">class</span> <span class="token class-name">MutexLock</span><span class="token punctuation">;</span><span class="token comment">//前向声明</span>
+
+<span class="token keyword">class</span> <span class="token class-name">Condition</span> <span class="token operator">:</span> <span class="token base-clause"><span class="token keyword">public</span> <span class="token class-name">NoCopyable</span></span><span class="token punctuation">{<!-- --></span>
+	<span class="token keyword">public</span><span class="token operator">:</span>
+		<span class="token comment">//因为每个条件变量会对应一把锁</span>
+		<span class="token comment">//所以需要在初始化一个条件变量时就将其对应的锁传进来</span>
+		<span class="token function">Condition</span><span class="token punctuation">(</span>MutexLock<span class="token operator">&amp;</span> mutex<span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token operator">~</span><span class="token function">Condition</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token comment">//阻塞</span>
+		<span class="token keyword">void</span> <span class="token function">wait</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token comment">//唤醒一个</span>
+		<span class="token keyword">void</span> <span class="token function">notify</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token comment">//广播唤醒</span>
+		<span class="token keyword">void</span> <span class="token function">notifyAll</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token keyword">private</span><span class="token operator">:</span>
+		pthread_cond_t _cond<span class="token punctuation">;</span>
+		MutexLock<span class="token operator">&amp;</span> _mutex<span class="token punctuation">;</span>
+<span class="token punctuation">}</span><span class="token punctuation">;</span>
+
+
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+
+</code></pre> 
+<p>Condition.cc：</p> 
+<pre><code class="prism language-cpp"><span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">"Condition.h"</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">"MutexLock.h"</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;pthread.h&gt;</span></span>
+
+<span class="token comment">//因为每个条件变量会对应一把锁</span>
+<span class="token comment">//所以需要在初始化一个条件变量时就将其对应的锁传进来</span>
+<span class="token class-name">Condition</span><span class="token double-colon punctuation">::</span><span class="token function">Condition</span><span class="token punctuation">(</span>MutexLock<span class="token operator">&amp;</span> mutex<span class="token punctuation">)</span><span class="token operator">:</span><span class="token function">_mutex</span><span class="token punctuation">(</span>mutex<span class="token punctuation">)</span><span class="token punctuation">{<!-- --></span>
+	<span class="token function">pthread_cond_init</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>_cond<span class="token punctuation">,</span><span class="token keyword">nullptr</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+<span class="token class-name">Condition</span><span class="token double-colon punctuation">::</span><span class="token operator">~</span><span class="token function">Condition</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">{<!-- --></span>
+	<span class="token function">pthread_cond_destroy</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>_cond<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+<span class="token comment">//阻塞</span>
+<span class="token keyword">void</span> <span class="token class-name">Condition</span><span class="token double-colon punctuation">::</span><span class="token function">wait</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">{<!-- --></span>
+	<span class="token comment">//pthread_cond_wait的第二个参数是锁的地址</span>
+	<span class="token comment">//但我们的锁是一个对象形式的MutexLock，其内部的成员变量_mutex</span>
+	<span class="token comment">//才是这里应该传进去的，但其是private私有的</span>
+	<span class="token comment">//因此我们应该到MutexLock类内写一个get函数，</span>
+	<span class="token comment">//其返回私有成员变量_mutex的地址</span>
+	<span class="token function">pthread_cond_wait</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>_cond<span class="token punctuation">,</span>_mutex<span class="token punctuation">.</span><span class="token function">getMutexLockPtr</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+<span class="token comment">//唤醒一个</span>
+<span class="token keyword">void</span> <span class="token class-name">Condition</span><span class="token double-colon punctuation">::</span><span class="token function">notify</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">{<!-- --></span>
+	<span class="token function">pthread_cond_signal</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>_cond<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+<span class="token comment">//广播唤醒</span>
+<span class="token keyword">void</span> <span class="token class-name">Condition</span><span class="token double-colon punctuation">::</span><span class="token function">notifyAll</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">{<!-- --></span>
+	<span class="token function">pthread_cond_broadcast</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>_cond<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+</code></pre> 
+<p>MutexLock.h：</p> 
+<pre><code class="prism language-cpp"><span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">ifndef</span> <span class="token expression">__MUTEXLOCK_H__ </span><span class="token comment">//防止多次编译的问题</span></span>
+
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name">__MUTEXLOCK_H__</span></span>
+
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">"NoCopyable.h"</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;pthread.h&gt;</span></span>
+
+<span class="token keyword">class</span> <span class="token class-name">MutexLock</span><span class="token operator">:</span><span class="token base-clause"><span class="token keyword">public</span> <span class="token class-name">NoCopyable</span></span><span class="token punctuation">{<!-- --></span>
+	<span class="token keyword">public</span><span class="token operator">:</span>
+		<span class="token function">MutexLock</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token operator">~</span><span class="token function">MutexLock</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token comment">//上锁</span>
+		<span class="token keyword">void</span> <span class="token function">lock</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token comment">//释放锁</span>
+		<span class="token keyword">void</span> <span class="token function">unlock</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token comment">//返回私有成员变量的地址</span>
+		pthread_mutex_t<span class="token operator">*</span> <span class="token function">getMutexLockPtr</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">{<!-- --></span>
+			<span class="token keyword">return</span> <span class="token operator">&amp;</span>_mutex<span class="token punctuation">;</span>
+		<span class="token punctuation">}</span>
+	<span class="token keyword">private</span><span class="token operator">:</span>
+		pthread_mutex_t _mutex<span class="token punctuation">;</span>
+<span class="token punctuation">}</span><span class="token punctuation">;</span>
+
+<span class="token keyword">class</span> <span class="token class-name">MutexLockGuard</span> <span class="token punctuation">{<!-- --></span>
+	<span class="token keyword">public</span><span class="token operator">:</span>
+		<span class="token function">MutexLockGuard</span><span class="token punctuation">(</span>MutexLock<span class="token operator">&amp;</span> mutex<span class="token punctuation">)</span>
+		<span class="token operator">:</span> <span class="token function">_mutex</span><span class="token punctuation">(</span>mutex<span class="token punctuation">)</span>
+		<span class="token punctuation">{<!-- --></span>
+			_mutex<span class="token punctuation">.</span><span class="token function">lock</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token punctuation">}</span>
+
+		<span class="token operator">~</span><span class="token function">MutexLockGuard</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">{<!-- --></span>
+			_mutex<span class="token punctuation">.</span><span class="token function">unlock</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token punctuation">}</span>
+	<span class="token keyword">private</span><span class="token operator">:</span>
+		MutexLock<span class="token operator">&amp;</span> _mutex<span class="token punctuation">;</span>
+<span class="token punctuation">}</span><span class="token punctuation">;</span>
+
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+
+</code></pre> 
+<p>MutexLock.cc：</p> 
+<pre><code class="prism language-cpp"><span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">"MutexLock.h"</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;pthread.h&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;stdio.h&gt;</span></span>
+
+<span class="token comment">//在构造函数中进行锁资源的初始化</span>
+<span class="token class-name">MutexLock</span><span class="token double-colon punctuation">::</span><span class="token function">MutexLock</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">{<!-- --></span>
+	<span class="token comment">//锁初始化，第二个参数是锁的属性，默认为null</span>
+	<span class="token keyword">int</span> ret <span class="token operator">=</span> <span class="token function">pthread_mutex_init</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>_mutex<span class="token punctuation">,</span><span class="token keyword">nullptr</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token keyword">if</span><span class="token punctuation">(</span>ret<span class="token punctuation">)</span><span class="token punctuation">{<!-- --></span>
+		<span class="token function">perror</span><span class="token punctuation">(</span><span class="token string">"pthread_mutex_init"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+
+<span class="token comment">//在析构函数中销毁锁资源</span>
+<span class="token class-name">MutexLock</span><span class="token double-colon punctuation">::</span><span class="token operator">~</span><span class="token function">MutexLock</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">{<!-- --></span>
+	<span class="token keyword">int</span> ret <span class="token operator">=</span> <span class="token function">pthread_mutex_destroy</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>_mutex<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token keyword">if</span><span class="token punctuation">(</span>ret<span class="token punctuation">)</span><span class="token punctuation">{<!-- --></span>
+		<span class="token function">perror</span><span class="token punctuation">(</span><span class="token string">"pthread_mutex_destroy"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+
+<span class="token comment">//上锁</span>
+<span class="token keyword">void</span> <span class="token class-name">MutexLock</span><span class="token double-colon punctuation">::</span><span class="token function">lock</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">{<!-- --></span>
+	<span class="token keyword">int</span> ret <span class="token operator">=</span> <span class="token function">pthread_mutex_lock</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>_mutex<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token keyword">if</span><span class="token punctuation">(</span>ret<span class="token punctuation">)</span><span class="token punctuation">{<!-- --></span>
+		<span class="token function">perror</span><span class="token punctuation">(</span><span class="token string">"pthread_mutex_lock"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+
+<span class="token comment">//释放锁</span>
+<span class="token keyword">void</span> <span class="token class-name">MutexLock</span><span class="token double-colon punctuation">::</span><span class="token function">unlock</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">{<!-- --></span>
+	<span class="token keyword">int</span> ret <span class="token operator">=</span> <span class="token function">pthread_mutex_unlock</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>_mutex<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token keyword">if</span><span class="token punctuation">(</span>ret<span class="token punctuation">)</span><span class="token punctuation">{<!-- --></span>
+		<span class="token function">perror</span><span class="token punctuation">(</span><span class="token string">"pthread_mutex_unlock"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+
+</code></pre> 
+<p>TaskQueue.h：</p> 
+<pre><code class="prism language-cpp"><span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">ifndef</span> <span class="token expression">__TASKQUEUE_H__</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name">__TASKQUEUE_H__</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;queue&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">"MutexLock.h"</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">"Condition.h"</span></span>
+
+<span class="token keyword">class</span> <span class="token class-name">TaskQueue</span><span class="token punctuation">{<!-- --></span>
+	<span class="token keyword">public</span><span class="token operator">:</span>
+		<span class="token function">TaskQueue</span><span class="token punctuation">(</span>size_t queSize<span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token operator">~</span><span class="token function">TaskQueue</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token keyword">bool</span> <span class="token function">empty</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token keyword">const</span><span class="token punctuation">;</span>
+		<span class="token keyword">bool</span> <span class="token function">full</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token keyword">const</span><span class="token punctuation">;</span>
+		<span class="token keyword">void</span> <span class="token function">push</span><span class="token punctuation">(</span><span class="token keyword">const</span> <span class="token keyword">int</span> <span class="token operator">&amp;</span>value<span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token keyword">int</span> <span class="token function">pop</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token keyword">private</span><span class="token operator">:</span>
+		size_t _queSize<span class="token punctuation">;</span><span class="token comment">//缓冲区大小</span>
+		std<span class="token double-colon punctuation">::</span>queue<span class="token operator">&lt;</span><span class="token keyword">int</span><span class="token operator">&gt;</span> _que<span class="token punctuation">;</span> <span class="token comment">//缓冲区</span>
+		MutexLock _mutex<span class="token punctuation">;</span> <span class="token comment">//互斥锁</span>
+		Condition _notEmpty<span class="token punctuation">;</span> <span class="token comment">//是否空 的条件变量</span>
+		Condition _notFull<span class="token punctuation">;</span> <span class="token comment">//是否满 的条件变量</span>
+<span class="token punctuation">}</span><span class="token punctuation">;</span>
+
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+
+</code></pre> 
+<p>TaskQueue.cc：</p> 
+<pre><code class="prism language-cpp"><span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">"TaskQueue.h"</span></span>
+
+<span class="token class-name">TaskQueue</span><span class="token double-colon punctuation">::</span><span class="token function">TaskQueue</span><span class="token punctuation">(</span>size_t queSize<span class="token punctuation">)</span>
+<span class="token operator">:</span><span class="token function">_queSize</span><span class="token punctuation">(</span>queSize<span class="token punctuation">)</span>
+	<span class="token punctuation">,</span><span class="token function">_que</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+	<span class="token punctuation">,</span><span class="token function">_mutex</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+	<span class="token punctuation">,</span><span class="token function">_notEmpty</span><span class="token punctuation">(</span>_mutex<span class="token punctuation">)</span>
+	<span class="token comment">//这两个进行初始化时会使用该类对应的构造函数</span>
+	<span class="token comment">//所以需要传一个mutex参数</span>
+	<span class="token punctuation">,</span><span class="token function">_notFull</span><span class="token punctuation">(</span>_mutex<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	
+<span class="token punctuation">}</span>
+
+<span class="token class-name">TaskQueue</span><span class="token double-colon punctuation">::</span><span class="token operator">~</span><span class="token function">TaskQueue</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">{<!-- --></span>
+	
+<span class="token punctuation">}</span>
+
+<span class="token keyword">bool</span> <span class="token class-name">TaskQueue</span><span class="token double-colon punctuation">::</span><span class="token function">empty</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token keyword">const</span><span class="token punctuation">{<!-- --></span>
+	<span class="token keyword">return</span> _que<span class="token punctuation">.</span><span class="token function">size</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">==</span> <span class="token number">0</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+<span class="token keyword">bool</span> <span class="token class-name">TaskQueue</span><span class="token double-colon punctuation">::</span><span class="token function">full</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token keyword">const</span><span class="token punctuation">{<!-- --></span>
+	<span class="token keyword">return</span> _que<span class="token punctuation">.</span><span class="token function">size</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">==</span> _queSize<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+<span class="token keyword">void</span> <span class="token class-name">TaskQueue</span><span class="token double-colon punctuation">::</span><span class="token function">push</span><span class="token punctuation">(</span><span class="token keyword">const</span> <span class="token keyword">int</span> <span class="token operator">&amp;</span>value<span class="token punctuation">)</span><span class="token punctuation">{<!-- --></span>
+	<span class="token comment">//在lock与unlock之间有可能出现return的情况</span>
+	<span class="token comment">//此时lock住的锁将无法被unlock导致死锁</span>
+	<span class="token comment">//而lock与unlock必须要成对出现，否则会有死锁问题</span>
+	<span class="token comment">//可以利用RAII的思想解决这种问题</span>
+	<span class="token comment">//_mutex.lock();</span>
+	<span class="token comment">//将上锁解锁操作放在MutexLockGuard类中通过构造器和析构函数的配合</span>
+	<span class="token comment">//可以自动上锁解锁，这是一种优化</span>
+	MutexLockGuard <span class="token function">autoLock</span><span class="token punctuation">(</span>_mutex<span class="token punctuation">)</span><span class="token punctuation">;</span><span class="token comment">//autoLock栈对象</span>
+	<span class="token comment">//上锁之后，开始往缓冲区中写入数据</span>
+	<span class="token comment">//先判断缓冲区是否满</span>
+	<span class="token comment">//存在问题：当full为true的时候，_notFull会wait，假如wait被唤醒了</span>
+	<span class="token comment">//那程序就直接往下走了，很有可能被唤醒的同时full为false</span>
+	<span class="token comment">//因此使用if存在隐患，我们应该让线程被唤醒的时候依然判断一下full的值</span>
+	<span class="token comment">//所以使用while</span>
+	<span class="token comment">//if(full()){<!-- --></span>
+	<span class="token keyword">while</span><span class="token punctuation">(</span><span class="token function">full</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">{<!-- --></span><span class="token comment">//while循环可以解决虚假唤醒的概念</span>
+		<span class="token comment">//满了的话，生产者就陷入等待</span>
+		<span class="token comment">//等待的时候_mutex实际上就已经被释放掉了</span>
+		<span class="token comment">//wait操作实际上就是由两个部分组成的，这两个部分是原子操作</span>
+		<span class="token comment">//上半部分：阻塞线程直到条件变量cond满足</span>
+		<span class="token comment">//下半部分：释放已经拿到的互斥锁</span>
+		<span class="token comment">//当被唤醒时，pthread_cond_wait函数会返回，解除阻塞并重新获得互斥锁</span>
+		_notFull<span class="token punctuation">.</span><span class="token function">wait</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+	<span class="token comment">//不满则开始放入数据</span>
+	_que<span class="token punctuation">.</span><span class="token function">push</span><span class="token punctuation">(</span>value<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token comment">//既然有数据了，那么就可以唤醒因非空条件变量而阻塞的线程</span>
+	_notEmpty<span class="token punctuation">.</span><span class="token function">notify</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token comment">//_mutex.unlock();</span>
+<span class="token punctuation">}</span>
+
+<span class="token keyword">int</span> <span class="token class-name">TaskQueue</span><span class="token double-colon punctuation">::</span><span class="token function">pop</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">{<!-- --></span>
+	<span class="token comment">//_mutex.lock();</span>
+	MutexLockGuard <span class="token function">autoLock</span><span class="token punctuation">(</span>_mutex<span class="token punctuation">)</span><span class="token punctuation">;</span><span class="token comment">//autoLock栈对象</span>
+	<span class="token comment">//如果为空，消费者就陷入等待</span>
+	<span class="token comment">//if(empty()){<!-- --></span>
+	<span class="token keyword">while</span><span class="token punctuation">(</span><span class="token function">empty</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">{<!-- --></span>
+		_notEmpty<span class="token punctuation">.</span><span class="token function">wait</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+	<span class="token comment">//tmp保存取出的值</span>
+	<span class="token keyword">int</span> tmp <span class="token operator">=</span> _que<span class="token punctuation">.</span><span class="token function">front</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token comment">//让指针往下一个位置，即删掉一个队列头部的元素</span>
+	_que<span class="token punctuation">.</span><span class="token function">pop</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token comment">//此时因为被取走了一个数据，所以肯定是不满的</span>
+	<span class="token comment">//那么就可以唤醒因缓冲区满的条件变量而阻塞的线程</span>
+	_notFull<span class="token punctuation">.</span><span class="token function">notify</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token comment">//_mutex.unlock();</span>
+
+	<span class="token keyword">return</span> tmp<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+</code></pre> 
+<p>NoCopyable.h：</p> 
+<pre><code class="prism language-cpp"><span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">ifndef</span> <span class="token expression">__NOCOPYABLE_H__</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name">__NOCOPYABLE_H__</span></span>
+
+<span class="token comment">//继承了本类的成员都将具有对象语义</span>
+<span class="token comment">//即无法实现对象赋值和对象复制的操作</span>
+<span class="token keyword">class</span> <span class="token class-name">NoCopyable</span><span class="token punctuation">{<!-- --></span>
+	<span class="token keyword">protected</span><span class="token operator">:</span>
+		<span class="token function">NoCopyable</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">{<!-- --></span>
+
+		<span class="token punctuation">}</span>
+
+		<span class="token operator">~</span><span class="token function">NoCopyable</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">{<!-- --></span>
+
+		<span class="token punctuation">}</span>
+
+		<span class="token function">NoCopyable</span><span class="token punctuation">(</span><span class="token keyword">const</span> NoCopyable<span class="token operator">&amp;</span> rhs<span class="token punctuation">)</span> <span class="token operator">=</span> <span class="token keyword">delete</span><span class="token punctuation">;</span>
+		NoCopyable<span class="token operator">&amp;</span> <span class="token keyword">operator</span><span class="token operator">=</span><span class="token punctuation">(</span><span class="token keyword">const</span> NoCopyable<span class="token operator">&amp;</span> rhs<span class="token punctuation">)</span> <span class="token operator">=</span> <span class="token keyword">delete</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span><span class="token punctuation">;</span>
+
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+
+</code></pre> 
+<p>Producer.h：</p> 
+<pre><code class="prism language-cpp"><span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">ifndef</span> <span class="token expression">__PRODUCER_H__</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name">__PRODUCER_H__</span></span>
+
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">"Thread.h"</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">"TaskQueue.h"</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;stdlib.h&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;iostream&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;unistd.h&gt;</span></span>
+
+<span class="token keyword">class</span> <span class="token class-name">Producer</span><span class="token operator">:</span><span class="token base-clause"><span class="token keyword">public</span> <span class="token class-name">Thread</span></span><span class="token punctuation">{<!-- --></span>
+	<span class="token keyword">public</span><span class="token operator">:</span>
+		<span class="token function">Producer</span><span class="token punctuation">(</span>TaskQueue<span class="token operator">&amp;</span> taskQueue<span class="token punctuation">)</span><span class="token operator">:</span><span class="token function">_taskQueue</span><span class="token punctuation">(</span>taskQueue<span class="token punctuation">)</span><span class="token punctuation">{<!-- --></span>
+
+		<span class="token punctuation">}</span>
+
+		<span class="token comment">//真正的线程要执行的任务</span>
+		<span class="token keyword">void</span> <span class="token function">run</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token keyword">override</span><span class="token punctuation">{<!-- --></span>
+			<span class="token keyword">int</span> cnt <span class="token operator">=</span> <span class="token number">10</span><span class="token punctuation">;</span>
+			<span class="token comment">//使用随机函数造数据</span>
+			<span class="token comment">//使用双冒号表示是C语言中的函数,这样有时候可以避免莫名其妙的错误</span>
+			<span class="token comment">//比如用C++写了一个和C函数同名的函数，用匿名空间表示就不会出问题</span>
+			<span class="token double-colon punctuation">::</span><span class="token function">srand</span><span class="token punctuation">(</span><span class="token function">clock</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+			<span class="token keyword">while</span><span class="token punctuation">(</span>cnt<span class="token operator">--</span> <span class="token operator">&gt;</span> <span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">{<!-- --></span>
+				<span class="token keyword">int</span> number <span class="token operator">=</span> <span class="token double-colon punctuation">::</span><span class="token function">rand</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token operator">%</span><span class="token number">100</span><span class="token punctuation">;</span>
+				<span class="token comment">//将数据送进缓冲区中</span>
+				_taskQueue<span class="token punctuation">.</span><span class="token function">push</span><span class="token punctuation">(</span>number<span class="token punctuation">)</span><span class="token punctuation">;</span>
+				std<span class="token double-colon punctuation">::</span>cout <span class="token operator">&lt;&lt;</span> <span class="token string">"producer &gt;&gt; number = "</span> <span class="token operator">&lt;&lt;</span> number <span class="token operator">&lt;&lt;</span> std<span class="token double-colon punctuation">::</span>endl<span class="token punctuation">;</span>
+				<span class="token function">sleep</span><span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+			<span class="token punctuation">}</span>
+		<span class="token punctuation">}</span>
+
+		<span class="token operator">~</span><span class="token function">Producer</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">{<!-- --></span>
+
+		<span class="token punctuation">}</span>
+	<span class="token keyword">private</span><span class="token operator">:</span>
+		TaskQueue<span class="token operator">&amp;</span> _taskQueue<span class="token punctuation">;</span>
+<span class="token punctuation">}</span><span class="token punctuation">;</span>
+
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+
+</code></pre> 
+<p>Consumer.h：</p> 
+<pre><code class="prism language-cpp"><span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">ifndef</span> <span class="token expression">__CONSUMER_H__</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name">__CONSUMER_H__</span></span>
+
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">"Thread.h"</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">"TaskQueue.h"</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;stdlib.h&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;iostream&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;unistd.h&gt;</span></span>
+
+<span class="token keyword">class</span> <span class="token class-name">Consumer</span><span class="token operator">:</span><span class="token base-clause"><span class="token keyword">public</span> <span class="token class-name">Thread</span></span><span class="token punctuation">{<!-- --></span>
+	<span class="token keyword">public</span><span class="token operator">:</span>
+		<span class="token function">Consumer</span><span class="token punctuation">(</span>TaskQueue<span class="token operator">&amp;</span> taskQueue<span class="token punctuation">)</span><span class="token operator">:</span><span class="token function">_taskQueue</span><span class="token punctuation">(</span>taskQueue<span class="token punctuation">)</span><span class="token punctuation">{<!-- --></span>
+
+		<span class="token punctuation">}</span>
+
+		<span class="token comment">//真正的线程要执行的任务</span>
+		<span class="token keyword">void</span> <span class="token function">run</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token keyword">override</span><span class="token punctuation">{<!-- --></span>
+			<span class="token keyword">int</span> cnt <span class="token operator">=</span> <span class="token number">10</span><span class="token punctuation">;</span>
+			<span class="token comment">//使用双冒号表示是C语言中的函数,这样有时候可以避免莫名其妙的错误</span>
+			<span class="token comment">//比如用C++写了一个和C函数同名的函数，用匿名空间表示就不会出问题</span>
+			<span class="token comment">//while(cnt-- &gt; 0){<!-- --></span>
+			<span class="token keyword">while</span><span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">{<!-- --></span>
+				<span class="token comment">//将数据从缓冲区中取出</span>
+				<span class="token keyword">int</span> number <span class="token operator">=</span> _taskQueue<span class="token punctuation">.</span><span class="token function">pop</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+				std<span class="token double-colon punctuation">::</span>cout <span class="token operator">&lt;&lt;</span> <span class="token string">"consumer &lt;&lt; number = "</span> <span class="token operator">&lt;&lt;</span> number <span class="token operator">&lt;&lt;</span> std<span class="token double-colon punctuation">::</span>endl<span class="token punctuation">;</span>
+				<span class="token function">sleep</span><span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+			<span class="token punctuation">}</span>
+		<span class="token punctuation">}</span>
+
+		<span class="token operator">~</span><span class="token function">Consumer</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">{<!-- --></span>
+
+		<span class="token punctuation">}</span>
+	<span class="token keyword">private</span><span class="token operator">:</span>
+		TaskQueue<span class="token operator">&amp;</span> _taskQueue<span class="token punctuation">;</span>
+<span class="token punctuation">}</span><span class="token punctuation">;</span>
+
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+
+</code></pre> 
+<p>TestPC.h：</p> 
+<pre><code class="prism language-cpp"><span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">"MutexLock.h"</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">"Producer.h"</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">"Consumer.h"</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">"TaskQueue.h"</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;iostream&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;memory&gt;</span></span>
+
+<span class="token keyword">using</span> <span class="token keyword">namespace</span> std<span class="token punctuation">;</span>
+
+<span class="token keyword">int</span> <span class="token function">main</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">{<!-- --></span>
+	TaskQueue <span class="token function">taskQueue</span><span class="token punctuation">(</span><span class="token number">5</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	unique_ptr<span class="token operator">&lt;</span>Thread<span class="token operator">&gt;</span> <span class="token function">producer</span><span class="token punctuation">(</span><span class="token keyword">new</span> <span class="token function">Producer</span><span class="token punctuation">(</span>taskQueue<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	unique_ptr<span class="token operator">&lt;</span>Thread<span class="token operator">&gt;</span> <span class="token function">producer2</span><span class="token punctuation">(</span><span class="token keyword">new</span> <span class="token function">Producer</span><span class="token punctuation">(</span>taskQueue<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	unique_ptr<span class="token operator">&lt;</span>Thread<span class="token operator">&gt;</span> <span class="token function">consumer</span><span class="token punctuation">(</span><span class="token keyword">new</span> <span class="token function">Consumer</span><span class="token punctuation">(</span>taskQueue<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	
+	producer<span class="token operator">-&gt;</span><span class="token function">start</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	producer2<span class="token operator">-&gt;</span><span class="token function">start</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	consumer<span class="token operator">-&gt;</span><span class="token function">start</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+	producer<span class="token operator">-&gt;</span><span class="token function">join</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	producer2<span class="token operator">-&gt;</span><span class="token function">join</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	consumer<span class="token operator">-&gt;</span><span class="token function">join</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+	<span class="token comment">//对象语义：不能进行复制或者赋值</span>
+	<span class="token comment">//值语义：可以进行赋值或者复制</span>
+	MutexLock mutex<span class="token punctuation">;</span>
+	<span class="token comment">//下面这种赋值或者构造都是可以的，但是没有意义</span>
+	<span class="token comment">//所以为了让下面这几行代码报错，让其具有对象语义</span>
+	<span class="token comment">//我们可以将其这俩函数设置为private私有的</span>
+	<span class="token comment">//或者设置为delete的，但是如果工程中类数以百计的话</span>
+	<span class="token comment">//都去一个一个的设置太麻烦了，这里可以使用继承的知识点</span>
+	<span class="token comment">//MutexLock mutex2 = mutex;//拷贝构造函数</span>
+	MutexLock mutex3<span class="token punctuation">;</span>
+	<span class="token comment">//mutex3 = mutex2;//赋值运算符函数</span>
+	<span class="token keyword">return</span> <span class="token number">0</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+</code></pre> 
+<p>运行结果：<br> <img src="https://images2.imgbox.com/a1/cc/kIAztWPc_o.png" alt="在这里插入图片描述"></p> 
+<h2><a id="_968"></a>线程池</h2> 
+<h3><a id="UML_969"></a>UML类图设计</h3> 
+<p><img src="https://images2.imgbox.com/7a/a0/CfrSv076_o.png" alt="在这里插入图片描述"></p> 
+<h3><a id="UML_971"></a>UML时序图设计</h3> 
+<h3><a id="_973"></a>代码实现</h3> 
+<p>这个线程池的代码太多了，我直接贴出我的gitee链接了，感兴趣的可以自己去链接里看：<a href="https://gitee.com/kyirealensea/cpp_learning_of_why/tree/master/oo_ThreadPool" rel="nofollow">线程池代码</a>；</p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/500cfc34e97f6ea85ecc6ccdd0f7254d/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">典型相关分析</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/515d3891a114ab192823a8bd0ba1515f/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">MATLAB聚类工具箱</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

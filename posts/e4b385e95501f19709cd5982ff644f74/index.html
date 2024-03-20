@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>介绍-fs、ramdisk、ramfs、tmpfs、initramfs和rootfs - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="介绍-fs、ramdisk、ramfs、tmpfs、initramfs和rootfs" />
+<meta property="og:description" content="看了一些关于Linux根文件系统、initramfs的帖子和文档，这里写一下自己的理解。
+1、文件系统fs
+什么是文件系统，我自己的理解就是数据的组织结构。要理解一个概念，首先应该知道为什么会\提出这个东西，它是为了解决什么问题的。比如说一个文本文件，我们通常看到的可能是里面的一句“hello world”的内容，但是当我们需要保存或者读取这个文件的时候，就需要考虑这个文件的名字该怎么保存，文件的大小又该怎么保存，我怎么知道到哪里才是这个文件的结束等等。文件系统可以有序地把这些数据组织起来，这就是我理解的文件系统。
+2、文件系统、块设备与ramdisk
+文件系统是一个软件上面的概念，数据一般是保存在物理设备上的，如硬盘、Flash等块设备。我简单地理解为用户文件-&gt;文件系统-&gt;物理设备这样三层的结构。
+文件系统的格式常见的有ext2、yaffs2等。至于ramdisk，就是用内存模拟了一个块设备，这个模拟的“块设备”是需要一个文件系统来组织数据的。我们创建一个ramdisk以后需要把它格式化为ext2或者其他文件系统格式，跟硬盘类似。ramdisk主要用于2.4版本的内核上，目前已经慢慢被淘汰。
+3、ramfs和tmpfs
+说到ramdisk，为什么它会被淘汰呢？是因为它会浪费内存、内存带宽以及CPU时间。Linux系统本身有一个缓冲的机制(disk caching mechanisms)，它会把块设备的数据进行缓冲（其实就是复制到内存中），那么ramdisk也算是一个块设备，所以它所保存的数据也会被缓冲。换而言之，一份数据可能会同时存在于缓冲区以及ramdisk中（实际上都在内存中），这样会涉及到数据在缓冲区以及ramdisk之间的拷贝问题，所以才会存在浪费内存、内存带宽以及CPU时间的问题。
+所以伟大的Linux又创造了ramfs。
+刚才说到，文件系统需要把数据保存到对应的物理设备上，Linux称这个对应的物理设备叫做backing store。那么ramfs是没有backing store的，所以就不存在ramdisk的数据拷贝问题了。ramfs是基于Linux disk caching mechanisms，所以你也可以理解为用户文件-&gt;ramfs文件系统格式-&gt;Linux disk caching mechanisms这样三层的结构（这个说法并不正确，只是便于理解）。
+有了ramfs以后怎么又蹦出来一个tmpfs呢？
+tmpfs跟ramfs其实很类似，但比ramfs多了两个特性，一是tmpfs有大小的限制；二是tmpfs可以把暂时不用的东西回写到swap分区。
+ramfs是没有大小限制的，可以一直写直到内存被塞满。另外，由于没有backing store，一些不常用的数据不能回写，只能一直占用内存，内存管理系统无法对这部分的内存进行回收，导致内存有效使用率比较低。所以针对这些问题，才有了tmpfs的改进。
+4、根文件系统rootfs
+什么是Linux的rootfs，我的理解是rootfs=特定的文件夹(文件)&#43;tmpfs&#43;disk caching mechanisms这样三层的结构。把dev、etc、home等等这些Linux运行所必须的文件夹(文件、设备节点)，按照tmpfs文件系统格式的要求组织好以后，保存在disk caching内存中的这一整个东西就是我理解的根文件系统。
+5、rootfs和initramfs
+kernel运行时的rootfs是在内存中的，那么未运行前rootfs可能是保存在Flash、SCSI甚至是网络中的。如果要kernel适应所有的这些情况，那么kernel本身就需要集成很多的驱动。考虑一种情况，你的电脑启动的时候需要读取SCSI中的一副图片显示在屏幕上，但等半天都没有读取完，屏幕一片黑，这样不友好的启动过程肯定被产品经理杀死千百遍啊！所以为了简化kernel，同时提高启动的速度，于是有了initramfs。
+那么initramfs又是个什么鬼？initramfs是一个cpio格式的包，可以类比为一个tar包。这里注意了，initramfs并不按照任何文件系统的格式组织数据！
+刚才我把运行时的根文件系统理解为rootfs=特定的文件夹(dev、etc、home等)&#43;tmpfs&#43;disk caching mechanisms三个部分，那么initramfs可以理解为initramfs=特定的文件夹(文件)，把这些文件夹按照cpio格式打包就是initramfs了，里面并不包含tmpfs文件系统的东西。作为对比，initramfs的前世initrd就是包含了文件系统的。所以可以理解为initrd=特定的文件夹(dev、etc、home等)&#43;文件系统(ext2或其他)。所以initrd是需要加载到ramdisk中，而不是tmpfs。
+编译kernel的时候，这个initramfs是以一个cpio包的形式被包裹到kernel的镜像中的。当kernel启动的时候，把initramfs解开，把里面的文件夹(文件)复制到一个tmpfs格式的分区中，那么就可以把这个分区作为根文件系统了！当然你可以事先在initramfs中放一副图片作为显示logo，这样就可以给用户一个友好的开机过程了。
+以上全是个人理解，可能与实际会有偏差，仅供参考。
+最后推荐几个文档：
+https://www.kernel.org/doc/Documentation/filesystems/ramfs-rootfs-initramfs.txt
+http://wiki.sourcemage.org/HowTo%282f%29Initramfs.html
+IBM Developer
+http://blog.linux.org.tw/~jserv/archives/001954.html
+特别是ramfs-rootfs-initramfs.txt，这个就是kernel中关于ramfs、tmpfs、initramfs和rootfs最最权威的说明了。" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/e4b385e95501f19709cd5982ff644f74/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2022-10-07T11:38:33+08:00" />
+<meta property="article:modified_time" content="2022-10-07T11:38:33+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">介绍-fs、ramdisk、ramfs、tmpfs、initramfs和rootfs</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p>看了一些关于Linux根文件系统、initramfs的帖子和文档，这里写一下自己的理解。</p> 
+<p><strong>1、文件系统fs</strong></p> 
+<p>什么是文件系统，我自己的理解就是数据的组织结构。要理解一个概念，首先应该知道为什么会\提出这个东西，它是为了解决什么问题的。比如说一个文本文件，我们通常看到的可能是里面的一句“hello world”的内容，但是当我们需要保存或者读取这个文件的时候，就需要考虑这个文件的名字该怎么保存，文件的大小又该怎么保存，我怎么知道到哪里才是这个文件的结束等等。<strong><span style="color:#000099;">文件系统可以有序地把这些数据组织起来，这就是我理解的文件系统。</span></strong></p> 
+<p></p> 
+<p><strong>2、文件系统、块设备与ramdisk</strong></p> 
+<p>文件系统是一个软件上面的概念，数据一般是保存在物理设备上的，如硬盘、Flash等块设备。我简单地理解为<strong><span style="color:#000099;">用户文件-&gt;文件系统-&gt;物理设备这样三层的结构</span></strong>。</p> 
+<p>文件系统的格式常见的有ext2、yaffs2等。<span style="color:#000099;"><strong>至于ramdisk，就是用内存模拟了一个块设备，这个模拟的“块设备”是需要一个文件系统来组织数据的。</strong></span>我们创建一个ramdisk以后需要把它格式化为ext2或者其他文件系统格式，跟硬盘类似。ramdisk主要用于2.4版本的内核上，目前已经慢慢被淘汰。</p> 
+<p></p> 
+<p><strong>3、ramfs和tmpfs</strong></p> 
+<p>        说到ramdisk，为什么它会被淘汰呢？是因为它会浪费内存、内存带宽以及CPU时间。Linux系统本身有一个缓冲的机制(disk caching mechanisms)，它会把块设备的数据进行缓冲（其实就是复制到内存中），那么ramdisk也算是一个块设备，所以它所保存的数据也会被缓冲。换而言之，一份数据可能会同时存在于缓冲区以及ramdisk中（实际上都在内存中），这样会涉及到数据在缓冲区以及ramdisk之间的拷贝问题，所以才会存在浪费内存、内存带宽以及CPU时间的问题。</p> 
+<p>所以伟大的Linux又创造了ramfs。</p> 
+<p>        刚才说到，文件系统需要把数据保存到对应的物理设备上，Linux称这个对应的物理设备叫做backing store。那么ramfs是没有backing store的，所以就不存在ramdisk的数据拷贝问题了。<span style="color:#000099;"><strong>ramfs是基于Linux disk caching mechanisms，所以你也可以理解为用户文件-&gt;ramfs文件系统格式-&gt;Linux disk caching mechanisms这样三层的结构（这个说法并不正确，只是便于理解）。</strong></span></p> 
+<p>    有了ramfs以后怎么又蹦出来一个tmpfs呢？</p> 
+<p>    tmpfs跟ramfs其实很类似，但比ramfs多了两个特性，<span style="color:#000099;"><strong>一是tmpfs有大小的限制；二是tmpfs可以把暂时不用的东西回写到swap分区</strong></span>。</p> 
+<p>ramfs是没有大小限制的，可以一直写直到内存被塞满。另外，由于没有backing store，一些不常用的数据不能回写，只能一直占用内存，内存管理系统无法对这部分的内存进行回收，导致内存有效使用率比较低。所以针对这些问题，才有了tmpfs的改进。</p> 
+<p></p> 
+<p><strong>4、根文件系统rootfs</strong></p> 
+<p>    什么是Linux的rootfs，我的理解是<span style="color:#990000;"><strong>rootfs=特定的文件夹(文件)+tmpfs+disk caching mechanisms这样三层的结构</strong></span>。把dev、etc、home等等这些Linux运行所必须的文件夹(文件、设备节点)，按照tmpfs文件系统格式的要求组织好以后，保存在disk caching内存中的这一整个东西就是我理解的根文件系统。</p> 
+<p></p> 
+<p><strong>5、rootfs和initramfs</strong></p> 
+<p>kernel运行时的rootfs是在内存中的，那么未运行前rootfs可能是保存在Flash、SCSI甚至是网络中的。如果要kernel适应所有的这些情况，那么kernel本身就需要集成很多的驱动。考虑一种情况，你的电脑启动的时候需要读取SCSI中的一副图片显示在屏幕上，但等半天都没有读取完，屏幕一片黑，这样不友好的启动过程肯定被产品经理杀死千百遍啊！所以为了简化kernel，同时提高启动的速度，于是有了initramfs。</p> 
+<p>那么initramfs又是个什么鬼？<span style="color:#000099;"><strong>initramfs是一个cpio格式的包，可以类比为一个tar包。这里注意了，initramfs并不按照任何文件系统的格式组织数据！</strong></span></p> 
+<p>刚才我把运行时的根文件系统理解为rootfs=特定的文件夹(dev、etc、home等)+tmpfs+disk caching mechanisms三个部分，那么initramfs可以理解为initramfs=特定的文件夹(文件)，把这些文件夹按照cpio格式打包就是initramfs了，里面并不包含tmpfs文件系统的东西。作为对比，initramfs的前世initrd就是包含了文件系统的。所以可以理解为initrd=特定的文件夹(dev、etc、home等)+文件系统(ext2或其他)。所以initrd是需要加载到ramdisk中，而不是tmpfs。</p> 
+<p>编译kernel的时候，这个initramfs是以一个cpio包的形式被包裹到kernel的镜像中的。当kernel启动的时候，把initramfs解开，把里面的文件夹(文件)复制到一个tmpfs格式的分区中，那么就可以把这个分区作为根文件系统了！当然你可以事先在initramfs中放一副图片作为显示logo，这样就可以给用户一个友好的开机过程了。</p> 
+<p></p> 
+<p>以上全是个人理解，可能与实际会有偏差，仅供参考。</p> 
+<p>最后推荐几个文档：</p> 
+<p><a href="https://www.kernel.org/doc/Documentation/filesystems/ramfs-rootfs-initramfs.txt" rel="nofollow" title="https://www.kernel.org/doc/Documentation/filesystems/ramfs-rootfs-initramfs.txt">https://www.kernel.org/doc/Documentation/filesystems/ramfs-rootfs-initramfs.txt</a></p> 
+<p><a href="http://wiki.sourcemage.org/HowTo%282f%29Initramfs.html" rel="nofollow" title="http://wiki.sourcemage.org/HowTo%282f%29Initramfs.html">http://wiki.sourcemage.org/HowTo%282f%29Initramfs.html</a></p> 
+<p><a href="https://www.ibm.com/developerworks/cn/linux/l-k26initrd/" rel="nofollow" title="IBM Developer">IBM Developer</a></p> 
+<p><a href="http://blog.linux.org.tw/~jserv/archives/001954.html" rel="nofollow" title="http://blog.linux.org.tw/~jserv/archives/001954.html">http://blog.linux.org.tw/~jserv/archives/001954.html</a></p> 
+<p>特别是ramfs-rootfs-initramfs.txt，这个就是kernel中关于ramfs、tmpfs、initramfs和rootfs最最权威的说明了。</p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/3bef055ab3413f55ab6fd8155b16a8d4/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">介绍-Linux capability机制</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/4a071c39786c4bc4f572c9fd0b9dc4cf/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">编译-glib交叉编译</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

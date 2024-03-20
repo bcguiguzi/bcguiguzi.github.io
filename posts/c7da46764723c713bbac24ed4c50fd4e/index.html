@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>一文读懂如何使用FPGA驱动PHY芯片 - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="一文读懂如何使用FPGA驱动PHY芯片" />
+<meta property="og:description" content="这里写自定义目录标题 如何使用FPGA驱动PHY芯片前言必要的硬件知识如何确定PHY芯片的物理地址?如何确定PHY芯片的工作模式? 如何驱动PHY芯片?MDIO的通讯协议是什么?PHY芯片怎么收发数据? 如何使用FPGA驱动PHY芯片 前言 笔者因为工作的原因接触到使用FPGA驱动PHY芯片进行通信，期间接触到了德州仪器的dp83849，博通公司的B50610，裕太车通等芯片。下面以博通公司的B506102为例来讲解如何使用和驱动PHY芯片。
+必要的硬件知识 对于嵌入式软件开发来说，不讲硬件就讲软件构架的行为都是耍流氓。
+如何确定PHY芯片的物理地址? 首先读者要明确一点，PHY芯片的物理地址是什么?这个东西有什么意义? 假如在你使用的电路板子上存在多个PHY芯片，为了区分每个不同的PHY芯片，给定PHY芯片一个独有的地址，从而确定我发送的的控制信号是给哪个PHY芯片的，而这个地址就是PHY芯片的物理地址。根据MDIO的协议，PHY的物理地址是5Bit数据，则理论上来说一根总线最多可以驱动2的5次方，即32个PHY芯片。但是实际上一般不会这么使用，首先在一般的工程中用不到这么多芯片，其次就是FPGA的引脚往往有很多，也不会如此的节省引脚。
+那么如何给定PHY芯片的物理地址呢?一般来说，PHY芯片的物理地址都是通过PHY芯片管脚连接的电阻的上拉下拉决定的。即当你板子焊接好后，PHY的物理地址就确定了，除了改变硬件连接之外，没有其它办法改变PHY芯片的物理地址。
+PHY芯片有一个POS(英语原文叫PowerOnStrapping ，笔者也不知道对应的中文名词是什么)的过程，即PHY芯片在上电的过程中，通过硬件的连接确定PHY芯片的物理地址，工作模式等等。
+如何确定PHY芯片的工作模式? 以博通芯片为例，此芯片支持两种接口:MII和RGMII。在上文提到的POS过程中，根据控制引脚的电阻上拉下拉决定。
+如何驱动PHY芯片? 以MII为例
+读者可以把PHY芯片的接口简单的理解为两部分，其一为控制接口，包括MDC， MDIO两个管脚；其二为通讯管脚，包括TXCLK， TXD， TXEN， RXCLK， RXD， RXDV等信号。
+控制管脚用于了解和控制PHY芯片的工作状态，通过读取和写入寄存器数据的方式了解当前PHY芯片的工作状态。MDIO是一种串行通讯方式，每次读取或者写入16位数据，至于每一位数据代表什么，就请各位读者去看对应芯片的器件手册了。其中MDC起到的是同步时钟的作用，其每个周期应该发送和接收MDIO一个bit数据。以笔者使用的，裕太车通的YT8512的MII规定为例:根据工作模式的不同，如果工作在100M工作模式下，MDC应该为25MHz的时钟，如果工作在10M工作模式下，MDC应该是2。5MHz的时钟。
+通讯管脚就更好理解了，就是发送和接收数据的管脚。当发送信号的时候TXEN作为发送信号的使能位，将其置为高电平后只需按照TXCLK时钟把要发送的数据赋给TXD端口就行了；同理，当接收信号的时候当RXDV置为高电平意味着发送的信息已经开始到达PHY芯片，只需按照RXCLK时钟把RXD信号存储起来就好。
+MDIO的通讯协议是什么? 所谓MDIO总线通信即FPGA和PHY芯片之间控制接口的通讯方式，根据FPGA读和写操作的不同，又分为两种不同帧格式，这个帧都是FPGA发送给PHY芯片的，分为以下几个部分:
+前导码(PRE):
+器件手册上为Preameble，一般是32个或者32个以上bit的高电平，用来提醒PHY芯片数据将要来临。
+起始码(ST):
+器件手册上为Start Of Frame。以0，1作为发送帧的起始位。即先发送一个低电平，和前面32个高电平分隔开，再发送一个高电平。
+操作码(OP):
+Opration Code。用来使PHY芯片区分这帧数据是读操作还是写操作。如果是读指令，发送1，0；如果是写指令，发送0，1；
+PHY的物理地址(PHYAD):
+PHY Address。PHY芯片的物理地址，用于区分特定的PHY芯片，在原则上讲，一条MDIO总线可以驱动32个PHY芯片，但是实际上往往不会这么做。如果读者朋友们使用的是FPGA开发板的话，往往只有几个PHY芯片，因为FPGA的并行操作特点，还有很可能是每个PHY芯片单独有一根MDIO总线连接，但是值得说明的是，这个5Bit数据是不可或缺的。请读者朋友们仔细读器件手册，弄清楚相应的PHY芯片对应的物理地址。
+寄存器地址(REGAD):
+Register Address。 PHY芯片往往有很多寄存器用于配置相应的工作模式，或者监视芯片的工作状态，期存器中的数据便是下文中的Data数据，往往是16Bit的。
+转换码(TA):
+Turn Around。根据读写操作的不同，TA也会有不同的输入，这很好理解，在写操作状态下，FPGA只需不停地输入便可；但是在读操作状态下，PHY会向FPGA返回数据，所以需要两个时钟的时间作为缓冲。读操作下TA为Z，0；写操作下为1，0。
+数据(DATA):
+读出或者写入的数据，至于这16bit数据每一位代表什么意思，就需要各位读者去看相应器件的器件手册了。
+图为博通芯片的MII接口
+PHY芯片怎么收发数据? //TODO" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/c7da46764723c713bbac24ed4c50fd4e/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2020-12-26T15:52:26+08:00" />
+<meta property="article:modified_time" content="2020-12-26T15:52:26+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">一文读懂如何使用FPGA驱动PHY芯片</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p></p> 
+<div class="toc"> 
+ <h4>这里写自定义目录标题</h4> 
+ <ul><li><a href="#FPGAPHY_2" rel="nofollow">如何使用FPGA驱动PHY芯片</a></li><li><ul><li><a href="#_3" rel="nofollow">前言</a></li><li><a href="#_6" rel="nofollow">必要的硬件知识</a></li><li><ul><li><a href="#PHY_9" rel="nofollow">如何确定PHY芯片的物理地址?</a></li><li><a href="#PHY_15" rel="nofollow">如何确定PHY芯片的工作模式?</a></li></ul> 
+  </li></ul> 
+  </li><li><a href="#_18" rel="nofollow"></a></li><li><a href="#PHY_19" rel="nofollow">如何驱动PHY芯片?</a></li><li><ul><li><ul><li><a href="#MDIO_27" rel="nofollow">MDIO的通讯协议是什么?</a></li><li><a href="#PHY_47" rel="nofollow">PHY芯片怎么收发数据?</a></li></ul> 
+  </li></ul> 
+ </li></ul> 
+</div> 
+<p></p> 
+<h2><a id="FPGAPHY_2"></a>如何使用FPGA驱动PHY芯片</h2> 
+<h3><a id="_3"></a>前言</h3> 
+<p>笔者因为工作的原因接触到使用FPGA驱动PHY芯片进行通信，期间接触到了德州仪器的dp83849，博通公司的B50610，裕太车通等芯片。下面以博通公司的B506102为例来讲解如何使用和驱动PHY芯片。</p> 
+<h3><a id="_6"></a>必要的硬件知识</h3> 
+<p>对于嵌入式软件开发来说，不讲硬件就讲软件构架的行为都是耍流氓。</p> 
+<h4><a id="PHY_9"></a>如何确定PHY芯片的物理地址?</h4> 
+<p>首先读者要明确一点，<strong>PHY芯片的物理地址是什么?这个东西有什么意义?</strong> 假如在你使用的电路板子上存在多个PHY芯片，为了区分每个不同的PHY芯片，给定PHY芯片一个独有的地址，从而确定我发送的的控制信号是给哪个PHY芯片的，而这个地址就是PHY芯片的物理地址。根据MDIO的协议，PHY的物理地址是5Bit数据，则理论上来说一根总线最多可以驱动2的5次方，即32个PHY芯片。但是实际上一般不会这么使用，首先在一般的工程中用不到这么多芯片，其次就是FPGA的引脚往往有很多，也不会如此的节省引脚。</p> 
+<p>那么如何给定PHY芯片的物理地址呢?<strong>一般来说，PHY芯片的物理地址都是通过PHY芯片管脚连接的电阻的上拉下拉决定的</strong>。即当你板子焊接好后，PHY的物理地址就确定了，除了改变硬件连接之外，没有其它办法改变PHY芯片的物理地址。</p> 
+<p>PHY芯片有一个POS(英语原文叫PowerOnStrapping ，笔者也不知道对应的中文名词是什么)的过程，即PHY芯片在上电的过程中，通过硬件的连接确定PHY芯片的物理地址，工作模式等等。</p> 
+<h4><a id="PHY_15"></a>如何确定PHY芯片的工作模式?</h4> 
+<p>以博通芯片为例，此芯片支持两种接口:MII和RGMII。在上文提到的POS过程中，根据控制引脚的电阻上拉下拉决定。</p> 
+<h2><a id="_18"></a></h2> 
+<h2><a id="PHY_19"></a>如何驱动PHY芯片?</h2> 
+<p><strong>以MII为例</strong></p> 
+<p>读者可以把PHY芯片的接口简单的理解为两部分，其一为控制接口，包括<strong>MDC， MDIO</strong>两个管脚；其二为通讯管脚，包括<strong>TXCLK， TXD， TXEN， RXCLK， RXD， RXDV</strong>等信号。</p> 
+<p>控制管脚用于了解和控制PHY芯片的工作状态，通过读取和写入寄存器数据的方式了解当前PHY芯片的工作状态。MDIO是一种串行通讯方式，每次读取或者写入16位数据，至于每一位数据代表什么，就请各位读者去看对应芯片的器件手册了。<strong>其中MDC起到的是同步时钟的作用，其每个周期应该发送和接收MDIO一个bit数据</strong>。以笔者使用的，裕太车通的YT8512的MII规定为例:根据工作模式的不同，如果工作在100M工作模式下，MDC应该为25MHz的时钟，如果工作在10M工作模式下，MDC应该是2。5MHz的时钟。</p> 
+<p>通讯管脚就更好理解了，就是发送和接收数据的管脚。当发送信号的时候TXEN作为发送信号的使能位，将其置为高电平后只需按照TXCLK时钟把要发送的数据赋给TXD端口就行了；同理，当接收信号的时候当RXDV置为高电平意味着发送的信息已经开始到达PHY芯片，只需按照RXCLK时钟把RXD信号存储起来就好。</p> 
+<h4><a id="MDIO_27"></a>MDIO的通讯协议是什么?</h4> 
+<p>所谓MDIO总线通信即FPGA和PHY芯片之间控制接口的通讯方式，根据FPGA读和写操作的不同，又分为两种不同帧格式，这个帧都是FPGA发送给PHY芯片的，分为以下几个部分:<br> <strong>前导码(PRE)</strong>:<br> 器件手册上为Preameble，一般是32个或者32个以上bit的高电平，用来提醒PHY芯片数据将要来临。<br> <strong>起始码(ST)</strong>:<br> 器件手册上为Start Of Frame。以0，1作为发送帧的起始位。即先发送一个低电平，和前面32个高电平分隔开，再发送一个高电平。<br> <strong>操作码(OP)</strong>:<br> Opration Code。用来使PHY芯片区分这帧数据是读操作还是写操作。如果是读指令，发送1，0；如果是写指令，发送0，1；<br> <strong>PHY的物理地址(PHYAD)</strong>:<br> PHY Address。PHY芯片的物理地址，用于区分特定的PHY芯片，在原则上讲，一条MDIO总线可以驱动32个PHY芯片，但是实际上往往不会这么做。如果读者朋友们使用的是FPGA开发板的话，往往只有几个PHY芯片，因为FPGA的并行操作特点，还有很可能是每个PHY芯片单独有一根MDIO总线连接，但是值得说明的是，这个5Bit数据是不可或缺的。请读者朋友们仔细读器件手册，弄清楚相应的PHY芯片对应的物理地址。<br> <strong>寄存器地址(REGAD)</strong>:<br> Register Address。 PHY芯片往往有很多寄存器用于配置相应的工作模式，或者监视芯片的工作状态，期存器中的数据便是下文中的Data数据，往往是16Bit的。<br> <strong>转换码(TA)</strong>:<br> Turn Around。根据读写操作的不同，TA也会有不同的输入，这很好理解，在写操作状态下，FPGA只需不停地输入便可；但是在读操作状态下，PHY会向FPGA返回数据，所以需要两个时钟的时间作为缓冲。读操作下TA为Z，0；写操作下为1，0。<br> <strong>数据(DATA)</strong>:<br> 读出或者写入的数据，至于这16bit数据每一位代表什么意思，就需要各位读者去看相应器件的器件手册了。<br> <img src="https://images2.imgbox.com/9e/51/y2BqLf83_o.png" alt="在这里插入图片描述"></p> 
+<p>图为博通芯片的MII接口</p> 
+<h4><a id="PHY_47"></a>PHY芯片怎么收发数据?</h4> 
+<p>//TODO</p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/f0618943e415dc3f93d5caeecc1f6c5b/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">第 45 届国际大学生程序设计竞赛（ICPC）亚洲区域赛（上海）D Walker</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/7e2afa778a4aa51a74f79738eb52aa26/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">三角形外接球万能公式_立体几何一类题的两个秒杀公式</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

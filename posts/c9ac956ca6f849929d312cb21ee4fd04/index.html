@@ -1,0 +1,299 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>基于aarch64分析kernel源码 四：printk 内核打印 - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="基于aarch64分析kernel源码 四：printk 内核打印" />
+<meta property="og:description" content="一、参考 Message logging with printk — The Linux Kernel documentation
+如何获得正确的printk格式占位符 — The Linux Kernel documentation
+使用printk记录消息 — The Linux Kernel documentation
+printk 内核打印 – 人人都懂物联网 (getiot.tech)
+内核printk原理介绍 - 知乎 (zhihu.com)
+Linux kernel log与调试_内核log_hui_zh的博客-CSDN博客
+linux内核日志的存储与读取 | QZJ (eathanq.github.io)
+二、printk概述 printk 函数主要做两件事情：
+将信息记录到 log 中；调用控制台驱动来将信息输出。
+从上图可看出，其核心是一个叫做log buffer的循环缓冲区，printk作为生产者将消息存入该缓冲区，右边的log服务模块作为消费者可从log buffer中读取消息。这样设计有以下几个优点：
+1、控制台和日志模块初始化前，内核的启动日志可以暂存到log buffer中。待它们初始化完成后，再输出相应信息。
+2、在printk log输出太快，而log服务的处理速度不足时，防止log信息丢失。
+3、将log输入模块和log输出模块解耦，增加设计的灵活性。
+三、log buffer 在内核启动初期，系统内存布局和log buffer大小（cpu核心数等因素决定）不确定，导致无法动态分配内存。为了支持printk，内核通过全局变量方式定义一个log buffer（全局变量被定义在数据段中，会在内核镜像映射过程中被映射），其定义如下：
+// kernel/printk/printk.c /* record buffer */ #define LOG_ALIGN __alignof__(unsigned long) #define __LOG_BUF_LEN (1 &lt;&lt; CONFIG_LOG_BUF_SHIFT) #define LOG_BUF_LEN_MAX (u32)(1 &lt;&lt; 31) static char __log_buf[__LOG_BUF_LEN] __aligned(LOG_ALIGN); static char *log_buf = __log_buf; static u32 log_buf_len = __LOG_BUF_LEN; 当必要信息初始化完成后，在 start_kernel 函数中调用 setup_log_buf(0) 函数动态分配 log buffer。" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/c9ac956ca6f849929d312cb21ee4fd04/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-09-02T11:41:32+08:00" />
+<meta property="article:modified_time" content="2023-09-02T11:41:32+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">基于aarch64分析kernel源码 四：printk 内核打印</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <h2><a id="_1"></a>一、参考</h2> 
+<p><a href="https://www.kernel.org/doc/html/latest/core-api/printk-basics.html" rel="nofollow">Message logging with printk — The Linux Kernel documentation</a></p> 
+<p><a href="https://www.kernel.org/doc/html/latest/translations/zh_CN/core-api/printk-formats.html" rel="nofollow">如何获得正确的printk格式占位符 — The Linux Kernel documentation</a></p> 
+<p><a href="https://www.kernel.org/doc/html/latest/translations/zh_CN/core-api/printk-basics.html" rel="nofollow">使用printk记录消息 — The Linux Kernel documentation</a></p> 
+<p><a href="https://getiot.tech/zh/linux-kernel/linux-kernel-printk" rel="nofollow">printk 内核打印 – 人人都懂物联网 (getiot.tech)</a></p> 
+<p><a href="https://zhuanlan.zhihu.com/p/521094976" rel="nofollow">内核printk原理介绍 - 知乎 (zhihu.com)</a></p> 
+<p><a href="https://blog.csdn.net/hui_zh/article/details/122599090">Linux kernel log与调试_内核log_hui_zh的博客-CSDN博客</a></p> 
+<p><a href="http://eathanq.github.io/2020/12/06/syslog/" rel="nofollow">linux内核日志的存储与读取 | QZJ (eathanq.github.io)</a></p> 
+<h2><a id="printk_17"></a>二、printk概述</h2> 
+<p>printk 函数主要做两件事情：</p> 
+<ol><li>将信息记录到 log 中；</li><li>调用控制台驱动来将信息输出。<br> <img src="https://images2.imgbox.com/5e/db/a6K1EFKo_o.jpg" alt="在这里插入图片描述"></li></ol> 
+<p>从上图可看出，其<strong>核心</strong>是一个叫做<strong>log buffer</strong>的循环缓冲区，printk作为生产者将消息存入该缓冲区，右边的log服务模块作为消费者可从log buffer中读取消息。这样设计有以下几个优点：</p> 
+<p>1、控制台和日志模块初始化前，内核的启动日志可以暂存到log buffer中。待它们初始化完成后，再输出相应信息。</p> 
+<p>2、在printk log输出太快，而log服务的处理速度不足时，防止log信息丢失。</p> 
+<p>3、将log输入模块和log输出模块解耦，增加设计的灵活性。</p> 
+<h2><a id="log_buffer_35"></a>三、log buffer</h2> 
+<p>在内核启动初期，系统<strong>内存布局</strong>和<strong>log buffer大小</strong>（cpu核心数等因素决定）<strong>不确定</strong>，导致<strong>无法动态分配内存</strong>。为了支持printk，内核通过<strong>全局变量</strong>方式定义一个log buffer（全局变量被定义在数据段中，会在内核镜像映射过程中被映射），其定义如下：</p> 
+<pre><code class="prism language-c"><span class="token comment">// kernel/printk/printk.c</span>
+
+<span class="token comment">/* record buffer */</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name">LOG_ALIGN</span> <span class="token expression"><span class="token function">__alignof__</span><span class="token punctuation">(</span><span class="token keyword">unsigned</span> <span class="token keyword">long</span><span class="token punctuation">)</span></span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name">__LOG_BUF_LEN</span> <span class="token expression"><span class="token punctuation">(</span><span class="token number">1</span> <span class="token operator">&lt;&lt;</span> CONFIG_LOG_BUF_SHIFT<span class="token punctuation">)</span></span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name">LOG_BUF_LEN_MAX</span> <span class="token expression"><span class="token punctuation">(</span>u32<span class="token punctuation">)</span><span class="token punctuation">(</span><span class="token number">1</span> <span class="token operator">&lt;&lt;</span> <span class="token number">31</span><span class="token punctuation">)</span></span></span>
+<span class="token keyword">static</span> <span class="token keyword">char</span> __log_buf<span class="token punctuation">[</span>__LOG_BUF_LEN<span class="token punctuation">]</span> <span class="token function">__aligned</span><span class="token punctuation">(</span>LOG_ALIGN<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token keyword">static</span> <span class="token keyword">char</span> <span class="token operator">*</span>log_buf <span class="token operator">=</span> __log_buf<span class="token punctuation">;</span>
+<span class="token keyword">static</span> u32 log_buf_len <span class="token operator">=</span> __LOG_BUF_LEN<span class="token punctuation">;</span>
+</code></pre> 
+<p>当必要信息初始化完成后，在 start_kernel 函数中调用 setup_log_buf(0) 函数<strong>动态分配 log buffer</strong>。</p> 
+<pre><code class="prism language-c"><span class="token keyword">void</span> __init <span class="token function">setup_log_buf</span><span class="token punctuation">(</span><span class="token keyword">int</span> early<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	……
+
+	log_buf_len <span class="token operator">=</span> new_log_buf_len<span class="token punctuation">;</span>
+	log_buf <span class="token operator">=</span> new_log_buf<span class="token punctuation">;</span>
+	new_log_buf_len <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+
+	……
+<span class="token punctuation">}</span>
+</code></pre> 
+<h2><a id="printk_ringbuffer_66"></a>四、printk_ringbuffer</h2> 
+<p>log buffer通过数据结构printk_ringbuffer维护其状态信息，其主要成员的关系如下图：<br> <img src="https://images2.imgbox.com/29/2c/Dv9390vN_o.png" alt="在这里插入图片描述"></p> 
+<pre><code class="prism language-c"><span class="token comment">// kernel/printk/printk_ringbuffer.h</span>
+
+<span class="token comment">/*
+ * Meta information about each stored message.
+ *
+ * All fields are set by the printk code except for @seq, which is
+ * set by the ringbuffer code.
+ */</span>
+<span class="token keyword">struct</span> <span class="token class-name">printk_info</span> <span class="token punctuation">{<!-- --></span>
+	u64	seq<span class="token punctuation">;</span>		<span class="token comment">/* sequence number */</span>
+	u64	ts_nsec<span class="token punctuation">;</span>	<span class="token comment">/* timestamp in nanoseconds */</span>
+	u16	text_len<span class="token punctuation">;</span>	<span class="token comment">/* length of text message */</span>
+	u8	facility<span class="token punctuation">;</span>	<span class="token comment">/* syslog facility */</span>
+	u8	flags<span class="token operator">:</span><span class="token number">5</span><span class="token punctuation">;</span>	<span class="token comment">/* internal record flags */</span>
+	u8	level<span class="token operator">:</span><span class="token number">3</span><span class="token punctuation">;</span>	<span class="token comment">/* syslog level */</span>
+	u32	caller_id<span class="token punctuation">;</span>	<span class="token comment">/* thread id or processor id */</span>
+
+	<span class="token keyword">struct</span> <span class="token class-name">dev_printk_info</span>	dev_info<span class="token punctuation">;</span>
+<span class="token punctuation">}</span><span class="token punctuation">;</span>
+<span class="token comment">/*
+ * A structure providing the buffers, used by writers and readers.
+ *
+ * Writers:
+ * Using prb_rec_init_wr(), a writer sets @text_buf_size before calling
+ * prb_reserve(). On success, prb_reserve() sets @info and @text_buf to
+ * buffers reserved for that writer.
+ *
+ * Readers:
+ * Using prb_rec_init_rd(), a reader sets all fields before calling
+ * prb_read_valid(). Note that the reader provides the @info and @text_buf,
+ * buffers. On success, the struct pointed to by @info will be filled and
+ * the char array pointed to by @text_buf will be filled with text data.
+ */</span>
+<span class="token keyword">struct</span> <span class="token class-name">printk_record</span> <span class="token punctuation">{<!-- --></span>
+	<span class="token keyword">struct</span> <span class="token class-name">printk_info</span>	<span class="token operator">*</span>info<span class="token punctuation">;</span>
+	<span class="token keyword">char</span>			<span class="token operator">*</span>text_buf<span class="token punctuation">;</span>
+	<span class="token keyword">unsigned</span> <span class="token keyword">int</span>		text_buf_size<span class="token punctuation">;</span>
+<span class="token punctuation">}</span><span class="token punctuation">;</span>
+
+<span class="token comment">/* Specifies the logical position and span of a data block. */</span>
+<span class="token keyword">struct</span> <span class="token class-name">prb_data_blk_lpos</span> <span class="token punctuation">{<!-- --></span>
+	<span class="token keyword">unsigned</span> <span class="token keyword">long</span>	begin<span class="token punctuation">;</span>
+	<span class="token keyword">unsigned</span> <span class="token keyword">long</span>	next<span class="token punctuation">;</span>
+<span class="token punctuation">}</span><span class="token punctuation">;</span>
+<span class="token comment">/*
+ * A descriptor: the complete meta-data for a record.
+ *
+ * @state_var: A bitwise combination of descriptor ID and descriptor state.
+ */</span>
+<span class="token keyword">struct</span> <span class="token class-name">prb_desc</span> <span class="token punctuation">{<!-- --></span>
+	<span class="token class-name">atomic_long_t</span>			state_var<span class="token punctuation">;</span>
+	<span class="token keyword">struct</span> <span class="token class-name">prb_data_blk_lpos</span>	text_blk_lpos<span class="token punctuation">;</span>
+<span class="token punctuation">}</span><span class="token punctuation">;</span>
+
+<span class="token comment">/* A ringbuffer of "ID + data" elements. */</span>
+<span class="token keyword">struct</span> <span class="token class-name">prb_data_ring</span> <span class="token punctuation">{<!-- --></span>
+	<span class="token keyword">unsigned</span> <span class="token keyword">int</span>	size_bits<span class="token punctuation">;</span>
+	<span class="token keyword">char</span>		<span class="token operator">*</span>data<span class="token punctuation">;</span>
+	<span class="token class-name">atomic_long_t</span>	head_lpos<span class="token punctuation">;</span>
+	<span class="token class-name">atomic_long_t</span>	tail_lpos<span class="token punctuation">;</span>
+<span class="token punctuation">}</span><span class="token punctuation">;</span>
+
+<span class="token comment">/* A ringbuffer of "struct prb_desc" elements. */</span>
+<span class="token keyword">struct</span> <span class="token class-name">prb_desc_ring</span> <span class="token punctuation">{<!-- --></span>
+	<span class="token keyword">unsigned</span> <span class="token keyword">int</span>		count_bits<span class="token punctuation">;</span>
+	<span class="token keyword">struct</span> <span class="token class-name">prb_desc</span>		<span class="token operator">*</span>descs<span class="token punctuation">;</span>
+	<span class="token keyword">struct</span> <span class="token class-name">printk_info</span>	<span class="token operator">*</span>infos<span class="token punctuation">;</span>
+	<span class="token class-name">atomic_long_t</span>		head_id<span class="token punctuation">;</span>
+	<span class="token class-name">atomic_long_t</span>		tail_id<span class="token punctuation">;</span>
+	<span class="token class-name">atomic_long_t</span>		last_finalized_id<span class="token punctuation">;</span>
+<span class="token punctuation">}</span><span class="token punctuation">;</span>
+
+<span class="token comment">/*
+ * The high level structure representing the printk ringbuffer.
+ *
+ * @fail: Count of failed prb_reserve() calls where not even a data-less
+ *        record was created.
+ */</span>
+<span class="token keyword">struct</span> <span class="token class-name">printk_ringbuffer</span> <span class="token punctuation">{<!-- --></span>
+	<span class="token keyword">struct</span> <span class="token class-name">prb_desc_ring</span>	desc_ring<span class="token punctuation">;</span>
+	<span class="token keyword">struct</span> <span class="token class-name">prb_data_ring</span>	text_data_ring<span class="token punctuation">;</span>
+	<span class="token class-name">atomic_long_t</span>		fail<span class="token punctuation">;</span>
+<span class="token punctuation">}</span><span class="token punctuation">;</span>
+</code></pre> 
+<h2><a id="_158"></a>五、日志等级</h2> 
+<p>日志级别的设置，用来<strong>控制</strong> printk 打印的这条信息<strong>是否在终端上显示</strong>的，当<strong>日志级别的数值小于控制台级别</strong>时，printk 要打印的信息才会在控制台打印出来，否则不会显示在控制台！</p> 
+<p>在我们内核中一共有8种级别，他们分别为：</p> 
+<pre><code class="prism language-c"><span class="token comment">// include/linux/kern_levels.h</span>
+
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name">KERN_EMERG</span>	<span class="token expression">KERN_SOH </span><span class="token string">"0"</span>	<span class="token comment">/* system is unusable */</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name">KERN_ALERT</span>	<span class="token expression">KERN_SOH </span><span class="token string">"1"</span>	<span class="token comment">/* action must be taken immediately */</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name">KERN_CRIT</span>	<span class="token expression">KERN_SOH </span><span class="token string">"2"</span>	<span class="token comment">/* critical conditions */</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name">KERN_ERR</span>	<span class="token expression">KERN_SOH </span><span class="token string">"3"</span>	<span class="token comment">/* error conditions */</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name">KERN_WARNING</span>	<span class="token expression">KERN_SOH </span><span class="token string">"4"</span>	<span class="token comment">/* warning conditions */</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name">KERN_NOTICE</span>	<span class="token expression">KERN_SOH </span><span class="token string">"5"</span>	<span class="token comment">/* normal but significant condition */</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name">KERN_INFO</span>	<span class="token expression">KERN_SOH </span><span class="token string">"6"</span>	<span class="token comment">/* informational */</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name">KERN_DEBUG</span>	<span class="token expression">KERN_SOH </span><span class="token string">"7"</span>	<span class="token comment">/* debug-level messages */</span></span>
+</code></pre> 
+<h2><a id="_177"></a>六、控制台级别</h2> 
+<pre><code class="prism language-c"><span class="token comment">// .config</span>
+
+#
+<span class="token macro property"><span class="token directive-hash">#</span> <span class="token directive keyword">printk</span> <span class="token expression">and dmesg options</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span>
+<span class="token expression">CONFIG_PRINTK_TIME<span class="token operator">=</span>y</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span> <span class="token expression">CONFIG_PRINTK_CALLER is not set</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span> <span class="token expression">CONFIG_STACKTRACE_BUILD_ID is not set</span></span>
+CONFIG_CONSOLE_LOGLEVEL_DEFAULT<span class="token operator">=</span><span class="token number">7</span>
+CONFIG_CONSOLE_LOGLEVEL_QUIET<span class="token operator">=</span><span class="token number">4</span>
+CONFIG_MESSAGE_LOGLEVEL_DEFAULT<span class="token operator">=</span><span class="token number">4</span>
+</code></pre> 
+<pre><code class="prism language-c"><span class="token comment">// include/linux/printk.h</span>
+
+<span class="token comment">/* printk's without a loglevel use this.. */</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name">MESSAGE_LOGLEVEL_DEFAULT</span> <span class="token expression">CONFIG_MESSAGE_LOGLEVEL_DEFAULT</span></span>
+
+<span class="token comment">/* We show everything that is MORE important than this.. */</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name">CONSOLE_LOGLEVEL_SILENT</span>  <span class="token expression"><span class="token number">0</span> </span><span class="token comment">/* Mum's the word */</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name">CONSOLE_LOGLEVEL_MIN</span>	 <span class="token expression"><span class="token number">1</span> </span><span class="token comment">/* Minimum loglevel we let people use */</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name">CONSOLE_LOGLEVEL_DEBUG</span>	<span class="token expression"><span class="token number">10</span> </span><span class="token comment">/* issue debug messages */</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name">CONSOLE_LOGLEVEL_MOTORMOUTH</span> <span class="token expression"><span class="token number">15</span>	</span><span class="token comment">/* You can't shut this one up */</span></span>
+
+<span class="token comment">/*
+ * Default used to be hard-coded at 7, quiet used to be hardcoded at 4,
+ * we're now allowing both to be set from kernel config.
+ */</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name">CONSOLE_LOGLEVEL_DEFAULT</span> <span class="token expression">CONFIG_CONSOLE_LOGLEVEL_DEFAULT</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name">CONSOLE_LOGLEVEL_QUIET</span>	 <span class="token expression">CONFIG_CONSOLE_LOGLEVEL_QUIET</span></span>
+</code></pre> 
+<pre><code class="prism language-c"><span class="token comment">// kernel/printk/printk.c</span>
+
+<span class="token keyword">int</span> console_printk<span class="token punctuation">[</span><span class="token number">4</span><span class="token punctuation">]</span> <span class="token operator">=</span> <span class="token punctuation">{<!-- --></span>
+	CONSOLE_LOGLEVEL_DEFAULT<span class="token punctuation">,</span>	<span class="token comment">/* console_loglevel */</span>
+	MESSAGE_LOGLEVEL_DEFAULT<span class="token punctuation">,</span>	<span class="token comment">/* default_message_loglevel */</span>
+	CONSOLE_LOGLEVEL_MIN<span class="token punctuation">,</span>		<span class="token comment">/* minimum_console_loglevel */</span>
+	CONSOLE_LOGLEVEL_DEFAULT<span class="token punctuation">,</span>	<span class="token comment">/* default_console_loglevel */</span>
+<span class="token punctuation">}</span><span class="token punctuation">;</span>
+<span class="token function">EXPORT_SYMBOL_GPL</span><span class="token punctuation">(</span>console_printk<span class="token punctuation">)</span><span class="token punctuation">;</span>
+</code></pre> 
+<h2><a id="_229"></a>七、常用的日志函数</h2> 
+<p><img src="https://images2.imgbox.com/b7/7b/nH4VUaHi_o.png" alt="在这里插入图片描述"></p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/201cbc9b1a964adf4aff8ebfe03291cf/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">C库字符串函数介绍</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/9ed003ddf078a171901b9ebbeb05cadf/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">Vue3&#43;TypeScript&#43;Pinia初始化项目，vscode报错解决办法！</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

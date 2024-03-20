@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>嚼烂I2C之 I2C为啥要这样设计？ - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="嚼烂I2C之 I2C为啥要这样设计？" />
+<meta property="og:description" content="本文纯属本人个人感悟，如有错误，欢迎指正交流； 主机 是指master而非电脑主机；
+I2C协议在嵌入式中应用十分广泛，但是你有没有想过，为什么I2C要设计成这样？为什么读从设备寄存器数据的时候要发送两遍start信号？为什么从设备可以拉低时钟线等等。
+首先，为什么start信号是：SCL高电平时，主机将SDA拉低？
+要想分析这个问题不妨做一个假设，比如我现在要定义新的I2C规范，start信号改成：SCL高电平时，主机将SDA释放为高电平，可以吗？当然可以，因为从机一直是开漏输出，从机不停的检测SCL和SDA两根线的电平高低，那么初始SDA线为低电平，start信号后SDA线变成了高电平，从机一定可以检测到，那这个电平的变化就可以定义成一种新的start信号； 那为什么真正的I2C协议没有这么做呢？很简单，比如一般的GPIO口，输出高电平时只要下面的NMOS管关闭就可以了，没有功耗；而要是输出低电平呢？那NMOS就一直要打开，换言之一直有电流通过，无论是功耗的增加还是发热问题，都是我们不希望看到的；因此I2C的SDA和SCL线在空闲状态时都是高电平。
+紧接着我们回顾一下I2C通信协议的具体内容，首先是写： 第一步发送start信号；第二步发送写设备地址，第三步发送写寄存器地址，第四步发送写入的数据；读的步骤是这样的：第一步发送start信号，第二步发送写设备地址，第三步发送写寄存器地址，第四步再发送一个start信号，第五步发送读设备地址，第六步接收从机发送过来的数据。
+对比读和写的过程不难发现，读操作的前半部分和写操作是一样的，但是紧接着读操作又发送了一个start信号，为什么要发送两遍start信号？
+这个问题并不难，正如上面所说的，读操作的前半部分和写操作是一样的，如果不再次发送start信号的话，主机发送的下一个字节就会被从机当作是数据，而不是读设备的地址了。
+可见，读操作中发送两遍start信号是必要的，那么读操作的大致流程如下：
+主设备：XXX这个地址的设备在不在？
+XXX地址从设备： 来了老弟
+主设备：AXXX这个寄存器地址你有吧？
+XXX地址从设备： 有的
+主设备：发送start （意思是我要读数据啦）
+主设备：发送读设备地址
+XXX地址从设备： 回复数据
+这个流程乍一看没有问题，但是如果你仔细思考一下，说不定会与我有一样的疑惑：“主机发送读设备地址”这个步骤不是多余的吗？ 毕竟主设备发完start、从设备地址、寄存器地址、start信号后就已经可以区分写操作，表明自己是读操作了呀？如果我是I2C协议的设计者的话，去掉这个“多余”的步骤，不是更简洁易记，并且能提高通信速度吗？
+事情并没有那么简单；我们回过头来仔细看一下，I2C协议中规定：无论是主机还是从机，发送完一个字节（8bit)数据后，另一方都要给一个ACK信号，也就是应答信号，这就保证了数据传输的准确性；但是唯独start信号是没有应答的！
+比方说现在主设备要写从设备的某个寄存器，上来就发一个start信号，start信号后是什么状态？SCL和SDA都是被主机拉低的状态！这时候从机是没有任何的话语权的，即便从机没有准备好，即便是从机不愿意，也“没有办法表达”，因为两根线都被主机拉低了呀！但是在写操作中，这根本不会造成问题，为什么？因为start信号后，主机还要发送设备地址、寄存器地址等等，如果从机此时在执行其他的指令，就不会拉低SDA线，也就不会产生应答信号，主机一看：喔没有应答，终止（有内鬼！终止交易！）。
+但是在读操作中，情况就不一样了；主机还是发start，发设备地址，发寄存器地址，假设从机这时候没有任何问题，表示：没错 这个设备地址是我，没错，这个寄存器地址我有；但问题是从机这时候压根不知道主机是想写数据还是读数据呀！那么可能从机的缓冲区并没有准备好，也就是没有做好发送数据的准备，这时候紧接着主机的第二个start信号过来了，假设主机不需要再发送读设备地址而是直接判断SDA电平接收数据，那么会发生什么？
+从机并没有准备好，但是SCL和SDA都是被主机拉低的状态，从机有苦说不出呀！可是主机并不知情，它先是释放SDA线，然后开始SCL线上时钟照旧，SCL每个上升沿采样SDA电平······，那不用说，数据全是FFFFFFFFF······ 而且主机永远意识不到——这个数据是错的，从机根本没有再发送数据；
+那真正的I2C协议呢？读操作的第二个start信号后，主机还要发送一个读设备地址给从机，这就是在询问从机，我要读数据，并且准备好接受了，你准备好发送了吗？这样从设备就有了话语权，从设备发送一个ACK，主机就知道：喔从机准备好了，我可以开始发送时钟，采样数据了；相反的，从设备没有发送ACK，那么主机就不会再盲目地往下进行了。
+这样解释真的无懈可击了吗？并不是；不要忘了，从机还有个“杀手锏”，那就是强行拉低SCL线来暂停主机的时钟，从而暂停数据传输，即Clock Stretching；那要这么说的话，“主机发送读设备地址”这个步骤不还是多余的嘛，毕竟从机没有准备好的话，在start信号后直接拉低SCL线就好了嘛；
+这个问题的分析首先我要引用一段说明，来自维基百科的I2C页面介绍：
+One of the more significant features of the I²C protocol is clock stretching. An addressed slave device may hold the clock line (SCL) low after receiving (or sending) a byte, indicating that it is not yet ready to process more data." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/94333c711bd23c5646045b5771bada50/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-10-18T20:42:04+08:00" />
+<meta property="article:modified_time" content="2023-10-18T20:42:04+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">嚼烂I2C之 I2C为啥要这样设计？</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p><em>本文纯属本人个人感悟，如有错误，欢迎指正交流； 主机 是指master而非电脑主机；</em></p> 
+<p></p> 
+<p>I2C协议在嵌入式中应用十分广泛，但是你有没有想过，为什么I2C要设计成这样？为什么读从设备寄存器数据的时候要发送两遍start信号？为什么从设备可以拉低时钟线等等。</p> 
+<p>首先，<strong>为什么start信号是：SCL高电平时，主机将SDA拉低？</strong></p> 
+<p>要想分析这个问题不妨做一个假设，比如我现在要定义新的I2C规范，start信号改成：SCL高电平时，主机将SDA释放为高电平，可以吗？当然可以，因为从机一直是开漏输出，从机不停的检测SCL和SDA两根线的电平高低，那么初始SDA线为低电平，start信号后SDA线变成了高电平，从机一定可以检测到，那这个电平的变化就可以定义成一种新的start信号； 那为什么真正的I2C协议没有这么做呢？很简单，比如一般的GPIO口，输出高电平时只要下面的NMOS管关闭就可以了，没有功耗；而要是输出低电平呢？那NMOS就一直要打开，换言之一直有电流通过，无论是功耗的增加还是发热问题，都是我们不希望看到的；因此I2C的SDA和SCL线在空闲状态时都是高电平。</p> 
+<p>紧接着我们回顾一下I2C通信协议的具体内容，首先是写： <em>第一步发送start信号；第二步发送写设备地址，第三步发送写寄存器地址，第四步发送写入的数据</em>；读的步骤是这样的：<em>第一步发送start信号，第二步发送写设备地址，第三步发送写寄存器地址，第四步再发送一个start信号，第五步发送读设备地址，第六步接收从机发送过来的数据</em>。</p> 
+<p>对比读和写的过程不难发现，<strong>读操作的前半部分和写操作是一样的，但是紧接着读操作又发送了一个start信号，为什么要发送两遍start信号？</strong></p> 
+<p>这个问题并不难，正如上面所说的，读操作的前半部分和写操作是一样的，如果不再次发送start信号的话，主机发送的下一个字节就会被从机当作是数据，而不是读设备的地址了。</p> 
+<p>可见，读操作中发送两遍start信号是必要的，那么读操作的大致流程如下：</p> 
+<p>主设备：XXX这个地址的设备在不在？</p> 
+<p>XXX地址从设备： 来了老弟</p> 
+<p>主设备：AXXX这个寄存器地址你有吧？</p> 
+<p>XXX地址从设备： 有的</p> 
+<p>主设备：发送start （意思是我要读数据啦）</p> 
+<p>主设备：发送读设备地址</p> 
+<p>XXX地址从设备： 回复数据</p> 
+<p>这个流程乍一看没有问题，但是如果你仔细思考一下，说不定会与我有一样的疑惑：“<em><strong>主机发送读设备地址</strong></em>”<strong>这个步骤不是多余的吗？</strong> 毕竟主设备发完start、从设备地址、寄存器地址、start信号后就已经可以区分写操作，表明自己是读操作了呀？如果我是I2C协议的设计者的话，去掉这个“多余”的步骤，不是更简洁易记，并且能提高通信速度吗？</p> 
+<p>事情并没有那么简单；我们回过头来仔细看一下，I2C协议中规定：无论是主机还是从机，发送完一个字节（8bit)数据后，另一方都要给一个ACK信号，也就是应答信号，这就保证了数据传输的准确性；但是<strong>唯独start信号是没有应答的</strong>！</p> 
+<p>比方说现在主设备要写从设备的某个寄存器，上来就发一个start信号，start信号后是什么状态？<strong>SCL和SDA都是被主机拉低的状态</strong>！这时候从机是没有任何的话语权的，即便从机没有准备好，即便是从机不愿意，也“没有办法表达”，因为两根线都被主机拉低了呀！但是在写操作中，这根本不会造成问题，为什么？因为start信号后，主机还要发送设备地址、寄存器地址等等，如果从机此时在执行其他的指令，就不会拉低SDA线，也就不会产生应答信号，主机一看：喔没有应答，终止（有内鬼！终止交易！）。</p> 
+<p>但是在读操作中，情况就不一样了；主机还是发start，发设备地址，发寄存器地址，假设从机这时候没有任何问题，表示：没错 这个设备地址是我，没错，这个寄存器地址我有；但问题是从机这时候压根不知道主机是想写数据还是读数据呀！那么可能从机的缓冲区并没有准备好，也就是没有做好发送数据的准备，这时候紧接着主机的第二个start信号过来了，<strong>假设主机不需要再发送读设备地址而是直接判断SDA电平接收数据，那么会发生什么</strong>？</p> 
+<p>从机并没有准备好，但是SCL和SDA都是被主机拉低的状态，从机有苦说不出呀！可是主机并不知情，它先是释放SDA线，然后开始SCL线上时钟照旧，SCL每个上升沿采样SDA电平······，那不用说，数据全是FFFFFFFFF······ 而且主机永远意识不到——这个数据是错的，从机根本没有再发送数据；</p> 
+<p>那真正的I2C协议呢？读操作的第二个start信号后，主机还要发送一个<strong>读设备地址</strong>给从机，这就是在询问从机，我要读数据，并且准备好接受了，你准备好发送了吗？这样从设备就有了话语权，从设备发送一个ACK，主机就知道：喔从机准备好了，我可以开始发送时钟，采样数据了；相反的，从设备没有发送ACK，那么主机就不会再盲目地往下进行了。</p> 
+<p>这样解释真的无懈可击了吗？并不是；不要忘了，从机还有个“杀手锏”，那就是<strong>强行拉低SCL线来暂停主机的时钟，从而暂停数据传输，即Clock Stretching</strong>；那要这么说的话，“主机发送读设备地址”这个步骤不还是多余的嘛，毕竟从机没有准备好的话，在start信号后直接拉低SCL线就好了嘛；</p> 
+<p>这个问题的分析首先我要引用一段说明，来自维基百科的I2C页面介绍：</p> 
+<blockquote>
+  One of the more significant features of the I²C protocol is clock stretching. An addressed slave device may hold the clock line (SCL) low after receiving (or sending) a byte, indicating that it is not yet ready to process more data. The master must wait until it observes the clock line going high, and an additional minimal time (4 μs for standard 100 kbit/s I²C) before pulling the clock low again.the term "clock stretching" is normally used only when slaves do it. Although in theory any clock pulse may be stretched, generally it is the intervals before or after the acknowledgment bit which are used. For example, if the slave is a MCU, its I²C interface could stretch the clock after each byte, until the software decides whether to send a positive acknowledgment or a NACK. 
+</blockquote> 
+<p>具体的翻译大家可以自己百度谷歌，我简要概括就是这个意思：<strong><em>延长时钟</em></strong> 是指被寻址的从设备可以在发送或接收一个字节后将SCL保持为低电平，主机必须等到SCL变高，并且再等待额外的最短时间（如4uS）后才能再将SCL拉低，尽管理论上可以延长任何时钟脉冲，但通常使用的是ACK位之前或之后的间隔。</p> 
+<p>也就是说从设备拉低SCL线通常只能在发送或接收一个字节后进行；另一个角度，假设我提的构想是成立的，I2C协议修改一下，即主机发送完第二个start信号后，从机如果没有准备好发送数据就拉低SCL，那么主机为了检测SCL是否被从机拉低就要先释放SCL，如果这时从机早已准备好了，没有拉低SCL，那么不就产生了一个SCL的上升沿吗，紧接着SCL一直是高电平，接下来怎么办？要延时多久？从机传过来的第一个bit怎么处理等等，整个逻辑就会混乱又复杂，要是想正常通信主机从机的判断逻辑都要大改。</p> 
+<p>所以说I2C的设计十分精秒，每一个步骤都不多余，在全球各种产品上如此流行也是情理之中了。仔细深究一下，还真是有点深不可测的感觉，以后可千万不能说I2C so easy啦！</p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/cc5d5d3bb001f7e4aba6a211af2b2431/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">RK3288 Android11 RTL8723DS WiFi 和 蓝牙Bluetooth 适配</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/45d93521f37b1c5616c1e3972ad1e5f6/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">数字信号处理----绪论</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

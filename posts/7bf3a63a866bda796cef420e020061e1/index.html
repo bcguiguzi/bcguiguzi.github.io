@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>【转】为什么要用Redis？Redis为什么这么快 - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="【转】为什么要用Redis？Redis为什么这么快" />
+<meta property="og:description" content="原文：https://blog.csdn.net/qq_44472134/article/details/104252693?ops_request_misc=&amp;request_id=&amp;biz_id=102&amp;utm_term=%25E6%258A%25A2%25E8%25B4%25AD%25E7%25A7%2592%25E6%259D%2580%25E4%25B8%25AD%25E4%25B8%25BA%25E4%25BB%2580%25E4%25B9%2588%25E8%25BF%2590%25E7%2594%25A8redis&amp;utm_medium=distribute.pc_search_result.none-task-blog-2~all~sobaiduweb~default-3-104252693.pc_search_result_no_baidu_js
+文章目录 一、为什么要使用redis呢？ 原因一、避免反复请求数据库造成效率低下原因二、需要在 秒杀，热点数据 和DB数据库之间 加入缓存中间件二、以下单线程仅指Redis负责存取这块的线程只有一个，而非Redis中只有一个进程三、讲一讲为什么Redis这么快？ 3.1、采用了多路复用io阻塞机制3.2、数据结构简单，操作节省时间3.3.、是C语言编写的，运行在内存中，自然速度快采用单线程，使用底层模型不同四、Redis的常见问题 4.1、Redis为什么是单线程的？4.2、如果万一CPU成为你的Redis瓶颈了，或者，你就是不想让服务器其他核闲置，那怎么办？4.3、单线程可以处理高并发请求吗？4.4、我们使用单线程的方式是无法发挥多核CPU 性能，有什么办法发挥多核CPU的性能嘛？五、简述一下Redis值的五种类型六、有序集合的实现方式是哪种数据结构？七、请列举几个用得到Redis的常用使用场景? 7.1、缓存，7.2、排行榜，7.3、计算器/限速器，7.4、好友关系，7.5、简单消息队列，7.6、Session共享，7.7、一些频繁被访问的数据，八、简述Redis的数据淘汰机制九、Redis怎样防止异常数据不丢失？ 9.1、RDB 持久化 （快照的形式，周期性的持久化）** 是Redis的默认持久化方法 适合冷备 9.1.1、RDB的配置方式9.1.2、RDB 優點9.1.3、RDB缺點9.1.4、RDB 保存過程9.2、AOF 持久化 （追加到AOF文件的末尾，最后以不同的频次保存到到磁盘）适合热备 9.2.1、AOF的设置方法：9.2.2、AOF的优点9.2.3、AOF 的缺点十、缓存常见问题及缓存穿透，缓存雪崩以及缓存击穿 的含义及原理 10.1、缓存更新方式10.2、数据不一致 产生的原因解决的办法10.3、缓存穿透：redis和数据库中都没有数据10.4、缓存击穿：就是一个很热门的数据，突然失效，大量请求到服务器数据库中10.5、缓存雪崩：大面积的缓存失效，打崩了DB10.6、 解决方法 缓存穿透：数据库和缓存中都没有缓存击穿： 单个key失效缓存雪崩： 所有缓存同时失效十一、过期时间设置常用操作： 11.1、过期时间设置11.2、键过期时间查看11.3、键过期判定11.4、 过期键的理论删除策略11.5、 Redis采用的过期键删除策略11.6、 AOF、RDB和复制功能对过期键的处理 （1）生成RDB文件：（2）载入RDB文件：（3）AOF文件写入：（4）AOF重写：（5）复制：十二、连接过程十三、主从链十四、分片十五、Redis是怎么持久化的？服务主从数据怎么交互的？ 一、为什么要使用redis呢？ 原因一、避免反复请求数据库造成效率低下 举个例子，假如系统中有2千万用户信息，用户信息基本固定，一旦录入很少变动，那么你每次加载所有用户信息时，如果都要请求数据库，数据库编译并执行你的查询语句，这样效率就会低下很多，针对这种信息不经常变动并且数据量。
+较大的情况，通常做法，就是把他加入缓存，每次取数前先去判断，如果缓存不为空，那么就从缓存取值，如果为空，再去请求数据库，并将数据加入缓存，这样大大提高系统访问效率。
+原因二、需要在 秒杀，热点数据 和DB数据库之间 加入缓存中间件 项目的DB遇到了瓶颈，特别是秒杀和热点数据这样的场景DB基本上就扛不住了，那就需要缓存中间件的加入了，目前市面上有的缓存中间件有 Redis 和 Memcached ，他们的优缺点
+https://blog.csdn.net/qq_44472134/article/details/104416741
+综合这些然后再结合我们项目特点，最后我们在技术选型的时候选谁。
+二、以下单线程仅指Redis负责存取这块的线程只有一个，而非Redis中只有一个进程 我先给个我的结论，单线程的Redis在瓶颈是cpu的io时（这不是大多数应用的实际应用场景），确实速度会比多线程慢。但是，我们实际应用场景中很少会遇到瓶颈是CPU的io的情况，这时候单线程优势就凸显出来了。
+实现很简单！性能又不会比多线程差，并且，单线程确实不用处理上下文的切换，cpu利用率会比多线程高，这时候采用单线程实现是一种很划算的做法。当然，如果你的宽带和内存牛逼到了使得你的io成为瓶颈，这时候也只能使用多线程了。
+面试时考官让我挑一种自己熟悉的NoSQL数据库讲一讲，我当场就蒙了，我就用过sql server，mysql和Oracle这几种，这几种就算从名字看也知道是sql数据库嘛，绞尽脑汁，我福至心灵，答出，Redis！
+先说说Redis是什么吧小老弟？
+Redis嘛，就是一种运行速度很快，并发很强的跑在内存上的NoSql数据库，支持键到五种数据类型的映射，（string、list、set、zset、hash）
+三、讲一讲为什么Redis这么快？ 3.1、采用了多路复用io阻塞机制 3.2、数据结构简单，操作节省时间 3.3.、是C语言编写的，运行在内存中，自然速度快 采用单线程， 避免了不必要的上下文切换和竞争条件，安全；也不存在多进程或者多线程导致的切换而消耗 CPU，不用去考虑各种锁的问题，不存在加锁释放锁操作，没有因为可能出现死锁而导致的性能消耗；
+使用底层模型不同 它们之间底层实现方式以及与客户端之间通信的应用协议不一样，Redis直接自己构建了VM 机制 ，因为一般的系统调用系统函数的话，会浪费一定的时间去移动和请求
+四、Redis的常见问题 4." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/7bf3a63a866bda796cef420e020061e1/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2021-01-08T12:01:19+08:00" />
+<meta property="article:modified_time" content="2021-01-08T12:01:19+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">【转】为什么要用Redis？Redis为什么这么快</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p>原文：<a href="https://blog.csdn.net/qq_44472134/article/details/104252693?ops_request_misc=&amp;request_id=&amp;biz_id=102&amp;utm_term=%25E6%258A%25A2%25E8%25B4%25AD%25E7%25A7%2592%25E6%259D%2580%25E4%25B8%25AD%25E4%25B8%25BA%25E4%25BB%2580%25E4%25B9%2588%25E8%25BF%2590%25E7%2594%25A8redis&amp;utm_medium=distribute.pc_search_result.none-task-blog-2~all~sobaiduweb~default-3-104252693.pc_search_result_no_baidu_js">https://blog.csdn.net/qq_44472134/article/details/104252693?ops_request_misc=&amp;request_id=&amp;biz_id=102&amp;utm_term=%25E6%258A%25A2%25E8%25B4%25AD%25E7%25A7%2592%25E6%259D%2580%25E4%25B8%25AD%25E4%25B8%25BA%25E4%25BB%2580%25E4%25B9%2588%25E8%25BF%2590%25E7%2594%25A8redis&amp;utm_medium=distribute.pc_search_result.none-task-blog-2~all~sobaiduweb~default-3-104252693.pc_search_result_no_baidu_js</a></p> 
+<h4>文章目录</h4> 
+<ul><li><a href="https://blog.csdn.net/qq_44472134/article/details/104252693?ops_request_misc=&amp;request_id=&amp;biz_id=102&amp;utm_term=%25E6%258A%25A2%25E8%25B4%25AD%25E7%25A7%2592%25E6%259D%2580%25E4%25B8%25AD%25E4%25B8%25BA%25E4%25BB%2580%25E4%25B9%2588%25E8%25BF%2590%25E7%2594%25A8redis&amp;utm_medium=distribute.pc_search_result.none-task-blog-2~all~sobaiduweb~default-3-104252693.pc_search_result_no_baidu_js#redis_1">一、为什么要使用redis呢？</a></li><li> 
+  <ul><li><a href="https://blog.csdn.net/qq_44472134/article/details/104252693?ops_request_misc=&amp;request_id=&amp;biz_id=102&amp;utm_term=%25E6%258A%25A2%25E8%25B4%25AD%25E7%25A7%2592%25E6%259D%2580%25E4%25B8%25AD%25E4%25B8%25BA%25E4%25BB%2580%25E4%25B9%2588%25E8%25BF%2590%25E7%2594%25A8redis&amp;utm_medium=distribute.pc_search_result.none-task-blog-2~all~sobaiduweb~default-3-104252693.pc_search_result_no_baidu_js#_2">原因一、避免反复请求数据库造成效率低下</a></li><li><a href="https://blog.csdn.net/qq_44472134/article/details/104252693?ops_request_misc=&amp;request_id=&amp;biz_id=102&amp;utm_term=%25E6%258A%25A2%25E8%25B4%25AD%25E7%25A7%2592%25E6%259D%2580%25E4%25B8%25AD%25E4%25B8%25BA%25E4%25BB%2580%25E4%25B9%2588%25E8%25BF%2590%25E7%2594%25A8redis&amp;utm_medium=distribute.pc_search_result.none-task-blog-2~all~sobaiduweb~default-3-104252693.pc_search_result_no_baidu_js#__DB__6">原因二、需要在 秒杀，热点数据 和DB数据库之间 加入缓存中间件</a></li></ul></li><li><a href="https://blog.csdn.net/qq_44472134/article/details/104252693?ops_request_misc=&amp;request_id=&amp;biz_id=102&amp;utm_term=%25E6%258A%25A2%25E8%25B4%25AD%25E7%25A7%2592%25E6%259D%2580%25E4%25B8%25AD%25E4%25B8%25BA%25E4%25BB%2580%25E4%25B9%2588%25E8%25BF%2590%25E7%2594%25A8redis&amp;utm_medium=distribute.pc_search_result.none-task-blog-2~all~sobaiduweb~default-3-104252693.pc_search_result_no_baidu_js#RedisRedis_12">二、以下单线程仅指Redis负责存取这块的线程只有一个，而非Redis中只有一个进程</a></li><li><a href="https://blog.csdn.net/qq_44472134/article/details/104252693?ops_request_misc=&amp;request_id=&amp;biz_id=102&amp;utm_term=%25E6%258A%25A2%25E8%25B4%25AD%25E7%25A7%2592%25E6%259D%2580%25E4%25B8%25AD%25E4%25B8%25BA%25E4%25BB%2580%25E4%25B9%2588%25E8%25BF%2590%25E7%2594%25A8redis&amp;utm_medium=distribute.pc_search_result.none-task-blog-2~all~sobaiduweb~default-3-104252693.pc_search_result_no_baidu_js#Redis_23">三、讲一讲为什么Redis这么快？</a></li><li> 
+  <ul><li><a href="https://blog.csdn.net/qq_44472134/article/details/104252693?ops_request_misc=&amp;request_id=&amp;biz_id=102&amp;utm_term=%25E6%258A%25A2%25E8%25B4%25AD%25E7%25A7%2592%25E6%259D%2580%25E4%25B8%25AD%25E4%25B8%25BA%25E4%25BB%2580%25E4%25B9%2588%25E8%25BF%2590%25E7%2594%25A8redis&amp;utm_medium=distribute.pc_search_result.none-task-blog-2~all~sobaiduweb~default-3-104252693.pc_search_result_no_baidu_js#31io_25">3.1、采用了多路复用io阻塞机制</a></li><li><a href="https://blog.csdn.net/qq_44472134/article/details/104252693?ops_request_misc=&amp;request_id=&amp;biz_id=102&amp;utm_term=%25E6%258A%25A2%25E8%25B4%25AD%25E7%25A7%2592%25E6%259D%2580%25E4%25B8%25AD%25E4%25B8%25BA%25E4%25BB%2580%25E4%25B9%2588%25E8%25BF%2590%25E7%2594%25A8redis&amp;utm_medium=distribute.pc_search_result.none-task-blog-2~all~sobaiduweb~default-3-104252693.pc_search_result_no_baidu_js#32_26">3.2、数据结构简单，操作节省时间</a></li><li><a href="https://blog.csdn.net/qq_44472134/article/details/104252693?ops_request_misc=&amp;request_id=&amp;biz_id=102&amp;utm_term=%25E6%258A%25A2%25E8%25B4%25AD%25E7%25A7%2592%25E6%259D%2580%25E4%25B8%25AD%25E4%25B8%25BA%25E4%25BB%2580%25E4%25B9%2588%25E8%25BF%2590%25E7%2594%25A8redis&amp;utm_medium=distribute.pc_search_result.none-task-blog-2~all~sobaiduweb~default-3-104252693.pc_search_result_no_baidu_js#33C_27">3.3.、是C语言编写的，运行在内存中，自然速度快</a></li><li><a href="https://blog.csdn.net/qq_44472134/article/details/104252693?ops_request_misc=&amp;request_id=&amp;biz_id=102&amp;utm_term=%25E6%258A%25A2%25E8%25B4%25AD%25E7%25A7%2592%25E6%259D%2580%25E4%25B8%25AD%25E4%25B8%25BA%25E4%25BB%2580%25E4%25B9%2588%25E8%25BF%2590%25E7%2594%25A8redis&amp;utm_medium=distribute.pc_search_result.none-task-blog-2~all~sobaiduweb~default-3-104252693.pc_search_result_no_baidu_js#_28">采用单线程，</a></li><li><a href="https://blog.csdn.net/qq_44472134/article/details/104252693?ops_request_misc=&amp;request_id=&amp;biz_id=102&amp;utm_term=%25E6%258A%25A2%25E8%25B4%25AD%25E7%25A7%2592%25E6%259D%2580%25E4%25B8%25AD%25E4%25B8%25BA%25E4%25BB%2580%25E4%25B9%2588%25E8%25BF%2590%25E7%2594%25A8redis&amp;utm_medium=distribute.pc_search_result.none-task-blog-2~all~sobaiduweb~default-3-104252693.pc_search_result_no_baidu_js#_30">使用底层模型不同</a></li></ul></li><li><a href="https://blog.csdn.net/qq_44472134/article/details/104252693?ops_request_misc=&amp;request_id=&amp;biz_id=102&amp;utm_term=%25E6%258A%25A2%25E8%25B4%25AD%25E7%25A7%2592%25E6%259D%2580%25E4%25B8%25AD%25E4%25B8%25BA%25E4%25BB%2580%25E4%25B9%2588%25E8%25BF%2590%25E7%2594%25A8redis&amp;utm_medium=distribute.pc_search_result.none-task-blog-2~all~sobaiduweb~default-3-104252693.pc_search_result_no_baidu_js#Redis_32">四、Redis的常见问题</a></li><li> 
+  <ul><li><a href="https://blog.csdn.net/qq_44472134/article/details/104252693?ops_request_misc=&amp;request_id=&amp;biz_id=102&amp;utm_term=%25E6%258A%25A2%25E8%25B4%25AD%25E7%25A7%2592%25E6%259D%2580%25E4%25B8%25AD%25E4%25B8%25BA%25E4%25BB%2580%25E4%25B9%2588%25E8%25BF%2590%25E7%2594%25A8redis&amp;utm_medium=distribute.pc_search_result.none-task-blog-2~all~sobaiduweb~default-3-104252693.pc_search_result_no_baidu_js#41Redis_33">4.1、Redis为什么是单线程的？</a></li><li><a href="https://blog.csdn.net/qq_44472134/article/details/104252693?ops_request_misc=&amp;request_id=&amp;biz_id=102&amp;utm_term=%25E6%258A%25A2%25E8%25B4%25AD%25E7%25A7%2592%25E6%259D%2580%25E4%25B8%25AD%25E4%25B8%25BA%25E4%25BB%2580%25E4%25B9%2588%25E8%25BF%2590%25E7%2594%25A8redis&amp;utm_medium=distribute.pc_search_result.none-task-blog-2~all~sobaiduweb~default-3-104252693.pc_search_result_no_baidu_js#42CPURedis_36">4.2、如果万一CPU成为你的Redis瓶颈了，或者，你就是不想让服务器其他核闲置，那怎么办？</a></li><li><a href="https://blog.csdn.net/qq_44472134/article/details/104252693?ops_request_misc=&amp;request_id=&amp;biz_id=102&amp;utm_term=%25E6%258A%25A2%25E8%25B4%25AD%25E7%25A7%2592%25E6%259D%2580%25E4%25B8%25AD%25E4%25B8%25BA%25E4%25BB%2580%25E4%25B9%2588%25E8%25BF%2590%25E7%2594%25A8redis&amp;utm_medium=distribute.pc_search_result.none-task-blog-2~all~sobaiduweb~default-3-104252693.pc_search_result_no_baidu_js#43_39">4.3、单线程可以处理高并发请求吗？</a></li><li><a href="https://blog.csdn.net/qq_44472134/article/details/104252693?ops_request_misc=&amp;request_id=&amp;biz_id=102&amp;utm_term=%25E6%258A%25A2%25E8%25B4%25AD%25E7%25A7%2592%25E6%259D%2580%25E4%25B8%25AD%25E4%25B8%25BA%25E4%25BB%2580%25E4%25B9%2588%25E8%25BF%2590%25E7%2594%25A8redis&amp;utm_medium=distribute.pc_search_result.none-task-blog-2~all~sobaiduweb~default-3-104252693.pc_search_result_no_baidu_js#44CPU_CPU_43">4.4、我们使用单线程的方式是无法发挥多核CPU 性能，有什么办法发挥多核CPU的性能嘛？</a></li></ul></li><li><a href="https://blog.csdn.net/qq_44472134/article/details/104252693?ops_request_misc=&amp;request_id=&amp;biz_id=102&amp;utm_term=%25E6%258A%25A2%25E8%25B4%25AD%25E7%25A7%2592%25E6%259D%2580%25E4%25B8%25AD%25E4%25B8%25BA%25E4%25BB%2580%25E4%25B9%2588%25E8%25BF%2590%25E7%2594%25A8redis&amp;utm_medium=distribute.pc_search_result.none-task-blog-2~all~sobaiduweb~default-3-104252693.pc_search_result_no_baidu_js#Redis_48">五、简述一下Redis值的五种类型</a></li><li><a href="https://blog.csdn.net/qq_44472134/article/details/104252693?ops_request_misc=&amp;request_id=&amp;biz_id=102&amp;utm_term=%25E6%258A%25A2%25E8%25B4%25AD%25E7%25A7%2592%25E6%259D%2580%25E4%25B8%25AD%25E4%25B8%25BA%25E4%25BB%2580%25E4%25B9%2588%25E8%25BF%2590%25E7%2594%25A8redis&amp;utm_medium=distribute.pc_search_result.none-task-blog-2~all~sobaiduweb~default-3-104252693.pc_search_result_no_baidu_js#_57">六、有序集合的实现方式是哪种数据结构？</a></li><li><a href="https://blog.csdn.net/qq_44472134/article/details/104252693?ops_request_misc=&amp;request_id=&amp;biz_id=102&amp;utm_term=%25E6%258A%25A2%25E8%25B4%25AD%25E7%25A7%2592%25E6%259D%2580%25E4%25B8%25AD%25E4%25B8%25BA%25E4%25BB%2580%25E4%25B9%2588%25E8%25BF%2590%25E7%2594%25A8redis&amp;utm_medium=distribute.pc_search_result.none-task-blog-2~all~sobaiduweb~default-3-104252693.pc_search_result_no_baidu_js#Redis_60">七、请列举几个用得到Redis的常用使用场景?</a></li><li> 
+  <ul><li><a href="https://blog.csdn.net/qq_44472134/article/details/104252693?ops_request_misc=&amp;request_id=&amp;biz_id=102&amp;utm_term=%25E6%258A%25A2%25E8%25B4%25AD%25E7%25A7%2592%25E6%259D%2580%25E4%25B8%25AD%25E4%25B8%25BA%25E4%25BB%2580%25E4%25B9%2588%25E8%25BF%2590%25E7%2594%25A8redis&amp;utm_medium=distribute.pc_search_result.none-task-blog-2~all~sobaiduweb~default-3-104252693.pc_search_result_no_baidu_js#71_62">7.1、缓存，</a></li><li><a href="https://blog.csdn.net/qq_44472134/article/details/104252693?ops_request_misc=&amp;request_id=&amp;biz_id=102&amp;utm_term=%25E6%258A%25A2%25E8%25B4%25AD%25E7%25A7%2592%25E6%259D%2580%25E4%25B8%25AD%25E4%25B8%25BA%25E4%25BB%2580%25E4%25B9%2588%25E8%25BF%2590%25E7%2594%25A8redis&amp;utm_medium=distribute.pc_search_result.none-task-blog-2~all~sobaiduweb~default-3-104252693.pc_search_result_no_baidu_js#72_65">7.2、排行榜，</a></li><li><a href="https://blog.csdn.net/qq_44472134/article/details/104252693?ops_request_misc=&amp;request_id=&amp;biz_id=102&amp;utm_term=%25E6%258A%25A2%25E8%25B4%25AD%25E7%25A7%2592%25E6%259D%2580%25E4%25B8%25AD%25E4%25B8%25BA%25E4%25BB%2580%25E4%25B9%2588%25E8%25BF%2590%25E7%2594%25A8redis&amp;utm_medium=distribute.pc_search_result.none-task-blog-2~all~sobaiduweb~default-3-104252693.pc_search_result_no_baidu_js#73_68">7.3、计算器/限速器，</a></li><li><a href="https://blog.csdn.net/qq_44472134/article/details/104252693?ops_request_misc=&amp;request_id=&amp;biz_id=102&amp;utm_term=%25E6%258A%25A2%25E8%25B4%25AD%25E7%25A7%2592%25E6%259D%2580%25E4%25B8%25AD%25E4%25B8%25BA%25E4%25BB%2580%25E4%25B9%2588%25E8%25BF%2590%25E7%2594%25A8redis&amp;utm_medium=distribute.pc_search_result.none-task-blog-2~all~sobaiduweb~default-3-104252693.pc_search_result_no_baidu_js#74_71">7.4、好友关系，</a></li><li><a href="https://blog.csdn.net/qq_44472134/article/details/104252693?ops_request_misc=&amp;request_id=&amp;biz_id=102&amp;utm_term=%25E6%258A%25A2%25E8%25B4%25AD%25E7%25A7%2592%25E6%259D%2580%25E4%25B8%25AD%25E4%25B8%25BA%25E4%25BB%2580%25E4%25B9%2588%25E8%25BF%2590%25E7%2594%25A8redis&amp;utm_medium=distribute.pc_search_result.none-task-blog-2~all~sobaiduweb~default-3-104252693.pc_search_result_no_baidu_js#75_74">7.5、简单消息队列，</a></li><li><a href="https://blog.csdn.net/qq_44472134/article/details/104252693?ops_request_misc=&amp;request_id=&amp;biz_id=102&amp;utm_term=%25E6%258A%25A2%25E8%25B4%25AD%25E7%25A7%2592%25E6%259D%2580%25E4%25B8%25AD%25E4%25B8%25BA%25E4%25BB%2580%25E4%25B9%2588%25E8%25BF%2590%25E7%2594%25A8redis&amp;utm_medium=distribute.pc_search_result.none-task-blog-2~all~sobaiduweb~default-3-104252693.pc_search_result_no_baidu_js#76Session_77">7.6、Session共享，</a></li><li><a href="https://blog.csdn.net/qq_44472134/article/details/104252693?ops_request_misc=&amp;request_id=&amp;biz_id=102&amp;utm_term=%25E6%258A%25A2%25E8%25B4%25AD%25E7%25A7%2592%25E6%259D%2580%25E4%25B8%25AD%25E4%25B8%25BA%25E4%25BB%2580%25E4%25B9%2588%25E8%25BF%2590%25E7%2594%25A8redis&amp;utm_medium=distribute.pc_search_result.none-task-blog-2~all~sobaiduweb~default-3-104252693.pc_search_result_no_baidu_js#77_80">7.7、一些频繁被访问的数据，</a></li></ul></li><li><a href="https://blog.csdn.net/qq_44472134/article/details/104252693?ops_request_misc=&amp;request_id=&amp;biz_id=102&amp;utm_term=%25E6%258A%25A2%25E8%25B4%25AD%25E7%25A7%2592%25E6%259D%2580%25E4%25B8%25AD%25E4%25B8%25BA%25E4%25BB%2580%25E4%25B9%2588%25E8%25BF%2590%25E7%2594%25A8redis&amp;utm_medium=distribute.pc_search_result.none-task-blog-2~all~sobaiduweb~default-3-104252693.pc_search_result_no_baidu_js#Redis_82">八、简述Redis的数据淘汰机制</a></li><li><a href="https://blog.csdn.net/qq_44472134/article/details/104252693?ops_request_misc=&amp;request_id=&amp;biz_id=102&amp;utm_term=%25E6%258A%25A2%25E8%25B4%25AD%25E7%25A7%2592%25E6%259D%2580%25E4%25B8%25AD%25E4%25B8%25BA%25E4%25BB%2580%25E4%25B9%2588%25E8%25BF%2590%25E7%2594%25A8redis&amp;utm_medium=distribute.pc_search_result.none-task-blog-2~all~sobaiduweb~default-3-104252693.pc_search_result_no_baidu_js#Redis_89">九、Redis怎样防止异常数据不丢失？</a></li><li> 
+  <ul><li><a href="https://blog.csdn.net/qq_44472134/article/details/104252693?ops_request_misc=&amp;request_id=&amp;biz_id=102&amp;utm_term=%25E6%258A%25A2%25E8%25B4%25AD%25E7%25A7%2592%25E6%259D%2580%25E4%25B8%25AD%25E4%25B8%25BA%25E4%25BB%2580%25E4%25B9%2588%25E8%25BF%2590%25E7%2594%25A8redis&amp;utm_medium=distribute.pc_search_result.none-task-blog-2~all~sobaiduweb~default-3-104252693.pc_search_result_no_baidu_js#91RDB___Redis__91">9.1、RDB 持久化 （快照的形式，周期性的持久化）** 是Redis的默认持久化方法 适合冷备</a></li><li> 
+    <ul><li><a href="https://blog.csdn.net/qq_44472134/article/details/104252693?ops_request_misc=&amp;request_id=&amp;biz_id=102&amp;utm_term=%25E6%258A%25A2%25E8%25B4%25AD%25E7%25A7%2592%25E6%259D%2580%25E4%25B8%25AD%25E4%25B8%25BA%25E4%25BB%2580%25E4%25B9%2588%25E8%25BF%2590%25E7%2594%25A8redis&amp;utm_medium=distribute.pc_search_result.none-task-blog-2~all~sobaiduweb~default-3-104252693.pc_search_result_no_baidu_js#911RDB_96">9.1.1、RDB的配置方式</a></li><li><a href="https://blog.csdn.net/qq_44472134/article/details/104252693?ops_request_misc=&amp;request_id=&amp;biz_id=102&amp;utm_term=%25E6%258A%25A2%25E8%25B4%25AD%25E7%25A7%2592%25E6%259D%2580%25E4%25B8%25AD%25E4%25B8%25BA%25E4%25BB%2580%25E4%25B9%2588%25E8%25BF%2590%25E7%2594%25A8redis&amp;utm_medium=distribute.pc_search_result.none-task-blog-2~all~sobaiduweb~default-3-104252693.pc_search_result_no_baidu_js#912RDB__111">9.1.2、RDB 優點</a></li><li><a href="https://blog.csdn.net/qq_44472134/article/details/104252693?ops_request_misc=&amp;request_id=&amp;biz_id=102&amp;utm_term=%25E6%258A%25A2%25E8%25B4%25AD%25E7%25A7%2592%25E6%259D%2580%25E4%25B8%25AD%25E4%25B8%25BA%25E4%25BB%2580%25E4%25B9%2588%25E8%25BF%2590%25E7%2594%25A8redis&amp;utm_medium=distribute.pc_search_result.none-task-blog-2~all~sobaiduweb~default-3-104252693.pc_search_result_no_baidu_js#913RDB_117">9.1.3、RDB缺點</a></li><li><a href="https://blog.csdn.net/qq_44472134/article/details/104252693?ops_request_misc=&amp;request_id=&amp;biz_id=102&amp;utm_term=%25E6%258A%25A2%25E8%25B4%25AD%25E7%25A7%2592%25E6%259D%2580%25E4%25B8%25AD%25E4%25B8%25BA%25E4%25BB%2580%25E4%25B9%2588%25E8%25BF%2590%25E7%2594%25A8redis&amp;utm_medium=distribute.pc_search_result.none-task-blog-2~all~sobaiduweb~default-3-104252693.pc_search_result_no_baidu_js#914RDB__121">9.1.4、RDB 保存過程</a></li></ul></li><li><a href="https://blog.csdn.net/qq_44472134/article/details/104252693?ops_request_misc=&amp;request_id=&amp;biz_id=102&amp;utm_term=%25E6%258A%25A2%25E8%25B4%25AD%25E7%25A7%2592%25E6%259D%2580%25E4%25B8%25AD%25E4%25B8%25BA%25E4%25BB%2580%25E4%25B9%2588%25E8%25BF%2590%25E7%2594%25A8redis&amp;utm_medium=distribute.pc_search_result.none-task-blog-2~all~sobaiduweb~default-3-104252693.pc_search_result_no_baidu_js#92AOF___AOF_137">9.2、AOF 持久化 （追加到AOF文件的末尾，最后以不同的频次保存到到磁盘）适合热备</a></li><li> 
+    <ul><li><a href="https://blog.csdn.net/qq_44472134/article/details/104252693?ops_request_misc=&amp;request_id=&amp;biz_id=102&amp;utm_term=%25E6%258A%25A2%25E8%25B4%25AD%25E7%25A7%2592%25E6%259D%2580%25E4%25B8%25AD%25E4%25B8%25BA%25E4%25BB%2580%25E4%25B9%2588%25E8%25BF%2590%25E7%2594%25A8redis&amp;utm_medium=distribute.pc_search_result.none-task-blog-2~all~sobaiduweb~default-3-104252693.pc_search_result_no_baidu_js#921AOF_149">9.2.1、AOF的设置方法：</a></li><li><a href="https://blog.csdn.net/qq_44472134/article/details/104252693?ops_request_misc=&amp;request_id=&amp;biz_id=102&amp;utm_term=%25E6%258A%25A2%25E8%25B4%25AD%25E7%25A7%2592%25E6%259D%2580%25E4%25B8%25AD%25E4%25B8%25BA%25E4%25BB%2580%25E4%25B9%2588%25E8%25BF%2590%25E7%2594%25A8redis&amp;utm_medium=distribute.pc_search_result.none-task-blog-2~all~sobaiduweb~default-3-104252693.pc_search_result_no_baidu_js#922AOF_166">9.2.2、AOF的优点</a></li><li><a href="https://blog.csdn.net/qq_44472134/article/details/104252693?ops_request_misc=&amp;request_id=&amp;biz_id=102&amp;utm_term=%25E6%258A%25A2%25E8%25B4%25AD%25E7%25A7%2592%25E6%259D%2580%25E4%25B8%25AD%25E4%25B8%25BA%25E4%25BB%2580%25E4%25B9%2588%25E8%25BF%2590%25E7%2594%25A8redis&amp;utm_medium=distribute.pc_search_result.none-task-blog-2~all~sobaiduweb~default-3-104252693.pc_search_result_no_baidu_js#923AOF__171">9.2.3、AOF 的缺点</a></li></ul></li></ul></li><li><a href="https://blog.csdn.net/qq_44472134/article/details/104252693?ops_request_misc=&amp;request_id=&amp;biz_id=102&amp;utm_term=%25E6%258A%25A2%25E8%25B4%25AD%25E7%25A7%2592%25E6%259D%2580%25E4%25B8%25AD%25E4%25B8%25BA%25E4%25BB%2580%25E4%25B9%2588%25E8%25BF%2590%25E7%2594%25A8redis&amp;utm_medium=distribute.pc_search_result.none-task-blog-2~all~sobaiduweb~default-3-104252693.pc_search_result_no_baidu_js#___176">十、缓存常见问题及缓存穿透，缓存雪崩以及缓存击穿 的含义及原理</a></li><li> 
+  <ul><li><a href="https://blog.csdn.net/qq_44472134/article/details/104252693?ops_request_misc=&amp;request_id=&amp;biz_id=102&amp;utm_term=%25E6%258A%25A2%25E8%25B4%25AD%25E7%25A7%2592%25E6%259D%2580%25E4%25B8%25AD%25E4%25B8%25BA%25E4%25BB%2580%25E4%25B9%2588%25E8%25BF%2590%25E7%2594%25A8redis&amp;utm_medium=distribute.pc_search_result.none-task-blog-2~all~sobaiduweb~default-3-104252693.pc_search_result_no_baidu_js#101_177">10.1、缓存更新方式</a></li><li><a href="https://blog.csdn.net/qq_44472134/article/details/104252693?ops_request_misc=&amp;request_id=&amp;biz_id=102&amp;utm_term=%25E6%258A%25A2%25E8%25B4%25AD%25E7%25A7%2592%25E6%259D%2580%25E4%25B8%25AD%25E4%25B8%25BA%25E4%25BB%2580%25E4%25B9%2588%25E8%25BF%2590%25E7%2594%25A8redis&amp;utm_medium=distribute.pc_search_result.none-task-blog-2~all~sobaiduweb~default-3-104252693.pc_search_result_no_baidu_js#102_188">10.2、数据不一致</a></li><li> 
+    <ul><li><a href="https://blog.csdn.net/qq_44472134/article/details/104252693?ops_request_misc=&amp;request_id=&amp;biz_id=102&amp;utm_term=%25E6%258A%25A2%25E8%25B4%25AD%25E7%25A7%2592%25E6%259D%2580%25E4%25B8%25AD%25E4%25B8%25BA%25E4%25BB%2580%25E4%25B9%2588%25E8%25BF%2590%25E7%2594%25A8redis&amp;utm_medium=distribute.pc_search_result.none-task-blog-2~all~sobaiduweb~default-3-104252693.pc_search_result_no_baidu_js#_189">产生的原因</a></li><li><a href="https://blog.csdn.net/qq_44472134/article/details/104252693?ops_request_misc=&amp;request_id=&amp;biz_id=102&amp;utm_term=%25E6%258A%25A2%25E8%25B4%25AD%25E7%25A7%2592%25E6%259D%2580%25E4%25B8%25AD%25E4%25B8%25BA%25E4%25BB%2580%25E4%25B9%2588%25E8%25BF%2590%25E7%2594%25A8redis&amp;utm_medium=distribute.pc_search_result.none-task-blog-2~all~sobaiduweb~default-3-104252693.pc_search_result_no_baidu_js#_192">解决的办法</a></li></ul></li><li><a href="https://blog.csdn.net/qq_44472134/article/details/104252693?ops_request_misc=&amp;request_id=&amp;biz_id=102&amp;utm_term=%25E6%258A%25A2%25E8%25B4%25AD%25E7%25A7%2592%25E6%259D%2580%25E4%25B8%25AD%25E4%25B8%25BA%25E4%25BB%2580%25E4%25B9%2588%25E8%25BF%2590%25E7%2594%25A8redis&amp;utm_medium=distribute.pc_search_result.none-task-blog-2~all~sobaiduweb~default-3-104252693.pc_search_result_no_baidu_js#103redis_195">10.3、缓存穿透：redis和数据库中都没有数据</a></li><li><a href="https://blog.csdn.net/qq_44472134/article/details/104252693?ops_request_misc=&amp;request_id=&amp;biz_id=102&amp;utm_term=%25E6%258A%25A2%25E8%25B4%25AD%25E7%25A7%2592%25E6%259D%2580%25E4%25B8%25AD%25E4%25B8%25BA%25E4%25BB%2580%25E4%25B9%2588%25E8%25BF%2590%25E7%2594%25A8redis&amp;utm_medium=distribute.pc_search_result.none-task-blog-2~all~sobaiduweb~default-3-104252693.pc_search_result_no_baidu_js#104_197">10.4、缓存击穿：就是一个很热门的数据，突然失效，大量请求到服务器数据库中</a></li><li><a href="https://blog.csdn.net/qq_44472134/article/details/104252693?ops_request_misc=&amp;request_id=&amp;biz_id=102&amp;utm_term=%25E6%258A%25A2%25E8%25B4%25AD%25E7%25A7%2592%25E6%259D%2580%25E4%25B8%25AD%25E4%25B8%25BA%25E4%25BB%2580%25E4%25B9%2588%25E8%25BF%2590%25E7%2594%25A8redis&amp;utm_medium=distribute.pc_search_result.none-task-blog-2~all~sobaiduweb~default-3-104252693.pc_search_result_no_baidu_js#105DB_199">10.5、缓存雪崩：大面积的缓存失效，打崩了DB</a></li><li><a href="https://blog.csdn.net/qq_44472134/article/details/104252693?ops_request_misc=&amp;request_id=&amp;biz_id=102&amp;utm_term=%25E6%258A%25A2%25E8%25B4%25AD%25E7%25A7%2592%25E6%259D%2580%25E4%25B8%25AD%25E4%25B8%25BA%25E4%25BB%2580%25E4%25B9%2588%25E8%25BF%2590%25E7%2594%25A8redis&amp;utm_medium=distribute.pc_search_result.none-task-blog-2~all~sobaiduweb~default-3-104252693.pc_search_result_no_baidu_js#106__202">10.6、 解决方法</a></li><li> 
+    <ul><li><a href="https://blog.csdn.net/qq_44472134/article/details/104252693?ops_request_misc=&amp;request_id=&amp;biz_id=102&amp;utm_term=%25E6%258A%25A2%25E8%25B4%25AD%25E7%25A7%2592%25E6%259D%2580%25E4%25B8%25AD%25E4%25B8%25BA%25E4%25BB%2580%25E4%25B9%2588%25E8%25BF%2590%25E7%2594%25A8redis&amp;utm_medium=distribute.pc_search_result.none-task-blog-2~all~sobaiduweb~default-3-104252693.pc_search_result_no_baidu_js#_203">缓存穿透：数据库和缓存中都没有</a></li><li><a href="https://blog.csdn.net/qq_44472134/article/details/104252693?ops_request_misc=&amp;request_id=&amp;biz_id=102&amp;utm_term=%25E6%258A%25A2%25E8%25B4%25AD%25E7%25A7%2592%25E6%259D%2580%25E4%25B8%25AD%25E4%25B8%25BA%25E4%25BB%2580%25E4%25B9%2588%25E8%25BF%2590%25E7%2594%25A8redis&amp;utm_medium=distribute.pc_search_result.none-task-blog-2~all~sobaiduweb~default-3-104252693.pc_search_result_no_baidu_js#_key_208">缓存击穿： 单个key失效</a></li><li><a href="https://blog.csdn.net/qq_44472134/article/details/104252693?ops_request_misc=&amp;request_id=&amp;biz_id=102&amp;utm_term=%25E6%258A%25A2%25E8%25B4%25AD%25E7%25A7%2592%25E6%259D%2580%25E4%25B8%25AD%25E4%25B8%25BA%25E4%25BB%2580%25E4%25B9%2588%25E8%25BF%2590%25E7%2594%25A8redis&amp;utm_medium=distribute.pc_search_result.none-task-blog-2~all~sobaiduweb~default-3-104252693.pc_search_result_no_baidu_js#__211">缓存雪崩： 所有缓存同时失效</a></li></ul></li></ul></li><li><a href="https://blog.csdn.net/qq_44472134/article/details/104252693?ops_request_misc=&amp;request_id=&amp;biz_id=102&amp;utm_term=%25E6%258A%25A2%25E8%25B4%25AD%25E7%25A7%2592%25E6%259D%2580%25E4%25B8%25AD%25E4%25B8%25BA%25E4%25BB%2580%25E4%25B9%2588%25E8%25BF%2590%25E7%2594%25A8redis&amp;utm_medium=distribute.pc_search_result.none-task-blog-2~all~sobaiduweb~default-3-104252693.pc_search_result_no_baidu_js#_215">十一、过期时间设置常用操作：</a></li><li> 
+  <ul><li><a href="https://blog.csdn.net/qq_44472134/article/details/104252693?ops_request_misc=&amp;request_id=&amp;biz_id=102&amp;utm_term=%25E6%258A%25A2%25E8%25B4%25AD%25E7%25A7%2592%25E6%259D%2580%25E4%25B8%25AD%25E4%25B8%25BA%25E4%25BB%2580%25E4%25B9%2588%25E8%25BF%2590%25E7%2594%25A8redis&amp;utm_medium=distribute.pc_search_result.none-task-blog-2~all~sobaiduweb~default-3-104252693.pc_search_result_no_baidu_js#111_216">11.1、过期时间设置</a></li><li><a href="https://blog.csdn.net/qq_44472134/article/details/104252693?ops_request_misc=&amp;request_id=&amp;biz_id=102&amp;utm_term=%25E6%258A%25A2%25E8%25B4%25AD%25E7%25A7%2592%25E6%259D%2580%25E4%25B8%25AD%25E4%25B8%25BA%25E4%25BB%2580%25E4%25B9%2588%25E8%25BF%2590%25E7%2594%25A8redis&amp;utm_medium=distribute.pc_search_result.none-task-blog-2~all~sobaiduweb~default-3-104252693.pc_search_result_no_baidu_js#112_224">11.2、键过期时间查看</a></li><li><a href="https://blog.csdn.net/qq_44472134/article/details/104252693?ops_request_misc=&amp;request_id=&amp;biz_id=102&amp;utm_term=%25E6%258A%25A2%25E8%25B4%25AD%25E7%25A7%2592%25E6%259D%2580%25E4%25B8%25AD%25E4%25B8%25BA%25E4%25BB%2580%25E4%25B9%2588%25E8%25BF%2590%25E7%2594%25A8redis&amp;utm_medium=distribute.pc_search_result.none-task-blog-2~all~sobaiduweb~default-3-104252693.pc_search_result_no_baidu_js#113_227">11.3、键过期判定</a></li><li><a href="https://blog.csdn.net/qq_44472134/article/details/104252693?ops_request_misc=&amp;request_id=&amp;biz_id=102&amp;utm_term=%25E6%258A%25A2%25E8%25B4%25AD%25E7%25A7%2592%25E6%259D%2580%25E4%25B8%25AD%25E4%25B8%25BA%25E4%25BB%2580%25E4%25B9%2588%25E8%25BF%2590%25E7%2594%25A8redis&amp;utm_medium=distribute.pc_search_result.none-task-blog-2~all~sobaiduweb~default-3-104252693.pc_search_result_no_baidu_js#114__229">11.4、 过期键的理论删除策略</a></li><li><a href="https://blog.csdn.net/qq_44472134/article/details/104252693?ops_request_misc=&amp;request_id=&amp;biz_id=102&amp;utm_term=%25E6%258A%25A2%25E8%25B4%25AD%25E7%25A7%2592%25E6%259D%2580%25E4%25B8%25AD%25E4%25B8%25BA%25E4%25BB%2580%25E4%25B9%2588%25E8%25BF%2590%25E7%2594%25A8redis&amp;utm_medium=distribute.pc_search_result.none-task-blog-2~all~sobaiduweb~default-3-104252693.pc_search_result_no_baidu_js#115_Redis_239">11.5、 Redis采用的过期键删除策略</a></li><li><a href="https://blog.csdn.net/qq_44472134/article/details/104252693?ops_request_misc=&amp;request_id=&amp;biz_id=102&amp;utm_term=%25E6%258A%25A2%25E8%25B4%25AD%25E7%25A7%2592%25E6%259D%2580%25E4%25B8%25AD%25E4%25B8%25BA%25E4%25BB%2580%25E4%25B9%2588%25E8%25BF%2590%25E7%2594%25A8redis&amp;utm_medium=distribute.pc_search_result.none-task-blog-2~all~sobaiduweb~default-3-104252693.pc_search_result_no_baidu_js#116_AOFRDB_249">11.6、 AOF、RDB和复制功能对过期键的处理</a></li><li> 
+    <ul><li><a href="https://blog.csdn.net/qq_44472134/article/details/104252693?ops_request_misc=&amp;request_id=&amp;biz_id=102&amp;utm_term=%25E6%258A%25A2%25E8%25B4%25AD%25E7%25A7%2592%25E6%259D%2580%25E4%25B8%25AD%25E4%25B8%25BA%25E4%25BB%2580%25E4%25B9%2588%25E8%25BF%2590%25E7%2594%25A8redis&amp;utm_medium=distribute.pc_search_result.none-task-blog-2~all~sobaiduweb~default-3-104252693.pc_search_result_no_baidu_js#1RDB_250">（1）生成RDB文件：</a></li><li><a href="https://blog.csdn.net/qq_44472134/article/details/104252693?ops_request_misc=&amp;request_id=&amp;biz_id=102&amp;utm_term=%25E6%258A%25A2%25E8%25B4%25AD%25E7%25A7%2592%25E6%259D%2580%25E4%25B8%25AD%25E4%25B8%25BA%25E4%25BB%2580%25E4%25B9%2588%25E8%25BF%2590%25E7%2594%25A8redis&amp;utm_medium=distribute.pc_search_result.none-task-blog-2~all~sobaiduweb~default-3-104252693.pc_search_result_no_baidu_js#2RDB_252">（2）载入RDB文件：</a></li><li><a href="https://blog.csdn.net/qq_44472134/article/details/104252693?ops_request_misc=&amp;request_id=&amp;biz_id=102&amp;utm_term=%25E6%258A%25A2%25E8%25B4%25AD%25E7%25A7%2592%25E6%259D%2580%25E4%25B8%25AD%25E4%25B8%25BA%25E4%25BB%2580%25E4%25B9%2588%25E8%25BF%2590%25E7%2594%25A8redis&amp;utm_medium=distribute.pc_search_result.none-task-blog-2~all~sobaiduweb~default-3-104252693.pc_search_result_no_baidu_js#3AOF_255">（3）AOF文件写入：</a></li><li><a href="https://blog.csdn.net/qq_44472134/article/details/104252693?ops_request_misc=&amp;request_id=&amp;biz_id=102&amp;utm_term=%25E6%258A%25A2%25E8%25B4%25AD%25E7%25A7%2592%25E6%259D%2580%25E4%25B8%25AD%25E4%25B8%25BA%25E4%25BB%2580%25E4%25B9%2588%25E8%25BF%2590%25E7%2594%25A8redis&amp;utm_medium=distribute.pc_search_result.none-task-blog-2~all~sobaiduweb~default-3-104252693.pc_search_result_no_baidu_js#4AOF_257">（4）AOF重写：</a></li><li><a href="https://blog.csdn.net/qq_44472134/article/details/104252693?ops_request_misc=&amp;request_id=&amp;biz_id=102&amp;utm_term=%25E6%258A%25A2%25E8%25B4%25AD%25E7%25A7%2592%25E6%259D%2580%25E4%25B8%25AD%25E4%25B8%25BA%25E4%25BB%2580%25E4%25B9%2588%25E8%25BF%2590%25E7%2594%25A8redis&amp;utm_medium=distribute.pc_search_result.none-task-blog-2~all~sobaiduweb~default-3-104252693.pc_search_result_no_baidu_js#5_259">（5）复制：</a></li></ul></li></ul></li><li><a href="https://blog.csdn.net/qq_44472134/article/details/104252693?ops_request_misc=&amp;request_id=&amp;biz_id=102&amp;utm_term=%25E6%258A%25A2%25E8%25B4%25AD%25E7%25A7%2592%25E6%259D%2580%25E4%25B8%25AD%25E4%25B8%25BA%25E4%25BB%2580%25E4%25B9%2588%25E8%25BF%2590%25E7%2594%25A8redis&amp;utm_medium=distribute.pc_search_result.none-task-blog-2~all~sobaiduweb~default-3-104252693.pc_search_result_no_baidu_js#_267">十二、连接过程</a></li><li><a href="https://blog.csdn.net/qq_44472134/article/details/104252693?ops_request_misc=&amp;request_id=&amp;biz_id=102&amp;utm_term=%25E6%258A%25A2%25E8%25B4%25AD%25E7%25A7%2592%25E6%259D%2580%25E4%25B8%25AD%25E4%25B8%25BA%25E4%25BB%2580%25E4%25B9%2588%25E8%25BF%2590%25E7%2594%25A8redis&amp;utm_medium=distribute.pc_search_result.none-task-blog-2~all~sobaiduweb~default-3-104252693.pc_search_result_no_baidu_js#_271">十三、主从链</a></li><li><a href="https://blog.csdn.net/qq_44472134/article/details/104252693?ops_request_misc=&amp;request_id=&amp;biz_id=102&amp;utm_term=%25E6%258A%25A2%25E8%25B4%25AD%25E7%25A7%2592%25E6%259D%2580%25E4%25B8%25AD%25E4%25B8%25BA%25E4%25BB%2580%25E4%25B9%2588%25E8%25BF%2590%25E7%2594%25A8redis&amp;utm_medium=distribute.pc_search_result.none-task-blog-2~all~sobaiduweb~default-3-104252693.pc_search_result_no_baidu_js#_279">十四、分片</a></li><li><a href="https://blog.csdn.net/qq_44472134/article/details/104252693?ops_request_misc=&amp;request_id=&amp;biz_id=102&amp;utm_term=%25E6%258A%25A2%25E8%25B4%25AD%25E7%25A7%2592%25E6%259D%2580%25E4%25B8%25AD%25E4%25B8%25BA%25E4%25BB%2580%25E4%25B9%2588%25E8%25BF%2590%25E7%2594%25A8redis&amp;utm_medium=distribute.pc_search_result.none-task-blog-2~all~sobaiduweb~default-3-104252693.pc_search_result_no_baidu_js#Redis_292">十五、Redis是怎么持久化的？服务主从数据怎么交互的？</a></li></ul> 
+<p> </p> 
+<h2><a name="t1"></a><a id="redis_1"></a>一、为什么要使用redis呢？</h2> 
+<h3><a name="t2"></a><a id="_2"></a>原因一、避免反复请求数据库造成效率低下</h3> 
+<p>举个例子，假如系统中有2千万用户信息，用户信息基本固定，一旦录入很少变动，那么你每次加载所有用户信息时，如果都要请求数据库，数据库编译并执行你的查询语句，这样效率就会低下很多，针对这种信息不经常变动并且数据量。</p> 
+<p>较大的情况，通常做法，就是把他加入缓存，每次取数前先去判断，如果缓存不为空，那么就从缓存取值，如果为空，再去请求数据库，并将数据加入缓存，这样大大提高系统访问效率。</p> 
+<h3><a name="t3"></a><a id="__DB__6"></a>原因二、需要在 秒杀，热点数据 和DB数据库之间 加入缓存中间件</h3> 
+<p>项目的DB遇到了瓶颈，特别是秒杀和热点数据这样的场景DB基本上就扛不住了，那就需要缓存中间件的加入了，目前市面上有的缓存中间件有 Redis 和 Memcached ，他们的优缺点<br> https://blog.csdn.net/qq_44472134/article/details/104416741</p> 
+<p>综合这些然后再结合我们项目特点，最后我们在技术选型的时候选谁。</p> 
+<h2><a name="t4"></a><a id="RedisRedis_12"></a>二、以下单线程仅指Redis负责存取这块的线程只有一个，而非Redis中只有一个进程</h2> 
+<p>我先给个我的结论，单线程的Redis在瓶颈是cpu的io时（这不是大多数应用的实际应用场景），确实速度会比多线程慢。但是，我们实际应用场景中很少会遇到瓶颈是CPU的io的情况，这时候单线程优势就凸显出来了。</p> 
+<p>实现很简单！性能又不会比多线程差，并且，单线程确实不用处理上下文的切换，cpu利用率会比多线程高，这时候采用单线程实现是一种很划算的做法。当然，如果你的宽带和内存牛逼到了使得你的io成为瓶颈，这时候也只能使用多线程了。</p> 
+<p>面试时考官让我挑一种自己熟悉的NoSQL数据库讲一讲，我当场就蒙了，我就用过sql server，mysql和Oracle这几种，这几种就算从名字看也知道是sql数据库嘛，绞尽脑汁，我福至心灵，答出，Redis！</p> 
+<p>先说说Redis是什么吧小老弟？</p> 
+<p>Redis嘛，就是一种运行速度很快，并发很强的跑在内存上的NoSql数据库，支持键到五种数据类型的映射，（string、list、set、zset、hash）</p> 
+<h2><a name="t5"></a><a id="Redis_23"></a>三、讲一讲为什么Redis这么快？</h2> 
+<h3><a name="t6"></a><a id="31io_25"></a>3.1、采用了多路复用io阻塞机制</h3> 
+<h3><a name="t7"></a><a id="32_26"></a>3.2、数据结构简单，操作节省时间</h3> 
+<h3><a name="t8"></a><a id="33C_27"></a>3.3.、是C语言编写的，运行在内存中，自然速度快</h3> 
+<h3><a name="t9"></a><a id="_28"></a>采用单线程，</h3> 
+<p>避免了不必要的上下文切换和竞争条件，安全；也不存在多进程或者多线程导致的切换而消耗 CPU，不用去考虑各种锁的问题，不存在加锁释放锁操作，没有因为可能出现死锁而导致的性能消耗；</p> 
+<h3><a name="t10"></a><a id="_30"></a>使用底层模型不同</h3> 
+<p>它们之间底层实现方式以及与客户端之间通信的应用协议不一样，Redis直接自己构建了VM 机制 ，因为一般的系统调用系统函数的话，会浪费一定的时间去移动和请求</p> 
+<h2><a name="t11"></a><a id="Redis_32"></a>四、Redis的常见问题</h2> 
+<h3><a name="t12"></a><a id="41Redis_33"></a>4.1、Redis为什么是单线程的？</h3> 
+<p>因为Redis的瓶颈不是cpu的运行速度，而往往是网络带宽和机器的内存大小。再说了，单线程切换开销小，容易实现既然单线程容易实现，而且CPU不会成为瓶颈，那就顺理成章地采用单线程的方案了。</p> 
+<h3><a name="t13"></a><a id="42CPURedis_36"></a>4.2、如果万一CPU成为你的Redis瓶颈了，或者，你就是不想让服务器其他核闲置，那怎么办？</h3> 
+<p>那也很简单，你多起几个Redis进程就好了。Redis是key-value数据库，又不是关系数据库，数据之间没有约束。只要客户端分清哪些key放在哪个Redis进程上就可以了。redis-cluster可以帮你做的更好。</p> 
+<h3><a name="t14"></a><a id="43_39"></a>4.3、单线程可以处理高并发请求吗？</h3> 
+<p>当然可以了，Redis都实现了。有一点概念需要澄清，并发并不是并行。<br> （相关概念：并发性I/O流，意味着能够让一个计算单元来处理来自多个客户端的流请求。并行性，意味着服务器能够同时执行几个事情，具有多个计算单元）</p> 
+<h3><a name="t15"></a><a id="44CPU_CPU_43"></a>4.4、我们使用单线程的方式是无法发挥多核CPU 性能，有什么办法发挥多核CPU的性能嘛？</h3> 
+<p>我们可以通过在单机开多个Redis 实例来完善！<br> 警告：这里我们一直在强调的单线程，只是在处理我们的网络请求的时候只有一个线程来处理，一个正式的Redis Server运行的时候肯定是不止一个线程的，这里需要大家明确的注意一下！<br> 例如Redis进行持久化的时候会以子进程或者子线程的方式执行（具体是子线程还是子进程待读者深入研究）</p> 
+<h2><a name="t16"></a><a id="Redis_48"></a>五、简述一下Redis值的五种类型</h2> 
+<pre><code>String 整数，浮点数或者字符串
+Set 集合
+Zset 有序集合
+Hash 散列表
+List 列表
+</code></pre> 
+<ul><li>1</li><li>2</li><li>3</li><li>4</li><li>5</li></ul> 
+<h2><a name="t17"></a><a id="_57"></a>六、有序集合的实现方式是哪种数据结构？</h2> 
+<p>跳跃表。</p> 
+<h2><a name="t18"></a><a id="Redis_60"></a>七、请列举几个用得到Redis的常用使用场景?</h2> 
+<h3><a name="t19"></a><a id="71_62"></a>7.1、缓存，</h3> 
+<p>毫无疑问这是Redis当今最为人熟知的使用场景。再提升服务器性能方面非常有效；</p> 
+<h3><a name="t20"></a><a id="72_65"></a>7.2、排行榜，</h3> 
+<p>在使用传统的关系型数据库（mysql oracle 等）来做这个事儿，非常的麻烦，而利用Redis的SortSet(有序集合)数据结构能够简单的搞定；</p> 
+<h3><a name="t21"></a><a id="73_68"></a>7.3、计算器/限速器，</h3> 
+<p>利用Redis中原子性的自增操作，我们可以统计类似用户点赞数、用户访问数等，这类操作如果用MySQL，频繁的读写会带来相当大的压力；限速器比较典型的使用场景是限制某个用户访问某个API的频率，常用的有抢购时，防止用户疯狂点击带来不必要的压力；</p> 
+<h3><a name="t22"></a><a id="74_71"></a>7.4、好友关系，</h3> 
+<p>利用集合的一些命令，比如求交集、并集、差集等。可以方便搞定一些共同好友、共同爱好之类的功能；</p> 
+<h3><a name="t23"></a><a id="75_74"></a>7.5、简单消息队列，</h3> 
+<p>除了Redis自身的发布/订阅模式，我们也可以利用List来实现一个队列机制，比如：到货通知、邮件发送之类的需求，不需要高可靠，但是会带来非常大的DB压力，完全可以用List来完成异步解耦；</p> 
+<h3><a name="t24"></a><a id="76Session_77"></a>7.6、Session共享，</h3> 
+<p>以PHP为例，默认Session是保存在服务器的文件中，如果是集群服务，同一个用户过来可能落在不同机器上，这就会导致用户频繁登陆；采用Redis保存Session后，无论用户落在那台机器上都能够获取到对应的Session信息。</p> 
+<h3><a name="t25"></a><a id="77_80"></a>7.7、一些频繁被访问的数据，</h3> 
+<p>经常被访问的数据如果放在关系型数据库，每次查询的开销都会很大，而放在redis中，因为redis 是放在内存中的可以很高效的访问</p> 
+<h2><a name="t26"></a><a id="Redis_82"></a>八、简述Redis的数据淘汰机制</h2> 
+<p>volatile-lru 从已设置过期时间的数据集中挑选最近最少使用的数据淘汰<br> volatile-ttl 从已设置过期时间的数据集中挑选将要过期的数据淘汰<br> volatile-random从已设置过期时间的数据集中任意选择数据淘汰<br> allkeys-lru从所有数据集中挑选最近最少使用的数据淘汰<br> allkeys-random从所有数据集中任意选择数据进行淘汰<br> noeviction禁止驱逐数据</p> 
+<h2><a name="t27"></a><a id="Redis_89"></a>九、Redis怎样防止异常数据不丢失？</h2> 
+<h3><a name="t28"></a><a id="91RDB___Redis__91"></a>9.1、RDB 持久化 （快照的形式，周期性的持久化）** 是Redis的默认持久化方法 适合冷备</h3> 
+<p>将某个时间点的所有数据都存放到硬盘上。<br> 可以将<strong>快照</strong>复制到其它服务器从而创建具有相同数据的服务器副本。<br> 如果系统发生故障，将会丢失最后一次创建快照之后的数据。<br> 如果数据量很大，保存快照的时间会很长。</p> 
+<h4><a name="t29"></a><a id="911RDB_96"></a>9.1.1、RDB的配置方式</h4> 
+<p>找到Redis的配置文件：redis.conf</p> 
+<p>1） 设置触发条件：<br><img alt="在这里插入图片描述" src="https://images2.imgbox.com/e1/bb/HD5sFvQN_o.png"><br><img alt="在这里插入图片描述" src="https://images2.imgbox.com/a3/b2/woonuskI_o.png"><br> 2) 设置rdb文件路径</p> 
+<p>默认rdb文件存放路径是当前目录，文件名是：dump.rdb。可以在配置文件中修改路径和文件名，分别是dir和dbfilename<br><img alt="在这里插入图片描述" src="https://images2.imgbox.com/1c/81/R1TsMYyJ_o.png"><br> Redis启动后会读取RDB快照文件，将数据从硬盘载入到内存，一般情况下1GB的快照文件载入到内存的时间大约20-30秒钟。</p> 
+<p>除了自动快照，还可以<strong>手动发送SAVE或BGSAVE命令让Redis执行快照</strong>，两个命令的区别在于，前者是由主进程进行快照操作，会阻塞住其他请求，后者会通过fork子进程进行快照操作。</p> 
+<p>通过RDB方式实现持久化，一旦Redis异常退出，就会<strong>丢失最后一次快照以后更改的所有数据</strong>。这就需要开发者根据具体的应用场合，通过组合设置自动快照条件的方式来将可能发生的数据损失控制在能够接受的范围。<strong>如果数据很重要以至于无法承受任何损失，则可以考虑使用AOF方式进行持久化</strong></p> 
+<h4><a name="t30"></a><a id="912RDB__111"></a>9.1.2、RDB 優點</h4> 
+<p>1.RDB是一个非常紧凑(compact)的文件，它保存了redis 在某个时间点上的数据集。这种文件非常适合用于进行备份和灾难恢复（将持久化到硬盘中的文件恢复即可）。</p> 
+<p>2.生成RDB文件的时候，redis主进程会fork()一个子进程来处理所有保存工作，主进程不需要进行任何磁盘IO操作。</p> 
+<p>3.RDB 在恢复大数据集时的速度比 AOF 的恢复速度要快。</p> 
+<h4><a name="t31"></a><a id="913RDB_117"></a>9.1.3、RDB缺點</h4> 
+<p>1.如果你需要尽量避免在服务器故障时丢失数据，那么RDB 不适合你。 虽然Redis 允许你设置不同的保存点（save point）来控制保存 RDB 文件的频率， 但是， 因为RDB 文件需要保存整个数据集的状态， 所以它并不是一个轻松的操作。 因此你可能会至少 5 分钟才保存一次 RDB 文件。 在这种情况下， 一旦发生故障停机， 你就可能会丢失好几分钟的数据（最后一次的数据）。</p> 
+<p>2.每次保存 RDB 的时候，Redis 都要 fork() 出一个子进程，并由子进程来进行实际的持久化工作。 在数据集比较庞大时， fork() 可能会非常耗时，造成服务器在某某毫秒内停止处理客户端； 如果数据集非常巨大，并且 CPU 时间非常紧张的话，那么这种停止时间甚至可能会长达整整一秒。 虽然 AOF 重写也需要进行 fork() ，但无论 AOF 重写的执行间隔有多长，数据的耐久性都不会有任何损失。</p> 
+<h4><a name="t32"></a><a id="914RDB__121"></a>9.1.4、RDB 保存過程</h4> 
+<p>当条件满足，redis需要执行RDB的时候，服务器会执行以下操作：</p> 
+<p>1、 redis调用系统函数fork() ，创建一个子进程进行持久化。</p> 
+<p>2.子进程将数据集写入到一个临时 RDB 文件中（持久化，也就是将内存中的数据写入临时文件）。</p> 
+<p>3.当子进程完成对临时RDB文件的写入时，redis 用新的临时RDB 文件替换原来的RDB 文件，并删除旧 RDB 文件。</p> 
+<p>注：fork的作用是复制一个与当前进程一样的进程。新进程的所有数据（变量、环境变量、程序计数器等）数值都和原进程一致，但是是一个全新的进程，并作为原进程的子进程</p> 
+<p>在执行fork的时候操作系统（类Unix操作系统）会使用写时复制（copy-on-write）策略，即fork函数发生的一刻父子进程共享同一内存数据，当父进程要更改其中某片数据时（如执行一个写命令 ），操作系统会将该片数据复制一份以保证子进程的数据不受影响，所以新的RDB文件存储的是执行fork那一刻的内存数据。</p> 
+<p>Redis在进行快照的过程中不会修改RDB文件，只有快照结束后才会将旧的文件替换成新的，也就是说任何时候RDB文件都是完整的。这使得我们可以通过定时备份RDB文件来实 现Redis数据库备份。RDB文件是经过压缩（可以配置rdbcompression参数以禁用压缩节省CPU占用）的二进制格式，所以占用的空间会小于内存中的数据大小，更加利于传输。</p> 
+<h3><a name="t33"></a><a id="92AOF___AOF_137"></a>9.2、AOF 持久化 （追加到AOF文件的末尾，最后以不同的频次保存到到磁盘）适合热备</h3> 
+<p>将写命令添加到 AOF 文件（Append Only File）的末尾。<br> 使用 AOF 持久化需要设置同步选项，从而确保写命令同步到磁盘文件上的时机。这是因为对文件进行写入并不会马上将内容同步到磁盘上，而是先存储到缓冲区，然后由操作系统决定什么时候同步到磁盘。有以下同步选项：<br> 选项同步频率always每个写命令都同步everysec每秒同步一次no让操作系统来决定何时同步<br> always 选项会严重减低服务器的性能；<br> everysec 选项比较合适，可以保证系统崩溃时只会丢失一秒左右的数据，并且 Redis 每秒执行一次同步对服务器性能几乎没有任何影响；<br> no 选项并不能给服务器性能带来多大的提升，而且也会增加系统崩溃时数据丢失的数量<br> 随着服务器写请求的增多，AOF 文件会越来越大。Redis 提供了一种将 AOF 重写的特性，能够去除 AOF 文件中的冗余写命令。<br> 用户可以向 Redis 发送 BGREWRITEAOF 命令，这个命令会移除 AOF 文件中冗余的命令来重写 AOF 文件，使 AOF 文件的体积变得尽可能地小<br> BGREWRITEAOF 的工作原理和快照持久化命令 BGSAVE 的工作原理类似，Redis 会创建一个子进程来负责对 AOF 文件进行重写。<br> 值得注意的是，进行 AOF 文件重写时，如果原来的 AOF 文件体积已经非常大，那么重写 AOF 并删除旧 AOF 文件的过程将会对 Redis 的性能造成较大的影响。<br> 为此，Redis 提供auto-aof-rewrite-percentage和auto-aof-rewrite-min-size两个配置选项来对 AOF 重写进行配置。auto-aof-rewrite-percentage和auto-aof-rewrite-min-size两个配置选项的含义可以参考 redis.conf 配置中的详细说明，具体来说，auto-aof-rewrite-percentage配置当 AOF 文件需要比旧 AOF 文件增大多少时才进行 AOF 重写，而auto-aof-rewrite-min-size则配置当 AOF 文件需要达到多大体积时才进行 AOF 重写。只有这两个配置的条件都达到时，才会进行 AOF 重写。</p> 
+<h4><a name="t34"></a><a id="921AOF_149"></a>9.2.1、AOF的设置方法：</h4> 
+<p>为了打开 AOF 持久化的功能，我们只需要将 <strong>redis.conf</strong> 配置文件中的appendonly配置选项设置为yes即可。涉及 AOF 持久化的几个常用配置如下所示：</p> 
+<pre><code>appendonly yes
+appendfilename "appendonly.aof"
+appendfsync everysec
+</code></pre> 
+<ul><li>1</li><li>2</li><li>3</li></ul> 
+<p>appendonly：是否打开 AOF 持久化功能<br> appendfilename：AOF 文件名称<br> appendfsync：同步频率</p> 
+<p>appendfsync 选项及同步频率<br> 选项 同步频率<br> always 每个 Redis 命令都要同步写入硬盘。这样会严重降低 Redis 的性能<br> everysec 每秒执行一次同步，显式地将多个写命令同步到硬盘<br> no 让操作系统来决定应该何时进行同步</p> 
+<h4><a name="t35"></a><a id="922AOF_166"></a>9.2.2、AOF的优点</h4> 
+<pre><code>AOF 持久化的方法提供了多种的同步频率，即使使用默认的同步频率每秒同步一次，Redis 最多也就丢失 1 秒的数据而已。
+AOF 文件使用 Redis 命令追加的形式来构造，因此，即使 Redis 只能向 AOF 文件写入命令的片断，使用 redis-check-aof 工具也很容易修正 AOF 文件。
+AOF 文件的格式可读性较强，这也为使用者提供了更灵活的处理方式。例如，如果我们不小心错用了 FLUSHALL 命令，在重写还没进行时，我们可以手工将最后的 FLUSHALL 命令去掉，然后再使用 AOF 来恢复数据。
+</code></pre> 
+<ul><li>1</li><li>2</li><li>3</li></ul> 
+<h4><a name="t36"></a><a id="923AOF__171"></a>9.2.3、AOF 的缺点</h4> 
+<pre><code>对于具有相同数据的的 Redis，AOF 文件通常会比 RDF 文件体积更大。
+虽然 AOF 提供了多种同步的频率，默认情况下，每秒同步一次的频率也具有较高的性能。但在 Redis 的负载较高时，RDB 比 AOF 具好更好的性能保证。
+RDB 使用快照的形式来持久化整个 Redis 数据，而 AOF 只是将每次执行的命令追加到 AOF 文件中，因此从理论上说，RDB 比 AOF 方式更健壮。官方文档也指出，AOF 的确也存在一些 BUG，这些 BUG 在 RDB 没有存在。
+</code></pre> 
+<ul><li>1</li><li>2</li><li>3</li></ul> 
+<h2><a name="t37"></a><a id="___176"></a>十、缓存常见问题及缓存穿透，缓存雪崩以及缓存击穿 的含义及原理</h2> 
+<h3><a name="t38"></a><a id="101_177"></a>10.1、缓存更新方式</h3> 
+<p>这是决定在使用缓存时就该考虑的问题。</p> 
+<p>缓存的数据在数据源发生变更时需要对缓存进行更新，数据源可能是 DB，也可能是远程服务。更新的方式可以是<strong>主动更新</strong>。数据源是 DB 时，可以在<strong>更新完 DB 后就直接更新缓存</strong>。</p> 
+<p>当数据源不是 DB 而是其他<strong>远程服务</strong>，可能无法及时主动感知数据变更，这种情况下一般会选择对缓存数据设置失效期，也就是数据不一致的最大容忍时间。</p> 
+<p>这种场景下，可以选择失效更新，<strong>key 不存在或失效时先请求数据源获取最新数据，然后再次缓存，并更新失效期</strong>。</p> 
+<p>但这样做有个问题，如果依赖的远程服务在更新时出现异常，则会导致数据不可用。改进的办法是异步更新，就是当失效时先不清除数据，继续使用旧的数据，然后由异步线程去执行更新任务。这样就避免了失效瞬间的空窗期。另外还有一种纯异步更新方式，定时对数据进行分批更新。实际使用时可以根据业务场景选择更新方式。</p> 
+<h3><a name="t39"></a><a id="102_188"></a>10.2、数据不一致</h3> 
+<h4><a name="t40"></a><a id="_189"></a>产生的原因</h4> 
+<p>一般是<strong>主动更新失败</strong>，例如更新 DB 后，更新 Redis 因为网络原因请求超时；或者是异步更新失败导致。</p> 
+<h4><a name="t41"></a><a id="_192"></a>解决的办法</h4> 
+<p>如果服务对耗时不是特别敏感可以增加重试；如果服务对耗时敏感可以通过异步补偿任务来处理失败的更新，或者短期的数据不一致不会影响业务，那么只要下次更新时可以成功，能保证最终一致性就可以。</p> 
+<h3><a name="t42"></a><a id="103redis_195"></a>10.3、缓存穿透：redis和数据库中都没有数据</h3> 
+<p>打个比方，你是个很有钱的人，开满了百度云，腾讯视频各种杂七杂八的会员，但是你就是没有netflix的会员，然后你把这些账号和密码发布到一个你自己做的网站上，然后你有一个朋友每过十秒钟就查询你的网站，发现你的网站没有Netflix的会员后打电话向你要。你就相当于是个数据库，网站就是Redis。这就是缓存穿透。</p> 
+<h3><a name="t43"></a><a id="104_197"></a>10.4、缓存击穿：就是一个很热门的数据，突然失效，大量请求到服务器数据库中</h3> 
+<p>大家都喜欢看腾讯视频上的《水果传》，但是你的会员突然到期了，大家在你的网站上看不到腾讯视频的账号，纷纷打电话向你询问，这就是缓存击穿</p> 
+<h3><a name="t44"></a><a id="105DB_199"></a>10.5、缓存雪崩：大面积的缓存失效，打崩了DB</h3> 
+<p>你的各种会员突然同一时间都失效了，那这就是缓存雪崩了。</p> 
+<h3><a name="t45"></a><a id="106__202"></a>10.6、 解决方法</h3> 
+<h4><a name="t46"></a><a id="_203"></a>缓存穿透：数据库和缓存中都没有</h4> 
+<p>1.接口层增加校验，对传参进行个校验，比如说我们的id是从1开始的，那么id&lt;=0的直接拦截；<br> 2.缓存中取不到的数据，在数据库中也没有取到，这时可以将key-value对写为key-null，这样可以防止攻击用户反复用同一个id暴力攻击,等再訪問這個key的時候，就提示位置错误、稍后重试这样的值具体取啥问产品，或者將缓存有效时间可以设置短点，如30秒（设置太长会导致正常情况也没法使用）。<br> 3.这样可以防止攻击用户反复用同一个id暴力攻击，但是我们要知道正常用户是不会在单秒内发起这么多次请求的，可以让<strong>运维</strong>大大<strong>对单个IP每秒访问次数超出阈值的IP都拉黑</strong>。<br> 4、还有一个高级用法布隆过滤器（Bloom Filter）这个也能很好的防止缓存穿透的发生，他的原理也很简单就是利用高效的数据结构和算法快速判断出你这个Key是否在数据库中存在，不存在你return就好了，存在你就去查了DB刷新KV再return</p> 
+<h4><a name="t47"></a><a id="_key_208"></a>缓存击穿： 单个key失效</h4> 
+<p>1、最好的办法就是设置<strong>热点数据永不过期</strong>，拿到刚才的比方里，那就是你买腾讯一个永久会员</p> 
+<h4><a name="t48"></a><a id="__211"></a>缓存雪崩： 所有缓存同时失效</h4> 
+<p>1.缓存数据的过期时间设置随机，防止同一时间大量数据过期现象发生。<br> 2.如果缓存数据库是分布式部署，将热点数据均匀分布在不同得缓存数据库中。<br> 3.redis数据库常用数据类型已经相关操作</p> 
+<h2><a name="t49"></a><a id="_215"></a>十一、过期时间设置常用操作：</h2> 
+<h3><a name="t50"></a><a id="111_216"></a>11.1、过期时间设置</h3> 
+<p>EXPIRE 将key的生存时间设置为ttl秒<br> PEXPIRE 将key的生成时间设置为ttl毫秒<br> EXPIREAT 将key的过期时间设置为timestamp所代表的的秒数的时间戳<br> PEXPIREAT 将key的过期时间设置为timestamp所代表的的毫秒数的时间戳<br> 其实以上几种处理方式都是根据PEXPIREAT来实现的，设置生存时间的时候是redis内部计算好时间之后在内存处理的，最终的处理都会转向PEXPIREAT。<br> 1、2两种方式是设置一个过期的时间段，就是咱们处理验证码最常用的策略，设置三分钟或五分钟后失效，把分钟数转换成秒或毫秒存储到redis中。<br> 3、4两种方式是指定一个过期的时间 ，比如优惠券的过期时间是某年某月某日，只是单位不一样</p> 
+<h3><a name="t51"></a><a id="112_224"></a>11.2、键过期时间查看</h3> 
+<p>ttl：以秒为单位，返回键的剩余生存时间。<br> pttl：以毫秒为单位，返回键的剩余生存时间。</p> 
+<h3><a name="t52"></a><a id="113_227"></a>11.3、键过期判定</h3> 
+<p>检查当前Unix（当前时间）时间戳是否大于键的过期时间，是则过期，否则不过期。</p> 
+<h3><a name="t53"></a><a id="114__229"></a>11.4、 过期键的理论删除策略</h3> 
+<p>（1）定时删除：<br> 　　设置一个键过期时间的同时，创建一个定时器。每个带有过期时间的键都对应着一个定时器。<br> 　　这种策略对内存是最友好的，但对CPU时间是最不友好的。创建一个定时器需要用到Redis服务器中的时间事件，而当前时间事件的实现方式为无序链表，查找一个事件的时间复杂度为O(N)，并不能高效地处理大量时间事件。<br> （2）惰性删除：<br> 　　访问一个键的时候再检测该键是否过期，是则删除之。<br> 　　这种策略对CPU时间是最友好的，但对内存是最不友好的。没被访问到的过期键永远不会被删除，可以看做内存泄露。对于运行状态非常依赖于内存的Redis来说，这种策略显然会影响到Redis的性能。<br> （3）定期删除：<br> 　　这种策略是对前两种策略的整合与折中方案。使用这种策略需要控制好删除操作每次执行的时长和执行的频率，否则会退化为前两种策略的其中一种。<br> （4）内存淘汰机制</p> 
+<h3><a name="t54"></a><a id="115_Redis_239"></a>11.5、 Redis采用的过期键删除策略</h3> 
+<p>Redis服务器实际使用的是惰性删除和定期删除两种策略配合使用的方案。<br> （1）惰性删除策略的实现：<br> 　　所有读写数据库的Redis命令在执行之前都会先检查输入键是否已过期，过期则删除之。<br> （2）定期删除策略的实现：<br> 　　在规定时间内，分多次遍历服务器中的各个数据库，从数据库的过期字典中随机检查一部分键的过期时间，并删除其中的过期键。<br> &lt;1&gt;定期删除程序每次运行时，都会从一定数量的数据库中取出一定数量的随机键进行检查，并删除其中的过期键。<br> &lt;2&gt;使用一个全局变量记录当前删除程序检查的是第几个数据库，下一次运行都会接着上一次的进度进行处理。<br> &lt;3&gt;随着删除程序的不断执行，服务器中所有的数据库都会被检查一遍，然后这个全局变量被重置为0，开始新一轮的检查工作。</p> 
+<h3><a name="t55"></a><a id="116_AOFRDB_249"></a>11.6、 AOF、RDB和复制功能对过期键的处理</h3> 
+<h4><a name="t56"></a><a id="1RDB_250"></a>（1）生成RDB文件：</h4> 
+<p>在执行save或bgsave命令创建一个新的RDB文件时，程序会对数据库中的键进行检查，已过期的键不会被保存到新创建的RDB文件中。</p> 
+<h4><a name="t57"></a><a id="2RDB_252"></a>（2）载入RDB文件：</h4> 
+<p>&lt;1&gt;主服务器模式：载入RDB文件时，程序会对文件中保存的键进行检查，只有未过期的键会被载入到数据库中。<br> &lt;2&gt;从服务器模式：文件中保存的所有键都会被载入到数据库中。不过因为主从服务器在进行数据同步的时候，从服务器的数据库会被清空，所以过期键对载入RDB文件的从服务器也不会造成影响。</p> 
+<h4><a name="t58"></a><a id="3AOF_255"></a>（3）AOF文件写入：</h4> 
+<p>当过期键被惰性删除或定期删除之后，程序会向AOF文件追加一条del命令，来显式地记录该键已被删除。</p> 
+<h4><a name="t59"></a><a id="4AOF_257"></a>（4）AOF重写：</h4> 
+<p>程序会对数据库中的键进行检查，已过期的键不会被保存到重写后的AOF文件中。</p> 
+<h4><a name="t60"></a><a id="5_259"></a>（5）复制：</h4> 
+<p>当服务器运行在复制模式下时，从服务器的过期键删除动作由主服务器控制：<br> &lt;1&gt;主服务器在删除一个过期键之后，会显式地向所有从服务器发送一个del命令，告知从服务器删除这个过期键。<br> &lt;2&gt;从服务器在执行客户端发送的读命令时，即使碰到过期键也不会将其删除，而是将过期键的值继续返回给客户端。<br> &lt;3&gt;从服务器只有在接到主服务器发送来的del命令之后，才会删除过期键。</p> 
+<p>说一下Redis中的Master-Slave模式</p> 
+<h2><a name="t61"></a><a id="_267"></a>十二、连接过程</h2> 
+<p>主服务器创建快照文件，发送给从服务器，并在发送期间使用缓冲区记录执行的写命令。快照文件发送完毕之后，开始向从服务器发送存储在缓冲区中的写命令；<br> 从服务器丢弃所有旧数据，载入主服务器发来的快照文件，之后从服务器开始接受主服务器发来的写命令；<br> 主服务器每执行一次写命令，就向从服务器发送相同的写命令。</p> 
+<h2><a name="t62"></a><a id="_271"></a>十三、主从链</h2> 
+<p>随着负载不断上升，主服务器可能无法很快地更新所有从服务器，或者重新连接和重新同步从服务器将导致系统超载。为了解决这个问题，可以创建一个中间层来分担主服务器的复制工作。中间层的服务器是最上层服务器的从服务器，又是最下层服务器的主服务器。<br><img alt="在这里插入图片描述" src="https://images2.imgbox.com/b8/10/OB3flwhm_o.png"></p> 
+<p>Sentinel（哨兵）可以监听集群中的服务器，并在主服务器进入下线状态时，自动从从服务器中选举出新的主服务器。</p> 
+<h2><a name="t63"></a><a id="_279"></a>十四、分片</h2> 
+<pre><code>分片是将数据划分为多个部分的方法，可以将数据存储到多台机器里面，这种方法在解决某些问题时可以获得线性级别的性能提升。
+假设有 4 个 Redis 实例 R0，R1，R2，R3，还有很多表示用户的键 user:1，user:2，... ，有不同的方式来选择一个指定的键存储在哪个实例中。
+
+最简单的方式是范围分片，例如用户 id 从 0~1000 的存储到实例 R0 中，用户 id 从 1001~2000 的存储到实例 R1 中，等等。但是这样需要维护一张映射范围表，维护操作代价很高。
+还有一种方式是哈希分片，使用 CRC32 哈希函数将键转换为一个数字，再对实例数量求模就能知道应该存储的实例。
+
+根据执行分片的位置，可以分为三种分片方式：
+客户端分片：客户端使用一致性哈希等算法决定键应当分布到哪个节点。
+代理分片：将客户端请求发送到代理上，由代理转发请求到正确的节点上。
+服务器分片：Redis Cluster
+</code></pre> 
+<ul><li>1</li><li>2</li><li>3</li><li>4</li><li>5</li><li>6</li><li>7</li><li>8</li><li>9</li><li>10</li></ul> 
+<h2><a name="t64"></a><a id="Redis_292"></a>十五、Redis是怎么持久化的？服务主从数据怎么交互的？</h2> 
+<p>RDB做镜像全量持久化，AOF做增量持久化。因为RDB会耗费较长时间，不够实时，在停机的时候会导致大量丢失数据，所以需要AOF来配合使用。在redis实例重启时，会使用RDB持久化文件重新构建内存，再使用AOF重放近期的操作指令来实现完整恢复重启之前的状态。</p> 
+<p>这里很好理解，把RDB理解为一整个表全量的数据，AOF理解为每次操作的日志就好了，服务器重启的时候先把表的数据全部搞进去，但是他可能不完整，你再回放一下日志，数据不就完整了嘛。不过Redis本身的机制是 AOF持久化开启且存在AOF文件时，优先加载AOF文件；AOF关闭或者AOF文件不存在时，加载RDB文件；加载AOF/RDB文件城后，Redis启动成功； AOF/RDB文件存在错误时，Redis启动失败并打印错误信息</p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/97090a6d4ca1dd0db939c0e2d33ed07d/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">fft 估计载波频率程序_毫米波雷达目标检测与参数估计算法（一）</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/4074559464c68ea09585a8f1a9080b60/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">GOBY扫描篇</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>spring-integration优化MQTT(32202)异常 - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="spring-integration优化MQTT(32202)异常" />
+<meta property="og:description" content="**前情：**公司的一个产品涉及到硬件交互，选用了mqtt协议，于是乎经过一番技术选型。我用emq做mqtt broker，又撸了一个mqtt消息处理服务（A）。
+这个A服务用了spring-integration，spring框架集成spring-integration自然是so easy。又花了点时间用策略设计模式写好了A服务的业务框架，接下来就是堆业务逻辑了。
+**问题：**自己做压力测试的时候，发现经常会报ERROR，MQTT(32202): 正在发布过多的消息，研究了一下发现在paho源码里有如下代码：
+if (message instanceof MqttPublish) { synchronized (queueLock) { if (actualInFlight &gt;= this.maxInflight) { //@TRACE 613= sending {0} msgs at max inflight window log.fine(CLASS_NAME, methodName, &#34;613&#34;, new Object[]{new Integer(actualInFlight)}); throw new MqttException(MqttException.REASON_CODE_MAX_INFLIGHT); } 注意maxInflight这个值，默认是10，也就是说，在使用paho发送mqtt消息时，同时只能发10个，你要是多起几个thread循环往mqtt client里怼消息，很容易就超过10个了，这个时候就会报错丢消息。
+解决方案：
+增大maxInflight（最低需要paho1.2.0版本）对paho源码修改配置多个mqtt client 我选用第三种办法。由于我选用了spring-integration，没有单独使用paho，单独使用paho可以直接做成多client模式。下面介绍如何使用spring-integration配置成多mqtt client，**思路是：**由于mqttMessageHandler只会引用一个paho客户端，并且在内部对paho客户端做了封装，所以直接修改MqttPahoMessageHandler复杂度较高，我们可以重新写一个MultiMqttMessageHandler，内部初始化多个MqttPahoMessageHandler，这样通过MessageingGateway发送消息时，直接通过MultiMqttMessageHandler来处理mqtt消息，MultiMqttMessageHandler可以通过负载均衡的方式来把消息分派给各个MqttPahoMessageHandler。
+自定义MyMqttPahoMessageHandler类，继承MqttPahoMessageHandler，重写MqttPahoMessageHandler的doStop()，onInit()，handleMessageInternal()方法，注意权限由protected改成public。handleMessageInternal()会由channel通过dispatcher间接调用；重写onInit()用来手动初始化MqttPahoMessageHandler。
+@Override public void doStop() { super.doStop(); } @Override public void handleMessageInternal(Message&lt;?&gt; message) throws Exception { super.handleMessageInternal(message); } @Override public void onInit() { try { super." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/88b4966d1668bac6c0bf0129d8671da5/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2019-03-22T11:54:35+08:00" />
+<meta property="article:modified_time" content="2019-03-22T11:54:35+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">spring-integration优化MQTT(32202)异常</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p>**前情：**公司的一个产品涉及到硬件交互，选用了mqtt协议，于是乎经过一番技术选型。我用emq做mqtt broker，又撸了一个mqtt消息处理服务（A）。</p> 
+<p>这个A服务用了spring-integration，spring框架集成spring-integration自然是so easy。又花了点时间用策略设计模式写好了A服务的业务框架，接下来就是堆业务逻辑了。</p> 
+<p>**问题：**自己做压力测试的时候，发现经常会报ERROR，<strong>MQTT(32202): 正在发布过多的消息</strong>，研究了一下发现在paho源码里有如下代码：</p> 
+<pre><code>if (message instanceof MqttPublish) {
+			synchronized (queueLock) {
+				if (actualInFlight &gt;= this.maxInflight) {
+					//@TRACE 613= sending {0} msgs at max inflight window
+					log.fine(CLASS_NAME, methodName, "613", new Object[]{new Integer(actualInFlight)});
+
+					throw new MqttException(MqttException.REASON_CODE_MAX_INFLIGHT);
+				}
+</code></pre> 
+<p>注意maxInflight这个值，默认是10，也就是说，在使用paho发送mqtt消息时，同时只能发10个，你要是多起几个thread循环往mqtt client里怼消息，很容易就超过10个了，这个时候就会报错丢消息。</p> 
+<p><strong>解决方案：</strong></p> 
+<ul><li>增大maxInflight（最低需要paho1.2.0版本）</li><li>对paho源码修改</li><li>配置多个mqtt client</li></ul> 
+<p>我选用第三种办法。由于我选用了spring-integration，没有单独使用paho，单独使用paho可以直接做成多client模式。下面介绍如何使用spring-integration配置成多mqtt client，**思路是：**<strong>由于mqttMessageHandler只会引用一个paho客户端，并且在内部对paho客户端做了封装，所以直接修改MqttPahoMessageHandler复杂度较高，我们可以重新写一个MultiMqttMessageHandler，内部初始化多个MqttPahoMessageHandler，这样通过MessageingGateway发送消息时，直接通过MultiMqttMessageHandler来处理mqtt消息，MultiMqttMessageHandler可以通过负载均衡的方式来把消息分派给各个MqttPahoMessageHandler。</strong></p> 
+<ol><li> <p>自定义MyMqttPahoMessageHandler类，继承MqttPahoMessageHandler，重写MqttPahoMessageHandler的doStop()，onInit()，handleMessageInternal()方法，注意权限由protected改成public。handleMessageInternal()会由channel通过dispatcher间接调用；重写onInit()用来手动初始化MqttPahoMessageHandler。</p> <pre><code>@Override
+	public void doStop() {
+		super.doStop();
+	}
+
+	@Override
+	public void handleMessageInternal(Message&lt;?&gt; message) throws Exception {
+		super.handleMessageInternal(message);
+	}
+
+	@Override
+	public void onInit() {
+		try {
+			super.onInit();
+		} catch (Exception e) {
+			e.printStackTrace();
+		}
+	}
+</code></pre> </li><li> <p>自定义MultiMqttMessageHandler类，继承AbstractMessageHandler，并implements Lifecycle，自定义一个MessageHandler，添加一个Map成员属性，用来维系多个MyMqttPahoMessageHandler；handlerCount变量可配置多个mqtt client。这里只用了radom随机数来做负载均衡，比较简陋，后期可以做迭代优化。</p> <pre><code>private final AtomicBoolean running = new AtomicBoolean();
+
+	private volatile Map&lt;Integer, MessageHandler&gt; mqttHandlerMap;
+	@Value("${spring.mqtt.sender.count}")
+	private Integer handlerCount = 3;
+	@Autowired
+	private MqttSenderConfig senderConfig;
+
+	@Override
+	public void start() {
+		if (!this.running.getAndSet(true)) {
+			doStart();
+		}
+	}
+
+	private void doStart(){
+		mqttHandlerMap = new ConcurrentHashMap&lt;&gt;();
+		for(int i=0;i&lt;handlerCount;i++){
+			mqttHandlerMap.put(i, senderConfig.createMqttOutbound());
+		}
+	}
+
+	@Override
+	public void stop() {
+		if (this.running.getAndSet(false)) {
+			doStop();
+		}
+	}
+
+	private void doStop(){
+		for(Map.Entry&lt;Integer, MessageHandler&gt; e : mqttHandlerMap.entrySet()){
+			MessageHandler handler = e.getValue();
+			((MyMqttPahoMessageHandler)handler).doStop();
+		}
+	}
+
+	@Override
+	public boolean isRunning() {
+		return this.running.get();
+	}
+
+	@Override
+	protected void handleMessageInternal(Message&lt;?&gt; message) throws Exception {
+		Random random = new Random();
+		MyMqttPahoMessageHandler messageHandler = (MyMqttPahoMessageHandler)mqttHandlerMap.get(random.nextInt(handlerCount));
+		messageHandler.handleMessageInternal(message);
+	}
+</code></pre> </li><li> <p>配置MqttSenderConfig类</p> <pre><code>@Bean
+	public MqttPahoClientFactory mqttClientFactory() {
+		DefaultMqttPahoClientFactory factory = new DefaultMqttPahoClientFactory();
+		factory.setServerURIs(hostUrl);
+		factory.setUserName(username);
+		factory.setPassword(password);
+		return factory;
+	}
+
+	public MessageHandler createMqttOutbound(){
+		String tempId = MqttAsyncClient.generateClientId();
+		MyMqttPahoMessageHandler messageHandler = new MyMqttPahoMessageHandler(clientId + "sender" + tempId, mqttClientFactory());
+		messageHandler.setAsync(true);
+		messageHandler.setDefaultTopic(defaultTopic);
+		messageHandler.setDefaultQos(1);
+		messageHandler.onInit();
+		return messageHandler;
+	}
+
+	@Bean
+	@ServiceActivator(inputChannel = "mqttOutboundChannel")
+	public MessageHandler mqttOutbound() {
+		return new MultiMqttMessageHandler();
+	}
+
+	@Bean
+	public MessageChannel mqttOutboundChannel() {
+		return new DirectChannel();
+	}
+
+	@MessagingGateway(defaultRequestChannel = "mqttOutboundChannel")
+	public interface MqttGateway {
+		void sendToMqtt(String data, @Header(MqttHeaders.TOPIC) String topic);
+	}
+</code></pre> </li><li> <p>调用sendToMqtt()方法可自动选择其中一个MyMqttPahoMessageHandler来处理发送mqtt消息。大功告成~</p> </li></ol>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/24decb3caa3451f85479a14b156e8da2/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">Asia Hong Kong Regional Contest 2016 J Taboo(level 3)(ac自动机&#43;dfs/dp)</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/7ec4969c131290a48e7b4d16432af296/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">cdn.bootcss.com无法访问 解决方法</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

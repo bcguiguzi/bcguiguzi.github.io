@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>TCP的管理机制（3） - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="TCP的管理机制（3）" />
+<meta property="og:description" content="文章目录 滑动窗口快重传（高速重发）超时重传 流量控制拥塞控制(网络问题)延迟应答捎带应答TCP总结 滑动窗口 滑动窗口：发送缓冲区的一部分,和对方的接收能力有关
+16位窗口大小：接收缓冲区剩余的大小
+像这种一收一发，就变成串行了，效率很低
+为了提高效率要允许一次发多个数据,可是允许一次发送多个数据，
+那么一次 要给对方多少呢？
+由接收方决定，要让对方能接收，在每次返回ack都会又窗口大小
+如图
+我们没有等待ack连续发了很多报文
+窗口大小：无需等待服务端确认应答ack而可以发送数据的最大值,上图的窗口大小是4000字节前4个段不需要ack，直接发送收到第一个ACK之后，滑动窗口就向后移动，继续发送数据,滑动窗口滑动后的变化取决于对方的接收能力 假如说客户端硬件设备比较先进，一直在给服务端发送数据，那么就会把服务器端的内核缓冲区给挤爆，如果有阻塞机制的话，那么服务器端就阻塞在了那边，如果没有阻塞机制的话，那么服务器端的前面的数据就会被覆盖掉
+所以这个时候就会有一个叫做滑动窗口的机制，服务端告诉客户端，用来存放数据的缓冲区有多大，如果满了的话，就不要再发送了
+滑动窗口就是为了防止数据丢失，防止出现丢包的情况
+可以在应答报文中填写上我自己的接收缓冲区的剩余空间大小
+16位的滑动窗口就是滑动窗口大小不能超过2^16,32位序号就是序号的数值不能超过2 ^32，
+recvfrom和sendto这些函数实际上就是一个拷贝函数：TCP 当中有接收缓冲区，和发送缓冲区，recvfrom，sendto就是把数据拷贝到TCP 缓冲区里面，以及从TCP 缓冲区里面把数据拷贝到用户层，文件描述符的生命周期是谁这进程的,一旦客户端建立好联系之后死机了，进程退出了，此时文件描述符也就退出了流量控制：填写TCP 滑动窗口的大小，告知对方自己能够接收到上限，达到两个方向上传输速度的控制，就叫做流量控制 快重传（高速重发） 如果丢包了怎么处理呢
+ACK丢失：像上面这样的，即使ACK600丢失了，也不需要进行重传，因为后续的ACK700可以被发送方收到，后续的报文可以说明前面的报文已经获取了（收到多少窗口往右移动就可以了）
+因为：ACK保证前面的全部收到，所以TCP是允许少量的丢包的 滑动窗口是一个环形队列，窗口不断移动的本质，就是窗口绕着那个环转圈，不可能越界，不可能出现溢出，write一直写数据会阻塞住就是环形队列被打满了 还有一种情况是发送方的数据报文丢失
+那么发送方会连续收到接收方发来的相同的报文，连续收到三个，就要重新发送对应的报文，这种机制就叫做“高速重发控制”，也叫“快重传” 主机的1001-2000的报文丢了但是后面的报文收到了没有丢，确认序号依旧是1001主机A会收到连续大量的确认1001，主机A如果连续收到了3个以上同样的ack，就说明1001以后的有些报文丢失了，主机A会立即进行重传,对方也会重新更新它的窗口序列，并返回主机A补发了1001-2000，我不确定到底补发多少，先发这么多，等待对方反馈，获得新的ack，也可以无脑的把1001后面的全部发送过去，但是我们少发一点，效率高，一点一点发送，网络也不会丢失太多 超时重传 TCP 的发送方在规定时间内没有收到确认报文就要重传已发送的报文
+没有收到确认报文的原因有两种
+发送方的发送报文丢失确认方的确认报文丢失，如果是这样的话，接收方会收到一份相同的报文，TCP 协议通过序列号（序号没有变化）识别出了这个重复报文呢，就会进行丢弃，（TCP具有去重能力），所以也能够保证报文的按序达到， 去重也是可靠性的表现
+如何保证TCP 有超时重传的机制
+需要超时重传实际上也就说明了发送方数据发送出去后也不能将数据删除或者覆盖掉（因为可能对面没有收到，还要重新发送一次）需要发送方收到对方的ACK才可以把数据移除掉 超时重传的时间
+在最理想情况下，找到一个最小的时间，保证“确认应答一定会在这个时间内返回”时间的长短和网络环境有关时间长，会影响重传的效率时间短，会频繁发送重复的包（这个问题不大，有去重的机制） TCP 为了保证高性能通信，动态计算了这个最大超时时间（不能让一直等待）
+由于这个和带宽（用于表示一秒钟内网络传输的总容量）有关，所以这个超时时间是动态的Linux中，超时以500ms为一个单位进行控制，每次判定超时重发的超时时间都是500ms的整数倍如果重新发出一次还得不到银达，就要等待2*500ms进行重新发送，如果还是不能应答，就在等待4*500进行重传，一次类推以指数形式递增，累积到一定的重传次数，TCP 就会认为网络或者对端主机出现了异常，强制关闭连接,(把自己关闭掉) 快重传vs超时重传
+ACK 的语义非常重要，因为决定了即使收到了后面的数据
+快重传是为了提高效率而进行的超时重传是为了快重传无法解决的时候，才会超时重传，兜底用的 流量控制 保证了发送的速度合理
+我们上文解释过了窗口的含义，还有一个概念是滑动窗口
+滑动窗口其实就是发送缓冲区的一部分（实际上缓冲区是头尾相接的环形）
+假设A收到了B发来的确认报文，窗口大小是20字节，确认号是31，这样就可以构造出自己滑动窗口的宽度
+在没有收到B确认报文的情况下，允许A 可以把滑动窗口的数据都发出去，但是在A 收到B 的确认报文之前，发送出去的数据都要暂时保留在这个滑动窗口里面，以便重传
+显然，A的发送串口的数据不能超过B 的接收能力，
+发送窗口的大小由前沿和后研进行决定，窗口越大，则网络吞吐效率高，
+收到新确认，后沿就可以往前移动，没有收到的话，后沿就不能移动
+前沿通常向前移动，但是由于接收方接受能力变低，前言可能也不会动
+第一次发送的时候怎么知道对方的接收能力？ 取决于对方什么时候给我发送的第一个报文" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/499fd39e299d670c8d6912bb4f7e8a13/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2022-09-05T05:45:00+08:00" />
+<meta property="article:modified_time" content="2022-09-05T05:45:00+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">TCP的管理机制（3）</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p></p> 
+<div class="toc"> 
+ <h4>文章目录</h4> 
+ <ul><li><a href="#_1" rel="nofollow">滑动窗口</a></li><li><ul><li><a href="#_54" rel="nofollow">快重传（高速重发）</a></li><li><a href="#_86" rel="nofollow">超时重传</a></li></ul> 
+  </li><li><a href="#_121" rel="nofollow">流量控制</a></li><li><a href="#_157" rel="nofollow">拥塞控制(网络问题)</a></li><li><a href="#_195" rel="nofollow">延迟应答</a></li><li><a href="#_210" rel="nofollow">捎带应答</a></li><li><a href="#TCP_228" rel="nofollow">TCP总结</a></li></ul> 
+</div> 
+<p></p> 
+<h2><a id="_1"></a>滑动窗口</h2> 
+<p><code>滑动窗口</code>：<strong>发送缓冲区</strong>的一部分,和对方的接收能力有关<br> <code>16位窗口大小</code>：<strong>接收缓冲区</strong>剩余的大小<br> <img src="https://images2.imgbox.com/3e/2a/dJqY6wOK_o.png" alt="在这里插入图片描述"></p> 
+<blockquote> 
+ <p>像这种一收一发，就变成串行了，效率很低<br> 为了提高效率要允许一次发多个数据,可是允许一次发送多个数据，<br> 那么一次 要给对方多少呢？<br> 由接收方决定，要让对方能接收，在每次返回ack都会又窗口大小</p> 
+</blockquote> 
+<p>如图</p> 
+<p><img src="https://images2.imgbox.com/f5/43/bGwaj5rP_o.png" alt="在这里插入图片描述"><br> 我们没有等待ack连续发了很多报文</p> 
+<blockquote> 
+ <ul><li>窗口大小：无需等待服务端确认应答ack而可以发送数据的最大值,上图的窗口大小是4000字节</li><li>前4个段不需要ack，直接发送</li><li>收到第一个ACK之后，滑动窗口就向后移动，继续发送数据,</li><li>滑动窗口滑动后的变化取决于对方的接收能力</li></ul> 
+</blockquote> 
+<p><img src="https://images2.imgbox.com/32/3c/05Gyad6k_o.png" alt="在这里插入图片描述"></p> 
+<p>假如说客户端硬件设备比较先进，一直在给服务端发送数据，那么就会把服务器端的内核缓冲区给挤爆，如果有阻塞机制的话，那么服务器端就阻塞在了那边，如果没有阻塞机制的话，那么服务器端的前面的数据就会被覆盖掉</p> 
+<p>所以这个时候就会有一个叫做滑动窗口的机制，服务端告诉客户端，用来存放数据的缓冲区有多大，如果满了的话，就不要再发送了</p> 
+<p>滑动窗口就是为了防止数据丢失，防止出现丢包的情况<br> <img src="https://images2.imgbox.com/52/24/KqgtD6a7_o.png" alt="在这里插入图片描述"><br> <u>可以在<strong>应答报文</strong>中填写上<strong>我自己</strong>的<strong>接收缓冲区</strong>的<strong>剩余空间</strong>大小</u></p> 
+<p>16位的滑动窗口就是滑动窗口大小不能超过2^16,32位序号就是序号的数值不能超过2 ^32，</p> 
+<ul><li>recvfrom和sendto这些函数实际上就是一个拷贝函数：TCP 当中有接收缓冲区，和发送缓冲区，recvfrom，sendto就是把数据拷贝到TCP 缓冲区里面，以及从TCP 缓冲区里面把数据拷贝到用户层，</li><li><u>文件描述符的生命周期是谁这进程的</u>,一旦客户端建立好联系之后死机了，进程退出了，此时文件描述符也就退出了</li><li><strong>流量控制</strong>：填写TCP 滑动窗口的大小，告知对方自己能够接收到上限，达到两个方向上传输速度的控制，就叫做流量控制</li></ul> 
+<h3><a id="_54"></a>快重传（高速重发）</h3> 
+<p>如果丢包了怎么处理呢</p> 
+<p><img src="https://images2.imgbox.com/56/d5/Mer3YXvu_o.png" alt="在这里插入图片描述"></p> 
+<ol><li><strong>ACK丢失</strong>：像上面这样的，即使ACK600丢失了，也不需要进行重传，因为后续的ACK700可以被发送方收到，后续的报文可以说明前面的报文已经获取了（收到多少窗口往右移动就可以了）<br> 因为：ACK保证前面的全部收到，所以TCP是允许少量的丢包的</li></ol> 
+<p><img src="https://images2.imgbox.com/4d/63/nS251HVC_o.png" alt="在这里插入图片描述"></p> 
+<blockquote> 
+ <ul><li>滑动窗口是一个环形队列，窗口不断移动的本质，就是窗口绕着那个环转圈，不可能越界，不可能出现溢出，</li><li>write一直写数据会阻塞住就是环形队列被打满了</li></ul> 
+</blockquote> 
+<ol start="2"><li>还有一种情况是发送方的<strong>数据报文丢失</strong><br> 那么发送方会连续收到接收方发来的相同的报文，<strong>连续收到三个</strong>，就要重新发送对应的报文，这种机制就叫做“<strong>高速重发控制</strong>”，也叫“快重传”</li></ol> 
+<p><img src="https://images2.imgbox.com/50/db/MoUNk0GV_o.png" alt="在这里插入图片描述"></p> 
+<ul><li>主机的1001-2000的报文丢了但是后面的报文收到了没有丢，确认序号依旧是1001</li><li>主机A会收到连续大量的确认1001，</li><li>主机A如果连续收到了3个以上同样的ack，就说明1001以后的有些报文丢失了，主机A会立即进行重传,对方也会重新更新它的窗口序列，并返回</li><li>主机A补发了1001-2000，我不确定到底补发多少，先发这么多，等待对方反馈，获得新的ack，也可以无脑的把1001后面的全部发送过去，但是我们少发一点，效率高，一点一点发送，网络也不会丢失太多</li></ul> 
+<h3><a id="_86"></a>超时重传</h3> 
+<p><img src="https://images2.imgbox.com/5a/8a/OFy5SeyW_o.png" alt="在这里插入图片描述"><br> <u>TCP 的发送方在<strong>规定时间</strong>内<strong>没有收到确认报文</strong>就要重传已发送的报文</u></p> 
+<p>没有收到确认报文的原因有两种</p> 
+<ol><li>发送方的发送报文丢失</li><li>确认方的确认报文丢失，如果是这样的话，接收方会收到一份相同的报文，TCP 协议通过<strong>序列号</strong>（序号没有变化）识别出了这个重复报文呢，就会进行丢弃，（<strong>TCP具有去重能力</strong>），所以也能够保证报文的按序达到，</li></ol> 
+<p><u>去重也是可靠性的表现</u></p> 
+<p><strong>如何保证TCP 有超时重传的机制</strong></p> 
+<ul><li>需要超时重传实际上也就说明了发送方数据发送出去后也不能将数据删除或者覆盖掉（因为可能对面没有收到，还要重新发送一次）</li><li>需要发送方收到对方的ACK才可以把数据移除掉</li></ul> 
+<p><strong>超时重传的时间</strong></p> 
+<blockquote> 
+ <ul><li>在最理想情况下，找到一个最小的时间，保证“确认应答一定会在这个时间内返回”</li><li>时间的长短和网络环境有关</li><li>时间长，会影响重传的效率</li><li>时间短，会频繁发送重复的包（这个问题不大，有去重的机制）</li></ul> 
+</blockquote> 
+<p><strong>TCP 为了保证高性能通信，动态计算了这个最大超时时间（不能让一直等待）</strong></p> 
+<blockquote> 
+ <ul><li>由于这个和带宽（用于表示一秒钟内网络传输的总容量）有关，所以这个超时时间是动态的</li><li>Linux中，超时以<strong>500ms</strong>为<strong>一个单位</strong>进行控制，每次判定超时重发的超时时间都是<strong>500ms的整数倍</strong></li><li>如果重新发出一次还得不到银达，就要等待2*500ms进行重新发送，</li><li>如果还是不能应答，就在等待4*500进行重传，一次类推以指数形式递增，累积到一定的重传次数，TCP 就会认为网络或者对端主机出现了异常，强制<strong>关闭连接</strong>,(把自己关闭掉)</li></ul> 
+</blockquote> 
+<p><strong>快重传vs超时重传</strong></p> 
+<p>ACK 的语义非常重要，因为决定了即使收到了后面的数据</p> 
+<blockquote> 
+ <ul><li>快重传是为了提高效率而进行的</li><li>超时重传是为了快重传无法解决的时候，才会超时重传，兜底用的</li></ul> 
+</blockquote> 
+<h2><a id="_121"></a>流量控制</h2> 
+<p>保证了发送的速度合理</p> 
+<p>我们上文解释过了窗口的含义，还有一个概念是滑动窗口<br> 滑动窗口其实就是发送缓冲区的一部分（实际上缓冲区是头尾相接的环形）<br> <img src="https://images2.imgbox.com/1a/81/n8lk1LDc_o.png" alt="在这里插入图片描述"><br> 假设A收到了B发来的确认报文，窗口大小是20字节，确认号是31，这样就可以构造出自己<code>滑动窗口</code>的宽度</p> 
+<p>在没有收到B确认报文的情况下，允许A 可以把滑动窗口的数据都发出去，但是在A 收到B 的确认报文之前，发送出去的数据都要暂时保留在这个滑动窗口里面，以便重传</p> 
+<p>显然，A的发送串口的数据不能超过B 的接收能力，</p> 
+<p>发送窗口的大小由前沿和后研进行决定，窗口越大，则网络吞吐效率高，</p> 
+<p>收到新确认，后沿就可以往前移动，没有收到的话，后沿就不能移动</p> 
+<p>前沿通常向前移动，但是由于接收方接受能力变低，前言可能也不会动</p> 
+<ol><li><u>第一次发送的时候怎么知道对方的接收能力？</u></li></ol> 
+<blockquote> 
+ <p><strong>取决于对方什么时候给我发送的第一个报文</strong><br> <strong>在握手期间协商窗口大小</strong>，还没发数据<br> 返回ACK的时候填写上了自己的窗口大小<br> 就能够构建出滑动窗口，就能够进行发送数据</p> 
+</blockquote> 
+<ol start="2"><li>如果接收缓冲区的窗口大小为0，怎么办</li></ol> 
+<blockquote> 
+ <ul><li>发送方就知道了对方不能接收，就不要发了，只能等待，一直等待</li><li>如果接收方一直不收数据，主机A可以向主机B发送一个<strong>窗口探测</strong>的报文带<code>PSH</code>标志位（告诉对方赶紧读），没带数据</li><li>主机B收到数据就要给主机A回复，如果对方的窗口大小还是0，那么A就要<strong>轮询</strong>的<strong>发送窗口探测</strong></li><li>一旦主机B数据被读了，那么也可以给A发送一个同步的报文，主动通知A</li><li>如果B的告知同步报文丢失了，A还会轮询的发窗口探测，共同运行</li></ul> 
+</blockquote> 
+<p>滑动窗口既保证了发送方的效率，也保证了接收方的接受能力，这就是所谓的流量控制</p> 
+<h2><a id="_157"></a>拥塞控制(网络问题)</h2> 
+<p>发送少量的数据丢失，就是正常的，可以重发，丢失了大量报文，就是网络问题，不应该重发</p> 
+<p><strong>拥塞控制</strong></p> 
+<blockquote> 
+ <p>滑动窗口时靠内核进行维护的，我们在发送的时候不仅要考虑对方<code>滑动窗口</code>所能接收的最大值，还要考虑<code>网络</code>在内，因为一个计算机网络中都是有很多主机所<strong>共享</strong>的，因此可能会因为其他主机之间的通信变得十分拥堵，在<strong>网络拥堵</strong>的时候，如果发送大量的数据包，就会导致数据包<strong>时延</strong>，<strong>丢失</strong>,这个时候就会等一等<br> <u>(是TCP发现网络拥塞(大家都执行，不是单一主机)，尝试去回复网络状况的机制)</u></p> 
+</blockquote> 
+<p>拥塞控制简单来说：网络发送<strong>拥堵</strong>的时候，TCP 会减少发送量，为了在发送时调节发送数据量，定义量拥塞窗口这个概念，拥赛窗口也是发送的窗口，他会根据网络的拥堵程度进行动态变化，发送窗口的大小实际上是拥塞窗口和接受窗口中的最小值：<br> <u>（滑动窗口=min｛拥塞窗口，对端窗口的大小｝）</u><br> :发送方既要考虑对方接收能力的问题，也要考虑网络状态的问题</p> 
+<p><img src="https://images2.imgbox.com/b2/d8/Ww7O7tBf_o.png" alt="在这里插入图片描述"></p> 
+<ul><li>此处引入量拥塞窗口的概念：描述（发送时候<strong>网络状态</strong>）</li><li>发送的一开始定义拥塞窗口的大小为1</li><li>每次收到<code>ACK</code> 应答，<code>拥塞窗口</code><strong>+1</strong>，这样子实际上，我们第一次发送一个数据，收到回应之后，拥塞窗口就变成了2，在对端接收缓冲区允许的情况之下，我们可以发送2倍的数据</li><li>每次发送数据包的时候，讲<code>拥塞窗口</code>和接收端主机<code>反馈的窗口</code>大小进行比较，取较小的值作为<code>实际发送的窗口</code></li></ul> 
+<ol><li><strong>阀值</strong>主要时用来判断合适指数增长何时线性增长</li><li>ssthresh数值表示拥塞控制窗口大小的一个阀值，峰值会影响阀值的大小，这里的峰值就是引起数据丢包的窗口大小，每次出现丢包的情况阀值就会变成丢包时峰值的一半</li><li><strong>慢启动</strong>是能够防止一个快速的TCP发送压垮整个网络</li><li><strong>慢启动的阈值</strong>是为了避免传输速率指数级增长导致发送者在短时间内就会压垮整个网络，TCP拥堵算法也就是为防止这种事情发生，他为速率的增长提供了一个管理实体</li><li>一开始都是<strong>慢启动算法</strong>，刚开始的指数增长是为了尽快让传递批量数据，更快的达到不丢包的极限，所以就需要使用指数增长，从而达到<strong>慢启动阀值（ssthresh）的初始值</strong>之后，我们就<strong>线性增加</strong>即可了，此时不能再指数增长了，</li><li>出现网络拥塞，就要重新进行<strong>慢启动</strong></li></ol> 
+<p><u>发生快重传</u></p> 
+<blockquote> 
+ <p>当发送端收到连续三个重复的确认时，把慢开始的阀值ssthresh减半，由于发送方并不认为此时网络拥塞，所以此时不执行慢开始算法，即：不会讲cwnd设置为1，而是设置成为ssthrsh减半之后的值</p> 
+</blockquote> 
+<p><img src="https://images2.imgbox.com/30/28/7FBVmSjL_o.png" alt="在这里插入图片描述"><br> 6. 当网络拥塞的时候，发生超时重传或快重传后需要重新设置拥塞窗口大小，<strong>此时将慢启动的阀值设置为发送网络拥塞的一半，然后从1开始按照指数级发送数据，到达阀值再进行线性增长</strong></p> 
+<blockquote> 
+ <ul><li>ssthresh设置为cwnd/2</li><li>cwnd重置为1</li></ul> 
+</blockquote> 
+<h2><a id="_195"></a>延迟应答</h2> 
+<p>提高效率的一种策略，网络传输的时间可能比准备的时间还要长，所以我希望一次多发一些数据过去，提高效率</p> 
+<p>延迟应答：如果接受数据的主机立刻返回ACK 应答，这时候返回的窗口可能比较小，接收方收到数据等一会，上层可能会读取数据，过一会窗口可能变更大了</p> 
+<blockquote> 
+ <ul><li>假设接收端缓冲区为1M，一次接收到500K 的数据</li><li>如果立即应答，返回的窗口就是500K，但实际上可能处理端处理的速度很快，10ms之内就把500K的数据从缓冲器里面消费掉，但这情况下，接收端接收大小还会变大，如果接收端稍微等待一会在应答，比如说等待200ms再应答，这个时候返回的窗口大小就是1M，一次可以多处理一点</li></ul> 
+</blockquote> 
+<p>因为窗口越大，网络吞吐量就越大，传输效率也就越高<br> 但是并非所有的包都可以延迟应答</p> 
+<ul><li><code>数量限制</code>：每隔N个包就应答一次</li><li><code>时间限制</code>：超过最大延迟时间就应答一次</li></ul> 
+<p>具体的数量和超时时间，依操作系统不同也有会有差异。一般N取2，超时时间取200ms</p> 
+<h2><a id="_210"></a>捎带应答</h2> 
+<p>服务器最常见的就是<strong>一问一回</strong>的模式，如果每次消息都是一问一答，类似于</p> 
+<ol><li>请求</li><li>请求的ACK</li><li>响应</li><li>响应的ACK</li></ol> 
+<p>如果变成<code>捎带应答</code>，就是发送应答的时候，也能够发送有效数据</p> 
+<ol><li>请求</li><li>请求的ACK+响应</li><li>响应的ACK<br> 这样就减少了包的传输个数，降低了通信成本，提高了效率</li></ol> 
+<h2><a id="TCP_228"></a>TCP总结</h2> 
+<p><img src="https://images2.imgbox.com/35/33/4HC1jLWy_o.png" alt="在这里插入图片描述"></p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/07f19206c976bdbb38442ed079975416/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">数组去重-Map实现</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/00ac20ca23950c1131238b53f2567610/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">el-input 设置type为number时,隐藏后面上下箭头以及输入文字光标上移的情况</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>量化理解（Google量化白皮书《Quantizing deep convolutional networks for efficient inference: A whitepaper》） - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="量化理解（Google量化白皮书《Quantizing deep convolutional networks for efficient inference: A whitepaper》）" />
+<meta property="og:description" content="可以说这篇博客是对Google量化白皮书的完整解读，篇幅较长，可以收藏慢慢阅读。笔者在翻译的基础上，又补充了帮助理解的内容，但量化的技术点很多，并不限于此篇，且文中有个别点笔者不能完全吃透，故写得不是很详细，望看此文的你可以帮忙指出文中错误且与我一起交流讨论。 一、什么是量化？为什么要量化？ 在深度神经网络模型应用中，量化是削减模型大小的一种常用方法。实际上就是把高位宽表示的权值和激活值用更低位宽来表示。为什么要削减模型，是因为硬件平台的自身性能不理想，如计算力低，内存、电量消耗等限制，导致模型推断速度慢、功耗高。 而定点运算指令比浮点运算指令在单位时间内能处理更多数据，同时，量化后的模型可以减少存储空间。当然，也可以将量化后的模型部署在高效的定制化计算平台上以达到更快的推断速度。 二、有哪些量化方法？怎样量化？ 具体的量化方案有以下几种： 1.Uniform Affine Quantizer（均匀映射量化） 也叫非对称量化
+下图是一个uint8非对称量化的映射过程：
+首先，量化前要计算量化因子，包括步长和零点两个量化参数。量化因子就是用来保证浮点区间内的变量都能无一缺漏的映射到要量化bit数的取值区间内。其中，步长和零点的计算公式如下：
+这里要重点说下零点z，也叫做偏移，为何这里需要零点？
+实际上，浮点型的0会映射到零点，这个零点是一个整型数，用来确保0没有量化误差。具体就是，0有特殊意义，比如padding时，0值也是参与计算的，浮点型的0进行8bit量化后还是0就不对了，所以加上这个零点后，浮点型0就会被映射到0-255这个区间内的一个数，这样的量化就更精确。就相当于让映射后区间整体偏移，浮点最小值对应0。
+计算完量化因子，再从浮点区间任取一值的量化过程：
+即浮点值除以步长，就近取整，加上零点。再做clamp使量化的区间为（0，Nlevels-1），对于8bit量化，其中Nlevels就是2^8 =256。
+注：对于单边分布，范围（Xmin，Xmax）需要进一步放宽去包含0点。例如，范围为（2.1, 3.5）的浮点型变量将会放宽为（0， 3.5），然后再量化。故，这种方式对于极端的单边分布会产生精度损失。
+逆量化：
+2.Uniform symmetric quantizer（对称量化） 对称量化是映射量化的简化版本。
+下图是一个int8对称量化的映射过程：
+首先，根据浮点区间的最大最小值计算量化因子（量化步长），然后在该范围内任选一个浮点型变量，利用给出的公式把它映射到8bit区间，即除以量化因子，就近取整，再根据有符号或无符号做一个clamp（截断），确定量化后的区间，当量化为8bit时，Nlevels就是2^8 =256，如果是4bit量化就是2 ^4=16。最后所有的浮点数都被映射在（-127,128）这个区间内，浮点数的最大最小值分别对应128、-127，将零点约束到0的位置。
+文中提到：
+若想更快的实现SIMD（SingleInstruction Multiple Data 单指令流多数据流），可以进一步约束权重的范围。这时，截断运算可以简化为：
+对称量化的逆量化为：
+更多对称量化内容查看这篇论文：Quantization and Training of Neural Networks for Efficient Integer-Arithmetic-Only Inference
+以上两个量化方案是比较常用的。
+3.Stochastic quantizer（随机量化） 随机量化方法加了一个噪声：
+期望情况下，随机量化方法通过对范围外的值进行饱和（既clamp），可以降低浮点型权重的通量。因此，这种方法比较适用于计算梯度。【这个量化不是很懂，后面再补充】
+4. 在后向传播中的训练模拟量化建模 还是先放一张非对称量化的图以及模拟量化过程公式：
+该模拟量化操作是在训练时就进行量化的（训练时量化后面会说），操作实际包括一个量化再紧跟一个逆量化。具体的，就是在前向传播的时候（forward）模拟了量化的这个过程，在forward时首先会把权值和激活值量化到8bit再反量化回有误差的32bit，整体训练还是浮点，反向传播（backward）的时候求得的梯度是模拟量化之后权值的梯度，用这个梯度去更新量化前的权值。
+如上图，选择从左到右数第4个点进行量化，量化后的值为253，然后再进行反量化，就得到它正对着的第5个点，即误差点，实际上用的这个点做的前向推理的，用误差点求梯度去更新原始点，SimQuant就是量化&#43;反量化。
+所以对于SGD（随机梯度下降），更新方式如下：
+由于模拟量化方程的导数几乎在各个位置均为0（我的理解就是连续的浮点数量化映射成了离散的点），故在反向传播求梯度时无法求得，所以需要在反向传播中构建一个近似量化。在实际工程中一种效果比较好的近似方法是将量化指定为下面公式的形式，这样可以方便定义导数。
+上图是： 模拟量化器（顶部），显示量化输出值。 用于导数计算的近似（底部）。
+而反向传播可以建模为“直通估计器”，即：
+其中
+是关于模拟的量化输出的loss的反向传播误差。
+具体内容查看这篇论文：Binaryconnect: Training deep neural
+networks with binary weights during propagations" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/f04422129d46258a23e7ae2495016192/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2020-07-23T19:30:09+08:00" />
+<meta property="article:modified_time" content="2020-07-23T19:30:09+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">量化理解（Google量化白皮书《Quantizing deep convolutional networks for efficient inference: A whitepaper》）</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-tomorrow-night">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <br> 可以说这篇博客是对Google量化白皮书的完整解读，篇幅较长，可以收藏慢慢阅读。笔者在翻译的基础上，又补充了帮助理解的内容，但量化的技术点很多，并不限于此篇，且文中有个别点笔者不能完全吃透，故写得不是很详细，望看此文的你可以帮忙指出文中错误且与我一起交流讨论。 
+<br> 
+<h2><a id="_7"></a>一、什么是量化？为什么要量化？</h2> 
+<br> 在深度神经网络模型应用中，量化是削减模型大小的一种常用方法。实际上就是把高位宽表示的权值和激活值用更低位宽来表示。为什么要削减模型，是因为硬件平台的自身性能不理想，如计算力低，内存、电量消耗等限制，导致模型推断速度慢、功耗高。 而定点运算指令比浮点运算指令在单位时间内能处理更多数据，同时，量化后的模型可以减少存储空间。当然，也可以将量化后的模型部署在高效的定制化计算平台上以达到更快的推断速度。 
+<br> 
+<h2><a id="_14"></a>二、有哪些量化方法？怎样量化？</h2> 
+<br> 具体的量化方案有以下几种： 
+<br> 
+<h3><a id="1Uniform_Affine_Quantizer_21"></a>1.Uniform Affine Quantizer（均匀映射量化）</h3> 
+<p><strong>也叫非对称量化</strong></p> 
+<p>下图是一个uint8非对称量化的映射过程：<br> <img src="https://images2.imgbox.com/23/4f/MaNuDQvV_o.png" alt="在这里插入图片描述"></p> 
+<p>首先，量化前要计算量化因子，包括<strong>步长</strong>和<strong>零点</strong>两个量化参数。量化因子就是用来保证浮点区间内的变量都能无一缺漏的映射到要量化bit数的取值区间内。其中，步长和零点的计算公式如下：</p> 
+<p><img src="https://images2.imgbox.com/4d/2d/Nh0ItLTy_o.png" alt="在这里插入图片描述"></p> 
+<p>这里要重点说下零点z，也叫做偏移，为何这里需要零点？<br> 实际上，浮点型的0会映射到零点，这个零点是一个整型数，用来确保0没有量化误差。具体就是，0有特殊意义，比如padding时，0值也是参与计算的，浮点型的0进行8bit量化后还是0就不对了，所以加上这个零点后，浮点型0就会被映射到0-255这个区间内的一个数，这样的量化就更精确。就相当于让映射后区间整体偏移，浮点最小值对应0。</p> 
+<p>计算完量化因子，再从浮点区间任取一值的量化过程：<br> <img src="https://images2.imgbox.com/b4/68/EPvtlV7f_o.png" alt="在这里插入图片描述"></p> 
+<p>即浮点值除以步长，就近取整，加上零点。再做clamp使量化的区间为（0，Nlevels-1），对于8bit量化，其中Nlevels就是2^8 =256。</p> 
+<p><strong>注：对于单边分布，范围（Xmin，Xmax）需要进一步放宽去包含0点。例如，范围为（2.1, 3.5）的浮点型变量将会放宽为（0， 3.5），然后再量化。故，这种方式对于极端的单边分布会产生精度损失。</strong></p> 
+<p>逆量化：<br> <img src="https://images2.imgbox.com/40/43/1EqbkIC5_o.png" alt="在这里插入图片描述"><br> <br></p> 
+<h3><a id="2Uniform_symmetric_quantizer_45"></a>2.Uniform symmetric quantizer（对称量化）</h3> 
+<br> 
+<p><strong>对称量化是映射量化的简化版本。</strong><br> 下图是一个int8对称量化的映射过程：<br> <img src="https://images2.imgbox.com/a5/52/GADHktw6_o.png" alt="在这里插入图片描述"></p> 
+<p><img src="https://images2.imgbox.com/07/91/oApgBUJN_o.png" alt="在这里插入图片描述"></p> 
+<p>首先，根据浮点区间的最大最小值计算量化因子（量化步长），然后在该范围内任选一个浮点型变量，利用给出的公式把它映射到8bit区间，即除以量化因子，就近取整，再根据有符号或无符号做一个clamp（截断），确定量化后的区间，当量化为8bit时，Nlevels就是2^8 =256，如果是4bit量化就是2 ^4=16。最后所有的浮点数都被映射在（-127,128）这个区间内，浮点数的最大最小值分别对应128、-127，将零点约束到0的位置。</p> 
+<p><strong>文中提到：</strong><br> 若想更快的实现SIMD（SingleInstruction Multiple Data 单指令流多数据流），可以进一步约束权重的范围。这时，截断运算可以简化为：</p> 
+<p><img src="https://images2.imgbox.com/9a/a0/Nfwn5yf0_o.png" alt="在这里插入图片描述"></p> 
+<p>对称量化的逆量化为：<br> <img src="https://images2.imgbox.com/7a/94/7EIaE3Nk_o.png" alt="在这里插入图片描述"></p> 
+<p><strong>更多对称量化内容查看这篇论文：Quantization and Training of Neural Networks for Efficient Integer-Arithmetic-Only Inference</strong><br> 以上两个量化方案是比较常用的。<br> <br></p> 
+<h3><a id="3Stochastic_quantizer_67"></a>3.Stochastic quantizer（随机量化）</h3> 
+<br> 
+<p>随机量化方法加了一个噪声：<br> <img src="https://images2.imgbox.com/db/ae/Y2M5hfTb_o.png" alt="在这里插入图片描述"></p> 
+<p>期望情况下，随机量化方法通过对范围外的值进行饱和（既clamp），可以降低浮点型权重的通量。因此，这种方法比较适用于计算梯度。【这个量化不是很懂，后面再补充】<br> <br></p> 
+<h3><a id="4__76"></a>4. 在后向传播中的训练模拟量化建模</h3> 
+<br> 
+<p>还是先放一张非对称量化的图以及模拟量化过程公式：<br> <img src="https://images2.imgbox.com/ab/0f/aWXSvFxS_o.png" alt="在这里插入图片描述"></p> 
+<p><img src="https://images2.imgbox.com/9d/0d/9T3x3uwp_o.png" alt="在这里插入图片描述"></p> 
+<p>该模拟量化操作是在训练时就进行量化的（训练时量化后面会说），操作实际包括一个量化再紧跟一个逆量化。具体的，就是在前向传播的时候（forward）模拟了量化的这个过程，在forward时首先会把权值和激活值量化到8bit再反量化回有误差的32bit，整体训练还是浮点，反向传播（backward）的时候求得的梯度是模拟量化之后权值的梯度，用这个梯度去更新量化前的权值。<br> 如上图，选择从左到右数第4个点进行量化，量化后的值为253，然后再进行反量化，就得到它正对着的第5个点，即误差点，实际上用的这个点做的前向推理的，用误差点求梯度去更新原始点，SimQuant就是量化+反量化。<br> 所以对于SGD（随机梯度下降），更新方式如下：</p> 
+<p><img src="https://images2.imgbox.com/04/46/kYpU84ZD_o.png" alt="在这里插入图片描述"></p> 
+<p>由于模拟量化方程的导数几乎在各个位置均为0（我的理解就是连续的浮点数量化映射成了离散的点），故在反向传播求梯度时无法求得，所以需要在反向传播中构建一个近似量化。在实际工程中一种效果比较好的近似方法是将量化指定为下面公式的形式，这样可以方便定义导数。<br> <img src="https://images2.imgbox.com/ae/d9/bQhVdWtn_o.png" alt="在这里插入图片描述"></p> 
+<p><img src="https://images2.imgbox.com/b3/52/CjibnQ9s_o.png" alt="在这里插入图片描述"></p> 
+<p>上图是： 模拟量化器（顶部），显示量化输出值。 用于导数计算的近似（底部）。<br> 而反向传播可以建模为“直通估计器”，即：<br> <img src="https://images2.imgbox.com/ca/09/MntIVdpB_o.png" alt="在这里插入图片描述"><br> 其中<img src="https://images2.imgbox.com/10/77/rAz3bRhj_o.png" alt="在这里插入图片描述"><br> 是关于模拟的量化输出的loss的反向传播误差。<br> <strong>具体内容查看这篇论文：Binaryconnect: Training deep neural<br> networks with binary weights during propagations</strong><br> <br></p> 
+<h3><a id="5_106"></a>5.量化参数如何求得</h3> 
+<p>量化参数可以利用一些标准来决定。前文中的量化参数是根据浮点值的最大最小计算出，这种计算量化因子实际是有问题的，这种属于不饱和的线性量化，会导致精度损失较大。于是就有了一种TensorRT的后量化算法，它通过最小化原始数据分布和量化后数据分布之间的KL散度来决定步长尺度。<br> 具体的：<br> 该算法对激活值进行饱和量化，即选择合适的阈值；对权值还是非饱和量化。<br> 什么是饱和？非饱和？<br> 看下面这张图：<br> <img src="https://images2.imgbox.com/d6/ad/C8rtRkur_o.png" alt="在这里插入图片描述"><br> 首先左边的图，上面是未量化的浮点区间，下面是要映射的int8区间。可以看到负值取值更大一点，就假设取这个值作为阈值，而正数最大值这边可能只有负值这边大小的一半，所以这个点量化后可能只映射到0-127的一半处，假设是64，所以量化后64-127这个区间显然就被浪费了；再假如负数最大值处是一个噪声点，只占激活值的一小部分甚至一个，而正值这边的值占比大的话，那么量化之后这些有效值就会压缩到一个很小的区间，然后精度损失就会比较大。<br> 而TensorRT的后量化算法是找到一个合适的阈值，如右图，把超出范围的噪声点的值都设为[T]，然后量化之后，值会非常均匀的分布在（-127-127）这个区间。故左图代表非饱和，右图为饱和。<br> 接下来用一段代码直观感受一下：</p> 
+<pre><code class="prism language-python"><span class="token keyword">import</span> numpy <span class="token keyword">as</span> np
+<span class="token keyword">def</span> <span class="token function">quant</span><span class="token punctuation">(</span>x<span class="token punctuation">,</span>s<span class="token punctuation">)</span><span class="token punctuation">:</span>
+    <span class="token keyword">return</span><span class="token punctuation">[</span><span class="token builtin">int</span><span class="token punctuation">(</span>e<span class="token punctuation">)</span> <span class="token keyword">for</span> e <span class="token keyword">in</span> np<span class="token punctuation">.</span>clip<span class="token punctuation">(</span>np<span class="token punctuation">.</span><span class="token builtin">round</span><span class="token punctuation">(</span>x<span class="token operator">*</span>s<span class="token punctuation">)</span><span class="token punctuation">,</span><span class="token operator">-</span><span class="token number">128</span><span class="token punctuation">,</span><span class="token number">127</span><span class="token punctuation">)</span><span class="token punctuation">]</span>
+arr<span class="token operator">=</span>np<span class="token punctuation">.</span>array<span class="token punctuation">(</span><span class="token punctuation">[</span><span class="token operator">-</span><span class="token number">0.75</span><span class="token punctuation">,</span><span class="token operator">-</span><span class="token number">0.5</span><span class="token punctuation">,</span><span class="token operator">-</span><span class="token number">0.1</span><span class="token punctuation">,</span><span class="token number">0.1</span><span class="token punctuation">,</span><span class="token number">0.2</span><span class="token punctuation">,</span><span class="token number">0.5</span><span class="token punctuation">,</span><span class="token number">1</span><span class="token punctuation">]</span><span class="token punctuation">)</span>
+scale<span class="token operator">=</span><span class="token number">127</span><span class="token operator">/</span>np<span class="token punctuation">.</span><span class="token builtin">max</span><span class="token punctuation">(</span>np<span class="token punctuation">.</span><span class="token builtin">abs</span><span class="token punctuation">(</span>arr<span class="token punctuation">)</span><span class="token punctuation">)</span>
+<span class="token keyword">print</span><span class="token punctuation">(</span><span class="token string">"量化前:[%s]"</span><span class="token operator">%</span><span class="token string">","</span><span class="token punctuation">.</span>join<span class="token punctuation">(</span><span class="token punctuation">[</span><span class="token builtin">str</span><span class="token punctuation">(</span>e<span class="token punctuation">)</span> <span class="token keyword">for</span> e <span class="token keyword">in</span> arr<span class="token punctuation">]</span><span class="token punctuation">)</span><span class="token punctuation">)</span>
+<span class="token keyword">print</span><span class="token punctuation">(</span><span class="token string">"量化后:[%s]"</span><span class="token operator">%</span><span class="token string">","</span><span class="token punctuation">.</span>join<span class="token punctuation">(</span><span class="token punctuation">[</span><span class="token builtin">str</span><span class="token punctuation">(</span>e<span class="token punctuation">)</span> <span class="token keyword">for</span> e <span class="token keyword">in</span> quant<span class="token punctuation">(</span>arr<span class="token punctuation">,</span>scale<span class="token punctuation">)</span><span class="token punctuation">]</span><span class="token punctuation">)</span><span class="token punctuation">)</span>
+</code></pre> 
+<p>人为给定一组数，假设是激活输出统计的值，按照量化的步骤，首先求得量化因子（根据区间最大值），可以看到该组数据的最大值是1，然后打印量化前后的值。<br> 输出：<br> <img src="https://images2.imgbox.com/8f/70/xX4KI0Mz_o.png" alt="在这里插入图片描述"><br> 可以看到，量化前后一一对应的，这种量化精度几乎没有损失。</p> 
+<p>-------------------------------------------美丽分割线-----------------------------------------</p> 
+<p>然后这段代码，是把区间最大值换成了100，同样是用区间最大值来计算量化因子，打印量化前后的值。</p> 
+<pre><code class="prism language-python">arr<span class="token operator">=</span>np<span class="token punctuation">.</span>array<span class="token punctuation">(</span><span class="token punctuation">[</span><span class="token operator">-</span><span class="token number">0.75</span><span class="token punctuation">,</span><span class="token operator">-</span><span class="token number">0.5</span><span class="token punctuation">,</span><span class="token operator">-</span><span class="token number">0.1</span><span class="token punctuation">,</span><span class="token number">0.1</span><span class="token punctuation">,</span><span class="token number">0.2</span><span class="token punctuation">,</span><span class="token number">0.5</span><span class="token punctuation">,</span><span class="token number">100</span><span class="token punctuation">]</span><span class="token punctuation">)</span>
+scale<span class="token operator">=</span><span class="token number">127</span><span class="token operator">/</span>np<span class="token punctuation">.</span><span class="token builtin">max</span><span class="token punctuation">(</span>np<span class="token punctuation">.</span><span class="token builtin">abs</span><span class="token punctuation">(</span>arr<span class="token punctuation">)</span><span class="token punctuation">)</span>
+<span class="token keyword">print</span><span class="token punctuation">(</span><span class="token string">"量化前:[%s]"</span><span class="token operator">%</span><span class="token string">","</span><span class="token punctuation">.</span>join<span class="token punctuation">(</span><span class="token punctuation">[</span><span class="token builtin">str</span><span class="token punctuation">(</span>e<span class="token punctuation">)</span> <span class="token keyword">for</span> e <span class="token keyword">in</span> arr<span class="token punctuation">]</span><span class="token punctuation">)</span><span class="token punctuation">)</span>
+<span class="token keyword">print</span><span class="token punctuation">(</span><span class="token string">"量化后:[%s]"</span><span class="token operator">%</span><span class="token string">","</span><span class="token punctuation">.</span>join<span class="token punctuation">(</span><span class="token punctuation">[</span><span class="token builtin">str</span><span class="token punctuation">(</span>e<span class="token punctuation">)</span> <span class="token keyword">for</span> e <span class="token keyword">in</span> quant<span class="token punctuation">(</span>arr<span class="token punctuation">,</span>scale<span class="token punctuation">)</span><span class="token punctuation">]</span><span class="token punctuation">)</span><span class="token punctuation">)</span>
+</code></pre> 
+<p>输出：<br> <img src="https://images2.imgbox.com/d5/44/B4CcjHzJ_o.png" alt="在这里插入图片描述"><br> 而选取100作为量化因子的计算，可以很明显的看到，100的确映射到了127，但是整个量化后的区间都更偏向右，最左边的值的映射与-127相差很远，并且中间的值被压缩映射成了相同的0，因此这种选择精度损失非常大。</p> 
+<p>-------------------------------------------美丽分割线-----------------------------------------</p> 
+<p>最后一段代码是TensorRT算法思想，虽然数据里有一个超大值100的噪声点，但是不用它作为量化因子，而是选择一个较为合适的值如0.75，打印量化前后的值。</p> 
+<pre><code class="prism language-python">scale<span class="token operator">=</span><span class="token number">127</span><span class="token operator">/</span><span class="token number">0.75</span>
+<span class="token keyword">print</span><span class="token punctuation">(</span><span class="token string">"量化前:[%s]"</span><span class="token operator">%</span><span class="token string">","</span><span class="token punctuation">.</span>join<span class="token punctuation">(</span><span class="token punctuation">[</span><span class="token builtin">str</span><span class="token punctuation">(</span>e<span class="token punctuation">)</span> <span class="token keyword">for</span> e <span class="token keyword">in</span> arr<span class="token punctuation">]</span><span class="token punctuation">)</span><span class="token punctuation">)</span>
+<span class="token keyword">print</span><span class="token punctuation">(</span><span class="token string">"量化后:[%s]"</span><span class="token operator">%</span><span class="token string">","</span><span class="token punctuation">.</span>join<span class="token punctuation">(</span><span class="token punctuation">[</span><span class="token builtin">str</span><span class="token punctuation">(</span>e<span class="token punctuation">)</span> <span class="token keyword">for</span> e <span class="token keyword">in</span> quant<span class="token punctuation">(</span>arr<span class="token punctuation">,</span>scale<span class="token punctuation">)</span><span class="token punctuation">]</span><span class="token punctuation">)</span><span class="token punctuation">)</span>
+</code></pre> 
+<p>输出：<br> <img src="https://images2.imgbox.com/e5/4a/ADhluwYX_o.png" alt="在这里插入图片描述"><br> 而基于TensorRT思想的结果，就更加合理，精度损失很小。</p> 
+<p>-------------------------------------------美丽分割线-----------------------------------------</p> 
+<p>在本文中，对于量化参数的计算采用一些更简单的方法。<br> 权重：使用实际的最大和最小值来决定量化参数。<br> 激活输出：使用跨批（batches）的最大和最小值的滑动平均值来决定量化参数。<br> 先训练后量化的方法：可以通过仔细地选择量化参数来提高量化模型的精度。<br> <br></p> 
+<h3><a id="6_164"></a>6.量化的粒度</h3> 
+<p>逐层量化：指定一个量化器（由尺度∆和零点z定义）对张量进行量化。如果想让精度进一步提升，可以采用对张量的每个卷积核都使用对应的量化器。<br> 逐通道量化：对每个卷积核有不同的量化器。<br> 对于激活输出我们不考虑逐通道量化，因为这会使卷积操作和矩阵乘操作中的内积计算变得复杂。“逐层量化”和“逐通道量化”都支持高效的点乘操作和卷积实现，因为这两种量化方式中量化参数在每个卷积核中都是固定的常量。<br> <br></p> 
+<h2><a id="__171"></a>三、 量化推断：性能和准确性</h2> 
+<p>这一部分介绍了工业部署中常用的两个模型量化方法，<strong>训练后量化和训练时量化</strong><br> <br></p> 
+<h3><a id="1Post_Training_Quantization__174"></a>1.Post Training Quantization （训练后量化）</h3> 
+<br> 字面意思，整个模型（浮点型的）训练完成后再单独把权值和激活值拿出来量化。前面已经简单介绍了英伟达的TensorRT后量化算法，该文直接展示了在两个粒度（“逐层量化”、“逐通道量化”）不同量化方法（“对称量化”、“非对称量化”）分别对常用模型进行权重和激活量化的实验结果对比。 
+<br> 
+<p><strong>1.1只对权重量化</strong><br> 特点：如果只是想为了方便传输和存储而减小模型大小，而不考虑在预测时浮点型计算的性能开销的话，这个量化很有用。<br> <br></p> 
+<p><strong>1.2量化权重和激活输出</strong><br> 激活值不像权值那样有固定数量，所以这时就得需要标定数据了，即计算激活输出的动态范围，求得量化参数，然后再量化。一般使用100个小批量数据就足够估算出激活输出的动态范围了。<br> <br></p> 
+<p><strong>1.3实验</strong><br> 首先是各个网络量化前的模型参数大小以及在top-1分类精度值。<br> <img src="https://images2.imgbox.com/45/42/4iXTLo24_o.png" alt="在这里插入图片描述"><br> <strong>只对权值量化的结果：</strong><br> <img src="https://images2.imgbox.com/26/b1/O3aj3whl_o.png" alt="在这里插入图片描述"><br> 可以看到，几乎对于所有模型来说逐通道量化方法可以提供很好的精度，且非对称逐通道的量化方案更接近浮点型精度。<br> <br></p> 
+<p><strong>量化权重和激活输出：</strong><br> （激活输出是逐层量化的方式）<br> <img src="https://images2.imgbox.com/80/45/dbn6m67R_o.png" alt="在这里插入图片描述"><br> 可以看到，当加上激活输出的逐层量化时，int8量化后的精度值更加接近浮点型精度值了。<br> <br></p> 
+<p>下面用一个更直观的图来看下在Mobilenet-V1网络中几种量化方案的效果：<br> <img src="https://images2.imgbox.com/4f/a6/hIIKgtGD_o.png" alt="在这里插入图片描述"><br> 可以看到随着量化程度的增加以及图片大小的增大，精度是越来越高的，很明显逐层的激活量化和非对称逐通道的权重量化都与浮点精度很接近，而对权重的逐层量化即使增加量化程度增大图片尺寸任然表现不佳。因为这是因为bn操作在特征层的各个通道间的动态范围差异非常大，而逐通道量化可以通过通道粒度来避免这个问题，它可以逐通道地量化而不依赖与bn的缩放。但是，激活输出仍然需要采用逐层对称量化方式来量化。<br> <br></p> 
+<p>下图是对各个网络8bit量化的柱状图：<br> <img src="https://images2.imgbox.com/03/94/zZm1WzPC_o.png" alt="在这里插入图片描述"><br> 从图中发现，好像只有Mobilenet系列对逐层量化不是很友好，其他有更多参数的网络结构（像Resnets 和 Inception-v3 ）在对称/非对称的逐通道量化方案表现不错，即使是逐层量化精度损失也不大，即这些模型对量化的鲁棒性会更高。<br> <br></p> 
+<p><strong>总结：</strong><br> 1.激活输出做8bit量化后，精度几乎没有损失。由于以下原因，激活输出的动态范围一般很小：<br> (a) 无缩放的批归一化：它可以确保所有特征的激活输出服从均值为0，方差为1的分布。<br> (b) ReLU6: 它可以将所有的特征输出都固定到（0， 6）范围内，从而消除大动态范围的可能。<br> 2. 几乎所有的量化精度损失都是源于权重量化而导致的。<br> <br></p> 
+<h3><a id="2Quantization_Aware_Training__219"></a>2.Quantization Aware Training （训练时量化）</h3> 
+<p>训练时量化方法相比于训练后量化，能够得到更高的精度，即使是逐层量化甚至是4bit 量化也能取得很高的精度。因此量化过程也会相对复杂一点。该文还简单介绍了利用Tensorflow的自动量化工具进行量化。</p> 
+<p>训练时量化对于权重和激活输出采用模拟量化操作来衡量量化效果。对于反向传播，使用前面说到的“直通估计器”去建模量化。其实，模拟量化那里已经比较清晰的描述了训练时量化的过程。再看下原文是怎么说的：</p> 
+<blockquote> 
+ <p>注意，在前向和反向传播计算中，我们使用的都是模拟量化的权重和激活输出。我们也保留浮点型权重，并且在梯度更新的过程中更新它们。这样可以确保使用较小的梯度更新逐步更新权重，而不会造成梯度满溢。更新的权重被量化，然后用于后续的前向和反向传播计算。</p> 
+</blockquote> 
+<p>对比理解下就会更清晰了。<br> <br><br> 训练时量化方案可以利用Tensorflow的量化库，在训练和预测时在模型图中自动插入模拟量化操作来实现。<br> 对于训练代码如下：</p> 
+<pre><code class="prism language-python">tf<span class="token punctuation">.</span>contrib<span class="token punctuation">.</span>quantize<span class="token punctuation">.</span>create_training_graph<span class="token punctuation">(</span>quant_delay<span class="token operator">=</span><span class="token number">2000000</span><span class="token punctuation">)</span>
+</code></pre> 
+<p>调用训练重写，用假量化节点重写图，并折叠批处理规范进行训练。 可以微调现有的浮点模型，也可以从头开始训练。 quant_delay控制量化训练的开始。<br> 对于测试代码：</p> 
+<pre><code class="prism language-python"> tf<span class="token punctuation">.</span>contrib<span class="token punctuation">.</span>quantize<span class="token punctuation">.</span>create_eval_graph<span class="token punctuation">(</span><span class="token punctuation">)</span>
+</code></pre> 
+<p>调用eval重写，用假量化节点重写图，并为eval折叠批处理规范。<br> <br><br> 高层转换过程如图所示：<br> <img src="https://images2.imgbox.com/9b/45/Fn7H4n5G_o.png" alt="在这里插入图片描述"><br> 图中从左到右分别是训练后量化（只量化权重/量化权重和激活）和训练时量化。<br> <br><br> 在训练中，量化一个模型的步骤为：<br> 1.条件允许的情况下，在保存好的浮点型模型的基础上精调，即在预训练好的模型基础上继续训练或者重新训练。<br> 2.修改估计器，添加量化运算，即利用量化库中的tf.contrib.quantize Rewriter向模型中添加假的量化运算。<br> 3.训练模型：这个过程结束后，我们就拥有了一个对于权重和激活输出都带有各自量化信息（尺度、零点）的保存好的模型。<br> 4.转换模型：利用Tensorflow的在 tf.contrib.lite.toco 中定义的转换器（TOCO），将带有量化参数的模型被转化成一个flatbuffer文件，这个文件会将权重转换成int整型，同时包含了激活输出用于量化计算的信息。<br> 5.执行模型： 转换后的带有整型权重的模型可以使用TFLite解释器执行，该解释器可以选择使用NN-API在自定义加速器中执行模型，也可以在CPU上运行模型。<br> <br><br> 一个简单的卷积层的转图例子：<br> <img src="https://images2.imgbox.com/a9/96/suONWKES_o.png" alt="在这里插入图片描述"><br> 该图为未量化的卷积操作。<br> <img src="https://images2.imgbox.com/a6/fb/qS4RQlid_o.png" alt="在这里插入图片描述"><br> 这张图就是在卷积操作前对权值量化然后再计算，计算的结果即激活输出，接着对激活量化。<br> <br><br> 训练时量化有很多要注意的点，首先：<br> <br></p> 
+<p><strong>2.1量化的操作变换</strong><br> 下图为加法操作：<br> <img src="https://images2.imgbox.com/61/72/nEAJ7BZT_o.png" alt="在这里插入图片描述"><br> 文中这里对图的介绍没有，于是恬着脸去问师兄，这个过程大致是这样的，可能我的理解会有偏差，最左边的图是未量化直接进行加的操作，右边的是分别对两个操作数量化然后相加，结果再进行量化。下面的图是，把两个已量化为8bit的操作数继续量化为32bit（重新调整定点值使乘加操作正确执行）进行相加，然后再将结果反量化回8bit，这样做的目的是提高精度，为什么在做加法运算时要量化成更低位宽，我认为应该是低位宽的乘加操作更快，所占内存更少，单位时间里能处理更多的数据（前文已提到）。</p> 
+<p>下图是连接操作：<br> <img src="https://images2.imgbox.com/11/75/uZ0H7Cp4_o.png" alt="在这里插入图片描述"><br> 同样的，连接操作，是把8bit量化为32bit再反量化为8bit（前面的加操作）进行两个操作数的连接，该操作不涉及复杂运算，所以不需要更低的位宽。<br> <br><br> <strong>2.2Batch Normalization（批量归一化）</strong><br> 训练时量化有个特殊处理，就是对BN进行量化。它的量化可能会复杂一点，因为BN本身就较为难理解。<br> 首先，BN简单来说就是在深度神经网络训练过程中使得每一层神经网络的输入保持相同分布的。我们知道若想通过训练数据获得的模型能够在测试集上也表现良好，那么训练数据和测试数据应该是满足相同分布的（IID独立同分布假设）。<br> 而对于深度学习这种包含很多隐层的网络结构，在训练过程中，各层参数老在变，也就是在训练过程中，隐层的输入分布老是变来变去，这就是所谓的“Internal Covariate Shift”。<br> 于是就提出了BatchNorm的基本思想：让每个隐层节点的激活输入分布固定下来。即对于每个隐层神经元，把逐渐向非线性函数映射后向取值区间极限饱和区靠拢的输入分布强制拉回到均值为0方差为1的比较标准的正态分布，使得非线性变换函数的输入值落入对输入比较敏感的区域，以此避免梯度消失问题。总的来说，在工程实践中，对于加快模型收敛速度，它是一个非常好用的技术。（BN的介绍就到这，具体的可以参考这篇文章：<br> <a href="https://blog.csdn.net/laozaoxiaowanzi/article/details/107693176">https://blog.csdn.net/laozaoxiaowanzi/article/details/107693176</a></p> 
+<p>现在回到BN量化，在训练和测试阶段BN的定义是不一样的。<br> 训练：<br> <img src="https://images2.imgbox.com/49/e3/XP1j52Kz_o.png" alt="在这里插入图片描述"></p> 
+<p>测试：<br> <img src="https://images2.imgbox.com/f5/6d/33NxvBKl_o.png" alt="在这里插入图片描述"><br> 其中 μ B 和 σ B分别为batch的均值和标准差。μ 和 σ 是整个训练集的均值和标准差，在训练阶段，这两个值可以通过batch的滑动平均方式计算得到。<br> 对于预测，可以将bn按照以下公式所定义的那样折叠进权重中。因此，在预测时没有显式的bn操作。bn按如下方式拆分整合为权值和偏置：<br> <img src="https://images2.imgbox.com/58/09/sPmdUw0h_o.png" alt="在这里插入图片描述"><br> 其中γ和β是训练时习得的参数（具体看BN）。</p> 
+<p>下图是折叠BN量化推理的基线方法：<br> <img src="https://images2.imgbox.com/e3/8b/7hvaY6Qw_o.png" alt="在这里插入图片描述"><br> 从图中可以看到，在训练阶段BN会使用批统计信息（既batch均值和方差），而在预测阶段使用的是整个训练集的均值和标准差。由于批统计量在每个batch批之间变化很大，这会在量化的权重中引入不希望的跳变，也会使量化模型的精度降低。一个简单的解决方法是，在训练时也使用整个训练集的均值和标准差，但是这样会使“！批！”归一化失去意义（既均值和标准差和批统计量完全没有了关系），并且会导致训练不稳定。图重构也是一种解决方法，它可以消除训练和预测时bn的差异，如下图所示：<br> <img src="https://images2.imgbox.com/3c/ab/10cpqW9p_o.png" alt="在这里插入图片描述"></p> 
+<ol><li>首先量化之前要在完整训练集统计量上乘以一个带修正因子的权重。这会确保即使存在批统计量波动，量化权重也不会出现跳变。<br> <img src="https://images2.imgbox.com/58/bb/DYTfXn5z_o.png" alt="在这里插入图片描述"><br> 2.在训练的初始阶段，不做权重的缩放（1步骤提到的），这样输出就是常规bn的输出。偏置bias同理。<br> <img src="https://images2.imgbox.com/d6/ad/9ehq97MV_o.png" alt="在这里插入图片描述"><br> 3.在经过充分训练后，将批统计量（均值、标准差）替换为此时计算得到的训练集统计量（均值、标准差）。注意这时需要将训练集统计量（均值、标准差）冻结，从而避免训练不稳定。这相当于预测时使用的归一化参数，可以保证相对稳定的性能。<br> <img src="https://images2.imgbox.com/61/0d/ZDYfwYIR_o.png" alt="在这里插入图片描述"><br> <br><br> <strong>2.3实验</strong></li></ol> 
+<p>对于训练时量化还是做了和之前相同的实验，因为是在训练过程中量化，实验是从浮点型继续训练，且先将BN冻结，即不对BN做量化。文中采用随机梯度下降法训练，学习率1e-5。</p> 
+<p>首先还是看Mobilenet-v1训练时量化的结果：<br> <img src="https://images2.imgbox.com/7d/8c/HmOtDqoO_o.png" alt="在这里插入图片描述"><br> 同样，随着量化程度和图片尺寸的增加，精度越来越高，而且对于该网络结构来说，无论是非对称还是对称，甚至逐层量化精度损失都不是很多。</p> 
+<p>下图是对比了常用网络结构在训练后和训练时量化的结果：<br> <img src="https://images2.imgbox.com/ac/c2/1FfCUUW3_o.png" alt="在这里插入图片描述"><br> <img src="https://images2.imgbox.com/da/11/0rqaub1x_o.png" alt="在这里插入图片描述"><br> 结果非常明显了！逐层量化的精度和浮点型精度很接近。<br> <br><br> <strong>2.4更低精度的网络（4bit）</strong></p> 
+<p>在8bit精度上，训练后量化的精度和浮点型精度模型相差很小。为了能够更好地理解训练时量化所带来的好处，文中对权重和激活输出做了4bit量化的3个实验，结果如下：（注意，在这些实验中，激活输出仍采用8bit量化方式。）<br> <img src="https://images2.imgbox.com/b9/94/0uMoquh2_o.png" alt="在这里插入图片描述"><br> <strong>实验1</strong>：在4bit精度上，逐通道量化明显要比逐层量化精度要高，甚至对于训练后量化也是如此。在8bit精度上，差距就没那么明显了，因为模型有足够的bit位容量，可以以高保真度去表征权重。（参见表5的第2、3列）</p> 
+<p><strong>实验2</strong>：低的bit位宽情况下，在已有模型基础上继续训练会大幅提升模型精度。对于大多数网络来讲，采用4bit位宽精调得到的精度结果也只是比8bit量化的精度小5%以内（参见表的第4列）。<br> <br><br> <img src="https://images2.imgbox.com/ab/2d/KhyKOAGJ_o.png" alt="在这里插入图片描述"><br> <strong>实验3</strong>：更低精度的激活输出量化：分别在精调（训练时）和不精调（训练后）的条件下，对所有层的激活输出采用4bit量化的精度进行了研究，这里激活输出采用逐层量化，而权重采用8bit逐通道量化。我们发现在这些实验中精调也会提升模型精度（第2列和第3列）。</p> 
+<p>由于激活量化而造成的损失比权重量化更严重（见表6）[这里我也不知道是怎么根据表中数据看出来的，我自己的理解是对比了第3、4列，第3列是8bit权重量化4bit激活量化，第4列是4bit权重量化8bit激活量化，本身4bit量化精度损失会比8bit的大，且权重量化带来的损失会更多一点，但是看表中数据低bit权值量化的精度反而比第3列高，所以这里激活量化造成了精度损失]。</p> 
+<p>注意权重和激活输出的量化粒度是不同的，所以对于量化影响来讲其实这不是一个公平的比较。所以我们只能猜测表6结果的原因是，量化激活输出会引入随机误差，因为不同图片之间的激活输出是有较大差异的，而权重量化是确定的，这就使网络能够更好地学习权重，从而补偿权重量化所带来的计算偏差。<br> <br></p> 
+<h3><a id="Training_best_practices_326"></a>四、Training best practices（训练效果最好的实践）</h3> 
+<br> 文中还做了一些不同配置的量化实验，得出一些结论。 
+<p><strong>1</strong>.他们做了随机量化和确定性量化（随机量化以外的方案），发现随机量化不会提升精度。随机量化方案会确定浮点型权重，这种浮点型权重在随机量化中提供鲁棒的性能，但这样会导致量化的权重在小批量之间波动变化。在预测时，量化值是确定的，却和训练时的不一致。正是因为这种不一致，会导致随机量化方案和确定量化方案相比表现不佳，而确定量化方案在训练过程中能够更好地补偿这种不一致。如图所示（训练时随机和确定量化对比）：<br> <br><br> <img src="https://images2.imgbox.com/92/76/XR2TuKhz_o.png" alt="在这里插入图片描述"><br> 可以看到，在训练次数不足250000步时，随机量化的精度低且不稳定，之后的精度虽然平稳但也不如确定量化高。<br> <br><br> <strong>2</strong>.他们研究了从头开始训练一个量化模型所得到的模型精度和从浮点型checkpoint基础上训练得到的模型精度，发现后者会得到更好的精度。这也和一般的发现规律——最好先以尽可能多的自由度去训练一个模型，然后用这个模型作为引导老师去训练更小的模型——相一致。如图所示：<br> <br><br> <img src="https://images2.imgbox.com/43/97/R3G08Wfx_o.png" alt="在这里插入图片描述"><br> <br><br> <strong>3</strong>.接着对量化bn的不同方法进行了的评测，结果显示带有修正的bn会产生最好的精度，即将bn与预测进行匹配会降低数据抖动，提高模型精度。他们展示了两个网络的结果。<br> 在第一个实验中， 他们进行了各种量化方案的比较：利用Mobilenet-V1_1_224比较了原始实现的bn和采用纠正—冻结方式的bn，发现采用后者能得到更稳定、更高的精度（蓝色）。如图所示：<br> <br><br> <img src="https://images2.imgbox.com/3d/d0/4a3TVeJY_o.png" alt="在这里插入图片描述"></p> 
+<p>从图中可以看出，没有修正过得BN量化（绿色）数据抖动很明显，原因是 batch间的缩放变化。重新BN（红色），虽然提升了数据的抖动，但并没有消除。 使用移动平均统计对权重进行量化（橙色）可以减少抖动，但仍然不会消除。 200000步后冻结移动均值和方差更新（蓝色）允许量化权重以适应BN诱导的缩放， 并以最小的抖动提供最佳的精度。<br> <br><br> 在第二个实验中， 展示了BN校正—冻结对准确性的影响。他们利用Mobilenet-V2_1_224比较了原始实现的bn和采用纠正—冻结方式的bn，发现后者可以使精度进一步提升，如图中400000步后。<br> <br><br> <img src="https://images2.imgbox.com/9e/3c/2enK1SXc_o.png" alt="在这里插入图片描述"><br> 同样， 没有校正的量化显示很高的数据抖动（绿色）； 用冷冻校正显示出良好的精度（蓝色红色）； 移动平均线被冻结后，eval精度中的抖动显著下降（400000步后）；红色曲线是在EMA权值经过充分的训练后的性能。<br> <br><br> <strong>4</strong>.最后他们还比较了在训练中对权重进行平均和不进行平均这两种方案，得出的结论是：慎用指数滑动平均。在浮点型模型训练中，为了提高精度，通常会对权重进行滑动平均操作。由于在反向传播时使用的是量化后的权重和激活输出，浮点型权重可能会收敛于量化决策边界的位置上。即使是瞬时的和滑动平均的浮点型权重之间的微小差异，也会导致量化的权重产生非常明显的不同，影响性能，如上图中EMA（Exponential moving averaging）指数滑动平均对应曲线的精度下降（3500000步后，红色曲线下降）。<br> <br></p> 
+<h3><a id="Model_Architecture_Recommendations__355"></a>五、Model Architecture Recommendations （模型架构建议）</h3> 
+<br> 在这部分他们探讨了激活函数的选择，以及模型精度和模型宽度（模型尺寸）之间的取舍问题，并得出以下结论： 
+<br> 
+<ol><li>不要约束激活范围，即将ReLU6替换为ReLU（模型在训练中自己确定激活范围）会有微小的精度提升，如图所示：<br> <br><br> <img src="https://images2.imgbox.com/46/0e/yawjG5E0_o.png" alt="在这里插入图片描述"><br> 该图表示Mobilenet-v1网络训练时用ReLU代替ReLU6进行浮点和量化的精确度的提高。</li></ol> 
+<p>（其实这张图着实看不懂在对比个啥，我猜可能左边两列是Relu，右边两列是Relu6，但不知道为什么精度出现负值，精度负了也不奇怪，奇怪的是一正一负，往好心大佬指点。）<br> <br></p> 
+<p>2.在前面的实验中可以得出，冗余度较高的模型更适合量化。他们对于像mobilenet这种更加精简的模型架构在精度和模型尺寸之间做了量化对比。首先，他们拿4bit权重逐通道量化模型 和 8bit不同深度乘子的量化模型（也就是8bit不同容量的量化模型），针对精度进行了比较，如图所示：<br> <br><br> <img src="https://images2.imgbox.com/4a/ea/tnZw758i_o.png" alt="在这里插入图片描述"><br> 从图中可以发现，将权重进行4bit量化后的模型精度（横轴1对应的蓝色点，大概0.59）和 直接将模型容量缩减25%的模型精度（横轴0.75对应的红色点，和黄色重合了，大概0.61）相差无几，且都与float型精度接近。<br> <br></p> 
+<h3><a id="Runtime_measurements__374"></a>六、Run-time measurements （运行时间测量）</h3> 
+<br> 
+<p>这部分他们<strong>Google Pixel 2</strong>手机上利用<strong>单个大核</strong>，分别测量了浮点型模型和量化模型的运行时间，同时也在骁龙DSP上使用Android NN-API测量了运行时间，实验结果如下图所示：<br> <img src="https://images2.imgbox.com/5d/b4/QSUmW1fN_o.png" alt="在这里插入图片描述"><br> 在Google Pixel 2上（第2、3列），量化模型的预测速度比浮点型模型的预测速度快2到3倍；在骁龙DSP上（第2、4列），会快大概10倍。<br> <br></p> 
+<h3><a id="Neural_network_accelerator_recommendations__382"></a>七、Neural network accelerator recommendations （神经网络加速器建议）</h3> 
+<br> 
+<p>为了让量化模型充分发挥其能力，他们提出了几个神经网络加速器增强的建议（直接用翻译的内容）：</p> 
+<ol><li> <p>极致的运算符融合：在一次计算中，尽可能多地执行运算符，这样可以降低内存使用量、缩减运行时间以及减少耗电量。</p> </li><li> <p>压缩内存使用： 通过利用权重和激活输出的快速解压缩，我们可以优化内存带宽。实现这个操作的一个简单的方法就是去支持权重和激活输出的低精度存储。</p> </li><li> <p>低精度计算： 通过支持一系列精度的计算，可以进一步加速。我们的建议是支持4bit、8bit和16bit权重和激活输出。4bit和8bit精度对于分类任务来讲足够了，回归任务需要更高精度的支持，比如超分辨率和高动态范围图像处理。</p> </li><li> <p>位宽逐层选择：我们期望网络的许多层可以在更低位宽精度下处理。这样做可以进一步减少模型尺寸和运行时间。</p> </li><li> <p>逐通道量化：支持逐通道量化对于以下几点的实现是至关重要的：</p> <p>(a) 为了使模型在硬件上更容易部署，不需要特定硬件的精调</p> <p>(b) 更低精度计算<br> <br></p> </li></ol> 
+<h3><a id="_396"></a>八、结论</h3> 
+<br> 
+<ol><li>如果选择训练后量化策略，请使用权重的<strong>对称逐通道量化</strong>作为开始。如果精度有下降的话，可以考虑精调（在浮点型checkpoint基础上继续训练）。</li><li>训练时量化可以进一步减小和浮点型模型的精度差距，采用8bit量化时可以将精度差距缩减到5%以内，甚至当4bit量化所有层时也是如此。</li><li>在CPU上，8bit量化预测可以提速2到3倍。在特定的专门为低精度向量计算优化过的处理器上，例如支持HVX的骁龙DSP，和浮点型模型预测速度相比可以提速近10倍。</li><li>我们利用均匀量化可以在精度不变的情况下将模型尺寸缩小4倍。更高的压缩可以通过非均匀量化技术实现，比如K-means。</li><li>在模型尺寸和压缩比之间存在比较清晰的折中关系。容量越大的模型对量化误差的容忍度越高。</li><li>对于某一个模型结构，我们可以在特征数量和量化之间进行折中，要是用更多的特征数量就可以相应更低位宽的卷积核。</li><li>在训练中不约束激活函数的输出范围，然后直接对输出进行量化，这样会得到更高的精度。从我们的实验结果看出，对于激活输出最好使用ReLU，而不建议ReLu6</li></ol> 
+<p>参考：<br> <a href="https://blog.csdn.net/wc996789331/article/details/90601123">https://blog.csdn.net/wc996789331/article/details/90601123</a><br> <a href="https://www.bilibili.com/video/BV1cZ4y1u7T5/" rel="nofollow">https://www.bilibili.com/video/BV1cZ4y1u7T5/</a></p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/5855c0bb273dc3fdc1a555093983794f/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">火狐浏览器和IE浏览器滚动条隐藏设置</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/d841a883c0a579aef2926441b16989b1/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">【睿慕课点云处理】第九章-基于深度学习的点云分割方法</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

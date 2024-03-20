@@ -1,0 +1,305 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>RabbitMQ 模拟实现【四】：虚拟主机设计 - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="RabbitMQ 模拟实现【四】：虚拟主机设计" />
+<meta property="og:description" content="文章目录 虚拟主机设计虚拟主机分析交换机和虚拟主机之间的从属关系核心 API发布消息订阅消息应答消息消费者管理类 虚拟主机设计 虚拟主机分析 类似于 MySQL 的 database，把交换机，队列，绑定，消息…进⾏逻辑上的隔离，⼀个服务器可以有多
+个虚拟主机~，此处我们项⽬就设计了⼀个虚拟主机（VirtualHost）来提供 API 供上层调用
+咱们这里采取的方案是,在客户提供的交换机等的身份标识(交换机名字),前加上虚拟机的名字. 即 客户要在虚拟机
+VirtualHostA中创建交换机 exchangeC,咱们服务器存储的交换机名字是 VirtualHostAexchangeC.
+交换机和虚拟主机之间的从属关系 ⽅案⼀：参考数据库设计，“⼀对多”⽅案，⽐如给交换机表，添加个属性，虚拟主机 id/name⽅案⼆：交换机的名字 = 虚拟主机名字 &#43; 交换机的真实名字（按照⽅案⼆，也可以去区分不同的队列，进⼀步由于，绑定和队列和交换机都相关，直接就隔离开了，再进⼀步，消息和队列是强相关的，队列名区分开，消息⾃然区分开。） 核心 API 发布消息 发布消息API:
+其实就是生产者将消息发送给对应的交换机,交换机再根据不同的转发规则,转发给与之相绑定且符合规则的消息队列.绑定关系 Binding 中有一个 bindingKey 属性消息 Message 中 有一个 routingKey 属性 下面就来讲解一下三种交换机的转发规则已经这两个 Key 的不同含义.
+直接交换机 DIRECT 转发规则
+在直接交换机中,bindingKye是无意义的,routingKey是要转发到的队列的队列名.直接交换机的转发规则, 是无视 bindingKey的,即 直接交换机是否与这个队列绑定都没有关系,而直接将消息转发到 routingKey指定的队列名的队列中. 扇出交换机 FANOUT 转发规则
+在扇出交换机中,bindingKye是绑定的要转发的队列,routingKey是无意义的.扇出交换机的转发规则,是将收到的消息转发到与之绑定的所有队列中.与bindingKye和routingKey是没有任何关系的. 主题交换机 TOPIC 转发规则
+在主题交换机中,bindingKey是创建绑定时,给绑定指定的特殊字符串(相当于一把锁),routingKey是转发消息时,给消息指定的特殊字符串(相当于一把钥匙).主题交换机的转发规则,是将收到的消息的routingKey与绑定的所有队列中的 bindingKey 进行匹配,当且仅当匹配成功时,才将消息转发给该队列. 匹配规则 - AMQP 协议
+routingKey规则
+由数字,字母,下划线组成，使用 . 将routingKey分成多个部分.bindingKey规则
+由数字,字母,下划线组成，使用 ." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/aa56bc11b46e65aa70d1f77c1a12f305/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2024-03-14T13:02:33+08:00" />
+<meta property="article:modified_time" content="2024-03-14T13:02:33+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">RabbitMQ 模拟实现【四】：虚拟主机设计</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p></p> 
+<div class="toc"> 
+ <h4>文章目录</h4> 
+ <ul><li><a href="#_1" rel="nofollow">虚拟主机设计</a></li><li><ul><li><a href="#_2" rel="nofollow">虚拟主机分析</a></li><li><a href="#_8" rel="nofollow">交换机和虚拟主机之间的从属关系</a></li><li><a href="#_API_11" rel="nofollow">核心 API</a></li><li><a href="#_13" rel="nofollow">发布消息</a></li><li><a href="#_196" rel="nofollow">订阅消息</a></li><li><a href="#_205" rel="nofollow">应答消息</a></li><li><a href="#_209" rel="nofollow">消费者管理类</a></li></ul> 
+ </li></ul> 
+</div> 
+<p></p> 
+<h2><a id="_1"></a>虚拟主机设计</h2> 
+<h3><a id="_2"></a>虚拟主机分析</h3> 
+<p>类似于 MySQL 的 database，把交换机，队列，绑定，消息…进⾏逻辑上的隔离，⼀个服务器可以有多<br> 个虚拟主机~，此处我们项⽬就设计了⼀个虚拟主机（VirtualHost）来提供 API 供上层调用</p> 
+<blockquote> 
+ <p>咱们这里采取的方案是,在客户提供的交换机等的身份标识(交换机名字),前加上虚拟机的名字. 即 客户要在虚拟机<br> VirtualHostA中创建交换机 exchangeC,咱们服务器存储的交换机名字是 VirtualHostAexchangeC.</p> 
+</blockquote> 
+<h3><a id="_8"></a>交换机和虚拟主机之间的从属关系</h3> 
+<ul><li>⽅案⼀：参考数据库设计，“⼀对多”⽅案，⽐如给交换机表，添加个属性，虚拟主机 id/name</li><li>⽅案⼆：交换机的名字 = 虚拟主机名字 + 交换机的真实名字（按照⽅案⼆，也可以去区分不同的队列，进⼀步由于，绑定和队列和交换机都相关，直接就隔离开了，再进⼀步，消息和队列是强相关的，队列名区分开，消息⾃然区分开。）</li></ul> 
+<h3><a id="_API_11"></a>核心 API</h3> 
+<p><img src="https://images2.imgbox.com/c0/3c/6wwLT4ul_o.png" alt="在这里插入图片描述"></p> 
+<h3><a id="_13"></a>发布消息</h3> 
+<p><strong>发布消息API:</strong></p> 
+<ul><li>其实就是生产者将消息发送给对应的交换机,交换机再根据不同的转发规则,转发给与之相绑定且符合规则的消息队列.</li><li>绑定关系 Binding 中有一个 bindingKey 属性</li><li>消息 Message 中 有一个 routingKey 属性</li></ul> 
+<p>下面就来讲解一下<strong>三种交换机的转发规则</strong>已经这两个 Key 的不同含义.</p> 
+<ul><li> <p>直接交换机 DIRECT 转发规则</p> 
+  <ul><li>在直接交换机中,bindingKye是无意义的,routingKey是要转发到的队列的队列名.</li><li>直接交换机的转发规则, 是无视 bindingKey的,即 直接交换机是否与这个队列绑定都没有关系,而直接将消息转发到 routingKey指定的队列名的队列中.</li></ul> </li><li> <p>扇出交换机 FANOUT 转发规则</p> 
+  <ul><li>在扇出交换机中,bindingKye是绑定的要转发的队列,routingKey是无意义的.</li><li>扇出交换机的转发规则,是将收到的消息转发到与之绑定的所有队列中.与bindingKye和routingKey是没有任何关系的.</li></ul> </li><li> <p>主题交换机 TOPIC 转发规则</p> 
+  <ul><li>在主题交换机中,</li><li>bindingKey是创建绑定时,给绑定指定的特殊字符串(相当于一把锁),</li><li>routingKey是转发消息时,给消息指定的特殊字符串(相当于一把钥匙).</li><li>主题交换机的转发规则,是将收到的消息的routingKey与绑定的所有队列中的 bindingKey 进行匹配,当且仅当匹配成功时,才将消息转发给该队列.</li></ul> </li></ul> 
+<p><strong>匹配规则 - AMQP 协议</strong></p> 
+<ul><li>routingKey规则<br> 由数字,字母,下划线组成，使用 . 将routingKey分成多个部分.</li><li>bindingKey规则<br> 由数字,字母,下划线组成，使用 . 将routingKey分成多个部分（支持两种特殊的符号作为通配符 * 与 # (<em>和#必须是作为被 . 分割出来的单独部分如 aaa</em>.bb就是非法的，* 可以匹配任何一个独立的部分，# 可以匹配0个或多个的独立部分）</li></ul> 
+<p><strong>相关代码实现</strong></p> 
+<pre><code class="prism language-java"><span class="token keyword">import</span> <span class="token import"><span class="token namespace">com<span class="token punctuation">.</span>example<span class="token punctuation">.</span>demo<span class="token punctuation">.</span>common<span class="token punctuation">.</span></span><span class="token class-name">MqException</span></span><span class="token punctuation">;</span>
+
+<span class="token comment">// 使用这个类来实现交换机的转发规则</span>
+<span class="token comment">// 同时通过这个类来验证 bindingKey 是否合法</span>
+<span class="token keyword">public</span> <span class="token keyword">class</span> <span class="token class-name">Router</span> <span class="token punctuation">{<!-- --></span>
+
+    <span class="token keyword">public</span>  <span class="token keyword">boolean</span> <span class="token function">checkBindingKey</span><span class="token punctuation">(</span><span class="token class-name">String</span> bindingKey<span class="token punctuation">)</span><span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>bindingKey<span class="token punctuation">.</span><span class="token function">length</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">==</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">return</span> <span class="token boolean">true</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+
+        <span class="token comment">// 检查字符串中不能存在非法字符</span>
+        <span class="token keyword">for</span> <span class="token punctuation">(</span><span class="token keyword">int</span> i <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span> i <span class="token operator">&lt;</span> bindingKey<span class="token punctuation">.</span><span class="token function">length</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span> i<span class="token operator">++</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">char</span> ch <span class="token operator">=</span> bindingKey<span class="token punctuation">.</span><span class="token function">charAt</span><span class="token punctuation">(</span>i<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token keyword">if</span> <span class="token punctuation">(</span>ch <span class="token operator">&gt;=</span> <span class="token char">'A'</span> <span class="token operator">&amp;&amp;</span> ch <span class="token operator">&lt;=</span> <span class="token char">'Z'</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                <span class="token keyword">continue</span><span class="token punctuation">;</span>
+            <span class="token punctuation">}</span>
+            <span class="token keyword">if</span> <span class="token punctuation">(</span>ch <span class="token operator">&gt;=</span> <span class="token char">'a'</span> <span class="token operator">&amp;&amp;</span> ch <span class="token operator">&lt;=</span> <span class="token char">'z'</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                <span class="token keyword">continue</span><span class="token punctuation">;</span>
+            <span class="token punctuation">}</span>
+            <span class="token keyword">if</span> <span class="token punctuation">(</span>ch <span class="token operator">&gt;=</span> <span class="token char">'0'</span> <span class="token operator">&amp;&amp;</span> ch <span class="token operator">&lt;=</span> <span class="token char">'9'</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                <span class="token keyword">continue</span><span class="token punctuation">;</span>
+            <span class="token punctuation">}</span>
+            <span class="token keyword">if</span> <span class="token punctuation">(</span>ch <span class="token operator">==</span> <span class="token char">'_'</span> <span class="token operator">||</span> ch <span class="token operator">==</span> <span class="token char">'.'</span> <span class="token operator">||</span> ch <span class="token operator">==</span> <span class="token char">'*'</span> <span class="token operator">||</span> ch <span class="token operator">==</span> <span class="token char">'#'</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                <span class="token keyword">continue</span><span class="token punctuation">;</span>
+            <span class="token punctuation">}</span>
+            <span class="token keyword">return</span> <span class="token boolean">false</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+        <span class="token comment">// 检查 * 或者 # 是否是独立的部分.</span>
+        <span class="token class-name">String</span><span class="token punctuation">[</span><span class="token punctuation">]</span> words <span class="token operator">=</span> bindingKey<span class="token punctuation">.</span><span class="token function">split</span><span class="token punctuation">(</span><span class="token string">"\\."</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">for</span> <span class="token punctuation">(</span><span class="token class-name">String</span> word <span class="token operator">:</span> words<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token comment">// 检查 word 长度 &gt; 1 并且包含了 * 或者 # , 就是非法的格式了.</span>
+            <span class="token keyword">if</span> <span class="token punctuation">(</span>word<span class="token punctuation">.</span><span class="token function">length</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">&gt;</span> <span class="token number">1</span> <span class="token operator">&amp;&amp;</span> <span class="token punctuation">(</span>word<span class="token punctuation">.</span><span class="token function">contains</span><span class="token punctuation">(</span><span class="token string">"*"</span><span class="token punctuation">)</span> <span class="token operator">||</span> word<span class="token punctuation">.</span><span class="token function">contains</span><span class="token punctuation">(</span><span class="token string">"#"</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                <span class="token keyword">return</span> <span class="token boolean">false</span><span class="token punctuation">;</span>
+            <span class="token punctuation">}</span>
+        <span class="token punctuation">}</span>
+        <span class="token comment">// 约定一下, 通配符之间的相邻关系（人为约定）</span>
+        <span class="token comment">// 只有 aaa.*.*.bbb =&gt; 合法</span>
+        <span class="token keyword">for</span> <span class="token punctuation">(</span><span class="token keyword">int</span> i <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span> i <span class="token operator">&lt;</span> words<span class="token punctuation">.</span>length <span class="token operator">-</span> <span class="token number">1</span><span class="token punctuation">;</span> i<span class="token operator">++</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token comment">// 连续两个 ##</span>
+            <span class="token keyword">if</span> <span class="token punctuation">(</span>words<span class="token punctuation">[</span>i<span class="token punctuation">]</span><span class="token punctuation">.</span><span class="token function">equals</span><span class="token punctuation">(</span><span class="token string">"#"</span><span class="token punctuation">)</span> <span class="token operator">&amp;&amp;</span> words<span class="token punctuation">[</span>i <span class="token operator">+</span> <span class="token number">1</span><span class="token punctuation">]</span><span class="token punctuation">.</span><span class="token function">equals</span><span class="token punctuation">(</span><span class="token string">"#"</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                <span class="token keyword">return</span> <span class="token boolean">false</span><span class="token punctuation">;</span>
+            <span class="token punctuation">}</span>
+            <span class="token comment">// # 连着 *</span>
+            <span class="token keyword">if</span> <span class="token punctuation">(</span>words<span class="token punctuation">[</span>i<span class="token punctuation">]</span><span class="token punctuation">.</span><span class="token function">equals</span><span class="token punctuation">(</span><span class="token string">"#"</span><span class="token punctuation">)</span> <span class="token operator">&amp;&amp;</span> words<span class="token punctuation">[</span>i <span class="token operator">+</span> <span class="token number">1</span><span class="token punctuation">]</span><span class="token punctuation">.</span><span class="token function">equals</span><span class="token punctuation">(</span><span class="token string">"*"</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                <span class="token keyword">return</span> <span class="token boolean">false</span><span class="token punctuation">;</span>
+            <span class="token punctuation">}</span>
+            <span class="token comment">// * 连着 #</span>
+            <span class="token keyword">if</span> <span class="token punctuation">(</span>words<span class="token punctuation">[</span>i<span class="token punctuation">]</span><span class="token punctuation">.</span><span class="token function">equals</span><span class="token punctuation">(</span><span class="token string">"*"</span><span class="token punctuation">)</span> <span class="token operator">&amp;&amp;</span> words<span class="token punctuation">[</span>i <span class="token operator">+</span> <span class="token number">1</span><span class="token punctuation">]</span><span class="token punctuation">.</span><span class="token function">equals</span><span class="token punctuation">(</span><span class="token string">"#"</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                <span class="token keyword">return</span> <span class="token boolean">false</span><span class="token punctuation">;</span>
+            <span class="token punctuation">}</span>
+        <span class="token punctuation">}</span>
+        <span class="token keyword">return</span> <span class="token boolean">true</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token comment">// 数字 + 字母 + 下划线</span>
+    <span class="token comment">// 使用.分割若干部分</span>
+    <span class="token keyword">public</span> <span class="token keyword">boolean</span> <span class="token function">checkRoutingKey</span><span class="token punctuation">(</span><span class="token class-name">String</span> routingKey<span class="token punctuation">)</span><span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">if</span><span class="token punctuation">(</span>routingKey<span class="token punctuation">.</span><span class="token function">length</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token operator">==</span><span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">return</span> <span class="token boolean">true</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+        <span class="token keyword">for</span> <span class="token punctuation">(</span><span class="token keyword">int</span> i <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span> i <span class="token operator">&lt;</span> routingKey<span class="token punctuation">.</span><span class="token function">length</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span> i<span class="token operator">++</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">char</span> ch <span class="token operator">=</span> routingKey<span class="token punctuation">.</span><span class="token function">charAt</span><span class="token punctuation">(</span>i<span class="token punctuation">)</span><span class="token punctuation">;</span>
+           <span class="token comment">// 判断</span>
+            <span class="token keyword">if</span> <span class="token punctuation">(</span>ch <span class="token operator">&gt;=</span> <span class="token char">'A'</span> <span class="token operator">&amp;&amp;</span> ch <span class="token operator">&lt;=</span> <span class="token char">'Z'</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                <span class="token keyword">continue</span><span class="token punctuation">;</span>
+            <span class="token punctuation">}</span>
+            <span class="token keyword">if</span> <span class="token punctuation">(</span>ch <span class="token operator">&gt;=</span> <span class="token char">'a'</span> <span class="token operator">&amp;&amp;</span> ch <span class="token operator">&lt;=</span> <span class="token char">'z'</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                <span class="token keyword">continue</span><span class="token punctuation">;</span>
+            <span class="token punctuation">}</span>
+            <span class="token keyword">if</span> <span class="token punctuation">(</span>ch <span class="token operator">&gt;=</span> <span class="token char">'0'</span> <span class="token operator">&amp;&amp;</span> ch <span class="token operator">&lt;=</span> <span class="token char">'9'</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                <span class="token keyword">continue</span><span class="token punctuation">;</span>
+            <span class="token punctuation">}</span>
+            <span class="token keyword">if</span> <span class="token punctuation">(</span>ch <span class="token operator">==</span> <span class="token char">'_'</span> <span class="token operator">||</span> ch <span class="token operator">==</span> <span class="token char">'.'</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                <span class="token keyword">continue</span><span class="token punctuation">;</span>
+            <span class="token punctuation">}</span>
+            <span class="token comment">// 该字符, 不是上述任何一种合法情况, 就直接返回 false</span>
+            <span class="token keyword">return</span> <span class="token boolean">false</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+        <span class="token keyword">return</span> <span class="token boolean">true</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token comment">// 判定该消息是否可以转发给这个绑定对应的队列</span>
+    <span class="token keyword">public</span> <span class="token keyword">boolean</span> <span class="token function">route</span><span class="token punctuation">(</span><span class="token class-name">ExchangeType</span> exchangeType<span class="token punctuation">,</span><span class="token class-name">Binding</span> binding<span class="token punctuation">,</span><span class="token class-name">Message</span> message<span class="token punctuation">)</span> <span class="token keyword">throws</span> <span class="token class-name">MqException</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">if</span><span class="token punctuation">(</span>exchangeType <span class="token operator">==</span> <span class="token class-name">ExchangeType</span><span class="token punctuation">.</span><span class="token constant">FANOUT</span><span class="token punctuation">)</span><span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">return</span> <span class="token boolean">true</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token keyword">if</span> <span class="token punctuation">(</span>exchangeType <span class="token operator">==</span> <span class="token class-name">ExchangeType</span><span class="token punctuation">.</span><span class="token constant">TOPIC</span><span class="token punctuation">)</span><span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">return</span> <span class="token function">routeTopic</span><span class="token punctuation">(</span>binding<span class="token punctuation">,</span>message<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">throw</span> <span class="token keyword">new</span> <span class="token class-name">MqException</span><span class="token punctuation">(</span><span class="token string">"[Router] 交换机类型非法！ exchange= "</span> <span class="token operator">+</span> exchangeType<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token comment">// 约定匹配规则</span>
+    <span class="token keyword">private</span> <span class="token keyword">boolean</span> <span class="token function">routeTopic</span><span class="token punctuation">(</span><span class="token class-name">Binding</span> binding<span class="token punctuation">,</span> <span class="token class-name">Message</span> message<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token class-name">String</span><span class="token punctuation">[</span><span class="token punctuation">]</span> bindingTokens <span class="token operator">=</span> binding<span class="token punctuation">.</span><span class="token function">getBindingKey</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">split</span><span class="token punctuation">(</span><span class="token string">"\\."</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token class-name">String</span><span class="token punctuation">[</span><span class="token punctuation">]</span> routingTokens <span class="token operator">=</span> message<span class="token punctuation">.</span><span class="token function">getRoutingKey</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">split</span><span class="token punctuation">(</span><span class="token string">"\\."</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+        <span class="token comment">// 引入两个下标</span>
+        <span class="token keyword">int</span> bindingIndex <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+        <span class="token keyword">int</span> routingIndex <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+
+        <span class="token keyword">while</span> <span class="token punctuation">(</span>bindingIndex <span class="token operator">&lt;</span> bindingTokens<span class="token punctuation">.</span>length <span class="token operator">&amp;&amp;</span> routingIndex <span class="token operator">&lt;</span> routingTokens<span class="token punctuation">.</span>length<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">if</span> <span class="token punctuation">(</span>bindingTokens<span class="token punctuation">[</span>bindingIndex<span class="token punctuation">]</span><span class="token punctuation">.</span><span class="token function">equals</span><span class="token punctuation">(</span><span class="token string">"*"</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                <span class="token comment">// * 可以匹配到任意部分</span>
+                bindingIndex<span class="token operator">++</span><span class="token punctuation">;</span>
+                routingIndex<span class="token operator">++</span><span class="token punctuation">;</span>
+                <span class="token keyword">continue</span><span class="token punctuation">;</span>
+            <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token keyword">if</span> <span class="token punctuation">(</span>bindingTokens<span class="token punctuation">[</span>bindingIndex<span class="token punctuation">]</span><span class="token punctuation">.</span><span class="token function">equals</span><span class="token punctuation">(</span><span class="token string">"#"</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                <span class="token comment">// 如果遇到 #, 需要先看看有没有下一个位置.</span>
+                bindingIndex<span class="token operator">++</span><span class="token punctuation">;</span>
+                <span class="token keyword">if</span> <span class="token punctuation">(</span>bindingIndex <span class="token operator">==</span> bindingTokens<span class="token punctuation">.</span>length<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                    <span class="token comment">//  # 匹配成功</span>
+                    <span class="token keyword">return</span> <span class="token boolean">true</span><span class="token punctuation">;</span>
+                <span class="token punctuation">}</span>
+                <span class="token comment">//  #  拿着后面的内容, 去 routingKey 中往后找, 找到对应的位置.</span>
+                <span class="token comment">// findNextMatch 查找 返回该下标. 没找到, 就返回 -1</span>
+                routingIndex <span class="token operator">=</span> <span class="token function">findNextMatch</span><span class="token punctuation">(</span>routingTokens<span class="token punctuation">,</span> routingIndex<span class="token punctuation">,</span> bindingTokens<span class="token punctuation">[</span>bindingIndex<span class="token punctuation">]</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                <span class="token keyword">if</span> <span class="token punctuation">(</span>routingIndex <span class="token operator">==</span> <span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                    <span class="token comment">// 没找到匹配的结果. 匹配失败</span>
+                    <span class="token keyword">return</span> <span class="token boolean">false</span><span class="token punctuation">;</span>
+                <span class="token punctuation">}</span>
+                <span class="token comment">// 找到的匹配的情况, 继续往后匹配.</span>
+                bindingIndex<span class="token operator">++</span><span class="token punctuation">;</span>
+                routingIndex<span class="token operator">++</span><span class="token punctuation">;</span>
+            <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+                <span class="token comment">// 普通字符串, 要求两边的内容一致.</span>
+                <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span>bindingTokens<span class="token punctuation">[</span>bindingIndex<span class="token punctuation">]</span><span class="token punctuation">.</span><span class="token function">equals</span><span class="token punctuation">(</span>routingTokens<span class="token punctuation">[</span>routingIndex<span class="token punctuation">]</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                    <span class="token keyword">return</span> <span class="token boolean">false</span><span class="token punctuation">;</span>
+                <span class="token punctuation">}</span>
+                bindingIndex<span class="token operator">++</span><span class="token punctuation">;</span>
+                routingIndex<span class="token operator">++</span><span class="token punctuation">;</span>
+            <span class="token punctuation">}</span>
+        <span class="token punctuation">}</span>
+
+        <span class="token comment">// 判定是否是双方同时到达末尾</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>bindingIndex <span class="token operator">==</span> bindingTokens<span class="token punctuation">.</span>length <span class="token operator">&amp;&amp;</span> routingIndex <span class="token operator">==</span> routingTokens<span class="token punctuation">.</span>length<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">return</span> <span class="token boolean">true</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+        <span class="token keyword">return</span> <span class="token boolean">false</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token comment">// # 查找</span>
+    <span class="token keyword">private</span> <span class="token keyword">int</span> <span class="token function">findNextMatch</span><span class="token punctuation">(</span><span class="token class-name">String</span><span class="token punctuation">[</span><span class="token punctuation">]</span> routingTokens<span class="token punctuation">,</span> <span class="token keyword">int</span> routingIndex<span class="token punctuation">,</span> <span class="token class-name">String</span> bindingToken<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">for</span> <span class="token punctuation">(</span><span class="token keyword">int</span> i <span class="token operator">=</span> routingIndex<span class="token punctuation">;</span> i <span class="token operator">&lt;</span> routingTokens<span class="token punctuation">.</span>length<span class="token punctuation">;</span> i<span class="token operator">++</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">if</span> <span class="token punctuation">(</span>routingTokens<span class="token punctuation">[</span>i<span class="token punctuation">]</span><span class="token punctuation">.</span><span class="token function">equals</span><span class="token punctuation">(</span>bindingToken<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                <span class="token keyword">return</span> i<span class="token punctuation">;</span>
+            <span class="token punctuation">}</span>
+        <span class="token punctuation">}</span>
+        <span class="token keyword">return</span> <span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<h3><a id="_196"></a>订阅消息</h3> 
+<ul><li> <p>新来的消息要转发给哪个消费者呢?<br> 咱们在这里采取轮询策略,即让消费者排队,依次将消息发送给消费者,当消费者收到消息后,则移动到队伍的最后等待下个消息.<br> 因此咱们要给核心类 Message类再增加几个属性和方法,来管理消费者</p> </li><li> <p>自动发送消息至订阅者<br> 那么消费者要如何拿到消息呢?即如何将消息发送给消费者,咱们这里采取的是自动发送,即队列中来了新消息,就自动将新消息发送给订阅了这个队列的消费者.</p> </li></ul> 
+<blockquote> 
+ <p>咱们实现的方法是,使用一个阻塞队列,当生产者发布消息到交换机时,交换机转发消息到对应的队列后,就把队列名当作令牌添加到这个阻塞队列中,再配置一个扫描线程,去时刻扫描这个阻塞队列中是否有新的令牌了,有了新令牌,则根据令牌去对应的队列中,去把新消息安装轮询策略转发给消费者.</p> 
+</blockquote> 
+<h3><a id="_205"></a>应答消息</h3> 
+<p>应答消息共有两种模式.<br> 自动应答:将消息发送给消费者就算应答了(不关心消费者收没收到,相当于没应答)<br> 手动应答:需要消费者手动调用应答方法(确保消费者收到消息了)</p> 
+<h3><a id="_209"></a>消费者管理类</h3> 
+<p>关于消费者,咱们并不打算持久化存储消费者的信息,即只在内存中存储消费者信息,如果服务器重启后,那么内存中的消费者信息也会清空,此时消费者就需要重新订阅消息.<br> <img src="https://images2.imgbox.com/e1/a7/hixLjKyt_o.png" alt="在这里插入图片描述"></p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/5f45619b6db6fc5f5ed1560b253ac695/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">vue3速查笔记</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/0d9573cd36de6e395ae8a0dfe11c5fe3/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">Node.js入门基础—day01</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

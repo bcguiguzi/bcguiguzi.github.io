@@ -1,0 +1,437 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Linux之NFS网络文件系统详解 - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="Linux之NFS网络文件系统详解" />
+<meta property="og:description" content="华子目录 简介NFS背景介绍注意 生产应用场景NFS工作原理示例图流程 NFS的使用安装配置文件主配置文件分析权限参数/etc/exports文件内容示例 实验1nfs账户映射实验2实验3 autofs自动挂载服务产生原因安装配置文件分析挂载参数 实验4实验5：本机自动挂载光驱 简介 NFS背景介绍 NFS是一种古老的用于在UNIX/Linux主机之间进行文件共享的协议。它古老到你必须穿着白大褂才能接近一台计算机的年代。在那个年代，所有的联网计算机都被认为是可信的，而不像现今这样，任何人都有多种多样方法能连接到你的计算机。因此，NFS在开发的时候专注于快速及易用的文件共享，而忽视了其安全性设计NFS（Network File System，网络文件系统）是FreeBSD支持的文件系统中的一种，它允许网络中的计算机（不同的计算机、不同的操作系统）之间通过TCP/IP网络共享资源，主要在unix系列操作系统上使用。NFS服务器可以让PC将网络中的NFS服务器共享的目录挂载到本地端的文件系统中，而在本地端的系统中看来，那个远程主机的目录就好像是自己的一个磁盘分区一样。由于NFS支持的功能比较多，而不同的功能都会使用不同的程序来启动，每启动一个功能就会启用一些端口来传输数据，因此NFS的功能所对应的端口并不固定，而是随机取用一些未被使用的小于1024的端口用于传输。但如此一来就会产生客户端连接服务器的问题，因为客户端需要知道服务器端的相关端口才能够连接。此时就需要RPCRPC（Remote Procedure Call，远程过程调用）：由于服务器在启动NFS时会随机选取数个端口号，并主动向RPC注册，所以RPC知道每个NFS功能所对应的端口号，RPC将端口号通知给客户端，让客户端可以连接到正确的端口上去。RPC采用固定端口号port 111来监听客户端的需求并向客户端响应正确的端口号。 注意 在启动NFS之前，要先启动RPC，否则NFS会无法向RPC注册。另外，RPC若重新启动，原来注册的数据会消失不见，因此RPC重启后，它管理的所有服务都需要重新启动以重新向RPC注册。
+生产应用场景 NFS网络文件系统很像windows系统的网络共享、安全功能、网络驱动器映射，这也和linux系统里的Samba服务器类似。只不过一般情况下，windows网络共享服务或Samba服务用于办公局域网共享，而互联网中小型网站集群架构后端常用NFS进行数据共享，如果是大型网站，那可能会用到更复杂的分布式文件系统。在企业集群架构的工作场景中，NFS作为所有前端web服务的共享存储，存储的内容一般包括网站用户上传的图片、附件、头像等，注意，网站的程序代码就不要放在NFS共享里了，因为网站程序是开发运维人员统一发布，不存在发布延迟问题，直接批量发布到web节点提供访问比共享到NFS里访问效率会更高些。NFS是当前互联网系统架构中常用的数据存储服务之一，中小型网站（2000万pv(页面浏览量)以下）公示应用频率居高，大公司或门户除了使用NFS外，还可能会使用更为复杂的分布式文件系统 NFS工作原理 示例图 流程 首先服务器端启动RPC服务，并开启111端口之后服务器端启动NFS服务，并向RPC注册端口信息客户端启动RPC（portmap服务），向服务端的RPC（portmap）服务请求服务端的NFS端口服务端的RPC（portmap）服务反馈NFS端口信息给客户端。（服务器搭建成功后可以使用下列命令查看，一般都是2049） NFS的使用 安装 [root@server ~]# yum install nfs-utils -y #安装nfs [root@server ~]# yum install rpcbind -y # 安装rpc，默认已安装 配置文件 主配置文件：/etc/exports，该配置文件不一定存在/usr/sbin/exportfs：该文件是维护NFS共享目录资源的命令文件，可以使用命令重新共享/etc/exports的目录资源、卸载共享目录日志目录：/var/lib/nfs权限设置文件：/var/lib/nfs/etab 主配置文件分析 /etc/exports 文件默认为空文件，需要输入nfs共享命令格式：文件路径 允许访问的NFS客户端IP(权限参数)分析 允许访问的NFS客户端：可以是IP地址或IP网段，如： 192.168.80.129/24192.168.80.130/255.255.255.0192.168.80.0/24*：允许所有主机访问 权限参数 必须写在圆括号中，且括号是紧挨着主机名的，权限的相关参数如下，多个参数之间使用逗号隔开
+权限参数作用ro只读rw读写（最终还是看文件系统rwx的权限）root_squash当NFS客户端以root账户访问时，映射为NFS服务器端的匿名账户（nobody），以普通账户访问时，映射为普通账户no_root_squash当NFS客户端以root账户访问时，映射为root账户（不推荐、不安全）all_squash无论NFS客户端使用什么账户访问，均映射为NFS 服务器的匿名账户（nobody）,推荐no_all_squash客户端普通账户访问服务器的数据时，实际的信息原样显示sync同步，同时将数据写入内存与硬盘中，保证数据不会丢失，推荐async异步，优先将数据保存到内存，然后在写入硬盘，效率高，但可能会数据丢失anonuid= anongid=将文件的用户和工作组映射为指定UID和GID，若不指定则默认为65534（nobody） /etc/exports文件内容示例 /home/public *(rw,sync) : 对所有主机共享/home/public目录，可读可写，同步传输/home/public 192.168.48.131/24(ro,all_squash,sync) : 只对131主机开发共享/home/public ，只读权限，客户端映射为nobody账户，同步传输/home/public 192.168.48.0/24(rw , sync , all_squash , anonuid=2000, anongid=2000): 对192." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/9e720d1a7362ff6e26f2cad53e0715b3/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2024-03-13T11:37:17+08:00" />
+<meta property="article:modified_time" content="2024-03-13T11:37:17+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Linux之NFS网络文件系统详解</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p></p> 
+<div class="toc"> 
+ <h4>华子目录</h4> 
+ <ul><li><a href="#_1" rel="nofollow">简介</a></li><li><ul><li><a href="#NFS_2" rel="nofollow">NFS背景介绍</a></li><li><a href="#_9" rel="nofollow">注意</a></li></ul> 
+  </li><li><a href="#_12" rel="nofollow">生产应用场景</a></li><li><a href="#NFS_17" rel="nofollow">NFS工作原理</a></li><li><ul><li><a href="#_18" rel="nofollow">示例图</a></li><li><a href="#_20" rel="nofollow">流程</a></li></ul> 
+  </li><li><a href="#NFS_28" rel="nofollow">NFS的使用</a></li><li><ul><li><a href="#_29" rel="nofollow">安装</a></li><li><a href="#_36" rel="nofollow">配置文件</a></li><li><a href="#_42" rel="nofollow">主配置文件分析</a></li><li><ul><li><a href="#_53" rel="nofollow">权限参数</a></li><li><a href="#etcexports_68" rel="nofollow">/etc/exports文件内容示例</a></li></ul> 
+  </li></ul> 
+  </li><li><a href="#1_73" rel="nofollow">实验1</a></li><li><a href="#nfs_165" rel="nofollow">nfs账户映射</a></li><li><ul><li><a href="#2_166" rel="nofollow">实验2</a></li><li><a href="#3_200" rel="nofollow">实验3</a></li></ul> 
+  </li><li><a href="#autofs_260" rel="nofollow">autofs自动挂载服务</a></li><li><ul><li><a href="#_261" rel="nofollow">产生原因</a></li><li><a href="#_270" rel="nofollow">安装</a></li><li><a href="#_276" rel="nofollow">配置文件分析</a></li><li><ul><li><a href="#_288" rel="nofollow">挂载参数</a></li></ul> 
+   </li><li><a href="#4_296" rel="nofollow">实验4</a></li><li><a href="#5_370" rel="nofollow">实验5：本机自动挂载光驱</a></li></ul> 
+ </li></ul> 
+</div> 
+<p></p> 
+<h2><a id="_1"></a>简介</h2> 
+<h3><a id="NFS_2"></a>NFS背景介绍</h3> 
+<ul><li><mark>NFS</mark>是一种<mark>古老</mark>的用于在<mark>UNIX/Linux主机</mark>之间进行<mark>文件共享</mark>的<mark>协议</mark>。它古老到你必须穿着白大褂才能接近一台计算机的年代。在那个年代，所有的联网计算机都被认为是可信的，而不像现今这样，任何人都有多种多样方法能连接到你的计算机。因此，NFS在开发的时候专注于快速及易用的文件共享，而忽视了其安全性设计</li><li><mark>NFS（Network File System，网络文件系统</mark>）是FreeBSD支持的文件系统中的一种，它<mark>允许网络中的计算机（不同的计算机、不同的操作系统）之间通过TCP/IP网络共享资源</mark>，主要在unix系列操作系统上使用。</li><li><mark>NFS服务器</mark>可以<mark>让PC</mark>将网络中的<mark>NFS服务器共享的目录挂载到本地端的文件系统中</mark>，而<mark>在本地</mark>端的系统中<mark>看来</mark>，那个<mark>远程主机</mark>的<mark>目录</mark>就好像是<mark>自己的一个磁盘分区一样。</mark></li><li>由于<mark>NFS</mark>支持的<mark>功能比较多</mark>，而不同的功能都会使用不同的程序来启动，<mark>每启动一个功能就会启用一些端口</mark>来传输数据，因此<mark>NFS的功能所对应的端口并不固定</mark>，而是<mark>随机</mark>取用一些未被使用的小于1024的<mark>端口用于传输</mark>。但如此一来就会产生<mark>客户端连接服务器的问题</mark>，因为<mark>客户端需要知道服务器端的相关端口</mark>才能够连接。此时就<mark>需要RPC</mark></li><li><mark>RPC（Remote Procedure Call，远程过程调用</mark>）：由于<mark>服务器在启动NFS时会随机选取数个端口号，并主动向RPC注册</mark>，所以<mark>RPC知道每个NFS功能所对应的端口号</mark>，<mark>RPC将端口号通知给客户端</mark>，让客户端可以连接到正确的端口上去。<mark>RPC采用固定端口号port 111</mark>来监听客户端的需求并向客户端响应正确的端口号。</li></ul> 
+<h3><a id="_9"></a>注意</h3> 
+<p>在<mark>启动NFS之前，要先启动RPC</mark>，否则<mark>NFS会无法向RPC注册</mark>。另外，<mark>RPC若重新启动</mark>，<mark>原来注册的数据会消失不见</mark>，因此<mark>RPC重启后</mark>，它管理的<mark>所有服务都需要重新启动</mark>以重新向RPC注册。</p> 
+<h2><a id="_12"></a>生产应用场景</h2> 
+<ul><li><mark>NFS网络文件系统</mark>很像windows系统的网络共享、安全功能、网络驱动器映射，这也和<mark>linux系统里的Samba服务器</mark>类似。只不过一般情况下，windows网络共享服务或Samba服务用于办公局域网共享，而互联网<mark>中小型网站集群架构后端常用NFS进行数据共享</mark>，如果是<mark>大型网站</mark>，那可能会用到<mark>更复杂的分布式文件系统。</mark></li><li>在企业集群架构的工作场景中，<mark>NFS作为所有前端web服务的共享存储</mark>，<mark>存储的内容一般包括网站用户上传的图片、附件、头像等</mark>，注意，网站的<mark>程序代码</mark>就<mark>不要放在NFS共享里了</mark>，因为网站程序是开发运维人员统一发布，不存在发布延迟问题，直接批量发布到web节点提供访问比共享到NFS里访问效率会更高些。</li><li><mark>NFS</mark>是<mark>当前互联网系统架构</mark>中常用的<mark>数据存储服务</mark>之一，中小型网站（2000万pv(页面浏览量)以下）公示应用频率居高，大公司或门户除了使用NFS外，还可能会使用更为复杂的分布式文件系统</li></ul> 
+<h2><a id="NFS_17"></a>NFS工作原理</h2> 
+<h3><a id="_18"></a>示例图</h3> 
+<p><img src="https://images2.imgbox.com/74/1f/FbwK0QEJ_o.png" alt="在这里插入图片描述"></p> 
+<h3><a id="_20"></a>流程</h3> 
+<ul><li>首先<mark>服务器端启动RPC服务</mark>，并<mark>开启111端口</mark></li><li>之后服务器端<mark>启动NFS服务</mark>，并<mark>向RPC注册端口信息</mark></li><li><mark>客户端启动RPC</mark>（portmap服务），向<mark>服务端的RPC</mark>（portmap）服务请求<mark>服务端的NFS端口</mark></li><li><mark>服务端的RPC</mark>（portmap）服务<mark>反馈NFS端口信息</mark>给<mark>客户端</mark>。（服务器搭建成功后可以使用下列命令查看，一般都是2049）</li><li><img src="https://images2.imgbox.com/f3/a5/XHvxWqLG_o.png" alt="在这里插入图片描述"></li></ul> 
+<h2><a id="NFS_28"></a>NFS的使用</h2> 
+<h3><a id="_29"></a>安装</h3> 
+<pre><code class="prism language-bash"><span class="token punctuation">[</span>root@server ~<span class="token punctuation">]</span><span class="token comment"># yum  install  nfs-utils   -y   #安装nfs</span>
+
+<span class="token punctuation">[</span>root@server ~<span class="token punctuation">]</span><span class="token comment"># yum  install  rpcbind  -y # 安装rpc，默认已安装</span>
+</code></pre> 
+<h3><a id="_36"></a>配置文件</h3> 
+<ul><li><mark>主配置文件</mark>：<mark>/etc/exports</mark>，该配置文件<mark>不一定存在</mark></li><li><mark>/usr/sbin/exportfs</mark>：该文件是维护NFS共享目录资源的命令文件，可以<mark>使用命令重新共享/etc/exports的目录资源</mark>、卸载共享目录</li><li><mark>日志目录</mark>：<mark>/var/lib/nfs</mark></li><li><mark>权限设置文件</mark>：<mark>/var/lib/nfs/etab</mark></li></ul> 
+<h3><a id="_42"></a>主配置文件分析</h3> 
+<ul><li><mark>/etc/exports</mark> 文件<mark>默认为空文件</mark>，<mark>需要输入nfs共享命令</mark></li><li>格式：<code>文件路径 允许访问的NFS客户端IP(权限参数)</code></li><li><img src="https://images2.imgbox.com/f1/81/j3i5JA0W_o.png" alt="在这里插入图片描述"></li><li>分析 
+  <ul><li>允许访问的NFS客户端：可以是<mark>IP地址</mark>或<mark>IP网段</mark>，如： 
+    <ul><li>192.168.80.129/24</li><li>192.168.80.130/255.255.255.0</li><li>192.168.80.0/24</li><li><mark>*：允许所有主机访问</mark></li><li><img src="https://images2.imgbox.com/5e/2e/8qT1ffim_o.png" alt="在这里插入图片描述"></li></ul> </li></ul> </li></ul> 
+<h4><a id="_53"></a>权限参数</h4> 
+<p>必须<mark>写在圆括号</mark>中，且括号是<mark>紧挨着主机名</mark>的，权限的相关参数如下，<mark>多个参数之间使用逗号隔开</mark></p> 
+<table><thead><tr><th>权限参数</th><th>作用</th></tr></thead><tbody><tr><td>ro</td><td>只读</td></tr><tr><td>rw</td><td>读写（最终还是<mark>看文件系统rwx的权限</mark>）</td></tr><tr><td>root_squash</td><td>当<mark>NFS客户端以root账户访问</mark>时，映射为NFS服务器端的匿名账户（<mark>nobody</mark>），以<mark>普通账户</mark>访问时，映射为<mark>普通账户</mark></td></tr><tr><td>no_root_squash</td><td>当NFS<mark>客户端以root账户</mark>访问时，映射为<mark>root账户</mark>（不推荐、不安全）</td></tr><tr><td>all_squash</td><td><mark>无论NFS客户端使用什么账户</mark>访问，均映射为NFS 服务器的匿名账户（<mark>nobody</mark>）,<mark>推荐</mark></td></tr><tr><td>no_all_squash</td><td>客户端<mark>普通账户</mark>访问服务器的数据时，<mark>实际的信息原样显示</mark></td></tr><tr><td>sync</td><td>同步，<mark>同时将数据写入内存与硬盘中</mark>，保证数据不会丢失，<mark>推荐</mark></td></tr><tr><td>async</td><td>异步，优先将数据保存到内存，然后在写入硬盘，效率高，但可能会数据丢失</td></tr><tr><td>anonuid= anongid=</td><td>将文件的用户和工作组映射为<mark>指定UID和GID</mark>，若不指定则默认为65534（nobody）</td></tr></tbody></table> 
+<p><img src="https://images2.imgbox.com/67/1c/s54672eV_o.png" alt="在这里插入图片描述"></p> 
+<h4><a id="etcexports_68"></a>/etc/exports文件内容示例</h4> 
+<ul><li><mark>/home/public *(rw,sync</mark>) : 对<mark>所有主机共享/home/public目录，可读可写，同步传输</mark></li><li><mark>/home/public 192.168.48.131/24(ro,all_squash,sync</mark>) : 只对<mark>131主机开发共享/home/public ，只读权限，客户端映射为nobody账户，同步传输</mark></li><li><mark>/home/public 192.168.48.0/24(rw , sync , all_squash , anonuid=2000, anongid=2000</mark>): <mark>对192.168.48.0网段中所有主机开放/home/public 目录，可读可写，同步传输，客户端映射为nobody，uid为2000，gid为2000</mark></li></ul> 
+<h2><a id="1_73"></a>实验1</h2> 
+<p><mark>建立NFS服务器，使用客户端访问</mark></p> 
+<ul><li>第一步：<mark>服务端server操作（先恢复快照</mark>），完成准备工作</li></ul> 
+<pre><code class="prism language-bash">root@server ~<span class="token punctuation">]</span><span class="token comment"># setenforce  0</span>
+
+<span class="token punctuation">[</span>root@server ~<span class="token punctuation">]</span><span class="token comment"># systemctl stop  firewalld</span>
+
+<span class="token punctuation">[</span>root@server ~<span class="token punctuation">]</span><span class="token comment"># yum  install  nfs-utils  -y   #安装nfs</span>
+</code></pre> 
+<ul><li>第二步：<mark>客户端node1操作（先恢复快照</mark>），完成准备工作</li></ul> 
+<pre><code class="prism language-bash"><span class="token punctuation">[</span>root@node1 ~<span class="token punctuation">]</span><span class="token comment"># setenforce  0</span>
+
+<span class="token punctuation">[</span>root@node1 ~<span class="token punctuation">]</span><span class="token comment"># systemctl stop  firewalld</span>
+
+<span class="token punctuation">[</span>root@node1 ~<span class="token punctuation">]</span><span class="token comment"># yum  install  nfs-utils  -y  #安装nfs</span>
+</code></pre> 
+<ul><li>第三步：服务端<mark>server操作</mark>，<mark>新建共享目录</mark>，并<mark>设置权限</mark></li></ul> 
+<pre><code class="prism language-bash"><span class="token punctuation">[</span>root@server ~<span class="token punctuation">]</span><span class="token comment"># mkdir -v /nfsfile</span>
+mkdir: 已创建目录 <span class="token string">'/nfsfile'</span>
+<span class="token punctuation">[</span>root@server ~<span class="token punctuation">]</span><span class="token comment"># echo "www.openlab.com" &gt; /nfsfile/redme</span>
+<span class="token punctuation">[</span>root@server ~<span class="token punctuation">]</span><span class="token comment"># ls /nfsfile</span>
+redme
+<span class="token punctuation">[</span>root@server ~<span class="token punctuation">]</span><span class="token comment"># cat /nfsfile/redme</span>
+www.openlab.com
+<span class="token punctuation">[</span>root@server ~<span class="token punctuation">]</span><span class="token comment"># chmod -Rf 777 /nfsfile</span>
+<span class="token punctuation">[</span>root@server ~<span class="token punctuation">]</span><span class="token comment"># ll /nfsfile -d</span>
+drwxrwxrwx <span class="token number">2</span> root root <span class="token number">19</span>  <span class="token number">3</span>月 <span class="token number">12</span> <span class="token number">23</span>:17 /nfsfile
+</code></pre> 
+<ul><li>第四步：服务端<mark>server操作</mark>，<mark>修改nfs主配置文件/etc/exports</mark></li></ul> 
+<pre><code class="prism language-bash"><span class="token punctuation">[</span>root@server ~<span class="token punctuation">]</span><span class="token comment"># vim  /etc/exports</span>
+/nfsfile        <span class="token number">192.168</span>.80.130/24<span class="token punctuation">(</span>rw,all_squash,sync<span class="token punctuation">)</span>
+</code></pre> 
+<ul><li>第五步：服务端<mark>server操作</mark>，先<mark>启动RPC服务</mark>，后<mark>启动nfs服务</mark></li></ul> 
+<pre><code class="prism language-bash"><span class="token punctuation">[</span>root@server ~<span class="token punctuation">]</span><span class="token comment"># systemctl start rpcbind</span>
+
+<span class="token punctuation">[</span>root@server ~<span class="token punctuation">]</span><span class="token comment"># systemctl start nfs-server</span>
+
+<span class="token punctuation">[</span>root@server ~<span class="token punctuation">]</span><span class="token comment"># systemctl enable rpcbind</span>
+
+<span class="token punctuation">[</span>root@server ~<span class="token punctuation">]</span><span class="token comment"># systemctl enable nfs-server</span>
+</code></pre> 
+<pre><code class="prism language-bash"><span class="token punctuation">[</span>root@server ~<span class="token punctuation">]</span><span class="token comment"># systemctl stop rpcbind</span>
+
+<span class="token punctuation">[</span>root@server ~<span class="token punctuation">]</span><span class="token comment"># systemctl start rpcbind</span>
+</code></pre> 
+<ul><li>第六步：客户端<mark>node1操作</mark>，通过命令<mark>查询共享数据</mark>并<mark>远程挂载使用</mark></li></ul> 
+<pre><code class="prism language-bash"><span class="token comment">#查询远程共享信息：</span>
+<span class="token punctuation">[</span>root@node1 ~<span class="token punctuation">]</span><span class="token comment"># showmount  -参数   服务器IP地址</span>
+
+<span class="token comment">#参数：</span>
+	<span class="token parameter variable">-e</span>     显示nfs服务器的共享列表
+	<span class="token parameter variable">-a</span>     显示本地挂载的文件资源列表
+	<span class="token parameter variable">-v</span>     显示版本号
+</code></pre> 
+<pre><code class="prism language-bash"><span class="token punctuation">[</span>root@node1 ~<span class="token punctuation">]</span><span class="token comment"># showmount -e 192.168.80.129  #查询129的共享信息（共享目录和允许的IP地址）</span>
+Export list <span class="token keyword">for</span> <span class="token number">192.168</span>.80.129:
+/nfsfile <span class="token number">192.168</span>.80.130
+
+
+<span class="token punctuation">[</span>root@node1 ~<span class="token punctuation">]</span><span class="token comment"># mkdir -v /nfs1    # 新建本地挂载目录</span>
+mkdir: 已创建目录 <span class="token string">'/nfs1'</span>
+<span class="token punctuation">[</span>root@node1 ~<span class="token punctuation">]</span><span class="token comment"># mount -t nfs 192.168.80.129:/nfsfile  /nfs1       #远程挂载（-t指明用哪种文件系统）</span>
+<span class="token punctuation">[</span>root@node1 ~<span class="token punctuation">]</span><span class="token comment"># cd /nfs1   # 通过本地目录查看远程共享数据</span>
+<span class="token punctuation">[</span>root@node1 nfs1<span class="token punctuation">]</span><span class="token comment"># ls</span>
+redme
+<span class="token punctuation">[</span>root@node1 nfs1<span class="token punctuation">]</span><span class="token comment"># cat redme</span>
+www.openlab.com
+</code></pre> 
+<ul><li>第七步：客户端<mark>node1操作</mark>，设置<mark>开机挂载</mark>，实现<mark>挂载永久性</mark>（在 <mark>/etc/fstab</mark>下）</li></ul> 
+<pre><code class="prism language-bash"><span class="token punctuation">[</span>root@node1 nfs1<span class="token punctuation">]</span><span class="token comment"># vim   /etc/fstab   # 添加如下：</span>
+<span class="token number">192.168</span>.48.130:/nfsfile         /nfs1   nfs     defaults        <span class="token number">0</span>       <span class="token number">0</span>
+
+<span class="token comment"># 重启后测试</span>
+</code></pre> 
+<h2><a id="nfs_165"></a>nfs账户映射</h2> 
+<h3><a id="2_166"></a>实验2</h3> 
+<ul><li>基于上例，将 <mark>/nfsfile权限</mark>进行修改，查看客户端是否可以访问，是否可以写入数据</li></ul> 
+<pre><code class="prism language-bash"><span class="token comment">#定位server端</span>
+<span class="token punctuation">[</span>root@server ~<span class="token punctuation">]</span><span class="token comment"># cat /etc/exports  #确认是否为rw写权限</span>
+/nfsfile    <span class="token number">192.168</span>.80.130<span class="token punctuation">(</span>rw,all_squash,sync<span class="token punctuation">)</span>
+
+
+<span class="token punctuation">[</span>root@server ~<span class="token punctuation">]</span><span class="token comment"># cd /nfsfile</span>
+<span class="token punctuation">[</span>root@server nfsfile<span class="token punctuation">]</span><span class="token comment"># ll</span>
+总用量 <span class="token number">4</span>
+<span class="token parameter variable">-rwxrwxrwx</span> <span class="token number">1</span> root root <span class="token number">16</span>  <span class="token number">3</span>月 <span class="token number">12</span> <span class="token number">23</span>:17 redme
+<span class="token punctuation">[</span>root@server nfsfile<span class="token punctuation">]</span><span class="token comment"># chmod -Rf 444 /nfsfile   #修改权限</span>
+<span class="token punctuation">[</span>root@server nfsfile<span class="token punctuation">]</span><span class="token comment"># ll</span>
+总用量 <span class="token number">4</span>
+-r--r--r-- <span class="token number">1</span> root root <span class="token number">16</span>  <span class="token number">3</span>月 <span class="token number">12</span> <span class="token number">23</span>:17 redme
+
+
+<span class="token comment">#定位node1端</span>
+<span class="token punctuation">[</span>root@node1 nfs1<span class="token punctuation">]</span><span class="token comment"># cd ~</span>
+<span class="token punctuation">[</span>root@node1 ~<span class="token punctuation">]</span><span class="token comment"># cd /nfs1   #发现权限不够</span>
+-bash: cd: /nfs1: 权限不够
+
+
+
+<span class="token comment">#定位server端</span>
+<span class="token punctuation">[</span>root@server nfsfile<span class="token punctuation">]</span><span class="token comment"># chmod -Rf 777 /nfsfile  #多执行几次，可能有延迟</span>
+
+
+<span class="token comment">#定位node1端</span>
+<span class="token punctuation">[</span>root@node1 ~<span class="token punctuation">]</span><span class="token comment"># cd /nfs1</span>
+<span class="token punctuation">[</span>root@node1 nfs1<span class="token punctuation">]</span><span class="token comment">#</span>
+</code></pre> 
+<h3><a id="3_200"></a>实验3</h3> 
+<ul><li><mark>客户端访问服务端，演示账户映射</mark></li></ul> 
+<pre><code class="prism language-bash"><span class="token comment">#定位node1端</span>
+<span class="token punctuation">[</span>root@node1 nfs1<span class="token punctuation">]</span><span class="token comment"># touch test.txt</span>
+<span class="token punctuation">[</span>root@node1 nfs1<span class="token punctuation">]</span><span class="token comment"># ll</span>
+总用量 <span class="token number">4</span>
+<span class="token parameter variable">-rwxrwxrwx</span> <span class="token number">1</span> root   root   <span class="token number">16</span>  <span class="token number">3</span>月 <span class="token number">12</span> <span class="token number">23</span>:17 redme
+-rw-r--r-- <span class="token number">1</span> nobody nobody  <span class="token number">0</span>  <span class="token number">3</span>月 <span class="token number">12</span> <span class="token number">23</span>:48 test.txt
+
+
+<span class="token comment">#定位server端</span>
+<span class="token punctuation">[</span>root@server nfsfile<span class="token punctuation">]</span><span class="token comment"># ll   # 注意：账户及工作组</span>
+总用量 <span class="token number">4</span>
+<span class="token parameter variable">-rwxrwxrwx</span> <span class="token number">1</span> root   root   <span class="token number">16</span>  <span class="token number">3</span>月 <span class="token number">12</span> <span class="token number">23</span>:17 redme
+-rw-r--r-- <span class="token number">1</span> nobody nobody  <span class="token number">0</span>  <span class="token number">3</span>月 <span class="token number">12</span> <span class="token number">23</span>:48 test.txt 
+
+<span class="token comment">#修改为root_squash</span>
+<span class="token punctuation">[</span>root@server nfsfile<span class="token punctuation">]</span><span class="token comment"># vim /etc/exports</span>
+/nfsfile        <span class="token number">192.168</span>.80.129/24<span class="token punctuation">(</span>rw,root_squash,sync<span class="token punctuation">)</span>
+
+<span class="token punctuation">[</span>root@server nfsfile<span class="token punctuation">]</span><span class="token comment"># exportfs -arv   # 不卸载，即可让配置文件生效</span>
+exporting <span class="token number">192.168</span>.80.130:/nfsfile
+
+
+<span class="token comment">#定位node1端</span>
+<span class="token punctuation">[</span>root@node1 nfs1<span class="token punctuation">]</span><span class="token comment"># cd /</span>
+<span class="token punctuation">[</span>root@node1 /<span class="token punctuation">]</span><span class="token comment"># su redhat  #切换到redhat用户</span>
+<span class="token punctuation">[</span>redhat@node1 /<span class="token punctuation">]</span>$ <span class="token builtin class-name">cd</span> /nfs1
+<span class="token punctuation">[</span>redhat@node1 nfs1<span class="token punctuation">]</span>$ ll
+<span class="token parameter variable">-rwxrwxrwx</span> <span class="token number">1</span> root   root   <span class="token number">16</span>  <span class="token number">3</span>月 <span class="token number">12</span> <span class="token number">23</span>:17 redme
+-rw-r--r-- <span class="token number">1</span> nobody nobody  <span class="token number">0</span>  <span class="token number">3</span>月 <span class="token number">12</span> <span class="token number">23</span>:48 test.txt
+
+<span class="token punctuation">[</span>redhat@node1 nfs1<span class="token punctuation">]</span>$ <span class="token function">touch</span> text1.txt
+<span class="token punctuation">[</span>redhat@node1 nfs1<span class="token punctuation">]</span>$ ll
+总用量 <span class="token number">4</span>
+<span class="token parameter variable">-rwxrwxrwx</span> <span class="token number">1</span> root   root   <span class="token number">16</span>  <span class="token number">3</span>月 <span class="token number">12</span> <span class="token number">23</span>:17 redme
+-rw-r--r-- <span class="token number">1</span> nobody nobody  <span class="token number">0</span>  <span class="token number">3</span>月 <span class="token number">12</span> <span class="token number">23</span>:48 test.txt
+-rw-rw-r-- <span class="token number">1</span> redhat redhat  <span class="token number">0</span>  <span class="token number">3</span>月 <span class="token number">12</span> <span class="token number">23</span>:55 text1.txt
+<span class="token punctuation">[</span>redhat@node1 nfs1<span class="token punctuation">]</span>$ <span class="token function">su</span> root
+密码：
+<span class="token punctuation">[</span>root@node1 nfs1<span class="token punctuation">]</span><span class="token comment">#</span>
+
+<span class="token comment">#定位server端</span>
+<span class="token punctuation">[</span>root@server nfsfile<span class="token punctuation">]</span><span class="token comment"># vim /etc/exports</span>
+/nfsfile    <span class="token number">192.168</span>.80.130<span class="token punctuation">(</span>rw,all_squash,sync,anonuid<span class="token operator">=</span><span class="token number">3000</span>,anongid<span class="token operator">=</span><span class="token number">3000</span><span class="token punctuation">)</span>
+<span class="token punctuation">[</span>root@server nfsfile<span class="token punctuation">]</span><span class="token comment"># exportfs -arv  #不卸载，即可让配置文件生效</span>
+exporting <span class="token number">192.168</span>.80.130:/nfsfile
+
+
+<span class="token comment">#定位node1端</span>
+<span class="token punctuation">[</span>root@node1 nfs1<span class="token punctuation">]</span><span class="token comment"># touch text2.txt</span>
+<span class="token punctuation">[</span>root@node1 nfs1<span class="token punctuation">]</span><span class="token comment"># ll    # 注意：uid和guid</span>
+总用量 <span class="token number">4</span>
+<span class="token parameter variable">-rwxrwxrwx</span> <span class="token number">1</span> root   root   <span class="token number">16</span>  <span class="token number">3</span>月 <span class="token number">12</span> <span class="token number">23</span>:17 redme
+-rw-r--r-- <span class="token number">1</span> nobody nobody  <span class="token number">0</span>  <span class="token number">3</span>月 <span class="token number">12</span> <span class="token number">23</span>:48 test.txt
+-rw-rw-r-- <span class="token number">1</span> redhat redhat  <span class="token number">0</span>  <span class="token number">3</span>月 <span class="token number">12</span> <span class="token number">23</span>:55 text1.txt
+-rw-r--r-- <span class="token number">1</span>   <span class="token number">3000</span>   <span class="token number">3000</span>  <span class="token number">0</span>  <span class="token number">3</span>月 <span class="token number">13</span> 00:00 text2.txt
+</code></pre> 
+<h2><a id="autofs_260"></a>autofs自动挂载服务</h2> 
+<h3><a id="_261"></a>产生原因</h3> 
+<ul><li> <p>在一般<mark>NFS文件系统</mark>的使用过程中，如果<mark>客户端要使用服务端所提供的文件系统</mark>，可以在 <mark>/etc/fstab中</mark>设置开机时<mark>自动挂载</mark>，也可以在登录系统后<mark>手动利用mount来挂载</mark></p> </li><li> <p>由于网络的问题，<mark>NFS服务器与客户端的连接不会一直存在</mark>，当我们挂载了NFS服务器之后，<mark>任何一方脱机都可能造成另外一方等待超时</mark>，如果<mark>在资源挂载后长期不使用</mark>，也会造成<mark>服务器硬件资源的浪费。</mark></p> </li><li> <p>为了解决这样的问题，就出现了下面的想法：</p> 
+  <ul><li>当客户端在有<mark>使用NFS文件系统的需求时</mark>才让系统<mark>自动挂载。</mark></li><li>当<mark>NFS文件系统使用完毕后</mark>（<mark>autofs默认自动卸载时间为300s即5分钟</mark>），<mark>让NFS自动卸载。</mark></li></ul> </li><li> <p><mark>autofs</mark> 自动挂载服务可以帮我们解决这一问题，该<mark>服务</mark>是<mark>运行</mark>在<mark>客户端</mark>的一种 <mark>Linux 系统守护进程</mark>，在<mark>用户需要使用该文件系统时才去动态挂载</mark>，从而节约了网络资源和服务器的硬件资源。</p> </li></ul> 
+<h3><a id="_270"></a>安装</h3> 
+<pre><code class="prism language-bash"><span class="token comment"># 客户端安装，服务端不用安装</span>
+<span class="token punctuation">[</span>root@node1 ~<span class="token punctuation">]</span><span class="token comment"># yum install autofs -y   </span>
+</code></pre> 
+<h3><a id="_276"></a>配置文件分析</h3> 
+<ul><li> <p><mark>配置文件路径：/etc/auto.master</mark></p> </li><li> <p>作用：处于生产环境中的 Linux 服务器，一般会<mark>同时管理许多设备的挂载操作</mark>。如果把这些设备挂载信息都写入到 <mark>autofs 服务的配置文件/etc/auto.master</mark>中，无疑会让主配置文件<mark>臃肿不堪</mark>，不利于服务执行效率，也不利于日后修改里面的配置内容，则<mark>需要将挂载的设备独立配置形成子文件</mark>，<mark>主配置文件只存储配置挂载设置的文件名</mark></p> </li><li> <p><mark>/etc/auto.master文件内容格式</mark>：<code>挂载目录 子配置文件路径</code></p> 
+  <ul><li><mark>挂载目录</mark>：<mark>不需要事先存在，因为autofs会主动建立该目录</mark></li><li><mark>子配置文件路径：文件名可自定义</mark></li><li>例：<code>/nfs /etc/auto.nfs</code></li></ul> </li><li> <p><mark>子配置文件名可以任意创建</mark>，<mark>内容格式</mark>：</p> 
+  <ul><li><code>本地挂载子目录 [-挂载参数] 服务器地址:共享目录</code></li><li>例：testmnt 192.168.48.130:/data</li></ul> </li></ul> 
+<h4><a id="_288"></a>挂载参数</h4> 
+<table><thead><tr><th>参数</th><th>功能</th></tr></thead><tbody><tr><td>fg/bg</td><td>当执行挂载时，该挂载行为会在前台（fg）还是后台（bg）执行，若在前台执行，则mount会持续尝试挂载，直到成功或time out为止；若为后台执行，则mount会在后台持续多次进行mount，而不会影响到前台的程序运行。</td></tr><tr><td>soft/hard</td><td>hard表示当两者之间的任何一台主机脱机，则RPC会持续地呼叫，直到对方恢复连接为止。如果是soft的话，那RPC会在time out后重复呼叫，而非持续呼叫</td></tr><tr><td>intr</td><td>当使用上面提到的hard方式挂载时，若加上intr这个参数，则当RPC持续呼叫时，该次的呼叫是可以被中断的</td></tr><tr><td>rsize/wsize</td><td>读出（rsize）与写入（wsize）的区块大小。这个设置值可以影响客户端与服务器</td></tr></tbody></table> 
+<h3><a id="4_296"></a>实验4</h3> 
+<p><mark>服务器创建共享目录，客户端实现自动挂载</mark></p> 
+<ul><li>第一步：<mark>服务器与客户端都恢复快照</mark>，并关闭安全软件</li><li>第二步：<mark>安装软件</mark></li></ul> 
+<pre><code class="prism language-bash"><span class="token comment">#定位server端</span>
+<span class="token punctuation">[</span>root@server ~<span class="token punctuation">]</span><span class="token comment"># yum  install  nfs-utils  -y  #安装nfs服务</span>
+<span class="token punctuation">[</span>root@server ~<span class="token punctuation">]</span><span class="token comment"># yum  install  rpcbind  -y  #安装rpc，默认已安装</span>
+
+
+<span class="token comment"># 定位node1端</span>
+<span class="token punctuation">[</span>root@node1 ~<span class="token punctuation">]</span><span class="token comment"># yum  install  nfs-utils  -y  #安装nfs服务</span>
+<span class="token punctuation">[</span>root@node1 ~<span class="token punctuation">]</span><span class="token comment"># yum  install  autofs  -y  #安装autofs服务</span>
+</code></pre> 
+<ul><li>第三步：定位<mark>server端</mark>，新建<mark>共享目录</mark>，编辑<mark>nfs配置文件，设置文件权限</mark></li></ul> 
+<pre><code class="prism language-bash">root@server ~<span class="token punctuation">]</span><span class="token comment"># mkdir  /data</span>
+<span class="token punctuation">[</span>root@server ~<span class="token punctuation">]</span><span class="token comment"># vim   /etc/exports</span>
+/data   *<span class="token punctuation">(</span>ro,sync,all_squash<span class="token punctuation">)</span>
+
+
+<span class="token punctuation">[</span>root@server ~<span class="token punctuation">]</span><span class="token comment"># echo  "this is test"  &gt; /data/file.txt</span>
+<span class="token punctuation">[</span>root@server ~<span class="token punctuation">]</span><span class="token comment"># chmod  -Rf  777 /data</span>
+</code></pre> 
+<ul><li>第四步：定位<mark>server端</mark>，<mark>启动服务</mark>，<mark>必须先启动rpcbind</mark></li></ul> 
+<pre><code class="prism language-bash"><span class="token punctuation">[</span>root@server ~<span class="token punctuation">]</span><span class="token comment"># systemctl start rpcbind  #先启动rpc服务</span>
+<span class="token punctuation">[</span>root@server ~<span class="token punctuation">]</span><span class="token comment"># systemctl start nfs-server #再启动nfs服务</span>
+
+<span class="token punctuation">[</span>root@server ~<span class="token punctuation">]</span><span class="token comment"># systemctl enable rpcbind   #设置开启自启动</span>
+<span class="token punctuation">[</span>root@server ~<span class="token punctuation">]</span><span class="token comment"># systemctl enable nfs-server</span>
+</code></pre> 
+<ul><li>第五步：定位<mark>node1端</mark>，编辑<mark>自动挂载主配置文件</mark></li></ul> 
+<pre><code class="prism language-bash"><span class="token comment">#计划node1端，挂载目录为 /nfs/testmnt</span>
+
+<span class="token punctuation">[</span>root@node1 ~<span class="token punctuation">]</span><span class="token comment"># vim /etc/auto.master</span>
+/nfs    /etc/auto.nfs            <span class="token comment"># 挂载的父目录及子配置文件（子配置文件自行命名）（/nfs不需要事先存在，因为autofs会主动建立该目录）</span>
+
+<span class="token punctuation">[</span>root@node1 ~<span class="token punctuation">]</span><span class="token comment"># vim /etc/auto.nfs</span>
+testmnt         <span class="token number">192.168</span>.80.129:/data   <span class="token comment"># 挂载目录的子目录    nfs服务器ip地址:共享目录</span>
+</code></pre> 
+<ul><li>第六步：定位<mark>node1端，启动服务</mark></li></ul> 
+<pre><code class="prism language-bash"><span class="token punctuation">[</span>root@node1 ~<span class="token punctuation">]</span><span class="token comment"># systemctl start autofs</span>
+
+<span class="token punctuation">[</span>root@node1 ~<span class="token punctuation">]</span><span class="token comment"># systemctl enable autofs</span>
+</code></pre> 
+<ul><li>第七步：定位node1端，测试</li></ul> 
+<pre><code class="prism language-bash"><span class="token punctuation">[</span>root@node1 ~<span class="token punctuation">]</span><span class="token comment"># cd /nfs</span>
+<span class="token punctuation">[</span>root@node1 nfs<span class="token punctuation">]</span><span class="token comment"># ls</span>
+<span class="token punctuation">[</span>root@node1 nfs<span class="token punctuation">]</span><span class="token comment"># cd testmnt  #当进入挂载目录时，testmnt自动创建</span>
+<span class="token punctuation">[</span>root@node1 testmnt<span class="token punctuation">]</span><span class="token comment"># ls</span>
+file.txt
+<span class="token punctuation">[</span>root@node1 testmnt<span class="token punctuation">]</span><span class="token comment"># cat file.txt</span>
+this is <span class="token builtin class-name">test</span>
+<span class="token punctuation">[</span>root@node1 testmnt<span class="token punctuation">]</span><span class="token comment"># df -h</span>
+文件系统               容量  已用  可用 已用% 挂载点
+devtmpfs               <span class="token number">4</span>.0M     <span class="token number">0</span>  <span class="token number">4</span>.0M    <span class="token number">0</span>% /dev
+tmpfs                  968M     <span class="token number">0</span>  968M    <span class="token number">0</span>% /dev/shm
+tmpfs                  388M  <span class="token number">6</span>.2M  382M    <span class="token number">2</span>% /run
+/dev/mapper/rhel-root   16G  <span class="token number">4</span>.1G   12G   <span class="token number">27</span>% /
+/dev/nvme0n1p1         395M  235M  161M   <span class="token number">60</span>% /boot
+tmpfs                  194M   52K  194M    <span class="token number">1</span>% /run/user/42
+tmpfs                  194M   36K  194M    <span class="token number">1</span>% /run/user/0
+<span class="token number">192.168</span>.80.129:/data    16G  <span class="token number">4</span>.1G   12G   <span class="token number">27</span>% /nfs/testmnt
+</code></pre> 
+<h3><a id="5_370"></a>实验5：本机自动挂载光驱</h3> 
+<p><mark>本机自动挂载光驱</mark></p> 
+<ul><li>第一步：定位<mark>server端</mark>，<mark>恢复快照</mark>，关闭安全软件，<mark>安装autofs软件</mark></li></ul> 
+<pre><code class="prism language-bash"><span class="token punctuation">[</span>root@server ~<span class="token punctuation">]</span><span class="token comment"># yum  install  autofs  -y #安装autofs</span>
+</code></pre> 
+<ul><li>第二步：计划<mark>光驱本地挂载目录</mark>为：<mark>/media/cdrom</mark></li><li>第三步：<mark>编辑autofs主配置文件</mark></li></ul> 
+<pre><code class="prism language-bash"><span class="token punctuation">[</span>root@server ~<span class="token punctuation">]</span><span class="token comment"># vim  /etc/auto.master</span>
+/media  /etc/iso.aa
+
+<span class="token comment"># /media 为最终挂载目录的父目录</span>
+<span class="token comment"># /etc/iso.aa：为子配置文件</span>
+</code></pre> 
+<ul><li>第四步：<mark>编写子配置文件</mark></li></ul> 
+<pre><code class="prism language-bash"><span class="token punctuation">[</span>root@server ~<span class="token punctuation">]</span><span class="token comment"># vim  /etc/iso.aa</span>
+cdrom   <span class="token parameter variable">-fstype</span><span class="token operator">=</span>iso9660,ro,nosuid,nodev :/dev/sr0  <span class="token comment"># 注意：冒号前有空格</span>
+</code></pre> 
+<ul><li>第五步：启动服务</li></ul> 
+<pre><code class="prism language-bash"><span class="token punctuation">[</span>root@server ~<span class="token punctuation">]</span><span class="token comment"># systemctl start autofs</span>
+
+<span class="token punctuation">[</span>root@server ~<span class="token punctuation">]</span><span class="token comment"># systemctl enable autofs</span>
+</code></pre> 
+<ul><li>第六步：测试</li></ul> 
+<pre><code class="prism language-bash"><span class="token punctuation">[</span>root@server ~<span class="token punctuation">]</span><span class="token comment"># umount  /dev/sr0   # 先卸载设备之前已挂载的光驱</span>
+
+<span class="token punctuation">[</span>root@server ~<span class="token punctuation">]</span><span class="token comment"># df  -h             # 查看已挂载的设备信息</span>
+文件系统               容量  已用  可用 已用% 挂载点
+devtmpfs               <span class="token number">4</span>.0M     <span class="token number">0</span>  <span class="token number">4</span>.0M    <span class="token number">0</span>% /dev
+tmpfs                  968M     <span class="token number">0</span>  968M    <span class="token number">0</span>% /dev/shm
+tmpfs                  388M  <span class="token number">9</span>.5M  378M    <span class="token number">3</span>% /run
+/dev/mapper/rhel-root   16G  <span class="token number">4</span>.2G   12G   <span class="token number">27</span>% /
+/dev/nvme0n1p1         395M  235M  160M   <span class="token number">60</span>% /boot
+tmpfs                  194M  104K  194M    <span class="token number">1</span>% /run/user/0
+
+<span class="token punctuation">[</span>root@server ~<span class="token punctuation">]</span><span class="token comment"># cd  /media</span>
+<span class="token punctuation">[</span>root@server media<span class="token punctuation">]</span><span class="token comment"># ls</span>
+<span class="token punctuation">[</span>root@server media<span class="token punctuation">]</span><span class="token comment"># cd  cdrom   # 触发自动挂载</span>
+<span class="token punctuation">[</span>root@server cdrom<span class="token punctuation">]</span><span class="token comment"># ls          </span>
+AppStream  EFI   extra_files.json  images    media.repo               RPM-GPG-KEY-redhat-release
+BaseOS     EULA  GPL               isolinux  RPM-GPG-KEY-redhat-beta
+<span class="token punctuation">[</span>root@server cdrom<span class="token punctuation">]</span><span class="token comment"># df -h     </span>
+文件系统               容量  已用  可用 已用% 挂载点
+devtmpfs               <span class="token number">4</span>.0M     <span class="token number">0</span>  <span class="token number">4</span>.0M    <span class="token number">0</span>% /dev
+tmpfs                  968M     <span class="token number">0</span>  968M    <span class="token number">0</span>% /dev/shm
+tmpfs                  388M  <span class="token number">9</span>.5M  378M    <span class="token number">3</span>% /run
+/dev/mapper/rhel-root   16G  <span class="token number">4</span>.2G   12G   <span class="token number">27</span>% /
+/dev/nvme0n1p1         395M  235M  160M   <span class="token number">60</span>% /boot
+tmpfs                  194M  104K  194M    <span class="token number">1</span>% /run/user/0
+/dev/sr0               <span class="token number">8</span>.5G  <span class="token number">8</span>.5G     <span class="token number">0</span>  <span class="token number">100</span>% /media/cdrom
+</code></pre>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/853b4efe5743520e22d4ea0aece35951/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">推荐一款嵌入式C的开源代码框架-tboox / tbox</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/a0657f9e56ff6934b15af77fbc467c13/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">计算机中有符号数的表示</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

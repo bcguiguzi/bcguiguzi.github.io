@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>关于Spring事件监听器是发布者线程调用（同步）还是线程池调用（异步）的探究 - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="关于Spring事件监听器是发布者线程调用（同步）还是线程池调用（异步）的探究" />
+<meta property="og:description" content="一、源码分析 Spring5.3.2 1、先看一哈发布事件demo主要类 //main启动类 public class Main { public static void main(String[] args) { ApplicationContext context = new AnnotationConfigApplicationContext(&#34;com.leon&#34;); System.out.println(Thread.currentThread().getName() &#43; &#34;发布了TestEvent事件&#34;); //发布TestEvent事件 context.publishEvent(new TestEvent(new TestView())); } } //自定义事件类 public class TestEvent extends ApplicationEvent { public TestEvent(Object source) { super(source); } } //一个数据视图类 @Data public class TestView { private String name = &#34;leon&#34;; private Integer age = 24; } //事件监听者 @Component public class Subscriber implements ApplicationListener&lt;TestEvent&gt; { @Override public void onApplicationEvent(TestEvent event) { System." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/18f48eb55fc5b75a35800bdf08b0f538/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-03-10T17:39:43+08:00" />
+<meta property="article:modified_time" content="2023-03-10T17:39:43+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">关于Spring事件监听器是发布者线程调用（同步）还是线程池调用（异步）的探究</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <h2><a id="_Spring532_0"></a>一、源码分析 Spring5.3.2</h2> 
+<h3><a id="1demo_1"></a>1、先看一哈发布事件demo主要类</h3> 
+<pre><code class="prism language-java"><span class="token comment">//main启动类</span>
+<span class="token keyword">public</span> <span class="token keyword">class</span> <span class="token class-name">Main</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">public</span> <span class="token keyword">static</span> <span class="token keyword">void</span> <span class="token function">main</span><span class="token punctuation">(</span><span class="token class-name">String</span><span class="token punctuation">[</span><span class="token punctuation">]</span> args<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+
+        <span class="token class-name">ApplicationContext</span> context <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">AnnotationConfigApplicationContext</span><span class="token punctuation">(</span><span class="token string">"com.leon"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+		
+		<span class="token class-name">System</span><span class="token punctuation">.</span>out<span class="token punctuation">.</span><span class="token function">println</span><span class="token punctuation">(</span><span class="token class-name">Thread</span><span class="token punctuation">.</span><span class="token function">currentThread</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">getName</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">+</span> <span class="token string">"发布了TestEvent事件"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+		
+        <span class="token comment">//发布TestEvent事件</span>
+        context<span class="token punctuation">.</span><span class="token function">publishEvent</span><span class="token punctuation">(</span><span class="token keyword">new</span> <span class="token class-name">TestEvent</span><span class="token punctuation">(</span><span class="token keyword">new</span> <span class="token class-name">TestView</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+
+<span class="token comment">//自定义事件类</span>
+<span class="token keyword">public</span> <span class="token keyword">class</span> <span class="token class-name">TestEvent</span> <span class="token keyword">extends</span> <span class="token class-name">ApplicationEvent</span> <span class="token punctuation">{<!-- --></span>
+
+    <span class="token keyword">public</span> <span class="token class-name">TestEvent</span><span class="token punctuation">(</span><span class="token class-name">Object</span> source<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">super</span><span class="token punctuation">(</span>source<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+<span class="token punctuation">}</span>
+
+<span class="token comment">//一个数据视图类</span>
+<span class="token annotation punctuation">@Data</span>
+<span class="token keyword">public</span> <span class="token keyword">class</span> <span class="token class-name">TestView</span> <span class="token punctuation">{<!-- --></span>
+
+    <span class="token keyword">private</span> <span class="token class-name">String</span> name <span class="token operator">=</span> <span class="token string">"leon"</span><span class="token punctuation">;</span>
+
+    <span class="token keyword">private</span> <span class="token class-name">Integer</span> age <span class="token operator">=</span> <span class="token number">24</span><span class="token punctuation">;</span>
+    
+<span class="token punctuation">}</span>
+
+<span class="token comment">//事件监听者</span>
+<span class="token annotation punctuation">@Component</span>
+<span class="token keyword">public</span> <span class="token keyword">class</span> <span class="token class-name">Subscriber</span> <span class="token keyword">implements</span> <span class="token class-name">ApplicationListener</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">TestEvent</span><span class="token punctuation">&gt;</span></span> <span class="token punctuation">{<!-- --></span>
+
+    <span class="token annotation punctuation">@Override</span>
+    <span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token function">onApplicationEvent</span><span class="token punctuation">(</span><span class="token class-name">TestEvent</span> event<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+
+		<span class="token class-name">System</span><span class="token punctuation">.</span>out<span class="token punctuation">.</span><span class="token function">println</span><span class="token punctuation">(</span><span class="token class-name">Thread</span><span class="token punctuation">.</span><span class="token function">currentThread</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">getName</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">+</span> <span class="token string">"监听到了TestEvent事件"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+        <span class="token class-name">Object</span> source <span class="token operator">=</span> event<span class="token punctuation">.</span><span class="token function">getSource</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+        <span class="token class-name">System</span><span class="token punctuation">.</span>out<span class="token punctuation">.</span><span class="token function">println</span><span class="token punctuation">(</span>source<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+<span class="token punctuation">}</span>
+</code></pre> 
+<h3><a id="2_52"></a>2、开始源码分析</h3> 
+<p>从context.publishEvent()发布事件开始</p> 
+<pre><code class="prism language-java"><span class="token comment">//org.springframework.context.support.AbstractApplicationContext#publishEvent(org.springframework.context.ApplicationEvent)</span>
+<span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token function">publishEvent</span><span class="token punctuation">(</span><span class="token class-name">ApplicationEvent</span> event<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+	<span class="token function">publishEvent</span><span class="token punctuation">(</span>event<span class="token punctuation">,</span> <span class="token keyword">null</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+<span class="token comment">//org.springframework.context.support.AbstractApplicationContext#publishEvent(java.lang.Object)</span>
+<span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token function">publishEvent</span><span class="token punctuation">(</span><span class="token class-name">Object</span> event<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+	<span class="token function">publishEvent</span><span class="token punctuation">(</span>event<span class="token punctuation">,</span> <span class="token keyword">null</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+</code></pre> 
+<p>我们阔以看到有两个发布事件的方法，一个是发布ApplicationEvent参数的方法，一个是发布一个Object参数的方法，继续往下看publishEvent方法</p> 
+<pre><code class="prism language-java"><span class="token comment">//org.springframework.context.support.AbstractApplicationContext#publishEvent(java.lang.Object, org.springframework.core.ResolvableType)</span>
+<span class="token comment">/**
+* @Param event 上面publishEvent方法的入参，可能是ApplicationEvent的实例，也可能是一个Object实例
+* @Param eventType 上面publishEvent方法的入参类型元数据的一个包装类
+**/</span>
+<span class="token keyword">protected</span> <span class="token keyword">void</span> <span class="token function">publishEvent</span><span class="token punctuation">(</span><span class="token class-name">Object</span> event<span class="token punctuation">,</span> <span class="token annotation punctuation">@Nullable</span> <span class="token class-name">ResolvableType</span> eventType<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+	<span class="token class-name">Assert</span><span class="token punctuation">.</span><span class="token function">notNull</span><span class="token punctuation">(</span>event<span class="token punctuation">,</span> <span class="token string">"Event must not be null"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+	
+	<span class="token class-name">ApplicationEvent</span> applicationEvent<span class="token punctuation">;</span>
+	<span class="token comment">//如果入参是事件实例</span>
+	<span class="token keyword">if</span> <span class="token punctuation">(</span>event <span class="token keyword">instanceof</span> <span class="token class-name">ApplicationEvent</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+		applicationEvent <span class="token operator">=</span> <span class="token punctuation">(</span><span class="token class-name">ApplicationEvent</span><span class="token punctuation">)</span> event<span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+	<span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token comment">//如果入参不是事件实例，就把该入参封装成一个PayloadApplicationEvent事件实例</span>
+		applicationEvent <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">PayloadApplicationEvent</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token punctuation">&gt;</span></span><span class="token punctuation">(</span><span class="token keyword">this</span><span class="token punctuation">,</span> event<span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token keyword">if</span> <span class="token punctuation">(</span>eventType <span class="token operator">==</span> <span class="token keyword">null</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+			eventType <span class="token operator">=</span> <span class="token punctuation">(</span><span class="token punctuation">(</span><span class="token class-name">PayloadApplicationEvent</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token operator">?</span><span class="token punctuation">&gt;</span></span><span class="token punctuation">)</span> applicationEvent<span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">getResolvableType</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token punctuation">}</span>
+	<span class="token punctuation">}</span>
+
+	<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token keyword">this</span><span class="token punctuation">.</span>earlyApplicationEvents <span class="token operator">!=</span> <span class="token keyword">null</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token keyword">this</span><span class="token punctuation">.</span>earlyApplicationEvents<span class="token punctuation">.</span><span class="token function">add</span><span class="token punctuation">(</span>applicationEvent<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+	<span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token comment">//得到事件广播器，把当前事件广播</span>
+		<span class="token function">getApplicationEventMulticaster</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">multicastEvent</span><span class="token punctuation">(</span>applicationEvent<span class="token punctuation">,</span> eventType<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+
+	<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token keyword">this</span><span class="token punctuation">.</span>parent <span class="token operator">!=</span> <span class="token keyword">null</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token comment">//把事件传播给当前ApplicationContext的父类ApplicationContext发布，即把当前事件广播给父类ApplicationContext所有监听器</span>
+		<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token keyword">this</span><span class="token punctuation">.</span>parent <span class="token keyword">instanceof</span> <span class="token class-name">AbstractApplicationContext</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+			<span class="token punctuation">(</span><span class="token punctuation">(</span><span class="token class-name">AbstractApplicationContext</span><span class="token punctuation">)</span> <span class="token keyword">this</span><span class="token punctuation">.</span>parent<span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">publishEvent</span><span class="token punctuation">(</span>event<span class="token punctuation">,</span> eventType<span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token punctuation">}</span>
+		<span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+			<span class="token keyword">this</span><span class="token punctuation">.</span>parent<span class="token punctuation">.</span><span class="token function">publishEvent</span><span class="token punctuation">(</span>event<span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token punctuation">}</span>
+	<span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>上面代码总结一哈就是，判断广播的对象是不是一个ApplicationEvent事件实例，如果是就把该事件发布，不是的话就把该对象封装成一个PayloadApplicationEvent事件实例对象再发布，最后还要把该广播对象传到父类上下文去发布，我们现在继续看事件广播器的multicastEvent()广播事件方法</p> 
+<pre><code class="prism language-java"><span class="token comment">//org.springframework.context.event.SimpleApplicationEventMulticaster#multicastEvent(org.springframework.context.ApplicationEvent, org.springframework.core.ResolvableType)</span>
+<span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token function">multicastEvent</span><span class="token punctuation">(</span><span class="token keyword">final</span> <span class="token class-name">ApplicationEvent</span> event<span class="token punctuation">,</span> <span class="token annotation punctuation">@Nullable</span> <span class="token class-name">ResolvableType</span> eventType<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+	<span class="token class-name">ResolvableType</span> type <span class="token operator">=</span> <span class="token punctuation">(</span>eventType <span class="token operator">!=</span> <span class="token keyword">null</span> <span class="token operator">?</span> eventType <span class="token operator">:</span> <span class="token function">resolveDefaultEventType</span><span class="token punctuation">(</span>event<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token comment">//得到当前事件广播器的执行器</span>
+	<span class="token class-name">Executor</span> executor <span class="token operator">=</span> <span class="token function">getTaskExecutor</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token comment">//遍历匹配当前事件所有的监听器(ApplicationListener)</span>
+	<span class="token keyword">for</span> <span class="token punctuation">(</span><span class="token class-name">ApplicationListener</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token operator">?</span><span class="token punctuation">&gt;</span></span> listener <span class="token operator">:</span> <span class="token function">getApplicationListeners</span><span class="token punctuation">(</span>event<span class="token punctuation">,</span> type<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token comment">//如果执行器不为空，就用执行器调用监听器onApplicationEvent(代码)</span>
+		<span class="token keyword">if</span> <span class="token punctuation">(</span>executor <span class="token operator">!=</span> <span class="token keyword">null</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+			executor<span class="token punctuation">.</span><span class="token function">execute</span><span class="token punctuation">(</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">-&gt;</span> <span class="token function">invokeListener</span><span class="token punctuation">(</span>listener<span class="token punctuation">,</span> event<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token punctuation">}</span>
+		<span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+			<span class="token comment">//如果执行器为空，就用发布者当前线程调用监听器onApplicationEvent(代码)</span>
+			<span class="token function">invokeListener</span><span class="token punctuation">(</span>listener<span class="token punctuation">,</span> event<span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token punctuation">}</span>
+	<span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>上面代码很明显就知道，如果当前事件广播器（ApplicationEventMulticaster）里有执行器就用执行器执行监听器代码（异步），如果没得就用当前事件的发布者线程进行调用（同步），下面我们继续看事件广播器的getTaskExecutor()得到执行器方法能得到执行器不</p> 
+<pre><code class="prism language-java"><span class="token comment">//org.springframework.context.event.SimpleApplicationEventMulticaster#taskExecutor</span>
+<span class="token keyword">private</span> <span class="token class-name">Executor</span> taskExecutor<span class="token punctuation">;</span>
+
+<span class="token comment">//org.springframework.context.event.SimpleApplicationEventMulticaster#getTaskExecutor</span>
+<span class="token keyword">protected</span> <span class="token class-name">Executor</span> <span class="token function">getTaskExecutor</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+	<span class="token keyword">return</span> <span class="token keyword">this</span><span class="token punctuation">.</span>taskExecutor<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>SimpleApplicationEventMulticaster中没看到taskExecutor设值得地方，debug调试也为空，说明其他地方也没设置值，所以Spring事件默认是发布者线程进行调用，那么问题来了，如果我们要用执行器进行监听器调用该如何办呢，其实我们看了刚才的代码很明显了，我们只需要设置一个执行器到事件广播器中就行了，所以我们找到事件广播器SimpleApplicationEventMulticaster初始化的地方看哈代码</p> 
+<pre><code class="prism language-java"><span class="token comment">//org.springframework.context.support.AbstractApplicationContext#APPLICATION_EVENT_MULTICASTER_BEAN_NAME</span>
+<span class="token keyword">public</span> <span class="token keyword">static</span> <span class="token keyword">final</span> <span class="token class-name">String</span> <span class="token constant">APPLICATION_EVENT_MULTICASTER_BEAN_NAME</span> <span class="token operator">=</span> <span class="token string">"applicationEventMulticaster"</span><span class="token punctuation">;</span>
+
+<span class="token comment">//org.springframework.context.support.AbstractApplicationContext#initApplicationEventMulticaster</span>
+<span class="token keyword">protected</span> <span class="token keyword">void</span> <span class="token function">initApplicationEventMulticaster</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+	<span class="token class-name">ConfigurableListableBeanFactory</span> beanFactory <span class="token operator">=</span> <span class="token function">getBeanFactory</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token comment">/**
+	* 如果容器中有实例名叫"applicationEventMulticaster"的ApplicationEventMulticaster事件广播器实例，
+	* 就把该事件广播器赋值到AbstractApplicationContext上下文中applicationEventMulticaster变量，这里
+	* 应该是为了某些人需要自定义ApplicationEventMulticaster事件广播器做预留。
+	**/</span>
+	<span class="token keyword">if</span> <span class="token punctuation">(</span>beanFactory<span class="token punctuation">.</span><span class="token function">containsLocalBean</span><span class="token punctuation">(</span><span class="token constant">APPLICATION_EVENT_MULTICASTER_BEAN_NAME</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token keyword">this</span><span class="token punctuation">.</span>applicationEventMulticaster <span class="token operator">=</span>
+				beanFactory<span class="token punctuation">.</span><span class="token function">getBean</span><span class="token punctuation">(</span><span class="token constant">APPLICATION_EVENT_MULTICASTER_BEAN_NAME</span><span class="token punctuation">,</span> <span class="token class-name">ApplicationEventMulticaster</span><span class="token punctuation">.</span><span class="token keyword">class</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token keyword">if</span> <span class="token punctuation">(</span>logger<span class="token punctuation">.</span><span class="token function">isTraceEnabled</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+			logger<span class="token punctuation">.</span><span class="token function">trace</span><span class="token punctuation">(</span><span class="token string">"Using ApplicationEventMulticaster ["</span> <span class="token operator">+</span> <span class="token keyword">this</span><span class="token punctuation">.</span>applicationEventMulticaster <span class="token operator">+</span> <span class="token string">"]"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token punctuation">}</span>
+	<span class="token punctuation">}</span>
+	<span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token comment">/**
+		* 说明容器中没有自定义的ApplicationEventMulticaster事件广播器，就把Spring默认的SimpleApplicationEventMulticaster
+		* 事件广播器复制给AbstractApplicationContext上下文中applicationEventMulticaster变量， 并注册到容器中。
+		**/</span>
+		<span class="token comment">//创建默认的事件广播器</span>
+		<span class="token keyword">this</span><span class="token punctuation">.</span>applicationEventMulticaster <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">SimpleApplicationEventMulticaster</span><span class="token punctuation">(</span>beanFactory<span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token comment">//把该实例注册到容器中</span>
+		beanFactory<span class="token punctuation">.</span><span class="token function">registerSingleton</span><span class="token punctuation">(</span><span class="token constant">APPLICATION_EVENT_MULTICASTER_BEAN_NAME</span><span class="token punctuation">,</span> <span class="token keyword">this</span><span class="token punctuation">.</span>applicationEventMulticaster<span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token keyword">if</span> <span class="token punctuation">(</span>logger<span class="token punctuation">.</span><span class="token function">isTraceEnabled</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+			logger<span class="token punctuation">.</span><span class="token function">trace</span><span class="token punctuation">(</span><span class="token string">"No '"</span> <span class="token operator">+</span> <span class="token constant">APPLICATION_EVENT_MULTICASTER_BEAN_NAME</span> <span class="token operator">+</span> <span class="token string">"' bean, using "</span> <span class="token operator">+</span>
+					<span class="token string">"["</span> <span class="token operator">+</span> <span class="token keyword">this</span><span class="token punctuation">.</span>applicationEventMulticaster<span class="token punctuation">.</span><span class="token function">getClass</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">getSimpleName</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">+</span> <span class="token string">"]"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token punctuation">}</span>
+	<span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>通过上述代码，我们阔以知道Spring默认是把SimpleApplicationEventMulticaster事件赋值给上下文并把他注入到容器中，所以我们只需要从容器中取出实例名叫"applicationEventMulticaster"的事件广播器实例，并把自定义的Executor执行器设置进事件广播器中即可</p> 
+<h2><a id="_182"></a>二、事件监听器调用者总结</h2> 
+<p>通过上述分析，我们阔以知道如下：</p> 
+<ol><li>Spring事件监听器（ApplicationListener）onApplicationEvent方法默认是发布者线程调用（同步）；</li><li>如果想用执行器（Executor）进行调用的（异步），需要将默认的SimpleApplicationEventMulticaster事件广播器中的执行器设置一个执行器，示例代码如下:</li></ol> 
+<p>示例一：</p> 
+<pre><code class="prism language-java"><span class="token annotation punctuation">@Component</span>
+<span class="token keyword">public</span> <span class="token keyword">class</span> <span class="token class-name">EventThreadPoolConfig</span> <span class="token keyword">implements</span> <span class="token class-name">ApplicationContextAware</span> <span class="token punctuation">{<!-- --></span>
+
+    <span class="token annotation punctuation">@Override</span>
+    <span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token function">setApplicationContext</span><span class="token punctuation">(</span><span class="token class-name">ApplicationContext</span> applicationContext<span class="token punctuation">)</span> <span class="token keyword">throws</span> <span class="token class-name">BeansException</span> <span class="token punctuation">{<!-- --></span>
+
+        <span class="token class-name">SimpleApplicationEventMulticaster</span> applicationEventMulticaster <span class="token operator">=</span> applicationContext<span class="token punctuation">.</span><span class="token function">getBean</span><span class="token punctuation">(</span><span class="token class-name">AbstractApplicationContext</span><span class="token punctuation">.</span><span class="token constant">APPLICATION_EVENT_MULTICASTER_BEAN_NAME</span><span class="token punctuation">,</span> <span class="token class-name">SimpleApplicationEventMulticaster</span><span class="token punctuation">.</span><span class="token keyword">class</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+        <span class="token class-name">Executor</span> taskExecutor <span class="token operator">=</span> <span class="token class-name">Executors</span><span class="token punctuation">.</span><span class="token function">newFixedThreadPool</span><span class="token punctuation">(</span><span class="token class-name">Runtime</span><span class="token punctuation">.</span><span class="token function">getRuntime</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">availableProcessors</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+        applicationEventMulticaster<span class="token punctuation">.</span><span class="token function">setTaskExecutor</span><span class="token punctuation">(</span>taskExecutor<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token punctuation">}</span>
+
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>示例二：</p> 
+<pre><code class="prism language-java"><span class="token annotation punctuation">@Configuration</span>
+<span class="token keyword">public</span> <span class="token keyword">class</span> <span class="token class-name">EventExecutorConfig</span> <span class="token punctuation">{<!-- --></span>
+
+    <span class="token annotation punctuation">@Bean</span><span class="token punctuation">(</span><span class="token string">"taskExecutor"</span><span class="token punctuation">)</span>
+    <span class="token keyword">public</span> <span class="token class-name">Executor</span> <span class="token function">initExecutor</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+
+        <span class="token class-name">ThreadFactory</span> namedThreadFactory <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">ThreadFactoryBuilder</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+                <span class="token punctuation">.</span><span class="token function">setNameFormat</span><span class="token punctuation">(</span><span class="token string">"taskExecutor-%d"</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">build</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+        <span class="token class-name">Executor</span> taskExecutor <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">ThreadPoolExecutor</span><span class="token punctuation">(</span><span class="token number">5</span><span class="token punctuation">,</span> <span class="token number">10</span><span class="token punctuation">,</span>
+                <span class="token number">0L</span><span class="token punctuation">,</span> <span class="token class-name">TimeUnit</span><span class="token punctuation">.</span><span class="token constant">MILLISECONDS</span><span class="token punctuation">,</span>
+                <span class="token keyword">new</span> <span class="token class-name">LinkedBlockingQueue</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">Runnable</span><span class="token punctuation">&gt;</span></span><span class="token punctuation">(</span><span class="token number">1024</span><span class="token punctuation">)</span><span class="token punctuation">,</span> namedThreadFactory<span class="token punctuation">,</span> <span class="token keyword">new</span> <span class="token class-name">ThreadPoolExecutor<span class="token punctuation">.</span>AbortPolicy</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+        <span class="token keyword">return</span> taskExecutor<span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token annotation punctuation">@Bean</span><span class="token punctuation">(</span><span class="token class-name">AbstractApplicationContext</span><span class="token punctuation">.</span><span class="token constant">APPLICATION_EVENT_MULTICASTER_BEAN_NAME</span><span class="token punctuation">)</span>
+    <span class="token keyword">public</span> <span class="token class-name">ApplicationEventMulticaster</span> <span class="token function">initEventMulticaster</span><span class="token punctuation">(</span><span class="token annotation punctuation">@Qualifier</span><span class="token punctuation">(</span><span class="token string">"taskExecutor"</span><span class="token punctuation">)</span> <span class="token class-name">Executor</span> taskExecutor<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+
+        <span class="token class-name">SimpleApplicationEventMulticaster</span> simpleApplicationEventMulticaster <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">SimpleApplicationEventMulticaster</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+        simpleApplicationEventMulticaster<span class="token punctuation">.</span><span class="token function">setTaskExecutor</span><span class="token punctuation">(</span>taskExecutor<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+        <span class="token keyword">return</span> simpleApplicationEventMulticaster<span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+<span class="token punctuation">}</span>
+</code></pre>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/8796cf8575d5172c4cfb85fbb14b0ab1/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">驱动程序开发：FTP服务器和OpenSSH的移植与搭建、以及一些笔记</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/01500ad20bced6061c11bd36dff0cdfc/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">java.lang.IllegalArgumentException: Invalid character found in method name [0x160x030x010x000xe10x01</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

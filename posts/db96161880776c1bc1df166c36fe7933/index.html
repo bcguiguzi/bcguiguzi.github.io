@@ -1,0 +1,1223 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>【MYSQL高级篇】 - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="【MYSQL高级篇】" />
+<meta property="og:description" content="第一章、MYSQL整体架构 mysql是一个典型的cs架构软件，它是基于c与c&#43;&#43;开发的，性能强大；
+比如我们平时写的web应用，就是作为mysql的客户端去连接mysql server端，我们熟知的navicat其实也是作为mysql客户端来连接mysql server的；
+下面是mysql的架构图
+首先：客户端通过tcp协议连接到mysql server端 连接器：连接首先会到达连接器，因为mysql需要一个认证模块来校验所有连接是否合法，是否具有权限，密码是否正确等，同时这个连接还会管理所有连接进行来的连接； query cache：在连接器处认证通过后，假如客户端传过来的是一个查询语句，并且 mysql server也开启了查询缓存的话，它会优先到查询缓存中去找是否有结果，如果找到了就返回这句sql的结果，但通常来说：我们不会开启mysql的查询缓存功能，因为它非常的鸡肋！甚至在mysql 8.0时就完全的抛弃了查询缓存功能； 为什么mysql要在8.0抛弃查询缓存功能？ 答：如果让我做查询sql的缓存功能，我会以sql语句为key，sql语句查出来的结果为值存入一个线程安全的map中，事实上，mysql也是这样做的，只不过它是将其存入hash表中，但这样会带来更多问题：①每个人写的查询语句都可能不同，并且绝大部分的查询sql都是不相同的，你要做查询sql的缓存的话，你就要将这些查询sql每一个都作为key存到hash表中，显然这个数量级就比较大了；②同一句查询sql，比如select * from t_user,如果换成大写SELECT * FROM t_user，或者中间多一个空格，就会导致mysql server认为它不是同一个sql，也会导致存储很多重复的key-value到查询缓存中；这就导致查询缓存中可能只有不到10%的sql是真正能够起到缓存作用的，剩下的90%存到内存中完全是浪费； 综上所述：如果开启了查询缓存功能，会导致mysql server端浪费掉大量的内存来存储不必要的sql-数据 键值对；所以mysql在8.0干掉了它； 3. 词法分析器：你的sql语句经过查询缓存后（如果是非查询语句则不会经过缓存），就会到达词法分析器，它的作用分析你的sql语法是否有误，如果有误就驳回； 4.优化器：语法分析无误后，会经过优化器，优化器会将你的sql语句进行优化，因为mysql并不信任人写的sql；同时在这一步：优化器还会分析你这一句sql在有多个索引时该走哪一个索引，以及怎么走等等，最后生成一个最优的执行计划；只要按着这个执行计划走，就可以是最快的执行速度； 5. 执行器：优化器生成执行计划后，就会拿着这个执行计划去调用存储引擎的接口，存储做出对应的操作，如增删改、返回查询结果等； 第二章：binlog日志详解 binlog是一个二进制文件，它记录了Mysql所有数据的变更，并以二进制的方式存储到了磁盘上； binlog的三种模式：行模式，statement模式，混合模式 ① 行模式： id
+name
+1
+许海
+比如：行模式下，我现在往上面这个表中加入了id=1，name=许海这样的一行；
+那么在binlog中就会记录为
+id
+name
+1
+许海
+如果我将许海修改为了刘丹，那么binlog中就会记录为
+id
+name
+1
+许海
+1
+刘丹
+最后再将其转为二进制文件，就成了行模式下的binlog；
+② statement模式： statement模式中：binlog会记录增删改的sql语句，假如你的sql是批量修改，最终也只会记录这一条sql，这样的好处就是节省空间，行模式就不行，假如你影响到了多行，行模式就会记录多行；
+③ 混合模式： 混合模式下：由mysql自己去判断你这一次sql到底适合记录statement还是记录行，这是后来才出的功能；
+通常来说：如果没有混合模式，我们会选用statement模式多一点，因为更节省空间；
+开启binlog ① 在mysql 8.0 中默认是开启binlog的
+② mysql 8.0 以前需要我们到/etc目录下的my." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/db96161880776c1bc1df166c36fe7933/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-03-29T00:28:50+08:00" />
+<meta property="article:modified_time" content="2023-03-29T00:28:50+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">【MYSQL高级篇】</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <div class="kdocs-document"> 
+ <h2 style="">第一章、MYSQL整体架构</h2> 
+ <ul><li style="margin-left:1.4em;list-style-type:disc;text-indent:0;"><p>mysql是一个典型的cs架构软件，它是基于c与c++开发的，性能强大；</p></li></ul> 
+ <ul><li style="margin-left:2.8em;list-style-type:circle;text-indent:0;"><p>比如我们平时写的web应用，就是作为mysql的客户端去连接mysql server端，我们熟知的navicat其实也是作为mysql客户端来连接mysql server的；</p></li></ul> 
+ <ul><li style="margin-left:1.4em;list-style-type:disc;text-indent:0;"><p>下面是mysql的架构图</p></li></ul> 
+ <div class="kdocs-line-container" style="display:flex;"> 
+  <div class="kdocs-img" style="flex-direction:column;max-width:100%;display:flex;width:973px;justify-content:center;align-items:center;height:auto;"> 
+   <div class="kdocs-img" style="padding-top:95.4779%;height:0;"> 
+    <img src="https://images2.imgbox.com/cf/3b/94ZsAelM_o.png" style="margin-left:;display:block;width:973px;margin-top:-95.4779%;height:auto;"> 
+   </div> 
+  </div> 
+ </div> 
+ <h4 style="">首先：客户端通过tcp协议连接到mysql server端</h4> 
+ <ol start="1"><li style="margin-left:1.4em;list-style-type:decimal;text-indent:0;"><h4><span class="kdocs-color" style="color:#DA326B;">连接器</span>：连接首先会到达连接器，因为mysql需要一个认证模块来校验所有连接是否合法，是否具有权限，密码是否正确等，同时这个连接还会管理所有连接进行来的连接；</h4></li></ol> 
+ <ol start="2"><li style="margin-left:1.4em;list-style-type:decimal;text-indent:0;"><h4><span class="kdocs-color" style="color:#DA326B;">query cache</span>：在连接器处认证通过后，假如客户端传过来的是一个查询语句，并且 mysql server也开启了查询缓存的话，它会优先到查询缓存中去找是否有结果，如果找到了就返回这句sql的结果，但通常来说：我们不会开启mysql的查询缓存功能，因为它非常的鸡肋！甚至在mysql 8.0时就完全的抛弃了查询缓存功能；</h4></li></ol> 
+ <ul><li style="margin-left:2.8em;list-style-type:circle;text-indent:0;"><h5><span class="kdocs-color" style="color:#DA326B;">为什么mysql要在8.0抛弃查询缓存功能？</span></h5></li></ul> 
+ <h5 style="text-indent:1.4em;">答：如果让我做查询sql的缓存功能，我会以sql语句为key，sql语句查出来的结果为值存入一个线程安全的map中，事实上，mysql也是这样做的，只不过它是将其存入hash表中，但这样会带来更多问题：①每个人写的查询语句都可能不同，并且绝大部分的查询sql都是不相同的，你要做查询sql的缓存的话，你就要将这些查询sql每一个都作为key存到hash表中，显然这个数量级就比较大了；②同一句查询sql，比如select * from t_user,如果换成大写SELECT * FROM t_user，或者中间多一个空格，就会导致mysql server认为它不是同一个sql，也会导致存储很多重复的key-value到查询缓存中；这就导致查询缓存中可能只有不到10%的sql是真正能够起到缓存作用的，剩下的90%存到内存中完全是浪费；</h5> 
+ <p style=""></p> 
+ <h5 style="">综上所述：如果开启了查询缓存功能，会导致mysql server端浪费掉大量的内存来存储不必要的sql-数据 键值对；所以mysql在8.0干掉了它；</h5> 
+ <h4 style=""> 3. <span class="kdocs-color" style="color:#DA326B;">词法分析器</span>：你的sql语句经过查询缓存后（如果是非查询语句则不会经过缓存），就会到达词法分析器，它的作用分析你的sql语法是否有误，如果有误就驳回；</h4> 
+ <h4 style=""> 4.<span class="kdocs-color" style="color:#DA326B;">优化器</span>：语法分析无误后，会经过优化器，优化器会将你的sql语句进行优化，因为mysql并不信任人写的sql；同时在这一步：优化器还会分析你这一句sql在有多个索引时该走哪一个索引，以及怎么走等等，最后生成一个最优的执行计划；只要按着这个执行计划走，就可以是最快的执行速度；</h4> 
+ <h4 style=""> 5. <span class="kdocs-color" style="color:#DA326B;">执行器</span>：优化器生成执行计划后，就会拿着这个执行计划去调用存储引擎的接口，存储做出对应的操作，如增删改、返回查询结果等；</h4> 
+ <h2 style="">第二章：binlog日志详解</h2> 
+ <ul><li style="margin-left:1.4em;list-style-type:disc;text-indent:0;"><h5>binlog是一个二进制文件，它记录了Mysql所有数据的变更，并以二进制的方式存储到了磁盘上；</h5></li></ul> 
+ <ul><li style="margin-left:1.4em;list-style-type:disc;text-indent:0;"><h4>binlog的三种模式：行模式，statement模式，混合模式</h4></li></ul> 
+ <h5 style="text-indent:1.4em;">① 行模式：</h5> 
+ <div style=""> 
+  <table class="kdocs-table" border="1" cellpadding="1" cellspacing="1" style=""><tbody><tr class="kdocs-tableRow"><td class="kdocs-tableCell" style="width:60px;vertical-align:top;height:50px;"><p style="">id</p></td><td class="kdocs-tableCell" style="width:79px;vertical-align:top;height:50px;"><p style="">name</p></td></tr><tr class="kdocs-tableRow"><td class="kdocs-tableCell" style="width:60px;vertical-align:top;height:49px;"><p style="">1</p></td><td class="kdocs-tableCell" style="width:79px;vertical-align:top;height:49px;"><p style="">许海</p></td></tr></tbody></table> 
+ </div> 
+ <p style="text-align:left;">比如：行模式下，我现在往上面这个表中加入了id=1，name=许海这样的一行；</p> 
+ <p style="">那么在binlog中就会记录为</p> 
+ <div style=""> 
+  <table class="kdocs-table" border="1" cellpadding="1" cellspacing="1" style=""><tbody><tr class="kdocs-tableRow"><td class="kdocs-tableCell" style="width:60px;vertical-align:top;height:50px;"><p style="text-align:left;">id</p></td><td class="kdocs-tableCell" style="width:79px;vertical-align:top;height:50px;"><p style="text-align:left;">name</p></td></tr><tr class="kdocs-tableRow"><td class="kdocs-tableCell" style="width:60px;vertical-align:top;height:49px;"><p style="text-align:left;">1</p></td><td class="kdocs-tableCell" style="width:79px;vertical-align:top;height:49px;"><p style="text-align:left;">许海</p></td></tr></tbody></table> 
+ </div> 
+ <p style="">如果我将许海修改为了刘丹，那么binlog中就会记录为</p> 
+ <div style=""> 
+  <table class="kdocs-table" border="1" cellpadding="1" cellspacing="1" style=""><tbody><tr class="kdocs-tableRow"><td class="kdocs-tableCell" style="width:60px;vertical-align:top;height:50px;"><p style="text-align:left;">id</p></td><td class="kdocs-tableCell" style="width:79px;vertical-align:top;height:50px;"><p style="text-align:left;">name</p></td></tr><tr class="kdocs-tableRow"><td class="kdocs-tableCell" style="width:60px;vertical-align:top;height:49px;"><p style="text-align:left;">1</p></td><td class="kdocs-tableCell" style="width:79px;vertical-align:top;height:49px;"><p style="text-align:left;">许海</p></td></tr><tr class="kdocs-tableRow"><td class="kdocs-tableCell" style="width:60px;vertical-align:top;height:49px;"><p style="text-align:left;">1</p></td><td class="kdocs-tableCell" style="width:79px;vertical-align:top;height:49px;"><p style="text-align:left;">刘丹</p></td></tr></tbody></table> 
+ </div> 
+ <p style="">最后再将其转为二进制文件，就成了行模式下的binlog；</p> 
+ <h5 style="text-indent:1.4em;">② statement模式：</h5> 
+ <p style="">statement模式中：binlog会记录增删改的sql语句，假如你的sql是批量修改，最终也只会记录这一条sql，这样的好处就是节省空间，行模式就不行，假如你影响到了多行，行模式就会记录多行；</p> 
+ <h5 style="text-indent:1.4em;">③ 混合模式：</h5> 
+ <p style="">混合模式下：由mysql自己去判断你这一次sql到底适合记录statement还是记录行，这是后来才出的功能；</p> 
+ <p style="">通常来说：如果没有混合模式，我们会选用statement模式多一点，因为更节省空间；</p> 
+ <ul><li style="margin-left:1.4em;list-style-type:disc;text-indent:0;"><h4>开启binlog</h4></li></ul> 
+ <p style="text-indent:1.4em;">① 在mysql 8.0 中默认是开启binlog的</p> 
+ <p style="text-indent:1.4em;">② mysql 8.0 以前需要我们到/etc目录下的my.cnf中添加几行配置：</p> 
+ <pre class="kdocs-plaintext"><code class="language-plaintext">log-bin = mysql-bin     #开启binlog
+binlog-format = ROW     #选择行模式
+server_id = 12345       #指定server实例的id,在mysql主从架构中,
+                        #就是通过这个server_id来区分不同的机器的,你保证这个id唯一即可
+binlog-do-db = online-document1 #对指定的某个库开启binlog日志，online-document1：库名</code></pre> 
+ <p style="">补充：① log-bin ：log-bin你还可以写成log-bin = /usr/local/mysql/log-bin/mysql-bin，表示给你的binlog日志文件指定一个存放位置，如果你不指定，就会存在默认的位置上(默认位置在哪里我暂时还没去测试，但这不重要)；mysq-bin表示给你的binlog日志文件取名叫mysql-bin，并且会立即生成第一个binlog日志文件，mysql会自动在你取的binlog文件名后面加上.000001，如果后面binlog大小满了，还会自动生成mysql-bin.000002依次往后；</p> 
+ <p style="">② server_id：你一定要设置server_id，否则会导致mysql无法启动</p> 
+ <p style="">③ binlog-do-db：如果你要开启对多个库的binlog日志，那么你把binlog-do-db多复制几行即可；</p> 
+ <pre class="kdocs-plaintext"><code class="language-plaintext">binlog-do-db = online-document1
+binlog-do-db = online-document2
+binlog-do-db = online-document3</code></pre> 
+ <p style="">如果你不配置binlog-do-db，那么就是对mysql中所有的库都开启binlog日志。</p> 
+ <p style="">④ binlog-igonre-db：这个配置是配置不对哪些库开启binlog日志的，用法跟binlog-do-db一致，不做赘述。</p> 
+ <p style=""></p> 
+ <ul><li style="margin-left:1.4em;list-style-type:disc;text-indent:0;"><h4>SQL命令检查binlog是否开启</h4></li></ul> 
+ <p style=""></p> 
+ <pre class="kdocs-plaintext"><code class="language-plaintext">show variables like 'log_bin'           #查看binlog开启状态
+show variables like 'binlong_format'    #查看binlog的模式</code></pre> 
+ <ul><li style="margin-left:1.4em;list-style-type:disc;text-indent:0;"><h4>SQL查看当前正在写入的binlog文件</h4></li></ul> 
+ <p style="">由于binlog日志越来越多，binlog文件可能会有多个，mysql提供了一个命令来查看当前正在写入的，也就是最新的binlog文件：</p> 
+ <pre class="kdocs-plaintext"><code class="language-plaintext">show matser status #不要把它误以为是查看主节点状态了，它确实是查询最新binlog文件的</code></pre> 
+ <p style="">结果就是这样：</p> 
+ <div class="kdocs-line-container" style="display:flex;"> 
+  <div class="kdocs-img" style="flex-direction:column;max-width:100%;display:flex;width:481px;justify-content:center;align-items:center;height:auto;"> 
+   <div class="kdocs-img" style="padding-top:15.384615%;height:0;"> 
+    <img src="https://images2.imgbox.com/b5/36/KvlmKCFg_o.png" style="margin-left:;display:block;width:481px;margin-top:-15.384615%;height:auto;"> 
+   </div> 
+  </div> 
+ </div> 
+ <p style="text-align:left;">显然我的binlog日志文件已经写到第五份了，</p> 
+ <p style="text-align:left;">并且我没有在my.cnf中配置binlog-do-db与binlog-igonre-db，所以这里这两项是空的；</p> 
+ <ul><li style="margin-left:1.4em;list-style-type:disc;text-indent:0;"><h4>查看master上所有的binlog日志文件</h4></li></ul> 
+ <pre class="kdocs-plaintext"><code class="language-plaintext">show master logs;</code></pre> 
+ <p style="">结果：</p> 
+ <div class="kdocs-line-container" style="display:flex;"> 
+  <div class="kdocs-img" style="flex-direction:column;max-width:100%;display:flex;width:246px;justify-content:center;align-items:center;height:auto;"> 
+   <div class="kdocs-img" style="padding-top:62.19512%;height:0;"> 
+    <img src="https://images2.imgbox.com/57/84/qUPyABC3_o.png" style="margin-left:;display:block;width:246px;margin-top:-62.19512%;height:auto;"> 
+   </div> 
+  </div> 
+ </div> 
+ <ul><li style="margin-left:1.4em;list-style-type:disc;text-indent:0;"><h4>查看指定binlog文件的内容</h4></li></ul> 
+ <pre class="kdocs-plaintext"><code class="language-plaintext">show binlog enevts in 'mysql-bin.000001';</code></pre> 
+ <p style="text-indent:1.4em;">结果：</p> 
+ <div class="kdocs-line-container" style="display:flex;"> 
+  <div class="kdocs-img" style="flex-direction:column;max-width:100%;display:flex;width:840px;justify-content:center;align-items:center;height:auto;"> 
+   <div class="kdocs-img" style="padding-top:37.619045%;height:0;"> 
+    <img src="https://images2.imgbox.com/08/89/H6JkEtpp_o.png" style="margin-left:;display:block;width:840px;margin-top:-37.619045%;height:auto;"> 
+   </div> 
+  </div> 
+ </div> 
+ <p style="">注意：① binlog是以二进制文件进行存储的，但你通过show binlog events in 这个命令查看binlog时，mysql server会以将二进制转换为表格展示出来。</p> 
+ <p style="">② 为什么这个sql语句是show binlog events，而不是show binlog 其他？如果你了解过canal的底层机制mysql-binlog-connector-java这个开原框架的话，你就会知道在mysql中是以事件的方式往binlog中写入的，所以你在这个结果里能看到Event_type字段；</p> 
+ <ul><li style="margin-left:1.4em;list-style-type:disc;text-indent:0;"><h4>通过binlog恢复被删除的数据</h4></li></ul> 
+ <h5 style="">① 将指定binlog文件中的数据全部恢复到指定的数据库中</h5> 
+ <p style="">mysqlbinlog --no-defaults /var/lib/binlog文件名称 |mysql -uroot -p 数据库名</p> 
+ <h5 style="">② 按binlog的指定位置来恢复数据,下面这句话的意思就是截取你指定的binlog文件中的第一行到第十行来进行恢复</h5> 
+ <p style="">mysqlbinlog --no-defaults /var/lib/binlog文件名称 --start-position="1" --stop-position="10" |mysql -uroot -p 数据库名</p> 
+ <h5 style="">③ 按时间进行恢复</h5> 
+ <p style="">mysqlbinlog --no-defaults /var/lib/binlog文件名称 --start-datetime="2022-05-10 15:25:00" --stop-datetime="2022-05-10 18:25:00" |mysql -uroot -p 数据库名</p> 
+ <h5 style="">实战：</h5> 
+ <p style="">我现在有一张test_table表如下：</p> 
+ <div class="kdocs-line-container" style="display:flex;"> 
+  <div class="kdocs-img" style="flex-direction:column;max-width:100%;display:flex;width:534px;justify-content:center;align-items:center;height:auto;"> 
+   <div class="kdocs-img" style="padding-top:34.082397%;height:0;"> 
+    <img src="https://images2.imgbox.com/9f/05/pqjUDWQO_o.png" style="margin-left:;display:block;width:534px;margin-top:-34.082397%;height:auto;"> 
+   </div> 
+  </div> 
+ </div> 
+ <p style="">再查看当前正在写入的binlog文件</p> 
+ <p style="">：show master status</p> 
+ <p style="">我们查看到当前正在写入的binlog文件名叫mysql-bin.000005</p> 
+ <div class="kdocs-line-container" style="display:flex;"> 
+  <div class="kdocs-img" style="flex-direction:column;max-width:100%;display:flex;width:486px;justify-content:center;align-items:center;height:auto;"> 
+   <div class="kdocs-img" style="padding-top:21.604939%;height:0;"> 
+    <img src="https://images2.imgbox.com/5c/47/BYsNNHmn_o.png" style="margin-left:;display:block;width:486px;margin-top:-21.604939%;height:auto;"> 
+   </div> 
+  </div> 
+ </div> 
+ <p style="">再查看当前binlog文件的详细内容</p> 
+ <p style="">：show binlog events in 'mysql-bin.000005'</p> 
+ <div class="kdocs-line-container" style="display:flex;"> 
+  <div class="kdocs-img" style="flex-direction:column;max-width:100%;display:flex;width:1402px;justify-content:center;align-items:center;height:auto;"> 
+   <div class="kdocs-img" style="padding-top:26.319544%;height:0;"> 
+    <img src="https://images2.imgbox.com/41/7a/Vnl0XmrM_o.png" style="margin-left:;display:block;width:1402px;margin-top:-26.319544%;height:auto;"> 
+   </div> 
+  </div> 
+ </div> 
+ <p style="text-align:left;">再使用truncate命令将该表的所有行进行了清空。</p> 
+ <p style="text-align:left;">：truncate table test_table</p> 
+ <p style="">我们再看binlog确实有truncate的记录</p> 
+ <div class="kdocs-line-container" style="display:flex;"> 
+  <div class="kdocs-img" style="flex-direction:column;max-width:100%;display:flex;width:1405px;justify-content:center;align-items:center;height:auto;"> 
+   <div class="kdocs-img" style="padding-top:32.02847%;height:0;"> 
+    <img src="https://images2.imgbox.com/e2/19/5SsDG3xB_o.png" style="margin-left:;display:block;width:1405px;margin-top:-32.02847%;height:auto;"> 
+   </div> 
+  </div> 
+ </div> 
+ <p style="">先使用指定位置的方式来恢复：</p> 
+ <p style="">mysqlbinlog --no-defaults mysql-bin.000005 --start-position="4" --stop-position="1174" |mysql -uroot -p online-document</p> 
+ <p style=""></p> 
+ <p style=""></p> 
+ <h2 style="">第三章、mysql索引</h2> 
+ <h3 style="">一、二叉树</h3> 
+ <h3 style="">二、B树</h3> 
+ <h3 style="">三、B+树</h3> 
+ <h3 style="">四、索引</h3> 
+ <ol start="1"><li style="margin-left:1.4em;list-style-type:decimal;text-indent:0;"><h4>Innodb的索引结构</h4></li></ol> 
+ <p style="">innodb的索引是基于B+树实现的，</p> 
+ <h4 style="">2. 聚集索引，非聚集索引</h4> 
+ <p style=""></p> 
+ <h2 style="">第二章、索引</h2> 
+ <h3 style="">一、对MYSQL而言，数据是存储在文件系统中的，不同的存储引擎在存储这些数据时，会有不同的文件格式和组织形式,主要的存储引擎分为Innodb，Myisam，</h3> 
+ <ol start="1"><li style="margin-left:1.4em;list-style-type:decimal;text-indent:0;"><h4>页、以及为什么mysql需要索引？</h4></li></ol> 
+ <p style="">在innodb引擎中，数据的最小存储单位称为页，一个页的大小为16kb。</p> 
+ <p style="">请看下图：</p> 
+ <div class="kdocs-line-container" style="display:flex;"> 
+  <div class="kdocs-img" style="flex-direction:column;max-width:100%;display:flex;width:370px;justify-content:center;align-items:center;height:auto;"> 
+   <div class="kdocs-img" style="padding-top:85.13513%;height:0;"> 
+    <img src="https://images2.imgbox.com/75/f9/YLg7a2QT_o.png" style="margin-left:;display:block;width:370px;margin-top:-85.13513%;height:auto;"> 
+   </div> 
+  </div> 
+ </div> 
+ <p style="">当你表中一行数据所占的空间并不大时，那么一页就能存放多行数据，页是一个逻辑概念并不是一个物理概念，一页中的每一行数据在硬盘中都是通过指针逻辑相连，而不是在物理上紧挨在一起；所以你表中的数据绝大多数情况都是分散存储在很多个页中。（页跟页之间也是通过指针逻辑相连）</p> 
+ <p style="">假如你这个表的主键是自增的，你通过where id = ？去查询某条数据，此时mysql就可以通过二分法等一系列算法来增加查询效率；</p> 
+ <p style="">但如果你这个表的主键不是自增，你再用where id = ？，或者用了一个不自增的某字段当做查询条件，mysql在底层就只能一个页一个页的遍历，先遍历第一个页，把第一个页中的所有行数据都遍历完，再遍历第二个页，直到将所有的页都遍历完，才能找出所有复合条件的行，很明显这种一直遍历的效率非常低，所以需要一套能高效查询的数据结构与索引来定位数据；</p> 
+ <ol start="2"><li style="margin-left:1.4em;list-style-type:decimal;text-indent:0;"><h4>innodb索引B+树结构的推演过程（<span class="kdocs-color" style="color:#C21C13;">非常重要</span>）</h4></li></ol> 
+ <h5 style="">①行格式（先了解一下，才能推演）</h5> 
+ <p style="">MySQL表中的数据我们肉眼看到是一行行存储的，里面只有id，name，age这三个字段的值，如下：</p> 
+ <div class="kdocs-line-container" style="display:flex;"> 
+  <div class="kdocs-img" style="flex-direction:column;max-width:100%;display:flex;width:245px;justify-content:center;align-items:center;height:auto;"> 
+   <div class="kdocs-img" style="padding-top:30.612246%;height:0;"> 
+    <img src="https://images2.imgbox.com/1e/0d/pQXhZ3O1_o.png" style="margin-left:;display:block;width:245px;margin-top:-30.612246%;height:auto;"> 
+   </div> 
+  </div> 
+ </div> 
+ <p style="">但实际上，MySQL在存储每一行数据时都遵循几种格式，称为<span class="kdocs-fontSize" style="font-size:22pt;"><span class="kdocs-color" style="color:#C21C13;"><span class="kdocs-bold" style="font-weight:bold;">行格式</span></span></span>，其中InnoDB中最有名的行格式就是<span class="kdocs-fontSize" style="font-size:22pt;"><span class="kdocs-color" style="color:#C21C13;">COMPACT</span></span><span class="kdocs-color" style="color:#080F17;">(行格式之一，后面还会详细讲行格式，这里只是为了学习索引而预先了解一部分）。</span></p> 
+ <h5 style="">简化版COMPACT：</h5> 
+ <p style="">比如我现在一行记录有C1，C2，C3三列，mysql在底层存储时，除了会记录C1，C2，C3的真实数据以外，还会记录record_type字段，next_record字段，以及其他信息(其他信息这里先不管，后面专门学行格式再说)</p> 
+ <ul><li style="margin-left:1.4em;list-style-type:disc;text-indent:0;"><p>record_type字段：这个字段记录的是当前记录的类型；</p></li></ul> 
+ <ul><li style="margin-left:2.8em;list-style-type:circle;text-indent:0;"><p>0表示普通记录。</p></li></ul> 
+ <ul><li style="margin-left:2.8em;list-style-type:circle;text-indent:0;"><p>1表示目录项记录</p></li></ul> 
+ <ul><li style="margin-left:2.8em;list-style-type:circle;text-indent:0;"><p>2表示最小记录</p></li></ul> 
+ <ul><li style="margin-left:2.8em;list-style-type:circle;text-indent:0;"><p>3表示最大记录</p></li></ul> 
+ <ul><li style="margin-left:1.4em;list-style-type:disc;text-indent:0;"><p>next_record字段：这个字段记录的是下一行记录的地址，相当于指针；</p></li></ul> 
+ <div class="kdocs-line-container" style="display:flex;"> 
+  <div class="kdocs-img" style="flex-direction:column;max-width:100%;display:flex;width:872px;justify-content:center;align-items:center;height:auto;"> 
+   <div class="kdocs-img" style="padding-top:49.65596%;height:0;"> 
+    <img src="https://images2.imgbox.com/eb/b9/vh1mbzrf_o.png" style="margin-left:;display:block;width:872px;margin-top:-49.65596%;height:auto;"> 
+   </div> 
+  </div> 
+ </div> 
+ <h5 style="">②页的基本模型：</h5> 
+ <p style="">看到上面的行格式可能你不太理解，但根据上面的知识，我们可以得到页的基本模型,再看下图你就理解了：</p> 
+ <div class="kdocs-line-container" style="display:flex;"> 
+  <div class="kdocs-img" style="flex-direction:column;max-width:100%;display:flex;width:1190px;justify-content:center;align-items:center;height:auto;"> 
+   <div class="kdocs-img" style="padding-top:56.554623%;height:0;"> 
+    <img src="https://images2.imgbox.com/42/3c/GMzUhITl_o.png" style="margin-left:;display:block;width:1190px;margin-top:-56.554623%;height:auto;"> 
+   </div> 
+  </div> 
+ </div> 
+ <h4 style="">3.聚簇索引</h4> 
+ <h6 style="">① 概念：</h6> 
+ <p style="">针对主键构建的索引就叫聚簇索引，<span class="kdocs-color" style="color:#C21C13;">非聚簇索引</span>就是不针对主键构建的索引，也叫<span class="kdocs-color" style="color:#C21C13;">二级索引，辅助索引。</span></p> 
+ <h6 style="">② 深入：</h6> 
+ <p style="">在上面的索引结构的推演过程中，最终建立起来的B+树的索引结构，你一定要理解：这整颗B+树就是一个索引，索引并不是数据页中的主键，而是这整体的一个B+树就是索引；</p> 
+ <p style="">只要你理解到位了，你就会明白：</p> 
+ <p style="">&gt;&gt;&gt;&gt;&gt; <span class="kdocs-color" style="color:#C21C13;"><span class="kdocs-bold" style="font-weight:bold;">聚簇索引并不是一个索引类型，而是一个存储数据的结构。</span></span></p> 
+ <p style="">&gt;&gt;&gt;&gt;&gt;<span class="kdocs-bold" style="font-weight:bold;"> </span><span class="kdocs-color" style="color:#C21C13;"><span class="kdocs-bold" style="font-weight:bold;">为什么InnoDB会默认给主键建立索引？</span></span></p> 
+ <p style="text-indent:1.4em;padding-left:1.4em;">答：因为我们刚才学过，InnoDB中存储数据默认就是按照B+树的结构来存储的，一张表就是一颗B+树，它要创建B+树，要提升效率，肯定就要以默认的主键来创建索引，因为此时根本就还没有其他字段建立索引，只能拿主键来建立索引，这颗B+树才能搭的起来，否则最下面一层的数据页中的行数据根本就不知道以哪个字段进行排序，所以只要你往表中插入数据，InnoDB就会帮你以主键为基础把索引建立起来；</p> 
+ <p style="">&gt;&gt;&gt;&gt;&gt; <span class="kdocs-color" style="color:#C21C13;"><span class="kdocs-bold" style="font-weight:bold;">为什么InnoDB的主键禁止更改？</span></span></p> 
+ <p style="text-indent:1.4em;padding-left:1.4em;">答：因为我们刚才学过，InnoDB的每一个表都会默认以主键为基础来建立聚簇索引，如果你把主键都改了，那么最下面一层数据页中的排好序的主键要全部换掉，虽然确实能换，但是成本太大，它要按照新主键的大小重新排一次顺序，并按顺序放入不同的数据页中，整个下面一层的数据页中的数据全部打乱了，所以InnoDB直接就禁止我们修改主键了；</p> 
+ <p style="">&gt;&gt;&gt;&gt;&gt; <span class="kdocs-color" style="color:#C21C13;"><span class="kdocs-bold" style="font-weight:bold;">为什么叫聚簇索引？如何理解聚簇两个字？</span></span></p> 
+ <p style="text-indent:1.4em;padding-left:1.4em;">答：聚簇的意思是：索引和行数据是在一起的，我们刚才学过，聚簇索引结构下的索引确实是跟行数据在一起的，Innodb中存放表数据的文件格式是ibd，每个表都有自己的ibd文件，这个表的索引跟行数据都是存放在这个文件中的，所以叫聚簇索引；</p> 
+ <p style="text-indent:1.4em;padding-left:1.4em;">像非聚簇索引的最下面一层就不是存的行数据了，而是存的数据的地址，比如MyISAM中就有两个文件格式，myi格式就是用来存索引的，myd就是来存行数据的（记忆技巧，i就是index，d就是data，my就是MyISAM）；</p> 
+ <div class="kdocs-line-container" style="display:flex;"> 
+  <div class="kdocs-img" style="flex-direction:column;max-width:100%;display:flex;width:1239px;justify-content:center;align-items:center;height:auto;"> 
+   <div class="kdocs-img" style="padding-top:61.25908%;height:0;"> 
+    <img src="https://images2.imgbox.com/4b/1e/YnascoNa_o.png" style="margin-left:;display:block;width:1239px;margin-top:-61.25908%;height:auto;"> 
+   </div> 
+  </div> 
+ </div> 
+ <h6 style="">③ 聚簇索引的缺点：</h6> 
+ <p style="">经过上面的学习，我们知道聚簇索引的查询效率是很高的，但是你不知道它的插入效率并不高；</p> 
+ <p style="">为什么聚簇索引的插入效率不高？</p> 
+ <p style="">答：以上图中的页9，页20为例，假如现在我新插入了一条主键id为200的数据，由于页20已经满了，所以200这行数据要插入页20，就会导致页20中的数据整体向后挪一位，页31也会跟着向后挪一位，再后面的页也会向后挪，只要在200这个id后面的行数据都会向后挪一位，显然这个成本比较高；</p> 
+ <h6 style="">④ 聚簇索引的补充：</h6> 
+ <p style="">&gt;&gt;&gt;&gt;&gt; 只有InnoDB支持聚簇索引，MyISAM不支持聚簇索引。</p> 
+ <p style="">&gt;&gt;&gt;&gt;&gt; 一个表只能有一个聚簇索引，MyISAM的表还没有聚簇索引，为什么只能有一个聚簇索引？我们刚才学了聚簇索引最下一层就是按照主键来排序的，你不能给它两个主键，两个主键如何来排序？</p> 
+ <p style="">&gt;&gt;&gt;&gt;&gt; 如果你的表没有定义主键，那么InnoDB会帮你选一个非空且唯一的字段作为隐式的主键来创建聚簇索引。</p> 
+ <p style="">&gt;&gt;&gt;&gt;&gt;为了有效的利用聚簇索引的特性，所以当你在建表时，可以尽量让主键id有序，不要使用UUID，MD5加密字符串，纯字符串等无法保证有序的数据作为主键，如果是这些无序的数据作为主键，那么mysql在维护聚簇索引时是非常困难的，可能查询效率并不会很高；</p> 
+ <h4 style="">4.二级索引（也叫非聚簇索引、辅助索引）</h4> 
+ <p style="">在一个表中只能有一个聚簇索引，但是可以有多个二级索引；</p> 
+ <h5 style=""><span class="kdocs-fontSize" style="font-size:15pt;"><span class="kdocs-color" style="color:#C21C13;"><span class="kdocs-bold" style="font-weight:bold;">① 注意：聚簇索引、二级索引的使用场景：（非常重要，有助于你理解索引）</span></span></span></h5> 
+ <p style="">当你要以主键作为查询条件时，InnoDB就会以聚簇索引来进行查询，这样效率最高，当你要以其他字段来查询时，你再使用聚簇索引来查询就没有任何意义了，所以就有了二级索引，你可以对这个字段建立二级索引，<span class="kdocs-color" style="color:#C21C13;"><span class="kdocs-bold" style="font-weight:bold;">新建的二级索引也是一颗单独的B+树。</span></span></p> 
+ <h5 style=""><span class="kdocs-color" style="color:#C21C13;"><span class="kdocs-bold" style="font-weight:bold;">② 它跟聚簇索引的区别：</span></span></h5> 
+ <ul><li style="margin-left:1.4em;list-style-type:disc;text-indent:0;"><p><span class="kdocs-color" style="color:#C21C13;"><span class="kdocs-bold" style="font-weight:bold;">最底下一层数据页不是以主键来进行排序的，而是以你新建索引的字段的值进行排序。</span></span></p></li></ul> 
+ <ul><li style="margin-left:1.4em;list-style-type:disc;text-indent:0;"><p>数据页中存的不是完全的数据行，而聚簇索引把完整的数据行都存到里面了，二级索引最下层的数据页中只存了主键值与二级索引字段的值（还存了行格式），这也进一步体现了聚簇索引的值跟索引不在同一个地方；当你要以二级索引字段为条件进行查询时，比如你查到值为2，那么你就会找到主键的值为20，此时你就可以拿着20这个主键到聚簇索引中再去查，就能找到真正的行数据了----&gt; 这个操作叫做<span class="kdocs-fontSize" style="font-size:22pt;"><span class="kdocs-color" style="color:#C21C13;">回表；</span></span></p></li></ul> 
+ <p style="padding-left:1.4em;"><span class="kdocs-color" style="color:#C21C13;"><span class="kdocs-bold" style="font-weight:bold;">所以在索引优化中有一个技巧：当你只需要查询某个字段A的值时，你就不要写select *，而是select A ，这样就能省去回表的操作，减少IO次数；</span></span></p> 
+ <ul><li style="margin-left:1.4em;list-style-type:disc;text-indent:0;"><p>下图就是二级索引的示意图</p></li></ul> 
+ <div class="kdocs-line-container" style="display:flex;"> 
+  <div class="kdocs-img" style="flex-direction:column;max-width:100%;display:flex;width:1186px;justify-content:center;align-items:center;height:auto;"> 
+   <div class="kdocs-img" style="padding-top:59.274876%;height:0;"> 
+    <img src="https://images2.imgbox.com/95/59/6mIHaBuJ_o.png" style="margin-left:;display:block;width:1186px;margin-top:-59.274876%;height:auto;"> 
+   </div> 
+  </div> 
+ </div> 
+ <h5 style="">③ 问：为什么二级索引不把完整的行数据记录到数据页中呢？这样不就省去了回表操作吗？</h5> 
+ <p style="">答：一个表中可以有多个二级索引，假如你除开主键有10个字段，你将这个10个字段都建立二级索引，那么每个二级索引B+树的叶子节点中都包含了整表的数据，假如你有1000w行数据，你10个二级索引，那么总共你光二级索引就存了10x1000w条数据，显然这个成本就太高，不如只在聚簇索引中存一份，其他二级索引要用的时候就回表即可；</p> 
+ <h4 style="">5.联合索引</h4> 
+ <p style="">顾名思义：联合索引就是你可以让多个列共同建立一个非聚簇索引，这个就是联合索引，所以联合索引严格来说就是非聚簇索引，比如你可以对A列和B列建立联合索引。</p> 
+ <h5 style="">① 非聚簇索引示意图:</h5> 
+ <div class="kdocs-line-container" style="display:flex;"> 
+  <div class="kdocs-img" style="flex-direction:column;max-width:100%;display:flex;width:1180px;justify-content:center;align-items:center;height:auto;"> 
+   <div class="kdocs-img" style="padding-top:59.57627%;height:0;"> 
+    <img src="https://images2.imgbox.com/26/d7/R3anjFWY_o.png" style="margin-left:;display:block;width:1180px;margin-top:-59.57627%;height:auto;"> 
+   </div> 
+  </div> 
+ </div> 
+ <h4 style=""> <span class="kdocs-color" style="color:#C21C13;">6.Innodb索引的补充（非常重要）</span></h4> 
+ <h3 style="">三、MyISAM的索引</h3> 
+ <h5 style="">1.MyISAM跟InnoDB的区别</h5> 
+ <h6 style="">① MyISAM跟InnoDB一样，它的默认索引也是B+树结构，MyISAM中索引的叶子节点的data域中存放的是数据记录的地址，而InnoDB中非聚簇索引的叶子节点存放的是索引字段的值与主键的值，<span class="kdocs-color" style="color:#C21C13;"><span class="kdocs-bold" style="font-weight:bold;">由于MyISAM是直接拿着地址去找行数据，所以MyISAM的回表操作是十分快速的，而InnoDB是拿着主键值去回表，会相对慢一点</span></span></h6> 
+ <h6 style="">② My ISAM中是没有聚簇索引的，它全部都是二级索引（近似看做二级索引）；</h6> 
+ <h6 style="">③ InnoDB强制要求表中必须有主键，MyISAM中可以没有主键，但是有主键显然是更好的，因为主键在MyISAM中可以构建B+树索引（只不过构建出来的是非聚簇索引）；如果你没有给InnoDB指定一个主键，InnoDB则会自动选一个唯一不重复的列作为主键，如果不存在这种列，它还会自己生成一个隐式的字段作为主键，这个字段的大小为6个字节，类型为长整型；而MyISAM则不会自动构建主键列；</h6> 
+ <h3 style="">四、小结</h3> 
+ <div class="kdocs-line-container" style="display:flex;"> 
+  <div class="kdocs-img" style="flex-direction:column;max-width:100%;display:flex;width:1196px;justify-content:center;align-items:center;height:auto;"> 
+   <div class="kdocs-img" style="padding-top:23.327759%;height:0;"> 
+    <img src="https://images2.imgbox.com/60/6f/TXQUY9lk_o.png" style="margin-left:;display:block;width:1196px;margin-top:-23.327759%;height:auto;"> 
+   </div> 
+  </div> 
+ </div> 
+ <h4 style="">索引的代价</h4> 
+ <h5 style="">① 空间上的代价</h5> 
+ <p style="">会牺牲一定的空间来存储索引，并且一个表中的索引字段越多，索引占用的空间越大；</p> 
+ <h5 style="">② 时间上的代价</h5> 
+ <p style="">建立索引后，查询效率大大提高，但是增、删、改时都需要去重新维护各个索引的B+树，因为原来的页可能会分裂，页里面的数据可能会往后移，等等这些维护操作都让性能降低；</p> 
+ <p style=""> 所以：<span class="kdocs-color" style="color:#C21C13;"><span class="kdocs-bold" style="font-weight:bold;">索引并不是建的越多越好，索引越多，B+树就越多，增删改时要维护的B+树就越多</span></span>，所以在建立索引时一定要在恰当的字段上建索引，这就涉及到索引的优化了；</p> 
+ <h2 style="">第三章、InnoDB的数据结构</h2> 
+ <ol start="1"><li style="margin-left:1.4em;list-style-type:decimal;text-indent:0;"><h3>磁盘与内存交互的基本单位：页</h3></li></ol> 
+ <p style="">由于磁盘与内存交互的最小单位是页，所以InnoDB也把MYSQL中的数据分成了若干个页，InnoDB中页的大小默认是16kb；</p> 
+ <p style="">你可以通过SQL命令查看InnoDB中页的大小:</p> 
+ <pre class="kdocs-plaintext"><code class="language-plaintext">show variables like '%innodb_page_size%'</code></pre> 
+ <p style="">不同的数据库页的大小也不同，SQL SERVER中页的大小为8KB，而ORACLE中是用了一个'块' Block 的概念来替代页，支持的块的大小有2KB，4KB，16KB，32KB，和64KB；</p> 
+ <h5 style="">加深理解：页是磁盘与内存交互的最小单位，对这句话深入理解一下</h5> 
+ <p style="">① 内存从磁盘读取数据，它会把目标数据附近的数据也读出来，总计读取一个页的大小，就算本来这个数据没有一页这么大，它也会读这么大。且把目标附近的数据也读出来的原因是：它会认为通常你读一个数据时，它附近的数据也是极有可能会被使用到的，这是为了节省效率；（注意：这个附近并不是物理上的附近，而是逻辑上靠指针相连的附近）</p> 
+ <p style="">② <span class="kdocs-fontSize" style="font-size:22pt;"><span class="kdocs-color" style="color:#C21C13;"><span class="kdocs-bold" style="font-weight:bold;">刷盘</span></span></span>：把内存中的数据写到磁盘中，这个操作称为刷盘，举个例子：假如你修改了一行数据，这个数据的大小并没有一页，在刷盘时，它也会把一页的数据刷到磁盘上，目的是为了减少io操作，如果你每修改一行就单独刷一次盘，那样io次数太多，还不如一次性刷一页，当然，如果数据操作一页了，就会一次性刷多页；</p> 
+ <ol start="2"><li style="margin-left:1.4em;list-style-type:decimal;text-indent:0;"><h3>页的上层结构</h3></li></ol> 
+ <p style="">什么叫页的上层结构，就是由页组成的那些结构，页的上面有区、段、表空间等；</p> 
+ <ol start="3"><li style="margin-left:1.4em;list-style-type:decimal;text-indent:0;"><h3>页的内部结构</h3></li></ol> 
+ <h4 style="">① 结构总览：</h4> 
+ <p style="">页的内部空间被划分为7个部分，总共加起来16KB</p> 
+ <div class="kdocs-line-container" style="display:flex;"> 
+  <div class="kdocs-img" style="flex-direction:column;max-width:100%;display:flex;width:583px;justify-content:center;align-items:center;height:auto;"> 
+   <div class="kdocs-img" style="padding-top:76.15781%;height:0;"> 
+    <img src="https://images2.imgbox.com/9d/ce/JgNUwknC_o.png" style="margin-left:;display:block;width:583px;margin-top:-76.15781%;height:auto;"> 
+   </div> 
+  </div> 
+ </div> 
+ <div class="kdocs-line-container" style="display:flex;"> 
+  <div class="kdocs-img" style="flex-direction:column;max-width:100%;display:flex;width:1045px;justify-content:center;align-items:center;height:auto;"> 
+   <div class="kdocs-img" style="padding-top:43.157894%;height:0;"> 
+    <img src="https://images2.imgbox.com/9f/84/HjrS435v_o.png" style="margin-left:;display:block;width:1045px;margin-top:-43.157894%;height:auto;"> 
+   </div> 
+  </div> 
+ </div> 
+ <h4 style="">第一部分： 文件头，文件尾</h4> 
+ <h5 style="">File Header(文件头)：记录页的各种通用信息的，如上一页，下一页的是谁，页号等等，</h5> 
+ <p style="">Header总共占用38个字节，里面包含8个属性，记不住，我们挑4个重点属性进行讲解</p> 
+ <div class="kdocs-line-container" style="display:flex;"> 
+  <div class="kdocs-img" style="flex-direction:column;max-width:100%;display:flex;width:886px;justify-content:center;align-items:center;height:auto;"> 
+   <div class="kdocs-img" style="padding-top:55.417606%;height:0;"> 
+    <img src="https://images2.imgbox.com/51/84/CcgLKjk0_o.png" style="margin-left:;display:block;width:886px;margin-top:-55.417606%;height:auto;"> 
+   </div> 
+  </div> 
+ </div> 
+ <ul><li style="margin-left:1.4em;list-style-type:disc;text-indent:0;"><p>FIL_PAGE_OFFSET：这个表示<span class="kdocs-fontSize" style="font-size:19pt;"><span class="kdocs-color" style="color:#C21C13;"><span class="kdocs-bold" style="font-weight:bold;">页号</span></span></span>，</p></li></ul> 
+ <p style="text-indent:1.4em;">我们之前讲索引结构时，就能看到页上面有一个页号：</p> 
+ <div class="kdocs-line-container" style="display:flex;"> 
+  <div class="kdocs-img" style="flex-direction:column;max-width:100%;display:flex;width:243px;justify-content:center;align-items:center;height:auto;"> 
+   <div class="kdocs-img" style="padding-top:69.95885%;height:0;"> 
+    <img src="https://images2.imgbox.com/88/75/BaJgVfjd_o.png" style="margin-left:;display:block;width:243px;margin-top:-69.95885%;height:auto;"> 
+   </div> 
+  </div> 
+ </div> 
+ <ul><li style="margin-left:1.4em;list-style-type:disc;text-indent:0;"><p>FIL_PAGE_TYPE：表示<span class="kdocs-fontSize" style="font-size:16pt;"><span class="kdocs-color" style="color:#C21C13;"><span class="kdocs-bold" style="font-weight:bold;">页的类型</span></span></span>，我们学习索引结构时，就知道一个聚簇索引中除了有数据页，还目录页，所以页是有类型的，同时还不止这两种，还有<span class="kdocs-fontSize" style="font-size:16pt;"><span class="kdocs-color" style="color:#C21C13;"><span class="kdocs-bold" style="font-weight:bold;">Undo页</span></span></span>，系统页等等，Undo页在后面我们会学到，它是跟mysql的事务有关；</p></li></ul> 
+ <ul><li style="margin-left:1.4em;list-style-type:disc;text-indent:0;"><p>FIL_PAGE_PREV和FIL_PAGE_NEXT：这两个就是记录的上一页和下一页的指针，页跟页之间是通过双向链表连接的；</p></li></ul> 
+ <ul><li style="margin-left:1.4em;list-style-type:disc;text-indent:0;"><p>FIL_PAGE_SPACE_OR_CHKSUM：<span class="kdocs-fontSize" style="font-size:19pt;"><span class="kdocs-color" style="color:#C21C13;"><span class="kdocs-bold" style="font-weight:bold;">数据和</span></span></span></p></li></ul> 
+ <ul><li style="margin-left:1.4em;list-style-type:disc;text-indent:0;"><p>FIL_PAGE_LSN：<span class="kdocs-fontSize" style="font-size:19pt;"><span class="kdocs-color" style="color:#C21C13;"><span class="kdocs-bold" style="font-weight:bold;">日志序列号</span></span></span></p></li></ul> 
+ <h5 style="">File Trailer 文件尾：里面只有两部分，1：数据和，2.日志序列号</h5> 
+ <p style="">内存在和硬盘交互时，默认最小单位是页，但是假如我在传输了一半，整个页只传了一半到磁盘上，就直接断电了， 此时我们是不是应该等电脑重启后自动将刷过来的一半给删掉，或者等服务重启后把剩下的一半再刷盘啊，否则你说页是最小基本单位就没有意义，必须保证以页的整数倍进行传输，那<span class="kdocs-fontSize" style="font-size:19pt;"><span class="kdocs-color" style="color:#C21C13;"><span class="kdocs-bold" style="font-weight:bold;">开发者们到底是如何保证页的完整传输的呢？</span></span></span></p> 
+ <p style=""><span class="kdocs-fontSize" style="font-size:19pt;">答：这里就必须使用到数据和与日志序列号，主要是数据和，日志序列号打辅助，</span></p> 
+ <p style=""><span class="kdocs-fontSize" style="font-size:19pt;">举例：我现在要将内存中某页的数据刷盘，内存中这个页，我们刚学了页的基本结构，它肯定有文件头和文件尾，假如我内存中这个页文件头的数据和是123，文件尾的数据和也是123,当我把数据刷盘时，磁盘中肯定也有一个页来接收你的数据，磁盘中这个页文件头、文件尾的数据和都是456，我前半部分刷盘成功的话，我就会把磁盘中页文件头的数据和改成123，后半部分再刷盘成功的话，就会把文件尾的数据和改成123，如果某一天我只刷了一半，此时磁盘中这个页的文件头数据和就是123,文件尾数据和是456，两者不相等，就会触发系统的回滚操作，只要检测到文件头文件尾数据和不相等，就会回滚当前页的数据； 其中日志序列号也有类似的作用，但是太底层了， 我就没必要深究了；</span></p> 
+ <h4 style="">第二部分：Free Space（空闲空间），User Records（用户记录），Infimum+Supremum（最大最小记录）</h4> 
+ <div class="kdocs-line-container" style="display:flex;"> 
+  <div class="kdocs-img" style="flex-direction:column;max-width:100%;display:flex;width:921px;justify-content:center;align-items:center;height:auto;"> 
+   <div class="kdocs-img" style="padding-top:43.431053%;height:0;"> 
+    <img src="https://images2.imgbox.com/9b/8c/l5YSZI6l_o.png" style="margin-left:;display:block;width:921px;margin-top:-43.431053%;height:auto;"> 
+   </div> 
+  </div> 
+ </div> 
+ <p style="">第二部分只要是用来存储记录的（此时你应该转变思想，我们把数据叫做记录，而不叫数据），</p> 
+ <ul><li style="margin-left:1.4em;list-style-type:disc;text-indent:0;"><p><span class="kdocs-fontSize" style="font-size:16pt;"><span class="kdocs-bold" style="font-weight:bold;">空闲空间</span></span>：页中整整有16kb，它就相当于是一个箱子，箱子里没有装记录时，肯定有很多空闲的地方，页中统一把空闲的地方叫做空闲空间</p></li></ul> 
+ <ul><li style="margin-left:1.4em;list-style-type:disc;text-indent:0;"><p><span class="kdocs-fontSize" style="font-size:16pt;"><span class="kdocs-bold" style="font-weight:bold;">最大最小记录</span></span>：这两个记录并不是真正的记录，我们在前面学习索引数据结构时，会发现无论是数据页还是目录页，页里面的记录都维护了一个从小到大的顺序，维护这个顺序的目的是为了快速查找，但是在页中，你的记录都是通过一个个的单向链表连接起来，并且每页与每页之间的记录也会通过单向链表连接，相当于说你根本就不知道哪一个记录在你的页中是最小的，哪个是最大的，所以需要在每页中单独加两个标识：一个标识记录着当页中最小记录的指针，另一个标识记录着当页最大记录的指针，当两页相连时，页A的最大记录标识就会记录下一页页B的最小记录的指针，这样页跟页之间就相连起来了；</p></li></ul> 
+ <p style="">当一个页中没有插入记录时，空闲空间里面啥也没有，最小记录，最大记录也没有记录指针，</p> 
+ <p style="">当插入一个记录时，最小记录的指针指向它，最大记录的指针也指向它，</p> 
+ <p style="">当插入第二个记录时，最小记录的指针指向小的那个记录，最大记录的指针指向大的那个记录，</p> 
+ <p style="">当空闲空间被占满时，就会开辟一个新的页；（这些真正的记录/数据也被称为user record 用户记录，因为站在mysql的角度来说，我们是使用它的用户，我们存储的记录就叫用户记录，<span class="kdocs-fontSize" style="font-size:16pt;"><span class="kdocs-color" style="color:#C21C13;"><span class="kdocs-bold" style="font-weight:bold;">用户记录在页中存储时是按照行格式来进行排列的</span></span></span>）。</p> 
+ <p style=""><span class="kdocs-fontSize" style="font-size:16pt;"><span class="kdocs-bold" style="font-weight:bold;">记录头信息：</span></span></p> 
+ <p style="">我们现在使用create table语法创建一个page_demo表，里面c1，c2，c3列，指定c1为主键，字符集为ascii，同时指定行格式为Compact：</p> 
+ <div class="kdocs-line-container" style="display:flex;"> 
+  <div class="kdocs-img" style="flex-direction:column;max-width:100%;display:flex;width:608px;justify-content:center;align-items:center;height:auto;"> 
+   <div class="kdocs-img" style="padding-top:38.157894%;height:0;"> 
+    <img src="https://images2.imgbox.com/e5/d3/KcGijGPe_o.png" style="margin-left:;display:block;width:608px;margin-top:-38.157894%;height:auto;"> 
+   </div> 
+  </div> 
+ </div> 
+ <p style="">在我们肉眼看起来，一行记录中只有c1，c2，c3，其实并不是，里面有很多东西，一行记录是按照指定的行格式进行排列的，以下是一个<span class="kdocs-fontSize" style="font-size:16pt;"><span class="kdocs-bold" style="font-weight:bold;">完整行格式的示意图：</span></span></p> 
+ <div class="kdocs-line-container" style="display:flex;"> 
+  <div class="kdocs-img" style="flex-direction:column;max-width:100%;display:flex;width:909px;justify-content:center;align-items:center;height:auto;"> 
+   <div class="kdocs-img" style="padding-top:55.775578%;height:0;"> 
+    <img src="https://images2.imgbox.com/8c/af/01I5KZgu_o.png" style="margin-left:;display:block;width:909px;margin-top:-55.775578%;height:auto;"> 
+   </div> 
+  </div> 
+ </div> 
+ <p style="text-align:left;"><span class="kdocs-fontSize" style="font-size:16pt;">我们看到行格式主要分为两部分：</span></p> 
+ <ul><li style="margin-left:1.4em;list-style-type:disc;text-indent:0;text-align:left;"><p><span class="kdocs-fontSize" style="font-size:16pt;">一部分记录的是真实数据：</span></p></li></ul> 
+ <ul><li style="margin-left:2.8em;list-style-type:circle;text-indent:0;text-align:left;"><p><span class="kdocs-fontSize" style="font-size:16pt;">这里面就有c1，c2，c3的值，同时Compact还会给我们新增两个隐藏列；</span></p></li></ul> 
+ <ul><li style="margin-left:1.4em;list-style-type:disc;text-indent:0;text-align:left;"><p><span class="kdocs-fontSize" style="font-size:16pt;">另一部分是记录的额外信息：主要有三部分</span></p></li></ul> 
+ <ul><li style="margin-left:2.8em;list-style-type:circle;text-indent:0;text-align:left;"><p><span class="kdocs-fontSize" style="font-size:16pt;">第一部分：变长字段长度列表</span></p></li></ul> 
+ <ul><li style="margin-left:2.8em;list-style-type:circle;text-indent:0;text-align:left;"><p><span class="kdocs-fontSize" style="font-size:16pt;">第二部分：NULL值列表</span></p></li></ul> 
+ <ul><li style="margin-left:2.8em;list-style-type:circle;text-indent:0;text-align:left;"><p><span class="kdocs-fontSize" style="font-size:16pt;">第二部分：记录头信息</span></p></li></ul> 
+ <p style=""><span class="kdocs-fontSize" style="font-size:16pt;">其中记录头信息中又分为：以下部分：</span></p> 
+ <div class="kdocs-line-container" style="display:flex;"> 
+  <div class="kdocs-img" style="flex-direction:column;max-width:100%;display:flex;width:912px;justify-content:center;align-items:center;height:auto;"> 
+   <div class="kdocs-img" style="padding-top:49.67105%;height:0;"> 
+    <img src="https://images2.imgbox.com/d8/a2/slVULw21_o.png" style="margin-left:;display:block;width:912px;margin-top:-49.67105%;height:auto;"> 
+   </div> 
+  </div> 
+ </div> 
+ <p style="">预留位1，预留位2：这个暂时不解释</p> 
+ <ul><li style="margin-left:1.4em;list-style-type:disc;text-indent:0;"><p>delete_mask：用来表示该条记录是否被删除，占1个二进制位，用1个bit表示，1表示删除，0表示未删除；</p></li></ul> 
+ <ul><li style="margin-left:1.4em;list-style-type:disc;text-indent:0;"><p>min_rec_mask：</p></li></ul> 
+ <ul><li style="margin-left:1.4em;list-style-type:disc;text-indent:0;"><p>record_type：用来表示记录类型，0表示这是一条普通的用户记录，1表示这是B+树非叶子节点的记录，比如目录页中的记录就用1表示，2表示最小记录，3表示最大记录；</p></li></ul> 
+ <ul><li style="margin-left:1.4em;list-style-type:disc;text-indent:0;"><p>heap_no：表示当前记录在本页中的位置</p></li></ul> 
+ <p style="">比如我现在往表中插入了四条记录，那么第一条记录的heap_no就是2，第二条就是3，依次递增，</p> 
+ <div class="kdocs-line-container" style="display:flex;"> 
+  <div class="kdocs-img" style="flex-direction:column;max-width:100%;display:flex;width:732px;justify-content:center;align-items:center;height:auto;"> 
+   <div class="kdocs-img" style="padding-top:40.027325%;height:0;"> 
+    <img src="https://images2.imgbox.com/aa/6e/ENOrLwwl_o.png" style="margin-left:;display:block;width:732px;margin-top:-40.027325%;height:auto;"> 
+   </div> 
+  </div> 
+ </div> 
+ <p style="">那为什么这个heap_no不从0开始呢,却从2开始？这就跟我们前面将的最大最小记录呼应了，每个页中都有一个默认的最大记录跟最小记录，它们的heap_no为0跟1，所以你真实的用户记录就只能从2开始了，也就是说最小记录在页中最靠前，最大记录次之，真实用户记录都在他们后面；</p> 
+ <ul><li style="margin-left:1.4em;list-style-type:disc;text-indent:0;"><p>next_record：用来记录下一个记录的指针；</p></li></ul> 
+ <ul><li style="margin-left:1.4em;list-style-type:disc;text-indent:0;"><p>n_owned：</p></li></ul> 
+ <h4 style="">第三部分：页目录Page Directory 与页头Page Header</h4> 
+ <h5 style=""><span class="kdocs-fontSize" style="font-size:16pt;"><span class="kdocs-color" style="color:#C21C13;"><span class="kdocs-bold" style="font-weight:bold;">1.页目录Page Directory</span></span></span></h5> 
+ <p style=""><span class="kdocs-fontSize" style="font-size:16pt;"><span class="kdocs-color" style="color:#C21C13;"><span class="kdocs-bold" style="font-weight:bold;">①为什么需要页目录？</span></span></span></p> 
+ <p style=""><span class="kdocs-color" style="color:#080F17;">假设一个页中有1000条记录，每个用户记录之间都采用单链表的方式进行连接，</span><span class="kdocs-fontSize" style="font-size:16pt;"><span class="kdocs-color" style="color:#C21C13;"><span class="kdocs-bold" style="font-weight:bold;">单链表的特点就是查询慢，删除跟增加快</span></span><span class="kdocs-color" style="color:#080F17;"><span class="kdocs-bold" style="font-weight:bold;">，</span></span></span></p> 
+ <p style=""><span class="kdocs-fontSize" style="font-size:16pt;"><span class="kdocs-color" style="color:#C21C13;"><span class="kdocs-bold" style="font-weight:bold;">题外话：为什么单链表的删除跟增加快啊？</span></span></span></p> 
+ <p style=""><span class="kdocs-fontSize" style="font-size:16pt;">答：因为它删除跟增加都不用移动后面的节点的位置，只需要改变一下指针的指向即可，而数组的增删就非常慢，因为数组在内存中是连续的空间，所以它要改变后面所有元素的位置；</span></p> 
+ <p style=""><span class="kdocs-color" style="color:#080F17;">如果我们定位到一条数据在某个页中，拿到这1000条行记录，我们该如何找到我们想要的那一条数据呢？</span></p> 
+ <ul><li style="margin-left:1.4em;list-style-type:disc;text-indent:0;"><p>方式一：<span class="kdocs-color" style="color:#080F17;">采用遍历的方式进行查找，显然效率较低，刚刚才说单链表的遍历非常慢，这种方式显然不靠谱，所以设计者们就设计出了页目录Page Directory</span></p></li></ul> 
+ <ul><li style="margin-left:1.4em;list-style-type:disc;text-indent:0;"><p><span class="kdocs-fontSize" style="font-size:13pt;"><span class="kdocs-color" style="color:#C21C13;"><span class="kdocs-bold" style="font-weight:bold;">方式二：</span></span></span>将页中所有的用户记录按顺序分成一个个组，后一个组中的所有元素一定比前一个组中的所有元素大，将每一个组中最大的元素放入一个集合中，每个位置都称为一个槽slot，这个集合就成为Page Directory，得到这样一个槽的集合后，再通过二分法进行查找，先找到槽，再通过槽去找组，这样效率就高多了：</p></li></ul> 
+ <div class="kdocs-line-container" style="display:flex;"> 
+  <div class="kdocs-img" style="flex-direction:column;max-width:100%;display:flex;width:766px;justify-content:center;align-items:center;height:auto;"> 
+   <div class="kdocs-img" style="padding-top:48.56397%;height:0;"> 
+    <img src="https://images2.imgbox.com/62/fc/eFuLLddg_o.png" style="margin-left:;display:block;width:766px;margin-top:-48.56397%;height:auto;"> 
+   </div> 
+  </div> 
+ </div> 
+ <p style="">注意：在聚簇索引中，是将每组中最大的主键放入槽中，而在非聚簇索引中，由于并不是按照主键排序，而是按照索引列的值进行排序，所以它会把每个组中索引列的最大值放入槽中；</p> 
+ <p style=""><span class="kdocs-fontSize" style="font-size:16pt;"><span class="kdocs-color" style="color:#C21C13;"><span class="kdocs-bold" style="font-weight:bold;">②注意：在维护槽的时候，为什么不直接把每一个用户记录的主键作为槽的值记录下来，这样不是更简单吗，还不用将所有用户记录分组：</span></span></span></p> 
+ <p style="">请求思考一下：一页总共的大小才16KB，如果你将用户记录的主键作为槽的值进行记录，你这个页中有多少用户记录，那么就会有多少个槽，聚簇索引还好，聚簇索引的用户记录会包含完整数据，主键占完整数据的比例并不会太大，但是如果你是非聚簇索引，非聚簇索引的用户记录记录的是索引列的值跟主键，此时你槽中就不是记录主键，而是记录索引列的值了，因为非聚簇索引是按照索引列的值进行排序的，你仔细想想，本身我用户记录就差不多只有索引列的值跟主键值，你再加一个槽，这个操作就占了一个索引列值的大小，基本需要多出50%的空间来存储Page Directory，这很划不来，所以处于空间的考虑，才对用户记录进行分组，同时只将最大值存入槽中；</p> 
+ <p style=""><span class="kdocs-fontSize" style="font-size:16pt;"><span class="kdocs-color" style="color:#C21C13;"><span class="kdocs-bold" style="font-weight:bold;">③关于组的细节：</span></span></span></p> 
+ <p style=""><span class="kdocs-fontSize" style="font-size:16pt;"><span class="kdocs-color" style="color:#C21C13;"><span class="kdocs-bold" style="font-weight:bold;">在对用户记录分组时，最大最小记录也会参与分组</span></span></span></p> 
+ <ul><li style="margin-left:1.4em;list-style-type:disc;text-indent:0;"><p><span class="kdocs-fontSize" style="font-size:16pt;">第一组：是由最小记录一个人组成的组</span></p></li></ul> 
+ <ul><li style="margin-left:1.4em;list-style-type:disc;text-indent:0;"><p><span class="kdocs-fontSize" style="font-size:16pt;">最后一组：是最大记录所在的组，里面除了最大记录，还有最靠后的用户记录</span></p></li></ul> 
+ <ul><li style="margin-left:1.4em;list-style-type:disc;text-indent:0;"><p><span class="kdocs-fontSize" style="font-size:16pt;">在每个组的最后一条用户记录中，会将本组一共有多少条记录存储到本组最后一条用户记录的<span class="kdocs-color" style="color:#C21C13;"><span class="kdocs-bold" style="font-weight:bold;">记录头信息中的n_owned</span></span>字段中；</span></p></li></ul> 
+ <ul><li style="margin-left:2.8em;list-style-type:circle;text-indent:0;"><p><span class="kdocs-fontSize" style="font-size:16pt;">特别的：在最后一组中，由于最后一条记录是最大记录，所以此时是由最大记录的记录头信息中的n_owned字段来存储本组中用户记录的数量。（注意，最大记录，最小记录，也是记录，只不过不是真正的用户记录，它们跟用户记录都遵循同样的行格式）</span></p></li></ul> 
+ <ul><li style="margin-left:1.4em;list-style-type:disc;text-indent:0;"><p><span class="kdocs-fontSize" style="font-size:16pt;"><span class="kdocs-color" style="color:#C21C13;"><span class="kdocs-bold" style="font-weight:bold;">被删除的用户记录，是不参与分组的</span></span></span></p></li></ul> 
+ <h5 style="">2. Page Header 页头</h5> 
+ <p style="">设计们为了能快速的得到一个数据页的基本状态信息，单独设计了一个Page Header，它们用Page Header来存储：</p> 
+ <ul><li style="margin-left:1.4em;list-style-type:disc;text-indent:0;"><p>页目录中槽的数量</p></li></ul> 
+ <ul><li style="margin-left:1.4em;list-style-type:disc;text-indent:0;"><p>当前页还剩多少空闲空间</p></li></ul> 
+ <ul><li style="margin-left:1.4em;list-style-type:disc;text-indent:0;"><p>本页中记录的数量（包含最大最小记录，以及被删除的记录）</p></li></ul> 
+ <ul><li style="margin-left:1.4em;list-style-type:disc;text-indent:0;"><p>本页中纯用户记录的数量（不包含最大最小记录，以及被删除的记录）</p></li></ul> 
+ <ul><li style="margin-left:1.4em;list-style-type:disc;text-indent:0;"><p>垃圾链表中第一个被删除的用户记录的地址</p></li></ul> 
+ <ul><li style="margin-left:1.4em;list-style-type:disc;text-indent:0;"><p>当前页在B+树中所在的层级</p></li></ul> 
+ <ul><li style="margin-left:1.4em;list-style-type:disc;text-indent:0;"><p>当前页所在的索引ID</p></li></ul> 
+ <ul><li style="margin-left:1.4em;list-style-type:disc;text-indent:0;"><p>以及其他等等。。。。。</p></li></ul> 
+ <ol start="4"><li style="margin-left:1.4em;list-style-type:decimal;text-indent:0;"><h3>面试题：</h3></li></ol> 
+ <h5 style="">普通索引和唯一索引在查询效率上有什么不同？</h5> 
+ <p style="">唯一索引更快，但是也不会快很多，因为首先是先将页读到内存再进行查询，cpu进行操作时，速度非常之快，所以可以说效率相差无几；</p> 
+ <ol start="5"><li style="margin-left:1.4em;list-style-type:decimal;text-indent:0;"><h3>行格式</h3></li></ol> 
+ <p style="">Mysql5.7和8.0的默认行格式是Dynamic</p> 
+ <h4 style="">①创建表时指定行格式</h4> 
+ <p style="">Create table 表名（</p> 
+ <p style="text-align:left;">c1 varchar（10），</p> 
+ <p style="text-align:left;">c2 varchar（10），</p> 
+ <p style="text-align:left;">c3 varchar（8），</p> 
+ <p style="">）charset = ascii <span class="kdocs-color" style="color:#C21C13;"><span class="kdocs-bold" style="font-weight:bold;">ROW_FORMAT = Compact</span></span></p> 
+ <p style=""></p> 
+ <h4 style="">②Compact行格式（翻译过来是紧凑的意思）</h4> 
+ <p style="">在上面讲记录头信息时，我们提前将Compact行格式的结构图进行了讲解，现在就接着这个图讲：</p> 
+ <div class="kdocs-line-container" style="display:flex;"> 
+  <div class="kdocs-img" style="flex-direction:column;max-width:100%;display:flex;width:909px;justify-content:center;align-items:center;height:auto;"> 
+   <div class="kdocs-img" style="padding-top:55.775578%;height:0;"> 
+    <img src="https://images2.imgbox.com/c3/ef/t8p0CAQv_o.png" style="margin-left:;display:block;width:909px;margin-top:-55.775578%;height:auto;"> 
+   </div> 
+  </div> 
+ </div> 
+ <ul><li style="margin-left:1.4em;list-style-type:disc;text-indent:0;"><p><span class="kdocs-fontSize" style="font-size:16pt;"><span class="kdocs-bold" style="font-weight:bold;">变长字段长度列表：</span></span>什么叫变长字段？varchar，text，Blob等这些类型的字段就是变长字段，char类型不是变长字段。</p></li></ul> 
+ <p style="padding-left:1.4em;">比如:</p> 
+ <p style="padding-left:1.4em;">我在表中创建了两个字段</p> 
+ <p style="padding-left:1.4em;">varchar字段 c1，长度指定为了10，</p> 
+ <p style="padding-left:1.4em;">varchar字段c2，长度指定为了8，</p> 
+ <p style="padding-left:1.4em;">我将c1字段的值赋为'abcd',</p> 
+ <p style="padding-left:1.4em;">c2字段的值赋为'ab',</p> 
+ <p style="padding-left:1.4em;">此时实际上c1字段的长度为4（因为是4个字节），c2字段的长度为2，那么变长字段长度列表中就会记录下这两个字段的实际长度，记录为0204（倒序记录的，将靠后字段的实际长度放在前面，靠前字段的实际长度放在后面）；</p> 
+ <ul><li style="margin-left:1.4em;list-style-type:disc;text-indent:0;"><p><span class="kdocs-fontSize" style="font-size:16pt;"><span class="kdocs-bold" style="font-weight:bold;">Null值列表</span></span>：记录着当前记录中哪些字段的值为null</p></li></ul> 
+ <ul><li style="margin-left:1.4em;list-style-type:disc;text-indent:0;"><p><span class="kdocs-fontSize" style="font-size:16pt;"><span class="kdocs-bold" style="font-weight:bold;">隐藏列</span></span>：Compact行格式中，除了记录真实列外，还为每个记录新增了三个隐藏列，分别如下：</p></li></ul> 
+ <ul><li style="margin-left:2.8em;list-style-type:circle;text-indent:0;"><p>row_id：行id，唯一标识一条记录</p></li></ul> 
+ <p style="padding-left:1.4em;">在前面学习索引时，我提到过一嘴，在InnoDB中，如果你没有指定主键，且表中没有一个UNIQUE修饰的字段时，InnoDB会自动帮你生成一个隐式的唯一不为null的字段作为主键，这个字段其实说的就是这个row_id。注意，如果你这个表中已经提供了主键，那么InnoDB则不会生成row_id。</p> 
+ <div class="kdocs-line-container" style="display:flex;"> 
+  <div class="kdocs-img" style="flex-direction:column;max-width:100%;display:flex;width:714px;justify-content:center;align-items:center;height:auto;"> 
+   <div class="kdocs-img" style="padding-top:16.246498%;height:0;"> 
+    <img src="https://images2.imgbox.com/c3/2c/yBQAPT1N_o.png" style="margin-left:;display:block;width:714px;margin-top:-16.246498%;height:auto;"> 
+   </div> 
+  </div> 
+ </div> 
+ <ul><li style="margin-left:2.8em;list-style-type:circle;text-indent:0;"><p>transcation_id：事务id（后面再细说）</p></li></ul> 
+ <ul><li style="margin-left:2.8em;list-style-type:circle;text-indent:0;"><p>roll_pointer：回滚指针（后面再细说）</p></li></ul> 
+ <p style="padding-left:1.4em;"></p> 
+ <h4 style="">③Dynamic和Compressed行格式（Dynamic是动态的意思，Compressed是被压缩的意思）</h4> 
+ <ul><li style="margin-left:1.4em;list-style-type:disc;text-indent:0;"><p>行溢出：InnoDB可以将一条记录中的某些数据存储在真正的数据页之外，当它把某些数据存到真正数据页之外时，这就叫行溢出。</p></li></ul> 
+ <ul><li style="margin-left:1.4em;list-style-type:disc;text-indent:0;"><p>。。。。。有待补充</p></li></ul> 
+ <h4 style="">④Redundant行格式（翻译过来是冗余的意思）</h4> 
+ <p style="">。。。。。有待补充</p> 
+ <ol start="6"><li style="margin-left:1.4em;list-style-type:decimal;text-indent:0;"><h3>区，段，表空间</h3></li></ol> 
+ <h4 style="">① 区</h4> 
+ <p style="">B+树每一层的页都会形成一个双向链表，它们的真实物理地址在磁盘上可能是隔得很远的，如果我们想查的数据所在的页已经被加载到了内存还好，我们直接在内存中查询速度很快，就怕的是某个页还没被加载到内存仍然在磁盘中，同时我们想要的数据就在这个页中，此时你就得到磁盘上去找了。</p> 
+ <p style="">但磁盘中寻址的速度是非常慢的，为什么磁盘的寻址速度慢？</p> 
+ <ul><li style="margin-left:1.4em;list-style-type:disc;text-indent:0;"><p>磁盘的物理结构：</p></li></ul> 
+ <p style="">我们平时看到的磁盘其实是下面这个样子（不是固态）</p> 
+ <div class="kdocs-line-container" style="display:flex;"> 
+  <div class="kdocs-img" style="flex-direction:column;max-width:100%;display:flex;width:548px;justify-content:center;align-items:center;height:auto;"> 
+   <div class="kdocs-img" style="padding-top:69.52555%;height:0;"> 
+    <img src="https://images2.imgbox.com/12/a5/bJTEFBNw_o.png" style="margin-left:;display:block;width:548px;margin-top:-69.52555%;height:auto;"> 
+   </div> 
+  </div> 
+ </div> 
+ <ul><li style="margin-left:1.4em;list-style-type:disc;text-indent:0;"><p>解剖图：</p></li></ul> 
+ <div class="kdocs-line-container" style="display:flex;"> 
+  <div class="kdocs-img" style="flex-direction:column;max-width:100%;display:flex;width:696px;justify-content:center;align-items:center;height:auto;"> 
+   <div class="kdocs-img" style="padding-top:81.034485%;height:0;"> 
+    <img src="https://images2.imgbox.com/9d/0c/zHBqI72i_o.png" style="margin-left:;display:block;width:696px;margin-top:-81.034485%;height:auto;"> 
+   </div> 
+  </div> 
+ </div> 
+ <p style="">从上面的解剖图可以看出，磁盘是由多个'光盘'组成，每个'光盘'的两面都散步的大量的磁性物质，</p> 
+ <p style="">每个'光盘'每一面都有一个读写磁头，读写磁头可以改变磁性物质的两极转向来模拟二进制01，所以磁盘可以用来存储二进制数据。</p> 
+ <p style="">磁盘的每一面被分为很多条<a class="kdocs-link" style="color:#0A6CFF;" href="https://baike.baidu.com/item/%E7%A3%81%E9%81%93?fromModule=lemma_inlink" rel="nofollow noopener noreferrer" target="_blank">磁道</a>，即表面上的一些<a class="kdocs-link" style="color:#0A6CFF;" href="https://baike.baidu.com/item/%E5%90%8C%E5%BF%83?fromModule=lemma_inlink" rel="nofollow noopener noreferrer" target="_blank">同心</a>圆，越接近中心，圆就越小。而每一个<a class="kdocs-link" style="color:#0A6CFF;" href="https://baike.baidu.com/item/%E7%A3%81%E9%81%93?fromModule=lemma_inlink" rel="nofollow noopener noreferrer" target="_blank">磁道</a>又按512个<a class="kdocs-link" style="color:#0A6CFF;" href="https://baike.baidu.com/item/%E5%AD%97%E8%8A%82?fromModule=lemma_inlink" rel="nofollow noopener noreferrer" target="_blank">字节</a>为单位划分为等分，叫做扇区，我们的数据就存放在这些扇区中的。</p> 
+ <p style="">磁盘的旋转速度为7200转每分钟，换算下来≈8.3ms转一圈，也就是要完成整个磁盘的查找的话，至少要8.3ms，这个速度相对于内存是非常非常慢的，内存的速度是ns级别，中间差了十几万倍。</p> 
+ <p style="">所以再回到刚才那个问题：如果我们想找到磁盘中的某个页，显然这个时间就可能是ms级别，非常的慢，所以此时设计者们就想出了一个办法 &gt;&gt;&gt;&gt;&gt; 顺序存储与批量读取</p> 
+ <ul><li style="margin-left:1.4em;list-style-type:disc;text-indent:0;"><p><span class="kdocs-fontSize" style="font-size:16pt;"><span class="kdocs-color" style="color:#C21C13;"><span class="kdocs-bold" style="font-weight:bold;">顺序存储：</span></span></span></p></li></ul> 
+ <p style="">在之前，不同的页可能分散在磁盘中不同的地方，你要从页A找到页B你必须要经过磁盘的旋转,并且页A跟页B可能还离得很远，这样在磁盘中旋转查找时就非常的慢，所以设计者们就将所有的页在磁盘中进行顺序存储，也就是页与页之间是紧密相邻的，但由于磁盘中数据量巨大，无法做到给全部页都分配连续的空间，但是可以将所有页都分成不同的区，每个区中都有64个页，区中的页在物理磁盘上是紧密相邻的，不同的区之间又通过双向链表连接；</p> 
+ <ul><li style="margin-left:2.8em;list-style-type:circle;text-indent:0;"><p>这样设计的好处是：假如我想查询c1字段大于20小于3000的用户记录，我定位到了大于20小于1500的用户记录都在页A中，剩下的全在页B中，原来的方式就需要我旋转磁盘，这个旋转幅度有可能大有可能小,基于两个页的位置决定，但是现在不同了，页A跟页B都在同一个区中，且是紧密相连的，我的磁盘只需要旋转一丁点就可以找到页B，显然这样的速度就非常快了。</p></li></ul> 
+ <p style="">再提一嘴：<span class="kdocs-fontSize" style="font-size:22pt;"><span class="kdocs-color" style="color:#C21C13;"><span class="kdocs-bold" style="font-weight:bold;">一个区就是在物理磁盘上紧密相连、连续的64个页</span></span></span>，一个页16kb，一个区64x16正好就是1MB。</p> 
+ <ul><li style="margin-left:1.4em;list-style-type:disc;text-indent:0;"><p><span class="kdocs-fontSize" style="font-size:16pt;"><span class="kdocs-color" style="color:#C21C13;"><span class="kdocs-bold" style="font-weight:bold;">批量读取：</span></span></span></p></li></ul> 
+ <p style="">磁盘的吞吐量是40MB每秒，也就是磁盘可以一次性输出/输入40MB数据，40x64=64个区=2560个页，也就是我们不再一个页一个页的传输数据给内存了，而是一次性要传就传64个区，1秒钟传64个区给内存，算下来传输一个页只需要0.4ms，在内存中查找一个页的速度大概是1ms（意思是：这个页已经被加载到了内存，我在内存中找到它），这样批量读取的速度比你直接在内存中查还要快，极大的提高了磁盘与内存的交互效率。</p> 
+ <p style="">综上所述：已经将为什么需要有区的概率解释清楚了。</p> 
+ <h4 style="">②段</h4> 
+ <h4 style="">③碎片区</h4> 
+ <h4 style="">④表空间</h4> 
+ <h2 style="">第四章：索引的创建与设计原则（索引优化）</h2> 
+ <h3 style="">一、索引的声明与使用</h3> 
+ <h4 style="">1.索引的分类</h4> 
+ <p style="">不同的角度可以有不同的分类方式：</p> 
+ <ul><li style="margin-left:1.4em;list-style-type:disc;text-indent:0;"><p>按功能逻辑划分：索引可分为：普通索引，唯一索引，主键索引，全文索引</p></li></ul> 
+ <ul><li style="margin-left:1.4em;list-style-type:disc;text-indent:0;"><p>按底层物理实现方式：索引可分为：聚簇索引，非聚簇索引/辅助索引/二级索引</p></li></ul> 
+ <ul><li style="margin-left:1.4em;list-style-type:disc;text-indent:0;"><p>按作用字段个数进行划分：索引可分为:单列索引，联合索引</p></li></ul> 
+ <h5 style="">①.普通索引：</h5> 
+ <p style="">创建索引时不附加任何约束条件，也<span class="kdocs-fontSize" style="font-size:16pt;"><span class="kdocs-color" style="color:#C21C13;"><span class="kdocs-bold" style="font-weight:bold;">不要求非空和唯一</span></span></span>，只是用于提高查询效率，这类索引可以创建在<span class="kdocs-fontSize" style="font-size:16pt;"><span class="kdocs-color" style="color:#C21C13;"><span class="kdocs-bold" style="font-weight:bold;">任何数据类型</span></span></span>的字段中。</p> 
+ <h5 style="">②.唯一索引：</h5> 
+ <ul><li style="margin-left:1.4em;list-style-type:disc;text-indent:0;"><p>注意：当你在创建表时，使用了<span class="kdocs-fontSize" style="font-size:16pt;"><span class="kdocs-color" style="color:#C21C13;"><span class="kdocs-bold" style="font-weight:bold;">UNIQUE修饰字段</span></span></span>，那么mysql<span class="kdocs-fontSize" style="font-size:16pt;"><span class="kdocs-color" style="color:#C21C13;"><span class="kdocs-bold" style="font-weight:bold;">会自动为这个字段添加唯一索引。</span></span></span></p></li></ul> 
+ <ul><li style="margin-left:1.4em;list-style-type:disc;text-indent:0;"><p>如果你想删除对这个字段的唯一性约束，你只需要删除这个字段的唯一性索引即可实现。</p></li></ul> 
+ <ul><li style="margin-left:1.4em;list-style-type:disc;text-indent:0;"><p>创建了唯一索引的字段，必须唯一，<span class="kdocs-fontSize" style="font-size:16pt;"><span class="kdocs-color" style="color:#C21C13;"><span class="kdocs-bold" style="font-weight:bold;">但是可以有NULL值。</span></span></span></p></li></ul> 
+ <p style="">注意：唯一索引比普通索引更快，但在内存中操作也不会快太多；</p> 
+ <h5 style="">③主键索引：</h5> 
+ <p style="">主键索引就是特殊的唯一索引，<span class="kdocs-fontSize" style="font-size:16pt;"><span class="kdocs-color" style="color:#C21C13;"><span class="kdocs-bold" style="font-weight:bold;">必须唯一且非空，一张表里最多只能有一个主键索引。</span></span></span></p> 
+ <p style="">为什么只能有一个主键索引？</p> 
+ <p style="">这是因为InnoDB引擎在底层实现聚簇索引的物理结构就是这样的，前面讲过。</p> 
+ <h5 style="">④联合索引：</h5> 
+ <p style="">联合索引唯一值得注意的是：最左匹配原则，后面我会讲。</p> 
+ <h5 style="">⑤空间索引：</h5> 
+ <div class="kdocs-line-container" style="display:flex;"> 
+  <div class="kdocs-img" style="flex-direction:column;max-width:100%;display:flex;width:1220px;justify-content:center;align-items:center;height:auto;"> 
+   <div class="kdocs-img" style="padding-top:10.245901%;height:0;"> 
+    <img src="https://images2.imgbox.com/af/8b/d22aOzZt_o.png" style="margin-left:;display:block;width:1220px;margin-top:-10.245901%;height:auto;"> 
+   </div> 
+  </div> 
+ </div> 
+ <h5 style="">⑥全文索引：全文检索基本不用mysql，所以这里不讲它</h5> 
+ <div class="kdocs-line-container" style="display:flex;"> 
+  <div class="kdocs-img" style="flex-direction:column;max-width:100%;display:flex;width:687px;justify-content:center;align-items:center;height:auto;"> 
+   <div class="kdocs-img" style="padding-top:34.352257%;height:0;"> 
+    <img src="https://images2.imgbox.com/7c/7e/OvXPoZVo_o.png" style="margin-left:;display:block;width:687px;margin-top:-34.352257%;height:auto;"> 
+   </div> 
+  </div> 
+ </div> 
+ <h4 style="">2.创建索引</h4> 
+ <p style="">在create table时我们可以创建索引，如果没有在建表时创建索引，也可以后期使用alter table的方式来添加索引，或者也可以使用create index语句在已存在的表上添加索引。</p> 
+ <h5 style="">① 建表时创建索引</h5> 
+ <p style="">语法格式：</p> 
+ <div class="kdocs-line-container" style="display:flex;"> 
+  <div class="kdocs-img" style="flex-direction:column;max-width:100%;display:flex;width:1169px;justify-content:center;align-items:center;height:auto;"> 
+   <div class="kdocs-img" style="padding-top:7.014542%;height:0;"> 
+    <img src="https://images2.imgbox.com/82/9a/b5Wk2jpa_o.png" style="margin-left:;display:block;width:1169px;margin-top:-7.014542%;height:auto;"> 
+   </div> 
+  </div> 
+ </div> 
+ <p style="">案例1：创建普通索引</p> 
+ <pre class="kdocs-sql"><code class="language-sql">create table tableName(
+    id INT,
+    name VARCHAR(100),
+    age INT,
+    #创建普通索引
+    INDEX 索引名称(列名)
+);</code></pre> 
+ <p style="">案例2：创建唯一索引：</p> 
+ <pre class="kdocs-sql"><code class="language-sql">如果你要创建唯一性索引，全文索引，空间索引，在INDEX前面加上对应的修饰词UNIQUE，FULLTEXT，SPATIAL即可
+如下：
+create table tableName(
+    id INT,
+    name VARCHAR(100),
+    age INT,
+    #创建唯一性索引
+    UNIQUE INDEX 索引名称(列名)  #你也可以把INDEX关键字换成KEY也是可以的。
+);</code></pre> 
+ <p style="">案例3：创建联合索引</p> 
+ <pre class="kdocs-sql"><code class="language-sql">create table tableName(
+    id INT,
+    name VARCHAR(100),
+    age INT,
+    #创建联合索引
+    INDEX 索引名称(列名1，列名2)  #你也可以把INDEX关键字换成KEY也是可以的。
+);</code></pre> 
+ <p style="">注意：联合索引的B+树，叶子节点的排序规则：会先以列名1的值排序，如果列名1的值相同，再以列名2排序。</p> 
+ <p style="">案例4：创建索引时指定长度</p> 
+ <p style="">在前面我们看了创建索引的语法，如下：</p> 
+ <div class="kdocs-line-container" style="display:flex;"> 
+  <div class="kdocs-img" style="flex-direction:column;max-width:100%;display:flex;width:737px;justify-content:center;align-items:center;height:auto;"> 
+   <div class="kdocs-img" style="padding-top:7.598372%;height:0;"> 
+    <img src="https://images2.imgbox.com/b1/27/GPjuv4O7_o.png" style="margin-left:;display:block;width:737px;margin-top:-7.598372%;height:auto;"> 
+   </div> 
+  </div> 
+ </div> 
+ <p style="">这里的length使用场景是：当你要对某一个字段添加索引，但是这个字段的值特别长，比如这个字段是一个text类型，显然你将这个字段的值存入叶子节点就不太合适，因为太大了，所以你可以通过length来指定长度，比如指定为10，只将这个字段的前10位作为值存到叶子节点中，这样就大大的节省了空间，同时也能达到索引的目的，没有必要全部存进去；</p> 
+ <p style="">用法：INDEX 索引名称(列名1(10)) &gt;&gt;&gt;&gt;&gt; 前面的建表语句我省略了，在使用时请自动加上建表语句。</p> 
+ <p style="">案例5：创建空间索引</p> 
+ <p style="">。。。。。。。对空间索引，我暂时还不熟，这里不写案例，后面熟悉了再补充。</p> 
+ <h5 style="">②给已经建好的表添加索引：</h5> 
+ <h6 style="">&gt;&gt;&gt; alter table的方式：</h6> 
+ <p style="">ALTER TABLE 表名 ADD UNIQUE | FULLTEXT | SPATIAL INDEX | KEY 索引名（列名（截取的长度））INVISIBLE | VISIBLE </p> 
+ <h6 style="">&gt;&gt;&gt; create index的方式：</h6> 
+ <p style="">CREATE UNIQUE | FULLTEXT | SPATIAL INDEX | KEY 索引名 ON 表名 (列名(截取的长度)) INVISIBLE | VISIBLE </p> 
+ <h5 style="">③查看表中的所有索引：</h5> 
+ <pre class="kdocs-sql"><code class="language-sql">SHOW INDEX FROM 表名 #查看某张表中的索引</code></pre> 
+ <h4 style="">3 删除索引</h4> 
+ <p style="">删除索引的场景：当你要对某张表的数据进行大量的增删改时，你可以先将这张表的索引删掉，如果不删，当你去增删改时，InnoDB会同步的维护这些索引的B+树，成本很高，所以你先将索引都删掉，等增删改查完成后，再把索引加回来，就可以极大的提高效率。</p> 
+ <h5 style="">①使用alter table 来删除索引</h5> 
+ <p style="">ALTER TABLE 表名 DROP INDEX 索引名；</p> 
+ <h5 style="">②使用drop index来删除索引</h5> 
+ <p style="">DROP INDEX 索引名 ON 表名；</p> 
+ <p style=""><span class="kdocs-color" style="color:#C21C13;"><span class="kdocs-bold" style="font-weight:bold;">注意1：被AUTO_INCREMENT修饰字段的唯一索引不能被删除，为什么？</span></span></p> 
+ <p style="">答：AUTO_INCREMENT只能存在于有主键约束或者有唯一约束的字段上，假如你把一个列的唯一索引删掉了，那么这个字段的唯一约束就没了，这个字段如果不是主键的话，那么就违背了AUTO_INCREMENT只能存在于主键约束或唯一约束字段上的原则了，所以被AUTO_INCREMENT修饰字段的唯一索引不能删除。</p> 
+ <p style=""><span class="kdocs-color" style="color:#C21C13;"><span class="kdocs-bold" style="font-weight:bold;">注意2：</span></span></p> 
+ <p style="">&gt;&gt;&gt;&gt;&gt;<span class="kdocs-bold" style="font-weight:bold;"> </span><span class="kdocs-color" style="color:#C21C13;"><span class="kdocs-bold" style="font-weight:bold;">如果你这个字段已经添加了索引，你把这个字段删除时，这个字段的索引也会被删除；</span></span></p> 
+ <p style="">&gt;&gt;&gt;&gt;&gt;<span class="kdocs-color" style="color:#C21C13;"><span class="kdocs-bold" style="font-weight:bold;"> 如果你对列A，列B，列C合在一起添加了联合索引，你将任意一个列删除了，这个联合索引的叶子节点中被删除列的值就会消失，如果你把这三个列都删完了，这个联合索引也没了；</span></span></p> 
+ <h3 style="">二、 Mysql8.0索引的新特性</h3> 
+ <h4 style="">1.支持降序索引</h4> 
+ <h5 style="">① 降序索引的语法与意义</h5> 
+ <p style="text-align:left;">再拿出我们前面的创建索引的语法，后面有个ASC，DESC，这个就是用来指定索引是降序还是升序的，</p> 
+ <p style="text-align:left;">什么意思？</p> 
+ <p style="text-align:left;">比如你对col1列创建索引，在MYSQL8以前，这个索引的叶子节点中，默认是对这个列的值升序排列的，现在不同了，你可以通过SQL语法来将其指定为DESC，如果不指定，默认就是升序；</p> 
+ <div class="kdocs-line-container" style="display:flex;"> 
+  <div class="kdocs-img" style="flex-direction:column;max-width:100%;display:flex;width:746px;justify-content:center;align-items:center;height:auto;"> 
+   <div class="kdocs-img" style="padding-top:7.372654%;height:0;"> 
+    <img src="https://images2.imgbox.com/19/23/u7i9byvA_o.png" style="margin-left:;display:block;width:746px;margin-top:-7.372654%;height:auto;"> 
+   </div> 
+  </div> 
+ </div> 
+ <p style="text-align:left;">案例：</p> 
+ <pre class="kdocs-sql"><code class="language-sql">CREATE TABLE 表名（
+    列名1 INT,
+    列名2 VARCHAR(10)
+    INDEX 索引名(列名1，列名2 DESC)
+）</code></pre> 
+ <p style="text-align:left;">我这里就是创建了一个列名1跟列名2的联合索引，</p> 
+ <p style="text-align:left;">列名1我没有指定ASC或DESC，默认就是ASC，</p> 
+ <p style="text-align:left;">在构建B+树的叶子节点时，首先会按照列名1来进行升序排序，如果两个用户记录出现了列名1的值相等的情况，就会再以列名2的降序进行排列。</p> 
+ <h5 style="">②为什么需要降序索引</h5> 
+ <p style="">没有降序索引之前，我对列名1创建一个索引，默认就是升序的，当我使用</p> 
+ <p style="">SELECT * FROM 表名 ORDER BY 列名1<span class="kdocs-color" style="color:#C21C13;"><span class="kdocs-bold" style="font-weight:bold;"> DESC</span></span>时，此时查询速率会明显降低，因为在底层InnoDB会反向查找，效率不高，所以需要降序索引；</p> 
+ <p style=""><span class="kdocs-fontSize" style="font-size:13pt;"><span class="kdocs-color" style="color:#C21C13;"><span class="kdocs-bold" style="font-weight:bold;">注意事项：</span></span></span></p> 
+ <p style="">我现在常见了一个联合索引，对列A升序，对列B降序，</p> 
+ <pre class="kdocs-sql"><code class="language-sql">CREATE TABLE 表名（
+    列名1 INT,
+    列名2 VARCHAR(10)
+    INDEX 索引名(列名A，列名B DESC)
+）</code></pre> 
+ <p style="">此时我使用SELECT * FROM 表名 ORDER BY 列A,列B DESC进行查询，是完全符合索引中叶子节点的结构的，所以可以很快速的查找到；</p> 
+ <p style="">但是如果我使用了SELECT * FROM 表名 ORDER BY 列A DESC,列B DESC，将列A也进行降序排序，就跟索引中叶子节点结构不同了，InnoDB在查询时就还是会进行反向查询，效率依然不高；</p> 
+ <p style="">解决办法就是：你再单独创建一个列B降序，列A也降序的联合索引就可以了，只不过是多了一个B+树；</p> 
+ <p style="">我这里只举了联合索引的例子，对单列索引肯定也适用的。</p> 
+ <h4 style="">2. 隐藏索引</h4> 
+ <p style="">我们创建索引时，默认这些索引都是visible的，也就是可见的状态，我们也可以将其设置为隐藏状态invisible；</p> 
+ <h5 style="">①索引的硬删除：</h5> 
+ <p style="">我们前面讲了索引的删除，无论是使用alter table，drop index都是硬删除，它们都是硬删除，你将这个索引删除后，不排除会出现问题，等出现问题后，你又将索引创建回来，如果你的表中数据量非常大，这一套操作下来，InnoDB在恢复这些索引的B+树时消耗的资源就非常多，成本很高，所以就需要一个软删除，这是用invisible就起来作用了；</p> 
+ <h5 style="">②索引的软删除：</h5> 
+ <p style="">在删除一个索引前，你可以先将这个索引修改为invisible隐藏状态，使查询优化器不再使用这个索引，即使你使用force index强制使用这个索引，查询优化器也不会使用这个索引，等你确认索引隐藏后，系统没有受到任何影响，你就可以彻底的删除掉这个索引，这种就叫软删除；</p> 
+ <p style="">同时：如果你想验证这个索引删除后的查询性能差异，你也可以考虑暂时隐藏该索引</p> 
+ <h6 style="">注意1：主键是不能被设置为隐藏索引的；</h6> 
+ <h6 style="text-align:left;">注意2：当索引被隐藏时，你再增删改数据时，这个隐藏索引的B+树也是会被更新的，也会影响增删改的性能，所以你一旦确认这个隐藏索引确实不需要了，还是建议你删掉它；</h6> 
+ <h5 style="">③隐藏索引的三种方式</h5> 
+ <h6 style="">&gt;&gt;&gt; 建表时创建一个索引，并将其指定为隐藏索引</h6> 
+ <pre class="kdocs-sql"><code class="language-sql">CREATE TABLE 表名(
+    列A INT,
+    列B VARCHAR(20),
+    INDEX 索引名(列B(5) DESC) INVISIBLE #如果不指定INVISIBLE，默认就是VISIBLE
+)</code></pre> 
+ <h6 style="">&gt;&gt;&gt; 使用ALTER TABLE创建隐藏索引</h6> 
+ <p style="">1、为某表添加一个隐藏索引</p> 
+ <p style="">ALTER TABLE 表名 <span class="kdocs-color" style="color:#C21C13;"><span class="kdocs-bold" style="font-weight:bold;">ADD </span></span><span class="kdocs-color" style="color:#080F17;">UNIQUE | FULLTEXT | SPATIAL</span> INDEX 索引名(列名(截取长度)) INVISIBLE；</p> 
+ <p style="">2、将表中的某个索引修改为隐藏状态</p> 
+ <p style="">ALTER TABLE 表名 <span class="kdocs-color" style="color:#C21C13;"><span class="kdocs-bold" style="font-weight:bold;">ALTER</span></span> INDEX 需要隐藏的索引的名称 INVISIBLE； </p> 
+ <p style="">将隐藏索引改为显示状态：</p> 
+ <p style=""> ALTER TABLE 表名 <span class="kdocs-color" style="color:#C21C13;"><span class="kdocs-bold" style="font-weight:bold;">ALTER</span></span> INDEX 需要隐藏的索引的名称 VISIBLE； </p> 
+ <h6 style="">&gt;&gt;&gt; 使用CREATE INDEX来创建隐藏索引</h6> 
+ <p style="">CREATE UNIQUE | FULLTEXT | SPATIAL INDEX 索引名(列名(截取长度)) INVISIBLE ON 表名</p> 
+ <h3 style=""><span class="kdocs-color" style="color:#C21C13;">三、索引的设计原则（重要）</span></h3> 
+ <h4 style="">1. 哪些情况适合加索引</h4> 
+ <h5 style="">①字段本身就是唯一的，但是既没有加唯一性约束，也没有加主键约束的字段适合加索引</h5> 
+ <p style="">此时就适合给它添加唯一索引，因为就算这个字段本身是唯一的，但是没建立索引，对它的查询效率也不会提高；</p> 
+ <p style="">举例：学号，学号都是唯一的，所以你可以对其添加唯一索引</p> 
+ <h5 style="">②频繁作为WHERE查询条件的字段适合加索引</h5> 
+ <h5 style="text-align:left;">③经常GUOUP BY 和ORDER BY的字段适合加索引</h5> 
+ <p style="text-align:left;">注意：并不是WHERE条件后才会触发索引，我GRUOP BY 列A，如果这个列A有索引，也会触发索引，同理ORDER BY 列A，也会触发索引；</p> 
+ <h6 style="text-align:left;">1.经典案例：（一定要看）</h6> 
+ <p style="text-align:left;">现在有下面这样一个查询语句：</p> 
+ <pre class="kdocs-sql"><code class="language-sql">SELECT student_id,COUNT(1) AS num FROM student_info
+GROUP BY student_id
+ORDER BY create_time DESC;</code></pre> 
+ <p style="text-align:left;">如果要让你来创建索引，来优化这条SQL的查询效率，你会怎么优化呢？</p> 
+ <h6 style="text-align:left;"> 错误的方式：我对student_id建一个唯一索引，对create_time再建立一个降序索引（因为这个SQL是对create_time降序排序）</h6> 
+ <ul><li style="margin-left:1.4em;list-style-type:disc;text-indent:0;text-align:left;"><p>第一步：单独为student_id建立一个唯一性索引，索引名：student_id</p></li></ul> 
+ <p style="text-align:left;">ALTER TABLE student_info ADD UNIQUE INDEX student_id(student_id) VISIBLE;</p> 
+ <ul><li style="margin-left:1.4em;list-style-type:disc;text-indent:0;text-align:left;"><p>第二步：再单独为create_time建立一个降序普通索引，索引名：create_time</p></li></ul> 
+ <p style="text-align:left;">ALTER TABLE student_info ADD INDEX create_time(create_time DESC) VISIBLE;</p> 
+ <p style="text-align:left;"><span class="kdocs-color" style="color:#C21C13;"><span class="kdocs-bold" style="font-weight:bold;">但显然使用这种方式来创建索引，你基本上达不到优化的目的，为什么？</span></span></p> 
+ <p style=""><span class="kdocs-color" style="color:#C21C13;"><span class="kdocs-bold" style="font-weight:bold;">首先：SQL的执行顺序中，先走FROM，再走GRUOP BY，再走ORDER BY（部分顺序没说完），显然当SQL执行到GROUP BY时，InnoDB就已经发现student_id有索引了，所以它会去走student_id这棵B+树，从始至终根本不会走create_time的B+树，你的create_time索引建了个寂寞，如果你student_id没有索引，那么最后就会走create_time这个索引；</span></span></p> 
+ <p style=""><span class="kdocs-color" style="color:#C21C13;"><span class="kdocs-bold" style="font-weight:bold;">但是如果InnoDB走到GROUP BY时，除了发现student_id有一个单列索引了，还发现student_id还有一个联合索引,并且student_id还是联合索引中最左的列，那么InnoDB就不会走student_id单列索引，而会去走联合索引；</span></span></p> 
+ <p style=""><span class="kdocs-color" style="color:#C21C13;"><span class="kdocs-bold" style="font-weight:bold;">另外，如果InnoDB走到GROUP BY这里，发现student_id有一个联合索引，但是student_id不是最左的列，它还会走这个联合索引吗？就不会走这个联合索引了，此时如果student_id有单列索引，它就会走单列索引；</span></span></p> 
+ <h6 style="">正确的方式：</h6> 
+ <ul><li style="margin-left:1.4em;list-style-type:disc;text-indent:0;"><p>对student_id，create_time建立联合索引，并且要保证student_id在前，create_time在后，同时让create_time的降序排列</p></li></ul> 
+ <p style="text-indent:1.4em;">ALTER TABLE student_info ADD INDEX student_id_create_time(student_id,create_time DESC) VISIBLE</p> 
+ <h5 style="text-align:left;">④UPDATE，DELETE的WHERE条件列也适合添加索引</h5> 
+ <p style="">举例：</p> 
+ <p style="">UPDATE student_info SET student_id = 10001 WHERE student_name = '许海'；</p> 
+ <p style="">DELETE FROM student_info WHERE student_name = '许海';</p> 
+ <p style="">这两个语句后面的student_name字段都适合加上索引；</p> 
+ <p style="">注意：在使用UPDATE语句时，我们对WHERE条件后的字段加了索引，会大幅度提升InnoDB找到这条记录的效率，同时如果UPDATE语句中更新的字段不是索引字段，那么提升的效率会更明显，为什么？它不是索引字段，InnoDB就不用去维护它的B+树啦，当然速度是极快的；</p> 
+ <h5 style="">⑤DISTINCT修饰的字段适合创建索引</h5> 
+ <p style=""><span class="kdocs-color" style="color:#C21C13;"><span class="kdocs-bold" style="font-weight:bold;">为什么DISTINCT修饰的字段适合创建索引呢？</span></span></p> 
+ <p style="">假如你不对去重字段建立索引，要实现去重功能：肯定是要先将表中该字段的所有值全都查出来，然后再去掉重复的值；</p> 
+ <p style="">如果对去重字段建立了索引，那么这个字段相同的用户记录基本上都是在同一个数据页中（小概率不在，就算不在，也肯定是在紧密相邻的数据页中），此时InnoDB就可以在查询的同时对字段进行去重，不需要查询完成后再去重了，效率更高；</p> 
+ <p style="">比如SELECT DISTINCT(student_id) FROM student_info 这句sql要提升效率，你就可以对student_id建立索引</p> 
+ <h5 style="">⑥多表JOIN联表查询时的注意事项</h5> 
+ <ul><li style="margin-left:1.4em;list-style-type:disc;text-indent:0;"><p>联表查询时，连接的表尽量不要超过3张，每多一张表就相当多嵌套了一次循环，呈指数级的增长，严重影响查询效率；</p></li></ul> 
+ <ul><li style="margin-left:1.4em;list-style-type:disc;text-indent:0;"><p><span class="kdocs-color" style="color:#C21C13;"><span class="kdocs-bold" style="font-weight:bold;">对用于连接的字段，也适合创建索引，并且该字段在参与连接的表中的数据类型要保持一致；</span></span></p></li></ul> 
+ <ul><li style="margin-left:2.8em;list-style-type:circle;text-indent:0;"><p>看下面的SQL：</p></li></ul> 
+ <p style="padding-left:1.4em;">SELECT course_id,name,student_info.student_id ,course_name </p> 
+ <p style="padding-left:1.4em;">FROM student_info JOIN course ON student_info .course_id = course.course_id</p> 
+ <p style="padding-left:1.4em;">WHERE name = '许海'；</p> 
+ <p style="padding-left:1.4em;"><span class="kdocs-color" style="color:#C21C13;"><span class="kdocs-bold" style="font-weight:bold;">我要对这个SQL进行效率的优化，</span></span></p> 
+ <p style="padding-left:1.4em;"><span class="kdocs-color" style="color:#C21C13;"><span class="kdocs-bold" style="font-weight:bold;">---&gt;首先，我们看到WHERE，就应该想到可以对name字段加索引；</span></span></p> 
+ <p style="padding-left:1.4em;"><span class="kdocs-color" style="color:#C21C13;"><span class="kdocs-bold" style="font-weight:bold;">---&gt; 其次，如果数据量确实大，我还可以继续对用于连接的字段创建索引，这里的连接条件是ON student_info .course_id = course.course_id，也就是我们在student_info，course这两张表中都对course_id字段建立索引，同时还要保证两张表中的course_id字段是同一个类型，不能一个是varchar，一个是int，虽然一个是varchar，一个是int也能查出来，因为'101'这种数字类型的字符串在ON连接一个int类型时，会被隐式的转换成int类型，但这中间是经过了mysql的函数的，只要有函数，就会导致索引失效，所以一定要保证ON两边的字段类型类型相同；</span></span></p> 
+ <h5 style="">⑦创建列时，能使用小类型，就尽量使用小类型</h5> 
+ <p style="">什么意思呢？比如我现在要创建一个id字段，我可以用int，bigint，varchar，等等很多，在满足业务要求的情况下，尽量选择小的，就尽量选择int，为什么呢？</p> 
+ <ul><li style="margin-left:1.4em;list-style-type:disc;text-indent:0;"><p>字段的类型小，它所占用的空间就小，一页中就能存储更多的用户记录，B+树就能更加的扁平，减少B+树层级，从而IO次数</p></li></ul> 
+ <ul><li style="margin-left:1.4em;list-style-type:disc;text-indent:0;"><p>字段的类型小，在进行查询时，InnoDB进行的比较操作就越快，数据类型越大，比较越费时间；</p></li></ul> 
+ <h5 style="">⑧使用字符串前缀创建索引</h5> 
+ <p style="">当一个字段是字符串时，且这个字符串比较长时，我们创建索引时是否有必要将完整的字符串作为索引值来构建B+树，显然没有必要，所以我们在对这类长字符串的字段建立索引时，可以限制索引截取的长度，前面的创建索引有讲语法；</p> 
+ <p style="">这样的好处是：即减少了比较时间，又节省了数据页中的空间；</p> 
+ <p style=""><span class="kdocs-color" style="color:#C21C13;"><span class="kdocs-bold" style="font-weight:bold;">问题是：截取多少呢？</span></span><span class="kdocs-color" style="color:#080F17;"><span class="kdocs-bold" style="font-weight:bold;">截多了达不到节省空间和减少比较时间的目的，截少了又会导致重复值太多，索引效率不高</span></span></p> 
+ <div class="kdocs-line-container" style="display:flex;"> 
+  <div class="kdocs-img" style="flex-direction:column;max-width:100%;display:flex;width:1213px;justify-content:center;align-items:center;height:auto;"> 
+   <div class="kdocs-img" style="padding-top:45.91921%;height:0;"> 
+    <img src="https://images2.imgbox.com/5f/b6/w419uas8_o.png" style="margin-left:;display:block;width:1213px;margin-top:-45.91921%;height:auto;"> 
+   </div> 
+  </div> 
+ </div> 
+ <p style="">-----待补充----：越接近于1越好，学到这里时由于我没有学习mysql的函数，这里不是特别明白，所以后续学完了再进行补充</p> 
+ <h6 style="">拓展：Alibaba规约：</h6> 
+ <p style="">在对varchar字段建立索引时，必须指定索引长度。</p> 
+ <h6 style="">开发经验：通常截取长度达到20时，区分度就会达到90%以上，但是你最好是用上面的公式自己算一算；</h6> 
+ <h5 style="">⑨区分度越高的字段越适合建立索引</h5> 
+ <p style="">意思是：相同值越少的字段越适合建立索引</p> 
+ <h5 style="">⑩<span class="kdocs-color" style="color:#C21C13;">在创建联合索引时，将使用最频繁的列放在联合索引的最左侧</span></h5> 
+ <p style="">这是因为联合索引有一个最左匹配原则，不满足最左匹配原则会导致索引失效，所以应该让使用最频繁的列放在联合索引的最左侧；</p> 
+ <p style="">（这里我没有提mysql的优化器对最左匹配的优化，比如SELECT * FROM 表名 WHERE student_id = 10013 AND course_id = 100，假如我建的联合索引是将cours_id放在前，student_id在后，按我们现在学的知识来说，这个联合索引是会失效的，但实际使用过程中还是会走这个联合索引，因为mysql的优化器会自动对这种情况进行优化）</p> 
+ <p style="">但是我们前面讲过一个SQL：</p> 
+ <p style="padding-left:1.4em;">SELECT student_id,COUNT(1) AS num FROM student_info</p> 
+ <p style="padding-left:1.4em;">GROUP BY student_id</p> 
+ <p style="padding-left:1.4em;">ORDER BY create_time DESC;</p> 
+ <p style="">使用GROUP BY跟ORDER BY的组合进行查询时，优化器是不会对最左匹配原则进行优化的，我们上面有讲解过案例；</p> 
+ <h5 style="">11）在多个字段都要创建索引的情况下，联合索引优于单列索引</h5> 
+ <h5 style="">开发经验：建议单表中索引不要超过6个，我们前面都学过了，索引会占空间，且影响到增删改的效率</h5> 
+ <h4 style="">2.哪些情况不适合加索引</h4> 
+ <h5 style="">①where条件中（包括order by，group by中）用不到的字段不适合加索引</h5> 
+ <p style="">加了也没用，纯纯浪费感情。</p> 
+ <h5 style="">②数据量小的表，最好别加索引（开发经验：数据量低于1000行你还是别创建索引了）</h5> 
+ <p style="">你加了索引，如果是非聚簇索引，还可能需要回表，完全没必要，多的时间都去了。</p> 
+ <h5 style="">③有大量重复数据的列，不要对它创建索引</h5> 
+ <p style="">开发经验：当一个列的重复数据高于10%时，这个列就不适合创建索引了。</p> 
+ <h5 style="">④避免对经常更新的表创建过多索引</h5> 
+ <h5 style="">⑤不建议用无序的值作为索引，比如UUID，身份证号等这些值作为索引会产生页分裂的情况。</h5> 
+ <h5 style="">⑥不要建立冗余的索引</h5> 
+ <p style="">比如：我创建了一个联合索引(name,birthday,phone)，又对name创建了一个单列索引，</p> 
+ <p style="">那么name这个单列索引就纯粹是冗余的，因为它联合索引完全可以替代name这个单列索引，效果完全一样。</p> 
+ <h2 style="">第五章、性能分析工具的使用</h2> 
+ <h3 style="">一、数据库优化的步骤</h3> 
+ <h3 style="">二、查看系统性能参数：</h3> 
+ <p style="">Mysql中，可以使用show status命令查询Mysql服务端的性能参数，执行频率等。</p> 
+ <h4 style="">1.show status语法：</h4> 
+ <pre class="kdocs-sql"><code class="language-sql">show [ global | session ] status like '参数';</code></pre> 
+ <h4 style="">一些常用的性能参数：</h4> 
+ <ul><li style="margin-left:1.4em;list-style-type:disc;text-indent:0;"><p>Connections：连接Mysql服务器的次数。</p></li></ul> 
+ <ul><li style="margin-left:1.4em;list-style-type:disc;text-indent:0;"><p>Uptime：当前Mysql实例运行的时长，单位秒。</p></li></ul> 
+ <pre class="kdocs-sql"><code class="language-sql">show status like 'Uptime';</code></pre> 
+ <p style="">结果为：</p> 
+ <div class="kdocs-line-container" style="display:flex;"> 
+  <div class="kdocs-img" style="flex-direction:column;max-width:100%;display:flex;width:242px;justify-content:center;align-items:center;height:auto;"> 
+   <div class="kdocs-img" style="padding-top:35.53719%;height:0;"> 
+    <img src="https://images2.imgbox.com/ec/b4/wb11ZfDB_o.png" style="margin-left:;display:block;width:242px;margin-top:-35.53719%;height:auto;"> 
+   </div> 
+  </div> 
+ </div> 
+ <p style="">表示我当前这个mysql服务器已经运行了609423秒，当你把mysql服务器重启后，这个时间又会从0开始计算。</p> 
+ <ul><li style="margin-left:1.4em;list-style-type:disc;text-indent:0;"><p>Slow_queries：Mysql服务器记录的慢查询SQL的次数。</p></li></ul> 
+ <ul><li style="margin-left:2.8em;list-style-type:circle;text-indent:0;"><p>注意：默认情况下，超过10秒的查询SQL会被当成慢查询，我们后续可以自己改这个阈值，请往下看。</p></li></ul> 
+ <ul><li style="margin-left:1.4em;list-style-type:disc;text-indent:0;"><p>Innodb_rows_read：select语句返回的行数，注意：这是整个Mysql实例运行期间的总查询行数，以下几个参数同理。</p></li></ul> 
+ <ul><li style="margin-left:1.4em;list-style-type:disc;text-indent:0;"><p>Innodb_rows_inserted：执行insert语句插入的行数，注意：这是整个Mysql实例运行期间的总插入行数，以下几个参数同理。</p></li></ul> 
+ <ul><li style="margin-left:1.4em;list-style-type:disc;text-indent:0;"><p>Innodb_rows_updated：执行update语句更新的行数。</p></li></ul> 
+ <ul><li style="margin-left:1.4em;list-style-type:disc;text-indent:0;"><p>Innodb_rows_deleted：执行delete语句删除的行数。</p></li></ul> 
+ <ul><li style="margin-left:1.4em;list-style-type:disc;text-indent:0;"><p>Com_select：查询操作的次数。</p></li></ul> 
+ <ul><li style="margin-left:1.4em;list-style-type:disc;text-indent:0;"><p>Com_insert：插入操作的次数，对于批量插入的insert操作，只累加一次。</p></li></ul> 
+ <ul><li style="margin-left:1.4em;list-style-type:disc;text-indent:0;"><p>Com_update：更新操作的次数。</p></li></ul> 
+ <ul><li style="margin-left:1.4em;list-style-type:disc;text-indent:0;"><p>Com_delete：删除操作的次数。</p></li></ul> 
+ <h4 style="">2.统计SQL的查询成本：last_query_cost，翻译过来就是最近一次的查询花费了多少成本。</h4> 
+ <h5 style="">①举例：我先执行一个查询语句，如下：</h5> 
+ <pre class="kdocs-sql"><code class="language-sql">select * from student_info where id = 900001;</code></pre> 
+ <p style="">再执行：</p> 
+ <pre class="kdocs-sql"><code class="language-sql">show status like 'last_query_cost';</code></pre> 
+ <p style="">我们就能看到最近一次查询语句所消耗的成本，最近一次查询语句就是我们刚才执行的select * from student_info where id = 900001;</p> 
+ <p style="">执行结果就是：value = 1的意思是：本次查询只用到了一个数据页，显然这个速度很快。</p> 
+ <div class="kdocs-line-container" style="display:flex;"> 
+  <div class="kdocs-img" style="flex-direction:column;max-width:100%;display:flex;width:373px;justify-content:center;align-items:center;height:auto;"> 
+   <div class="kdocs-img" style="padding-top:36.99732%;height:0;"> 
+    <img src="https://images2.imgbox.com/5e/91/uuOfUS2O_o.png" style="margin-left:;display:block;width:373px;margin-top:-36.99732%;height:auto;"> 
+   </div> 
+  </div> 
+ </div> 
+ <p style="">注意：last_query_cost的结果可能是个小数，就如下面的结果，</p> 
+ <p style="">意思是;总共用到了21个数据页，只不过最后一个数据页只查询了一部分就找到了结果。</p> 
+ <div class="kdocs-line-container" style="display:flex;"> 
+  <div class="kdocs-img" style="flex-direction:column;max-width:100%;display:flex;width:361px;justify-content:center;align-items:center;height:auto;"> 
+   <div class="kdocs-img" style="padding-top:38.504158%;height:0;"> 
+    <img src="https://images2.imgbox.com/aa/b1/oxtQQZ9f_o.png" style="margin-left:;display:block;width:361px;margin-top:-38.504158%;height:auto;"> 
+   </div> 
+  </div> 
+ </div> 
+ <h5 style=""> ②注意：</h5> 
+ <p style="">从页加载的角度来看：</p> 
+ <ul><li style="margin-left:1.4em;list-style-type:disc;text-indent:0;"><p>如果这个页就在数据库的缓冲池中，那么它的加载效率是最高的，比内存还高，如果这个页不在缓冲池中，就会从内存或者磁盘中读取。</p></li></ul> 
+ <ul><li style="margin-left:1.4em;list-style-type:disc;text-indent:0;"><p>如果我们从磁盘对单一页进行随机读，那么效率很低，差不多10ms左右，如果我们采用顺序IO读取的方式，批量对页进行读取，平均一页的读取效率甚至要快于单个页在内存中的随机读取。</p></li></ul> 
+ <p style="">所以，遇到IO不用担心，方法找对了，效率还是很高的，我们首先要考虑数据页存放的位置，如果是经常使用的数据，就尽量要放到缓冲池中，其次我们可以充分利用磁盘的吞吐能力，一次性批量读取数据页，这样对单个页的读取效率就能明显提升。</p> 
+ <h4 style="">3.慢查询日志</h4> 
+ <p style="">默认情况下：Mysql是没有开启慢查询日志的，就像Mysql5.7默认是不开启binlog日志的，</p> 
+ <p style="">平时不做性能调优的话，建议不要开启慢查询日志，因为开启后，Mysql server会把超过阈值的查询语句记录到慢查询日志文件中，这会损失一定的性能，在性能调优结束后，建议你关掉慢查询日志。</p> 
+ <h5 style="">①查看当前Mysql server中慢查询日志是否开启：</h5> 
+ <pre class="kdocs-sql"><code class="language-sql">show variables like 'slow_query_log';</code></pre> 
+ <p style="">以下就是显示没开启的状态：</p> 
+ <div class="kdocs-line-container" style="display:flex;"> 
+  <div class="kdocs-img" style="flex-direction:column;max-width:100%;display:flex;width:504px;justify-content:center;align-items:center;height:auto;"> 
+   <div class="kdocs-img" style="padding-top:32.539684%;height:0;"> 
+    <img src="https://images2.imgbox.com/a2/9d/xUwH3TFs_o.png" style="margin-left:;display:block;width:504px;margin-top:-32.539684%;height:auto;"> 
+   </div> 
+  </div> 
+ </div> 
+ <h5 style="text-align:left;">②开启慢查询日志：</h5> 
+ <pre class="kdocs-sql"><code class="language-sql">set global slow_query_log = on; 注意：global后面没有点'.'
+或
+set @@global.slow_query_log = on; 注意：global后面有点'.'</code></pre> 
+ <h5 style="">③查看真正的慢查询日志文件：</h5> 
+ <p style="">说是慢查询日志，肯定最终要有一个文件来记录这些慢查询，说到最后都要定位到这个文件，那么这个文件在哪里呢？</p> 
+ <p style="text-align:left;">通过这个命令就能找到真正慢查询日志文件到底在哪里：</p> 
+ <pre class="kdocs-sql"><code class="language-sql">show variables like 'slow_query_log_file';</code></pre> 
+ <p style="">结果：</p> 
+ <div class="kdocs-line-container" style="display:flex;"> 
+  <div class="kdocs-img" style="flex-direction:column;max-width:100%;display:flex;width:702px;justify-content:center;align-items:center;height:auto;"> 
+   <div class="kdocs-img" style="padding-top:10.96866%;height:0;"> 
+    <img src="https://images2.imgbox.com/02/e6/a0cZq3L4_o.png" style="margin-left:;display:block;width:702px;margin-top:-10.96866%;height:auto;"> 
+   </div> 
+  </div> 
+ </div> 
+ <p style="">如果是linux系统，那么该文件在/var/lib/mysql目录下。</p> 
+ <h5 style="">④修改慢查询的阈值</h5> 
+ <pre class="kdocs-sql"><code class="language-sql">show variables like 'long_query_time';</code></pre> 
+ <p style="">我们可以看到，阈值默认是10秒，超过10秒就会被认为是慢查询（不包含10）；</p> 
+ <div class="kdocs-line-container" style="display:flex;"> 
+  <div class="kdocs-img" style="flex-direction:column;max-width:100%;display:flex;width:583px;justify-content:center;align-items:center;height:auto;"> 
+   <div class="kdocs-img" style="padding-top:24.69983%;height:0;"> 
+    <img src="https://images2.imgbox.com/c5/35/rBqz0I5S_o.png" style="margin-left:;display:block;width:583px;margin-top:-24.69983%;height:auto;"> 
+   </div> 
+  </div> 
+ </div> 
+ <p style="">显然10秒这个时间太长了，所以我们需要重新设置一个合适的值：</p> 
+ <pre class="kdocs-sql"><code class="language-sql">set global long_query_time = 1;  注意：global后面没有点'.'
+或
+set @@global.long_query_time = 1; 注意：global后面有点'.'
+注意：
+long_query_time即是全局系统参数，又是会话系统参数，你只改全局是不行的，你还需要修改会话系统参数。
+set long_query_time = 1;</code></pre> 
+ <p style="">注意：你通过上面的方式进行修改，配置是没有持久化的，下次mysql重启后又恢复老样子了，所以你可以直接修改my.ini配置文件。</p> 
+ <div class="kdocs-line-container" style="display:flex;"> 
+  <div class="kdocs-img" style="flex-direction:column;max-width:100%;display:flex;width:1184px;justify-content:center;align-items:center;height:auto;"> 
+   <div class="kdocs-img" style="padding-top:24.070946%;height:0;"> 
+    <img src="https://images2.imgbox.com/29/80/901QxYvE_o.png" style="margin-left:;display:block;width:1184px;margin-top:-24.070946%;height:auto;"> 
+   </div> 
+  </div> 
+ </div> 
+ <h5 style="">⑤查看当前mysql实例的的慢查询日志：</h5> 
+ <pre class="kdocs-sql"><code class="language-sql">show status like 'Slow_queries';</code></pre> 
+ <p style="">结果：</p> 
+ <div class="kdocs-line-container" style="display:flex;"> 
+  <div class="kdocs-img" style="flex-direction:column;max-width:100%;display:flex;width:276px;justify-content:center;align-items:center;height:auto;"> 
+   <div class="kdocs-img" style="padding-top:38.405796%;height:0;"> 
+    <img src="https://images2.imgbox.com/60/e0/0SYv7MKV_o.png" style="margin-left:;display:block;width:276px;margin-top:-38.405796%;height:auto;"> 
+   </div> 
+  </div> 
+ </div> 
+ <p style="">这里的value = 2意思是总共有两次慢查询的记录，那如何找到这两条慢查询SQL呢？这就需要慢查询分析工具了。</p> 
+ <h5 style="">⑥慢查询日志分析工具：mysqldumpslow</h5> 
+ <p style="">mysqldumpslow是mysql专门提供的用于慢查询分析的工具，该工具不是在mysql命令行中运行，要在linux中执行；</p> 
+ <div class="kdocs-line-container" style="display:flex;"> 
+  <div class="kdocs-img" style="flex-direction:column;max-width:100%;display:flex;width:459px;justify-content:center;align-items:center;height:auto;"> 
+   <div class="kdocs-img" style="padding-top:48.583878%;height:0;"> 
+    <img src="https://images2.imgbox.com/0c/95/tUUhh7df_o.png" style="margin-left:;display:block;width:459px;margin-top:-48.583878%;height:auto;"> 
+   </div> 
+  </div> 
+ </div> 
+ <p style="">不是在mysql命令行中执行，mysql命令行中是执行sql的，而mysqldumpslow是一个脚本文件，需要在linux命令行中执行，如下：</p> 
+ <div class="kdocs-line-container" style="display:flex;"> 
+  <div class="kdocs-img" style="flex-direction:column;max-width:100%;display:flex;width:446px;justify-content:center;align-items:center;height:auto;"> 
+   <div class="kdocs-img" style="padding-top:13.004484%;height:0;"> 
+    <img src="https://images2.imgbox.com/f2/cb/dusloXcE_o.png" style="margin-left:;display:block;width:446px;margin-top:-13.004484%;height:auto;"> 
+   </div> 
+  </div> 
+ </div> 
+ <p style=""><span class="kdocs-fontSize" style="font-size:16pt;"><span class="kdocs-bold" style="font-weight:bold;">help命令查看帮助：mysqldumpslow -help</span></span></p> 
+ <div class="kdocs-line-container" style="display:flex;"> 
+  <div class="kdocs-img" style="flex-direction:column;max-width:100%;display:flex;width:903px;justify-content:center;align-items:center;height:auto;"> 
+   <div class="kdocs-img" style="padding-top:70.21041%;height:0;"> 
+    <img src="https://images2.imgbox.com/47/22/zuPi1MHc_o.png" style="margin-left:;display:block;width:903px;margin-top:-70.21041%;height:auto;"> 
+   </div> 
+  </div> 
+ </div> 
+ <p style="">说明：</p> 
+ <ul><li style="margin-left:1.4em;list-style-type:disc;text-indent:0;"><p>-s代表将慢查询sql以什么方式进行排序，后面跟at就表示按平均查询时长排序，后面跟t就表示按什么时候执行的排序</p></li></ul> 
+ <ul><li style="margin-left:1.4em;list-style-type:disc;text-indent:0;"><p>-t代表展示前几行，例如：-t 5就表示展示前5个慢SQL</p></li></ul> 
+ <ul><li style="margin-left:1.4em;list-style-type:disc;text-indent:0;"><p>-a：这个需要解释一下：假如你的慢查询SQL是select * from employee where name = '许海',等你使用mysqldumpslow工具将其查询出来时，字符串'许海'会被替换成'S'，如果是数值，会被替换成'N',所以就变成了select * from employee where name = 'S'；</p></li></ul> 
+ <p style="">如果你不想要这种替换，那么你就得把-a这个参数带上。</p> 
+ <p style="">使用案例：</p> 
+ <div class="kdocs-line-container" style="display:flex;"> 
+  <div class="kdocs-img" style="flex-direction:column;max-width:100%;display:flex;width:593px;justify-content:center;align-items:center;height:auto;"> 
+   <div class="kdocs-img" style="padding-top:15.682968%;height:0;"> 
+    <img src="https://images2.imgbox.com/ad/00/2TSsEEkW_o.png" style="margin-left:;display:block;width:593px;margin-top:-15.682968%;height:auto;"> 
+   </div> 
+  </div> 
+ </div> 
+ <p style="">结果：红色框圈起来的，就是查出来的慢SQL</p> 
+ <div class="kdocs-line-container" style="display:flex;"> 
+  <div class="kdocs-img" style="flex-direction:column;max-width:100%;display:flex;width:960px;justify-content:center;align-items:center;height:auto;"> 
+   <div class="kdocs-img" style="padding-top:26.145832%;height:0;"> 
+    <img src="https://images2.imgbox.com/52/34/3wPWyaTR_o.png" style="margin-left:;display:block;width:960px;margin-top:-26.145832%;height:auto;"> 
+   </div> 
+  </div> 
+ </div> 
+ <h5 style="">⑦关闭慢查询日志</h5> 
+ <p style=""><span class="kdocs-bold" style="font-weight:bold;">永久性方式：</span></p> 
+ <ul><li style="margin-left:1.4em;list-style-type:disc;text-indent:0;"><p>修改my.cnf或者my.ini文件，把slow_query_log设置为off，或者直接把 slow_query_log = off这一项从配置文件中删掉，再重启mysql服务器就可以了。</p></li></ul> 
+ <p style=""><span class="kdocs-bold" style="font-weight:bold;">临时性方式:</span></p> 
+ <ul><li style="margin-left:1.4em;list-style-type:disc;text-indent:0;"><p>使用set语句来设置</p></li></ul> 
+ <h5 style="">⑧删除慢查询日志文件</h5> 
+ <p style="">如果你想节省空间，慢查询日志文件对你又不需要了的话，你可以在linxu中直接使用rm命令将慢查询日志文件删掉；</p> 
+ <p style="">删掉后，如果你想重置慢查询日志文件，意思就是：我还想用慢查询日志文件，但是想要一个全新的，没有记录的文件，</p> 
+ <p style="">那么你可以使用命令：</p> 
+ <pre class="kdocs-sql"><code class="language-sql">mysqladmin -uroot -p flush-logs slow</code></pre> 
+ <p style="">注意：flush-logs表示刷新所有日志文件，包含慢查询日志，binglog，redolog日志，如果你只是想刷新慢查询日志，</p> 
+ <p style="">你就在后面加上slow即可；</p> 
+ <p style="">注意：你要利用刷新日志文件的方式重置慢查询日志的话，你需要先将slow_query_log 设置成on，表示打开慢查询日志，否则不会生成新的日志文件。</p> 
+ <h4 style="">4.explain查看执行计划（或者用describe关键字，两者等价）</h4> 
+ <p style="">上一步中，我们知道了到底是哪些SQL语句执行速度慢，我们现在就可以利用explain关键字来分析这些SQL；</p> 
+ <p style="">在5.6版本及以前，explain只能对select语句查看执行计划，在5.7以及之后的版本，还可以对update，delete，insert等语句查看执行计划。</p> 
+ <h5 style="">①explain中各个字段的意思：</h5> 
+ <div class="kdocs-line-container" style="display:flex;"> 
+  <div class="kdocs-img" style="flex-direction:column;max-width:100%;display:flex;width:969px;justify-content:center;align-items:center;height:auto;"> 
+   <div class="kdocs-img" style="padding-top:65.53147%;height:0;"> 
+    <img src="https://images2.imgbox.com/5e/ec/e53FzF8A_o.png" style="margin-left:;display:block;width:969px;margin-top:-65.53147%;height:auto;"> 
+   </div> 
+  </div> 
+ </div> 
+ <p style="">其中重要的有：</p> 
+ <ul><li style="margin-left:1.4em;list-style-type:disc;text-indent:0;"><p>type：表示针对单表的访问方法，什么意思呢？</p></li></ul> 
+ <ul><li style="margin-left:1.4em;list-style-type:disc;text-indent:0;"><p>key：实际上使用到的索引</p></li></ul> 
+ <ul><li style="margin-left:1.4em;list-style-type:disc;text-indent:0;"><p>key_len：实际使用到索引的长度</p></li></ul> 
+ <ul><li style="margin-left:1.4em;list-style-type:disc;text-indent:0;"><p>rows：预估的需要读取的记录条数</p></li></ul> 
+ <ul><li style="margin-left:1.4em;list-style-type:disc;text-indent:0;"><p>extra：额外信息</p></li></ul> 
+ <p style="">todo待完成。。。。。explain中的东西比较多，以后再补；</p> 
+ <h2 style="">第六章：索引优化、查询优化</h2> 
+ <p style="">有哪些维度可以对数据库进行调优？</p> 
+ <div class="kdocs-line-container" style="display:flex;"> 
+  <div class="kdocs-img" style="flex-direction:column;max-width:100%;display:flex;width:700px;justify-content:center;align-items:center;height:auto;"> 
+   <div class="kdocs-img" style="padding-top:27.285713%;height:0;"> 
+    <img src="https://images2.imgbox.com/15/85/G4RQ3yY6_o.png" style="margin-left:;display:block;width:700px;margin-top:-27.285713%;height:auto;"> 
+   </div> 
+  </div> 
+ </div> 
+ <h3 style="">一、索引失效案例：</h3> 
+ <p style="text-align:left;">现在我有三个索引：</p> 
+ <ul><li style="margin-left:1.4em;list-style-type:disc;text-indent:0;text-align:left;"><p>① (age，class_id，name)</p></li></ul> 
+ <ul><li style="margin-left:1.4em;list-style-type:disc;text-indent:0;text-align:left;"><p>② age</p></li></ul> 
+ <ul><li style="margin-left:1.4em;list-style-type:disc;text-indent:0;text-align:left;"><p>③ (age，class_id)</p></li></ul> 
+ <h4 style="">1.尽量做到全值匹配</h4> 
+ <p style="">又有三条SQL：</p> 
+ <ul><li style="margin-left:1.4em;list-style-type:disc;text-indent:0;"><p>select * from student where age = 30;</p></li></ul> 
+ <ul><li style="margin-left:1.4em;list-style-type:disc;text-indent:0;"><p>select * from student where age = 30 and class_id = 4;</p></li></ul> 
+ <ul><li style="margin-left:1.4em;list-style-type:disc;text-indent:0;"><p>select * from student where age = 30 and class_id = 4 and name = '许海';</p></li></ul> 
+ <p style="">以上三句SQL，哪句会走索引？</p> 
+ <p style="">答：三个都会走索引。</p> 
+ <p style="">再问：这三条sql语句，哪一个</p> 
+ <h4 style="">2.最左匹配原则</h4> 
+ <ul><li style="margin-left:1.4em;list-style-type:disc;text-indent:0;"><p>select * from student where class_id = 4 and name = '许海';</p></li></ul> 
+ <ul><li style="margin-left:2.8em;list-style-type:circle;text-indent:0;"><p>这句会走索引吗？不会。</p></li></ul> 
+ <ul><li style="margin-left:1.4em;list-style-type:disc;text-indent:0;"><p>select * from student where class_id = 4 and age = 30 and name = '许海';</p></li></ul> 
+ <ul><li style="margin-left:2.8em;list-style-type:circle;text-indent:0;"><p>这句会走索引吗？会，虽然顺序没有让age排一个，但是mysql底层的优化器会优化我们的sql。</p></li></ul> 
+ <p style="">总结：要想使用上联合索引，你的SQL必须带有最左边的字段，否则用不上。</p> 
+ <h4 style="">3.主键插入顺序</h4> 
+ <h4 style="">4.计算、函数、类型转换（自动或手动）会导致索引失效。</h4> 
+ <h4 style="">1.函数导致索引失效</h4> 
+ <p style="">比如：下面两句SQL谁更好呢？</p> 
+ <pre class="kdocs-sql"><code class="language-sql">selsect * from student where name like 'abc%';</code></pre> 
+ <pre class="kdocs-sql"><code class="language-sql">selsect * from student where left(name,3) = 'abc';</code></pre> 
+ <p style="">虽然两句SQL最后的结果都是一样的，但是第一个SQL能用上name索引，第一句SQL无法使用name索引，因为对name字段使用了name函数。</p> 
+ <p style="">由于函数都是千奇百怪的，mysql并不确定name字段的值经过各种函数后会变成什么样子，所以无法使用上索引，只能是把整张表中所有name字段的值都拿出来跟left函数运算，再跟'abc'做对比，所以使用不上所用。</p> 
+ <p style="">但是上面的like 'abc%'是可以用上索引的。所以：<span class="kdocs-fontSize" style="font-size:15pt;"><span class="kdocs-color" style="color:#C21C13;"><span class="kdocs-bold" style="font-weight:bold;">除了where，order by，group by，还有like也会触发索引</span></span></span></p> 
+ <h4 style="">2.计算导致索引失效</h4> 
+ <pre class="kdocs-sql"><code class="language-sql">selsect * from student where age + 1 = 18;</code></pre> 
+ <pre class="kdocs-sql"><code class="language-sql">selsect * from student where age = 17;</code></pre> 
+ <p style="">这两句结果都是一样的，但是由于第一句对age做了计算，也导致它不能使用age索引，原因跟函数导致索引失效一样，mysql无法判断你的age进行各种计算后会是什么结果，只能是全表扫描把所有age都拿出来+1跟18做对比。</p> 
+ <h4 style="">3.类型转换导致索引失效</h4> 
+ <p style="">由于name是字符串类型，你用name等于一个数值类型123，是无法走索引的。</p> 
+ <p style="">原因是：mysql会先将name的值用隐式的类型转换函数转换成字符串类型，再做对比，</p> 
+ <p style="">由于对name字段使用了函数，就会导致name索引失效。</p> 
+ <pre class="kdocs-sql"><code class="language-sql">selsect * from student where name = 123;</code></pre> 
+ <h4 style="">4.范围条件右边的索引会失效</h4> 
+ <p style="">我现在有一个联合索引（age，classId，name）,</p> 
+ <pre class="kdocs-sql"><code class="language-sql">select * from student
+where age = 30 and classId &gt; 30 and name = '许海';</code></pre> 
+ <p style="">按照我们前面学习的知识，这句SQL应该会走这个联合索引，并且age，classId，name三个字段都能用得上，</p> 
+ <p style="">但实际确实：该联合索引能用上，但是只能用age，classId两个字段，name这个字段无法使用上索引，</p> 
+ <p style="">因为classId &gt; 30是一个范围条件，它右边的所有字段都走不了索引，所以就导致name无法走索引。</p> 
+ <p style="">注意：我说的右边，指的是联合索引中classId的右边，如下图：</p> 
+ <div class="kdocs-line-container" style="display:flex;"> 
+  <div class="kdocs-img" style="flex-direction:column;max-width:100%;display:flex;width:196px;justify-content:center;align-items:center;height:auto;"> 
+   <div class="kdocs-img" style="padding-top:26.530611%;height:0;"> 
+    <img src="https://images2.imgbox.com/73/e1/v0etnZma_o.png" style="margin-left:;display:block;width:196px;margin-top:-26.530611%;height:auto;"> 
+   </div> 
+  </div> 
+ </div> 
+ <p style="">而不是SQL语句中classId的右边：</p> 
+ <div class="kdocs-line-container" style="display:flex;"> 
+  <div class="kdocs-img" style="flex-direction:column;max-width:100%;display:flex;width:504px;justify-content:center;align-items:center;height:auto;"> 
+   <div class="kdocs-img" style="padding-top:22.81746%;height:0;"> 
+    <img src="https://images2.imgbox.com/ba/a7/RzN2k79V_o.png" style="margin-left:;display:block;width:504px;margin-top:-22.81746%;height:auto;"> 
+   </div> 
+  </div> 
+ </div> 
+ <p style="">所以，就算你把SQL语句中name跟字段的位置交换，name字段也是用不了联合索引的。</p> 
+ <pre class="kdocs-sql"><code class="language-sql">select * from student
+where age = 30 and name = '许海' and classId &gt; 30;</code></pre> 
+ <p style=""><span class="kdocs-fontSize" style="font-size:16pt;"><span class="kdocs-bold" style="font-weight:bold;">注意1：name无法走上面这个联合索引，那它能单独走name的单列索引吗？</span></span></p> 
+ <p style="">答：一定要注意了，一条sql只能走一个索引，既然已经走了联合索引，就无法走其他单例索引了。</p> 
+ <p style=""><span class="kdocs-fontSize" style="font-size:16pt;"><span class="kdocs-bold" style="font-weight:bold;">注意2：代表范围的，除了上面的大于，小于...还有</span><span class="kdocs-color" style="color:#C21C13;"><span class="kdocs-bold" style="font-weight:bold;">不等于</span></span><span class="kdocs-bold" style="font-weight:bold;">，</span><span class="kdocs-color" style="color:#C21C13;"><span class="kdocs-bold" style="font-weight:bold;">between</span></span><span class="kdocs-bold" style="font-weight:bold;">也属于范围，它也会导致索引失效。</span></span></p> 
+ <h4 style="">5. is null能使用索引，is not null无法使用索引。</h4> 
+ <p style="">因为B+树中，null值也参与了排序，所以能通过B+树很快找到所有null值，但是is not null却需要全表扫描才能找到所有不是null的值。</p> 
+ <p style="">开发经验：在设计数据表的时候，最好给字段添加非空约束，比如你可以将int类型的字段默认值设置为0，而不是null将字符串的默认值设置为""而不是null，那么你以后在查询SQL时就不用where is not null了，就可以避免is not null导致索引失效。</p> 
+ <h4 style="">6. like查询时，通配符%在左边会导致索引失效。</h4> 
+ <p style="">比如：下面的sql就会导致索引失效。</p> 
+ <pre class="kdocs-sql"><code class="language-sql">select * from student
+where name like '%许海';</code></pre> 
+ <p style="">但是通配符%在右边不会导致索引失效，如：</p> 
+ <pre class="kdocs-sql"><code class="language-sql">select * from student
+where name like '许海%';</code></pre> 
+ <p style="">为什么'%许海'会导致索引失效呢？</p> 
+ <p style="">因为你这个值的开头都没有确定，我就完全不知道该从B+树哪里开始找，只能全表扫描了。</p> 
+ <p style="">但是'许海%'左边是确定了的，所以我就知道从B+树的哪里开始找更近，因为左边的'许海'是确定了的，所以我们可以找排在'许海'后面的行记录。</p> 
+ <p style=""><span class="kdocs-fontSize" style="font-size:16pt;"><span class="kdocs-bold" style="font-weight:bold;">阿里巴巴规约：页面搜索严禁使用左模糊或全模式，就是因为会导致索引失效，如果你非要用，就请使用搜索引擎。</span></span></p> 
+ <h4 style="">7. or的前后存在非索引的列，会导致索引失效</h4> 
+ <p style="">假如我对name建了索引，age没有建索引，那么下面的SQL就无法走name这个索引。</p> 
+ <pre class="kdocs-sql"><code class="language-sql">select * from student
+where name = '许海' or age = 20;</code></pre> 
+ <p style="">原因是什么呢？</p> 
+ <p style="">虽然通过B+树可以很快找到name等于'许海'的行记录，但是mysql还需要去找age=20的行记录，所以最终也要进行全表扫描，所以就相当于name索引失效了。</p> 
+ <h4 style="">8. 数据库的字符集和表的字符集不相同导致索引失效</h4> 
+ <p style="">不同的字符集在进行比较前需要进行转换，而转换会导致索引失效。</p> 
+ <h4 style="">9. 索引练习：</h4> 
+ <p style="">现在我有一个联合索引（a，b，c）,</p> 
+ <p style="">请看下面的语句，哪些能使用到索引？</p> 
+ <div class="kdocs-line-container" style="display:flex;"> 
+  <div class="kdocs-img" style="flex-direction:column;max-width:100%;display:flex;width:1176px;justify-content:center;align-items:center;height:auto;"> 
+   <div class="kdocs-img" style="padding-top:68.452385%;height:0;"> 
+    <img src="https://images2.imgbox.com/c4/ee/S5Dq7yj5_o.png" style="margin-left:;display:block;width:1176px;margin-top:-68.452385%;height:auto;"> 
+   </div> 
+  </div> 
+ </div> 
+ <div class="kdocs-line-container" style="display:flex;"> 
+  <div class="kdocs-img" style="flex-direction:column;max-width:100%;display:flex;width:1174px;justify-content:center;align-items:center;height:auto;"> 
+   <div class="kdocs-img" style="padding-top:7.921635%;height:0;"> 
+    <img src="https://images2.imgbox.com/47/29/KP9HUza9_o.png" style="margin-left:;display:block;width:1174px;margin-top:-7.921635%;height:auto;"> 
+   </div> 
+  </div> 
+ </div> 
+ <h3 style="">二、多表查询的优化</h3> 
+ <ol start="1"><li style="margin-left:1.4em;list-style-type:decimal;text-indent:0;"><h4> </h4></li></ol> 
+ <p style=""></p> 
+</div>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/c4a5df69caffca3536a8f651fbd312b8/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">vue动态组件＜Component＞与＜KeepAlive＞</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/397f7505a422f789e5a82a20c6c988d5/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">C&#43;&#43;中vector迭代器</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

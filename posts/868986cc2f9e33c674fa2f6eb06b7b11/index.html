@@ -1,0 +1,1095 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Golang中Channel的分析与使用 - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="Golang中Channel的分析与使用" />
+<meta property="og:description" content="一、什么是channel 我们来看《Go语言编程》中的一段话
+channel是Go语言在语言级别提供的goroutine间的通信方式，是一种进程内的通信方式。
+通俗点儿解释就是channel可以在两个或者多个goroutine之间传递消息。在Go中，goroutine和channel是并发编程的两大基石，goroutine用来执行并发任务，channel用来在goroutine之间来传递消息。
+Do not communicate by sharing memory; instead, share memory by communicating.
+不要通过共享内存来通信，而要通过通信来实现共享内存。
+推荐一本书《Concurrency in Go》，这本书对golang中的并发做了深入的讲解。
+二、channel的实现 1、引入概念 首先我们来看两个例子来简单看下golang中channel是如何使用的：
+package main import ( &#34;fmt&#34; ) func goroutineA(a &lt;-chan int) { for { select { case val := &lt;-a: fmt.Println(val) } } } func main() { ch := make(chan int) go goroutineA(ch) ch &lt;- 3 ch &lt;- 5 } 很简单的一段程序，初始化了一个非缓冲的channel，然后并发一个协程去接收channel中的数据，然后往channel中连续发送两个值，首先大家先理解一组概念，什么是非缓冲型channel和缓冲型channel？对，其实很简单，make时如果channel空间不为0，就是缓冲型的channel。
+ch := make(chan int)//非缓冲型 ch := make(chan int， 1024)//缓冲型 如果我们将go goroutineA(ch)这行代码往下移，会发生什么？对，会报错" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/868986cc2f9e33c674fa2f6eb06b7b11/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-03-13T10:54:37+08:00" />
+<meta property="article:modified_time" content="2023-03-13T10:54:37+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Golang中Channel的分析与使用</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-light">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <h3><a id="channel_0"></a>一、什么是channel</h3> 
+<p>我们来看《Go语言编程》中的一段话</p> 
+<blockquote> 
+ <p>channel是Go语言在语言级别提供的goroutine间的通信方式，是一种进程内的通信方式。</p> 
+</blockquote> 
+<p>通俗点儿解释就是channel可以在两个或者多个goroutine之间传递消息。在Go中，goroutine和channel是并发编程的两大基石，goroutine用来执行并发任务，channel用来在goroutine之间来传递消息。</p> 
+<blockquote> 
+ <p>Do not communicate by sharing memory; instead, share memory by communicating.</p> 
+ <p>不要通过共享内存来通信，而要通过通信来实现共享内存。</p> 
+</blockquote> 
+<p>推荐一本书《Concurrency in Go》，这本书对golang中的并发做了深入的讲解。</p> 
+<h3><a id="channel_14"></a>二、channel的实现</h3> 
+<h4><a id="1_16"></a>1、引入概念</h4> 
+<p>首先我们来看两个例子来简单看下golang中channel是如何使用的：</p> 
+<pre><code class="prism language-go"><span class="token keyword">package</span> main
+
+<span class="token keyword">import</span> <span class="token punctuation">(</span>
+    <span class="token string">"fmt"</span>
+<span class="token punctuation">)</span>
+
+<span class="token keyword">func</span> <span class="token function">goroutineA</span><span class="token punctuation">(</span>a <span class="token operator">&lt;-</span><span class="token keyword">chan</span> <span class="token builtin">int</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">for</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">select</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">case</span> val <span class="token operator">:=</span> <span class="token operator">&lt;-</span>a<span class="token punctuation">:</span>
+            fmt<span class="token punctuation">.</span><span class="token function">Println</span><span class="token punctuation">(</span>val<span class="token punctuation">)</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+
+<span class="token keyword">func</span> <span class="token function">main</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    ch <span class="token operator">:=</span> <span class="token function">make</span><span class="token punctuation">(</span><span class="token keyword">chan</span> <span class="token builtin">int</span><span class="token punctuation">)</span>
+    <span class="token keyword">go</span> <span class="token function">goroutineA</span><span class="token punctuation">(</span>ch<span class="token punctuation">)</span>
+    ch <span class="token operator">&lt;-</span> <span class="token number">3</span>
+    ch <span class="token operator">&lt;-</span> <span class="token number">5</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>很简单的一段程序，初始化了一个非缓冲的channel，然后并发一个协程去接收channel中的数据，然后往channel中连续发送两个值，首先大家先理解一组概念，什么是非缓冲型channel和缓冲型channel？对，其实很简单，make时如果channel空间不为0，就是缓冲型的channel。</p> 
+<pre><code class="prism language-go">ch <span class="token operator">:=</span> <span class="token function">make</span><span class="token punctuation">(</span><span class="token keyword">chan</span> <span class="token builtin">int</span><span class="token punctuation">)</span><span class="token comment">//非缓冲型</span>
+ch <span class="token operator">:=</span> <span class="token function">make</span><span class="token punctuation">(</span><span class="token keyword">chan</span> <span class="token builtin">int</span>， <span class="token number">1024</span><span class="token punctuation">)</span><span class="token comment">//缓冲型</span>
+</code></pre> 
+<p>如果我们将go goroutineA(ch)这行代码往下移，会发生什么？对，会报错</p> 
+<blockquote> 
+ <p>fatal error: all goroutines are asleep - deadlock!</p> 
+</blockquote> 
+<p>因为channel没有缓冲，也没有正在等待接收的goroutine，这个概念接下来我会讲到。</p> 
+<p>另外，我们会看到goroutineA的入参是a &lt;-chan int，代表一个只能用于接收的channel，也就是单向channel</p> 
+<pre><code class="prism language-go"><span class="token keyword">var</span> a <span class="token operator">&lt;-</span><span class="token keyword">chan</span> <span class="token builtin">int</span><span class="token comment">//单向channel，只用于接收，也就是从channel读取数据</span>
+<span class="token keyword">var</span> a <span class="token keyword">chan</span><span class="token operator">&lt;-</span> <span class="token builtin">int</span><span class="token comment">//单向channel，只用于发送，也就是往channel写入数据</span>
+</code></pre> 
+<p>大家一定要清楚接收和发送的概念</p> 
+<blockquote> 
+ <p>接收代表从channel读取数据</p> 
+ <p>发送代表往channel写入数据</p> 
+</blockquote> 
+<p>再看一个复杂点儿的例子</p> 
+<pre><code class="prism language-go"><span class="token keyword">package</span> main
+
+<span class="token keyword">import</span> <span class="token punctuation">(</span>
+    <span class="token string">"fmt"</span>
+    <span class="token string">"os"</span>
+    <span class="token string">"os/signal"</span>
+    <span class="token string">"syscall"</span>
+    <span class="token string">"time"</span>
+<span class="token punctuation">)</span>
+
+<span class="token keyword">var</span> exit <span class="token operator">=</span> <span class="token function">make</span><span class="token punctuation">(</span><span class="token keyword">chan</span> <span class="token builtin">string</span><span class="token punctuation">,</span> <span class="token number">1</span><span class="token punctuation">)</span>
+
+<span class="token keyword">func</span> <span class="token function">main</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">go</span> <span class="token function">dealSignal</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+    exited <span class="token operator">:=</span> <span class="token function">make</span><span class="token punctuation">(</span><span class="token keyword">chan</span> <span class="token keyword">struct</span><span class="token punctuation">{<!-- --></span><span class="token punctuation">}</span><span class="token punctuation">,</span> <span class="token number">1</span><span class="token punctuation">)</span>
+    <span class="token keyword">go</span> <span class="token function">channel1</span><span class="token punctuation">(</span>exited<span class="token punctuation">)</span>
+    count <span class="token operator">:=</span> <span class="token number">0</span>
+    t <span class="token operator">:=</span> time<span class="token punctuation">.</span><span class="token function">Tick</span><span class="token punctuation">(</span>time<span class="token punctuation">.</span>Second<span class="token punctuation">)</span>
+Loop<span class="token punctuation">:</span>
+    <span class="token keyword">for</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">select</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">case</span> <span class="token operator">&lt;-</span>t<span class="token punctuation">:</span>
+            count<span class="token operator">++</span>
+            fmt<span class="token punctuation">.</span><span class="token function">Printf</span><span class="token punctuation">(</span><span class="token string">"main run %d\n"</span><span class="token punctuation">,</span> count<span class="token punctuation">)</span>
+        <span class="token keyword">case</span> <span class="token operator">&lt;-</span>exited<span class="token punctuation">:</span>
+            fmt<span class="token punctuation">.</span><span class="token function">Println</span><span class="token punctuation">(</span><span class="token string">"main exit begin"</span><span class="token punctuation">)</span>
+            <span class="token keyword">break</span> Loop
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+    fmt<span class="token punctuation">.</span><span class="token function">Println</span><span class="token punctuation">(</span><span class="token string">"main exit end"</span><span class="token punctuation">)</span>
+<span class="token punctuation">}</span>
+
+<span class="token keyword">func</span> <span class="token function">dealSignal</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    c <span class="token operator">:=</span> <span class="token function">make</span><span class="token punctuation">(</span><span class="token keyword">chan</span> os<span class="token punctuation">.</span>Signal<span class="token punctuation">,</span> <span class="token number">1</span><span class="token punctuation">)</span>
+    signal<span class="token punctuation">.</span><span class="token function">Notify</span><span class="token punctuation">(</span>c<span class="token punctuation">,</span> os<span class="token punctuation">.</span>Interrupt<span class="token punctuation">,</span> syscall<span class="token punctuation">.</span>SIGTERM<span class="token punctuation">)</span>
+    <span class="token keyword">go</span> <span class="token keyword">func</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token operator">&lt;-</span>c
+        exit <span class="token operator">&lt;-</span> <span class="token string">"shutdown"</span>
+    <span class="token punctuation">}</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+<span class="token punctuation">}</span>
+
+<span class="token keyword">func</span> <span class="token function">channel1</span><span class="token punctuation">(</span>exited <span class="token keyword">chan</span><span class="token operator">&lt;-</span> <span class="token keyword">struct</span><span class="token punctuation">{<!-- --></span><span class="token punctuation">}</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    t <span class="token operator">:=</span> time<span class="token punctuation">.</span><span class="token function">Tick</span><span class="token punctuation">(</span>time<span class="token punctuation">.</span>Second<span class="token punctuation">)</span>
+    count <span class="token operator">:=</span> <span class="token number">0</span>
+    <span class="token keyword">for</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">select</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">case</span> <span class="token operator">&lt;-</span>t<span class="token punctuation">:</span>
+            count<span class="token operator">++</span>
+            fmt<span class="token punctuation">.</span><span class="token function">Printf</span><span class="token punctuation">(</span><span class="token string">"channel1 run %d\n"</span><span class="token punctuation">,</span> count<span class="token punctuation">)</span>
+        <span class="token keyword">case</span> <span class="token operator">&lt;-</span>exit<span class="token punctuation">:</span>
+            fmt<span class="token punctuation">.</span><span class="token function">Println</span><span class="token punctuation">(</span><span class="token string">"channel1 exit"</span><span class="token punctuation">)</span>
+            <span class="token function">close</span><span class="token punctuation">(</span>exited<span class="token punctuation">)</span>
+            <span class="token keyword">return</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>这个例子首先并发出一个dealsign方法，用来接收关闭信号，如果接收到关闭信号后往exit channel发送一条消息，然后并发运行channel1，channel1中定于了一个ticker，正常情况下channel1每秒打印第一个case语句，如果接收到exit的信号，进入第二个case，然后关闭传入的exited channel，那么main中的Loop，接收到exited关闭的信号后，打印“main exit begin”， 然后退出循环，进程成功退出。这个例子演示了channel在goroutine中起到的传递消息的作用。这个例子是为了向大家展示channel在多个goroutine之间进行通信。</p> 
+<h4><a id="2_133"></a>2、数据结构</h4> 
+<p>channel为什么会天生具备这种传递消息的特性呢，我们不禁对其底层的数据结构产生兴趣，我们来看下runtime/chan.go文件，有关channel的一切底层操作都在这个文件，我们首先来看下数据结构：</p> 
+<pre><code class="prism language-go"><span class="token keyword">type</span> hchan <span class="token keyword">struct</span> <span class="token punctuation">{<!-- --></span>
+    qcount   <span class="token builtin">uint</span>           <span class="token comment">// total data in the queue；chan中的元素总数</span>
+    dataqsiz <span class="token builtin">uint</span>           <span class="token comment">// size of the circular queue；底层循环数组的size</span>
+    buf      unsafe<span class="token punctuation">.</span>Pointer <span class="token comment">// points to an array of dataqsiz elements，指向底层循环数组的指针，只针对有缓冲的channel</span>
+    elemsize <span class="token builtin">uint16</span> <span class="token comment">//chan中元素的大小</span>
+    closed   <span class="token builtin">uint32</span> <span class="token comment">//chan是否关闭</span>
+    elemtype <span class="token operator">*</span>_type <span class="token comment">// element type；元素类型</span>
+    sendx    <span class="token builtin">uint</span>   <span class="token comment">// send index；已发送元素在循环数组中的索引</span>
+    recvx    <span class="token builtin">uint</span>   <span class="token comment">// receive index；已接收元素在循环数组中的索引</span>
+    recvq    waitq  <span class="token comment">// list of recv waiters，等待接收消息的goroutine队列</span>
+    sendq    waitq  <span class="token comment">// list of send waiters，等待发送消息的goroutine队列</span>
+
+    <span class="token comment">// lock protects all fields in hchan, as well as several</span>
+    <span class="token comment">// fields in sudogs blocked on this channel.</span>
+    <span class="token comment">//</span>
+    <span class="token comment">// Do not change another G's status while holding this lock</span>
+    <span class="token comment">// (in particular, do not ready a G), as this can deadlock</span>
+    <span class="token comment">// with stack shrinking.</span>
+    lock mutex
+<span class="token punctuation">}</span>
+
+<span class="token keyword">type</span> waitq <span class="token keyword">struct</span> <span class="token punctuation">{<!-- --></span>
+    first <span class="token operator">*</span>sudog
+    last  <span class="token operator">*</span>sudog
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>创建一个底层数组容量为5，元素类型为int，那么channel的数据结构如下图所示：</p> 
+<p><img src="https://images2.imgbox.com/bf/26/2cQ6lPy5_o.png" alt="1"></p> 
+<h4><a id="3_169"></a>3、创建</h4> 
+<p>首先我们先来了解一下 Channel 在 Go 语言中是如何创建的，Go 语言 Channel 的创建都是由 <code>make</code> 关键字完成的，我们在前面介绍<code>slice</code>和<code>map</code>的创建时都介绍了使用 <code>make</code> 关键字初始化数据结构，那么一个问题，那么Go语言是如何实现通过make方式来创建不同的数据结构的呢？</p> 
+<p>Golang 中所有形如 <code>make(chan int, 10)</code> 在编译期间会先被转换成 <code>OMAKE</code> 类型的节点，随后的类型检查阶段在发现 <code>make</code> 的第一个参数是 Channel 类型时会将 <code>OMAKE</code> 类型的节点转换成 <code>OMAKECHAN</code>：</p> 
+<pre><code class="prism language-go"><span class="token keyword">func</span> <span class="token function">typecheck1</span><span class="token punctuation">(</span>n <span class="token operator">*</span>Node<span class="token punctuation">,</span> top <span class="token builtin">int</span><span class="token punctuation">)</span> <span class="token punctuation">(</span>res <span class="token operator">*</span>Node<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">switch</span> n<span class="token punctuation">.</span>Op <span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">case</span> OMAKE<span class="token punctuation">:</span>
+        <span class="token comment">// ...</span>
+        <span class="token keyword">switch</span> t<span class="token punctuation">.</span>Etype <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">case</span> TCHAN<span class="token punctuation">:</span>
+            l <span class="token operator">=</span> <span class="token boolean">nil</span>
+            <span class="token keyword">if</span> i <span class="token operator">&lt;</span> <span class="token function">len</span><span class="token punctuation">(</span>args<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                l <span class="token operator">=</span> args<span class="token punctuation">[</span>i<span class="token punctuation">]</span>
+                i<span class="token operator">++</span>
+                l <span class="token operator">=</span> <span class="token function">typecheck</span><span class="token punctuation">(</span>l<span class="token punctuation">,</span> ctxExpr<span class="token punctuation">)</span>
+                l <span class="token operator">=</span> <span class="token function">defaultlit</span><span class="token punctuation">(</span>l<span class="token punctuation">,</span> types<span class="token punctuation">.</span>Types<span class="token punctuation">[</span>TINT<span class="token punctuation">]</span><span class="token punctuation">)</span>
+                <span class="token keyword">if</span> l<span class="token punctuation">.</span>Type <span class="token operator">==</span> <span class="token boolean">nil</span> <span class="token punctuation">{<!-- --></span>
+                    n<span class="token punctuation">.</span>Type <span class="token operator">=</span> <span class="token boolean">nil</span>
+                    <span class="token keyword">return</span> n
+                <span class="token punctuation">}</span>
+                <span class="token keyword">if</span> <span class="token operator">!</span><span class="token function">checkmake</span><span class="token punctuation">(</span>t<span class="token punctuation">,</span> <span class="token string">"buffer"</span><span class="token punctuation">,</span> l<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                    n<span class="token punctuation">.</span>Type <span class="token operator">=</span> <span class="token boolean">nil</span>
+                    <span class="token keyword">return</span> n
+                <span class="token punctuation">}</span>
+                n<span class="token punctuation">.</span>Left <span class="token operator">=</span> l
+            <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+                n<span class="token punctuation">.</span>Left <span class="token operator">=</span> <span class="token function">nodintconst</span><span class="token punctuation">(</span><span class="token number">0</span><span class="token punctuation">)</span>
+            <span class="token punctuation">}</span>
+            n<span class="token punctuation">.</span>Op <span class="token operator">=</span> OMAKECHAN
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+</code></pre> 
+<p><code>OMAKECHAN</code> 类型的节点最终都会在SSA中间代码生成阶段之前被转换成<code>makechan</code> 或者 <code>makechan64</code> 的函数调用：</p> 
+<pre><code class="prism language-go"><span class="token keyword">func</span> <span class="token function">walkexpr</span><span class="token punctuation">(</span>n <span class="token operator">*</span>Node<span class="token punctuation">,</span> init <span class="token operator">*</span>Nodes<span class="token punctuation">)</span> <span class="token operator">*</span>Node <span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">switch</span> n<span class="token punctuation">.</span>Op <span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">case</span> OMAKECHAN<span class="token punctuation">:</span>
+        size <span class="token operator">:=</span> n<span class="token punctuation">.</span>Left
+        fnname <span class="token operator">:=</span> <span class="token string">"makechan64"</span>
+        argtype <span class="token operator">:=</span> types<span class="token punctuation">.</span>Types<span class="token punctuation">[</span>TINT64<span class="token punctuation">]</span>
+
+        <span class="token keyword">if</span> size<span class="token punctuation">.</span>Type<span class="token punctuation">.</span><span class="token function">IsKind</span><span class="token punctuation">(</span>TIDEAL<span class="token punctuation">)</span> <span class="token operator">||</span> maxintval<span class="token punctuation">[</span>size<span class="token punctuation">.</span>Type<span class="token punctuation">.</span>Etype<span class="token punctuation">]</span><span class="token punctuation">.</span><span class="token function">Cmp</span><span class="token punctuation">(</span>maxintval<span class="token punctuation">[</span>TUINT<span class="token punctuation">]</span><span class="token punctuation">)</span> <span class="token operator">&lt;=</span> <span class="token number">0</span> <span class="token punctuation">{<!-- --></span>
+            fnname <span class="token operator">=</span> <span class="token string">"makechan"</span>
+            argtype <span class="token operator">=</span> types<span class="token punctuation">.</span>Types<span class="token punctuation">[</span>TINT<span class="token punctuation">]</span>
+        <span class="token punctuation">}</span>
+
+        n <span class="token operator">=</span> <span class="token function">mkcall1</span><span class="token punctuation">(</span><span class="token function">chanfn</span><span class="token punctuation">(</span>fnname<span class="token punctuation">,</span> <span class="token number">1</span><span class="token punctuation">,</span> n<span class="token punctuation">.</span>Type<span class="token punctuation">)</span><span class="token punctuation">,</span> n<span class="token punctuation">.</span>Type<span class="token punctuation">,</span> init<span class="token punctuation">,</span> <span class="token function">typename</span><span class="token punctuation">(</span>n<span class="token punctuation">.</span>Type<span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token function">conv</span><span class="token punctuation">(</span>size<span class="token punctuation">,</span> argtype<span class="token punctuation">)</span><span class="token punctuation">)</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>创建channel的时候，其实底层是调用makechan方法，我们来看下源码：</p> 
+<pre><code class="prism language-go"><span class="token keyword">func</span> <span class="token function">makechan</span><span class="token punctuation">(</span>t <span class="token operator">*</span>chantype<span class="token punctuation">,</span> size <span class="token builtin">int</span><span class="token punctuation">)</span> <span class="token operator">*</span>hchan <span class="token punctuation">{<!-- --></span>
+    elem <span class="token operator">:=</span> t<span class="token punctuation">.</span>elem
+
+    <span class="token comment">// compiler checks this but be safe.</span>
+    <span class="token keyword">if</span> elem<span class="token punctuation">.</span>size <span class="token operator">&gt;=</span> <span class="token number">1</span><span class="token operator">&lt;&lt;</span><span class="token number">16</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token function">throw</span><span class="token punctuation">(</span><span class="token string">"makechan: invalid channel element type"</span><span class="token punctuation">)</span>
+    <span class="token punctuation">}</span>
+    <span class="token keyword">if</span> hchanSize<span class="token operator">%</span>maxAlign <span class="token operator">!=</span> <span class="token number">0</span> <span class="token operator">||</span> elem<span class="token punctuation">.</span>align <span class="token operator">&gt;</span> maxAlign <span class="token punctuation">{<!-- --></span>
+        <span class="token function">throw</span><span class="token punctuation">(</span><span class="token string">"makechan: bad alignment"</span><span class="token punctuation">)</span>
+    <span class="token punctuation">}</span>
+
+    mem<span class="token punctuation">,</span> overflow <span class="token operator">:=</span> math<span class="token punctuation">.</span><span class="token function">MulUintptr</span><span class="token punctuation">(</span>elem<span class="token punctuation">.</span>size<span class="token punctuation">,</span> <span class="token function">uintptr</span><span class="token punctuation">(</span>size<span class="token punctuation">)</span><span class="token punctuation">)</span>
+    <span class="token keyword">if</span> overflow <span class="token operator">||</span> mem <span class="token operator">&gt;</span> maxAlloc<span class="token operator">-</span>hchanSize <span class="token operator">||</span> size <span class="token operator">&lt;</span> <span class="token number">0</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token function">panic</span><span class="token punctuation">(</span><span class="token function">plainError</span><span class="token punctuation">(</span><span class="token string">"makechan: size out of range"</span><span class="token punctuation">)</span><span class="token punctuation">)</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token comment">// Hchan does not contain pointers interesting for GC when elements stored in buf do not contain pointers.</span>
+    <span class="token comment">// buf points into the same allocation, elemtype is persistent.</span>
+    <span class="token comment">// SudoG's are referenced from their owning thread so they can't be collected.</span>
+    <span class="token comment">// TODO(dvyukov,rlh): Rethink when collector can move allocated objects.</span>
+    <span class="token keyword">var</span> c <span class="token operator">*</span>hchan
+    <span class="token keyword">switch</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">case</span> mem <span class="token operator">==</span> <span class="token number">0</span><span class="token punctuation">:</span>
+        <span class="token comment">// Queue or element size is zero.</span>
+        c <span class="token operator">=</span> <span class="token punctuation">(</span><span class="token operator">*</span>hchan<span class="token punctuation">)</span><span class="token punctuation">(</span><span class="token function">mallocgc</span><span class="token punctuation">(</span>hchanSize<span class="token punctuation">,</span> <span class="token boolean">nil</span><span class="token punctuation">,</span> <span class="token boolean">true</span><span class="token punctuation">)</span><span class="token punctuation">)</span>
+        <span class="token comment">// Race detector uses this location for synchronization.</span>
+        c<span class="token punctuation">.</span>buf <span class="token operator">=</span> c<span class="token punctuation">.</span><span class="token function">raceaddr</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+    <span class="token keyword">case</span> elem<span class="token punctuation">.</span>ptrdata <span class="token operator">==</span> <span class="token number">0</span><span class="token punctuation">:</span>
+        <span class="token comment">// Elements do not contain pointers.</span>
+        <span class="token comment">// Allocate hchan and buf in one call.</span>
+        c <span class="token operator">=</span> <span class="token punctuation">(</span><span class="token operator">*</span>hchan<span class="token punctuation">)</span><span class="token punctuation">(</span><span class="token function">mallocgc</span><span class="token punctuation">(</span>hchanSize<span class="token operator">+</span>mem<span class="token punctuation">,</span> <span class="token boolean">nil</span><span class="token punctuation">,</span> <span class="token boolean">true</span><span class="token punctuation">)</span><span class="token punctuation">)</span>
+        c<span class="token punctuation">.</span>buf <span class="token operator">=</span> <span class="token function">add</span><span class="token punctuation">(</span>unsafe<span class="token punctuation">.</span><span class="token function">Pointer</span><span class="token punctuation">(</span>c<span class="token punctuation">)</span><span class="token punctuation">,</span> hchanSize<span class="token punctuation">)</span>
+    <span class="token keyword">default</span><span class="token punctuation">:</span>
+        <span class="token comment">// Elements contain pointers.</span>
+        c <span class="token operator">=</span> <span class="token function">new</span><span class="token punctuation">(</span>hchan<span class="token punctuation">)</span>
+        c<span class="token punctuation">.</span>buf <span class="token operator">=</span> <span class="token function">mallocgc</span><span class="token punctuation">(</span>mem<span class="token punctuation">,</span> elem<span class="token punctuation">,</span> <span class="token boolean">true</span><span class="token punctuation">)</span>
+    <span class="token punctuation">}</span>
+
+    c<span class="token punctuation">.</span>elemsize <span class="token operator">=</span> <span class="token function">uint16</span><span class="token punctuation">(</span>elem<span class="token punctuation">.</span>size<span class="token punctuation">)</span>
+    c<span class="token punctuation">.</span>elemtype <span class="token operator">=</span> elem
+    c<span class="token punctuation">.</span>dataqsiz <span class="token operator">=</span> <span class="token function">uint</span><span class="token punctuation">(</span>size<span class="token punctuation">)</span>
+
+    <span class="token keyword">if</span> debugChan <span class="token punctuation">{<!-- --></span>
+        <span class="token function">print</span><span class="token punctuation">(</span><span class="token string">"makechan: chan="</span><span class="token punctuation">,</span> c<span class="token punctuation">,</span> <span class="token string">"; elemsize="</span><span class="token punctuation">,</span> elem<span class="token punctuation">.</span>size<span class="token punctuation">,</span> <span class="token string">"; elemalg="</span><span class="token punctuation">,</span> elem<span class="token punctuation">.</span>alg<span class="token punctuation">,</span> <span class="token string">"; dataqsiz="</span><span class="token punctuation">,</span> size<span class="token punctuation">,</span> <span class="token string">"\n"</span><span class="token punctuation">)</span>
+    <span class="token punctuation">}</span>
+    <span class="token keyword">return</span> c
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>可以看出makechan中其实主要的代码就是一个switch，针对不同的情况</p> 
+<blockquote> 
+ <p>1、case mem == 0代表无缓冲型channel，只分配hchan本身结构体大小的内存</p> 
+ <p>2、case elem.ptrdata==0 代表元素类型不含指针，只分配hchan本身结构体大小+元素大小*个数的内存，是连续的内存空间</p> 
+ <p>3、default元素类型包括指针，两次分配内存的操作</p> 
+</blockquote> 
+<p>然后将buf指向对应的地址，然后是hchan中其他变量的赋值。</p> 
+<h4><a id="4_287"></a>4、接收</h4> 
+<p>接下来我们来讲channel的接收和发送，我们使用一段程序来进行讲解</p> 
+<pre><code class="prism language-go"><span class="token keyword">func</span> <span class="token function">goroutineA</span><span class="token punctuation">(</span>a <span class="token operator">&lt;-</span><span class="token keyword">chan</span> <span class="token builtin">int</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    val <span class="token operator">:=</span> <span class="token operator">&lt;-</span> a
+    fmt<span class="token punctuation">.</span><span class="token function">Println</span><span class="token punctuation">(</span><span class="token string">"G1 received data: "</span><span class="token punctuation">,</span> val<span class="token punctuation">)</span>
+    <span class="token keyword">return</span>
+<span class="token punctuation">}</span>
+
+<span class="token keyword">func</span> <span class="token function">goroutineB</span><span class="token punctuation">(</span>b <span class="token operator">&lt;-</span><span class="token keyword">chan</span> <span class="token builtin">int</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    val <span class="token operator">:=</span> <span class="token operator">&lt;-</span> b
+    fmt<span class="token punctuation">.</span><span class="token function">Println</span><span class="token punctuation">(</span><span class="token string">"G2 received data: "</span><span class="token punctuation">,</span> val<span class="token punctuation">)</span>
+    <span class="token keyword">return</span>
+<span class="token punctuation">}</span>
+
+<span class="token keyword">func</span> <span class="token function">main</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    ch <span class="token operator">:=</span> <span class="token function">make</span><span class="token punctuation">(</span><span class="token keyword">chan</span> <span class="token builtin">int</span><span class="token punctuation">)</span>
+    <span class="token keyword">go</span> <span class="token function">goroutineA</span><span class="token punctuation">(</span>ch<span class="token punctuation">)</span>
+    <span class="token keyword">go</span> <span class="token function">goroutineB</span><span class="token punctuation">(</span>ch<span class="token punctuation">)</span>
+    ch <span class="token operator">&lt;-</span> <span class="token number">3</span>
+    time<span class="token punctuation">.</span><span class="token function">Sleep</span><span class="token punctuation">(</span>time<span class="token punctuation">.</span>Second<span class="token punctuation">)</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>首先创建了一个无缓冲型的channel，然后启动两个goroutine去消费channel的数据，紧接着向channel中发送数据。我们一步一步来分析channel是如何接收和发送数据的，首先来看接收</p> 
+<p>golang中接收channel数据有两种方式</p> 
+<pre><code class="prism language-go">i <span class="token operator">&lt;-</span> ch
+i<span class="token punctuation">,</span> ok <span class="token operator">&lt;-</span> ch
+</code></pre> 
+<p>这两种不同的方法经过编译器的处理都会变成 <code>ORECV</code> 类型的节点，但是后者会在类型检查阶段被转换成 <code>OAS2RECV</code> 节点，我们可以简单看一下这里转换的路线图：</p> 
+<p><img src="https://images2.imgbox.com/78/ec/3YsEYBPa_o.png" alt="2"></p> 
+<pre><code class="prism language-go"><span class="token comment">// entry points for &lt;- c from compiled code</span>
+<span class="token comment">//go:nosplit</span>
+<span class="token keyword">func</span> <span class="token function">chanrecv1</span><span class="token punctuation">(</span>c <span class="token operator">*</span>hchan<span class="token punctuation">,</span> elem unsafe<span class="token punctuation">.</span>Pointer<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token function">chanrecv</span><span class="token punctuation">(</span>c<span class="token punctuation">,</span> elem<span class="token punctuation">,</span> <span class="token boolean">true</span><span class="token punctuation">)</span>
+<span class="token punctuation">}</span>
+
+<span class="token comment">//go:nosplit</span>
+<span class="token keyword">func</span> <span class="token function">chanrecv2</span><span class="token punctuation">(</span>c <span class="token operator">*</span>hchan<span class="token punctuation">,</span> elem unsafe<span class="token punctuation">.</span>Pointer<span class="token punctuation">)</span> <span class="token punctuation">(</span>received <span class="token builtin">bool</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token boolean">_</span><span class="token punctuation">,</span> received <span class="token operator">=</span> <span class="token function">chanrecv</span><span class="token punctuation">(</span>c<span class="token punctuation">,</span> elem<span class="token punctuation">,</span> <span class="token boolean">true</span><span class="token punctuation">)</span>
+    <span class="token keyword">return</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>两者用法不同，chanrecv2可以返回channel是否关闭，但是最终调用方法都是chanrecv，我们来看下源码：</p> 
+<pre><code class="prism language-go"><span class="token keyword">func</span> <span class="token function">chanrecv</span><span class="token punctuation">(</span>c <span class="token operator">*</span>hchan<span class="token punctuation">,</span> ep unsafe<span class="token punctuation">.</span>Pointer<span class="token punctuation">,</span> block <span class="token builtin">bool</span><span class="token punctuation">)</span> <span class="token punctuation">(</span>selected<span class="token punctuation">,</span> received <span class="token builtin">bool</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">if</span> debugChan <span class="token punctuation">{<!-- --></span>
+        <span class="token function">print</span><span class="token punctuation">(</span><span class="token string">"chanrecv: chan="</span><span class="token punctuation">,</span> c<span class="token punctuation">,</span> <span class="token string">"\n"</span><span class="token punctuation">)</span>
+    <span class="token punctuation">}</span>
+    <span class="token comment">//##################step1####################</span>
+    <span class="token keyword">if</span> c <span class="token operator">==</span> <span class="token boolean">nil</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">if</span> <span class="token operator">!</span>block <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">return</span>
+        <span class="token punctuation">}</span>
+        <span class="token function">gopark</span><span class="token punctuation">(</span><span class="token boolean">nil</span><span class="token punctuation">,</span> <span class="token boolean">nil</span><span class="token punctuation">,</span> waitReasonChanReceiveNilChan<span class="token punctuation">,</span> traceEvGoStop<span class="token punctuation">,</span> <span class="token number">2</span><span class="token punctuation">)</span>
+        <span class="token function">throw</span><span class="token punctuation">(</span><span class="token string">"unreachable"</span><span class="token punctuation">)</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token comment">//##################step2####################</span>
+    <span class="token keyword">if</span> <span class="token operator">!</span>block <span class="token operator">&amp;&amp;</span> <span class="token punctuation">(</span>c<span class="token punctuation">.</span>dataqsiz <span class="token operator">==</span> <span class="token number">0</span> <span class="token operator">&amp;&amp;</span> c<span class="token punctuation">.</span>sendq<span class="token punctuation">.</span>first <span class="token operator">==</span> <span class="token boolean">nil</span> <span class="token operator">||</span>
+        c<span class="token punctuation">.</span>dataqsiz <span class="token operator">&gt;</span> <span class="token number">0</span> <span class="token operator">&amp;&amp;</span> atomic<span class="token punctuation">.</span><span class="token function">Loaduint</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>c<span class="token punctuation">.</span>qcount<span class="token punctuation">)</span> <span class="token operator">==</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token operator">&amp;&amp;</span>
+        atomic<span class="token punctuation">.</span><span class="token function">Load</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>c<span class="token punctuation">.</span>closed<span class="token punctuation">)</span> <span class="token operator">==</span> <span class="token number">0</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">return</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token keyword">var</span> t0 <span class="token builtin">int64</span>
+    <span class="token keyword">if</span> blockprofilerate <span class="token operator">&gt;</span> <span class="token number">0</span> <span class="token punctuation">{<!-- --></span>
+        t0 <span class="token operator">=</span> <span class="token function">cputicks</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token function">lock</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>c<span class="token punctuation">.</span>lock<span class="token punctuation">)</span>
+
+    <span class="token keyword">if</span> c<span class="token punctuation">.</span>closed <span class="token operator">!=</span> <span class="token number">0</span> <span class="token operator">&amp;&amp;</span> c<span class="token punctuation">.</span>qcount <span class="token operator">==</span> <span class="token number">0</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">if</span> raceenabled <span class="token punctuation">{<!-- --></span>
+            <span class="token function">raceacquire</span><span class="token punctuation">(</span>c<span class="token punctuation">.</span><span class="token function">raceaddr</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span>
+        <span class="token punctuation">}</span>
+        <span class="token function">unlock</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>c<span class="token punctuation">.</span>lock<span class="token punctuation">)</span>
+        <span class="token keyword">if</span> ep <span class="token operator">!=</span> <span class="token boolean">nil</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token function">typedmemclr</span><span class="token punctuation">(</span>c<span class="token punctuation">.</span>elemtype<span class="token punctuation">,</span> ep<span class="token punctuation">)</span>
+        <span class="token punctuation">}</span>
+        <span class="token keyword">return</span> <span class="token boolean">true</span><span class="token punctuation">,</span> <span class="token boolean">false</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token keyword">if</span> sg <span class="token operator">:=</span> c<span class="token punctuation">.</span>sendq<span class="token punctuation">.</span><span class="token function">dequeue</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span> sg <span class="token operator">!=</span> <span class="token boolean">nil</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token comment">// Found a waiting sender. If buffer is size 0, receive value</span>
+        <span class="token comment">// directly from sender. Otherwise, receive from head of queue</span>
+        <span class="token comment">// and add sender's value to the tail of the queue (both map to</span>
+        <span class="token comment">// the same buffer slot because the queue is full).</span>
+        <span class="token function">recv</span><span class="token punctuation">(</span>c<span class="token punctuation">,</span> sg<span class="token punctuation">,</span> ep<span class="token punctuation">,</span> <span class="token keyword">func</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span> <span class="token function">unlock</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>c<span class="token punctuation">.</span>lock<span class="token punctuation">)</span> <span class="token punctuation">}</span><span class="token punctuation">,</span> <span class="token number">3</span><span class="token punctuation">)</span>
+        <span class="token keyword">return</span> <span class="token boolean">true</span><span class="token punctuation">,</span> <span class="token boolean">true</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token keyword">if</span> c<span class="token punctuation">.</span>qcount <span class="token operator">&gt;</span> <span class="token number">0</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token comment">// Receive directly from queue</span>
+        qp <span class="token operator">:=</span> <span class="token function">chanbuf</span><span class="token punctuation">(</span>c<span class="token punctuation">,</span> c<span class="token punctuation">.</span>recvx<span class="token punctuation">)</span>
+        <span class="token keyword">if</span> raceenabled <span class="token punctuation">{<!-- --></span>
+            <span class="token function">raceacquire</span><span class="token punctuation">(</span>qp<span class="token punctuation">)</span>
+            <span class="token function">racerelease</span><span class="token punctuation">(</span>qp<span class="token punctuation">)</span>
+        <span class="token punctuation">}</span>
+        <span class="token keyword">if</span> ep <span class="token operator">!=</span> <span class="token boolean">nil</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token function">typedmemmove</span><span class="token punctuation">(</span>c<span class="token punctuation">.</span>elemtype<span class="token punctuation">,</span> ep<span class="token punctuation">,</span> qp<span class="token punctuation">)</span>
+        <span class="token punctuation">}</span>
+        <span class="token function">typedmemclr</span><span class="token punctuation">(</span>c<span class="token punctuation">.</span>elemtype<span class="token punctuation">,</span> qp<span class="token punctuation">)</span>
+        c<span class="token punctuation">.</span>recvx<span class="token operator">++</span>
+        <span class="token keyword">if</span> c<span class="token punctuation">.</span>recvx <span class="token operator">==</span> c<span class="token punctuation">.</span>dataqsiz <span class="token punctuation">{<!-- --></span>
+            c<span class="token punctuation">.</span>recvx <span class="token operator">=</span> <span class="token number">0</span>
+        <span class="token punctuation">}</span>
+        c<span class="token punctuation">.</span>qcount<span class="token operator">--</span>
+        <span class="token function">unlock</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>c<span class="token punctuation">.</span>lock<span class="token punctuation">)</span>
+        <span class="token keyword">return</span> <span class="token boolean">true</span><span class="token punctuation">,</span> <span class="token boolean">true</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token keyword">if</span> <span class="token operator">!</span>block <span class="token punctuation">{<!-- --></span>
+        <span class="token function">unlock</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>c<span class="token punctuation">.</span>lock<span class="token punctuation">)</span>
+        <span class="token keyword">return</span> <span class="token boolean">false</span><span class="token punctuation">,</span> <span class="token boolean">false</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token comment">// no sender available: block on this channel.</span>
+    gp <span class="token operator">:=</span> <span class="token function">getg</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+    mysg <span class="token operator">:=</span> <span class="token function">acquireSudog</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+    mysg<span class="token punctuation">.</span>releasetime <span class="token operator">=</span> <span class="token number">0</span>
+    <span class="token keyword">if</span> t0 <span class="token operator">!=</span> <span class="token number">0</span> <span class="token punctuation">{<!-- --></span>
+        mysg<span class="token punctuation">.</span>releasetime <span class="token operator">=</span> <span class="token operator">-</span><span class="token number">1</span>
+    <span class="token punctuation">}</span>
+    <span class="token comment">// No stack splits between assigning elem and enqueuing mysg</span>
+    <span class="token comment">// on gp.waiting where copystack can find it.</span>
+    mysg<span class="token punctuation">.</span>elem <span class="token operator">=</span> ep
+    mysg<span class="token punctuation">.</span>waitlink <span class="token operator">=</span> <span class="token boolean">nil</span>
+    gp<span class="token punctuation">.</span>waiting <span class="token operator">=</span> mysg
+    mysg<span class="token punctuation">.</span>g <span class="token operator">=</span> gp
+    mysg<span class="token punctuation">.</span>isSelect <span class="token operator">=</span> <span class="token boolean">false</span>
+    mysg<span class="token punctuation">.</span>c <span class="token operator">=</span> c
+    gp<span class="token punctuation">.</span>param <span class="token operator">=</span> <span class="token boolean">nil</span>
+    c<span class="token punctuation">.</span>recvq<span class="token punctuation">.</span><span class="token function">enqueue</span><span class="token punctuation">(</span>mysg<span class="token punctuation">)</span>
+    <span class="token function">goparkunlock</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>c<span class="token punctuation">.</span>lock<span class="token punctuation">,</span> waitReasonChanReceive<span class="token punctuation">,</span> traceEvGoBlockRecv<span class="token punctuation">,</span> <span class="token number">3</span><span class="token punctuation">)</span>
+
+    <span class="token comment">// someone woke us up</span>
+    <span class="token keyword">if</span> mysg <span class="token operator">!=</span> gp<span class="token punctuation">.</span>waiting <span class="token punctuation">{<!-- --></span>
+        <span class="token function">throw</span><span class="token punctuation">(</span><span class="token string">"G waiting list is corrupted"</span><span class="token punctuation">)</span>
+    <span class="token punctuation">}</span>
+    gp<span class="token punctuation">.</span>waiting <span class="token operator">=</span> <span class="token boolean">nil</span>
+    <span class="token keyword">if</span> mysg<span class="token punctuation">.</span>releasetime <span class="token operator">&gt;</span> <span class="token number">0</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token function">blockevent</span><span class="token punctuation">(</span>mysg<span class="token punctuation">.</span>releasetime<span class="token operator">-</span>t0<span class="token punctuation">,</span> <span class="token number">2</span><span class="token punctuation">)</span>
+    <span class="token punctuation">}</span>
+    closed <span class="token operator">:=</span> gp<span class="token punctuation">.</span>param <span class="token operator">==</span> <span class="token boolean">nil</span>
+    gp<span class="token punctuation">.</span>param <span class="token operator">=</span> <span class="token boolean">nil</span>
+    mysg<span class="token punctuation">.</span>c <span class="token operator">=</span> <span class="token boolean">nil</span>
+    <span class="token function">releaseSudog</span><span class="token punctuation">(</span>mysg<span class="token punctuation">)</span>
+    <span class="token keyword">return</span> <span class="token boolean">true</span><span class="token punctuation">,</span> <span class="token operator">!</span>closed
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>由于源码较多，我们逐个step进行讲解;</p> 
+<h5><a id="1step1_452"></a>（1）step1</h5> 
+<p>如果channel是nil：如果是非阻塞模式，直接返回（false，false）；如果是阻塞模式，调用goprak挂起goroutine，会阻塞下去。</p> 
+<pre><code class="prism language-go"><span class="token comment">//##################step1####################</span>
+    <span class="token keyword">if</span> c <span class="token operator">==</span> <span class="token boolean">nil</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">if</span> <span class="token operator">!</span>block <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">return</span>
+        <span class="token punctuation">}</span>
+        <span class="token function">gopark</span><span class="token punctuation">(</span><span class="token boolean">nil</span><span class="token punctuation">,</span> <span class="token boolean">nil</span><span class="token punctuation">,</span> waitReasonChanReceiveNilChan<span class="token punctuation">,</span> traceEvGoStop<span class="token punctuation">,</span> <span class="token number">2</span><span class="token punctuation">)</span>
+        <span class="token function">throw</span><span class="token punctuation">(</span><span class="token string">"unreachable"</span><span class="token punctuation">)</span>
+    <span class="token punctuation">}</span>
+</code></pre> 
+<h5><a id="2step2_467"></a>（2）step2</h5> 
+<p>快速操作（不用获取锁，快速返回），三组条件全部满足，快速返回（false，false）</p> 
+<blockquote> 
+ <p>条件1：首先是在非阻塞模式下</p> 
+ <p>条件2：如果是非缓冲型（datasiz=0）并且等待发送goroutine队列为空（sendq.first=nil，就是没人往channel写数据），或者缓冲型channel（datasiz&gt;0）并且buf中没有数据；</p> 
+ <p>条件3：channel未关闭</p> 
+</blockquote> 
+<pre><code class="prism language-go"><span class="token comment">//##################step2####################</span>
+    <span class="token keyword">if</span> <span class="token operator">!</span>block <span class="token operator">&amp;&amp;</span> <span class="token punctuation">(</span>c<span class="token punctuation">.</span>dataqsiz <span class="token operator">==</span> <span class="token number">0</span> <span class="token operator">&amp;&amp;</span> c<span class="token punctuation">.</span>sendq<span class="token punctuation">.</span>first <span class="token operator">==</span> <span class="token boolean">nil</span> <span class="token operator">||</span>
+        c<span class="token punctuation">.</span>dataqsiz <span class="token operator">&gt;</span> <span class="token number">0</span> <span class="token operator">&amp;&amp;</span> atomic<span class="token punctuation">.</span><span class="token function">Loaduint</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>c<span class="token punctuation">.</span>qcount<span class="token punctuation">)</span> <span class="token operator">==</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token operator">&amp;&amp;</span>
+        atomic<span class="token punctuation">.</span><span class="token function">Load</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>c<span class="token punctuation">.</span>closed<span class="token punctuation">)</span> <span class="token operator">==</span> <span class="token number">0</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">return</span>
+    <span class="token punctuation">}</span>
+</code></pre> 
+<h5><a id="3step3_486"></a>（3）step3</h5> 
+<p>首先加锁，如果channel已经关闭，并且buf中没有元素，返回对应类型的0值，但是received为false；两种情况</p> 
+<blockquote> 
+ <p>情形1：非缓冲型，channel已关闭</p> 
+ <p>情形2：缓冲型，channel已关闭，并且buf无元素</p> 
+</blockquote> 
+<pre><code class="prism language-go"><span class="token comment">//##################step3####################</span>
+    <span class="token function">lock</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>c<span class="token punctuation">.</span>lock<span class="token punctuation">)</span>
+
+    <span class="token keyword">if</span> c<span class="token punctuation">.</span>closed <span class="token operator">!=</span> <span class="token number">0</span> <span class="token operator">&amp;&amp;</span> c<span class="token punctuation">.</span>qcount <span class="token operator">==</span> <span class="token number">0</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">if</span> raceenabled <span class="token punctuation">{<!-- --></span>
+            <span class="token function">raceacquire</span><span class="token punctuation">(</span>c<span class="token punctuation">.</span><span class="token function">raceaddr</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span>
+        <span class="token punctuation">}</span>
+        <span class="token function">unlock</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>c<span class="token punctuation">.</span>lock<span class="token punctuation">)</span>
+        <span class="token keyword">if</span> ep <span class="token operator">!=</span> <span class="token boolean">nil</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token function">typedmemclr</span><span class="token punctuation">(</span>c<span class="token punctuation">.</span>elemtype<span class="token punctuation">,</span> ep<span class="token punctuation">)</span>
+        <span class="token punctuation">}</span>
+        <span class="token keyword">return</span> <span class="token boolean">true</span><span class="token punctuation">,</span> <span class="token boolean">false</span>
+    <span class="token punctuation">}</span>
+</code></pre> 
+<h5><a id="4step4_510"></a>（4）step4</h5> 
+<p>如果等待发送队列中有元素，证明channel已经满了，两种情形</p> 
+<blockquote> 
+ <p>情形1：非缓冲型，无buf</p> 
+ <p>情形2：缓冲型，buf满了</p> 
+</blockquote> 
+<pre><code class="prism language-go"><span class="token comment">//##################step4####################</span>
+<span class="token keyword">if</span> sg <span class="token operator">:=</span> c<span class="token punctuation">.</span>sendq<span class="token punctuation">.</span><span class="token function">dequeue</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span> sg <span class="token operator">!=</span> <span class="token boolean">nil</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token function">recv</span><span class="token punctuation">(</span>c<span class="token punctuation">,</span> sg<span class="token punctuation">,</span> ep<span class="token punctuation">,</span> <span class="token keyword">func</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span> <span class="token function">unlock</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>c<span class="token punctuation">.</span>lock<span class="token punctuation">)</span> <span class="token punctuation">}</span><span class="token punctuation">,</span> <span class="token number">3</span><span class="token punctuation">)</span>
+        <span class="token keyword">return</span> <span class="token boolean">true</span><span class="token punctuation">,</span> <span class="token boolean">true</span>
+    <span class="token punctuation">}</span>
+</code></pre> 
+<p>两种情形都正常进入recv方法，我们来看下源码：</p> 
+<pre><code class="prism language-go"><span class="token keyword">func</span> <span class="token function">recv</span><span class="token punctuation">(</span>c <span class="token operator">*</span>hchan<span class="token punctuation">,</span> sg <span class="token operator">*</span>sudog<span class="token punctuation">,</span> ep unsafe<span class="token punctuation">.</span>Pointer<span class="token punctuation">,</span> unlockf <span class="token keyword">func</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span> skip <span class="token builtin">int</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+  <span class="token comment">//##################step4-1####################</span>
+    <span class="token keyword">if</span> c<span class="token punctuation">.</span>dataqsiz <span class="token operator">==</span> <span class="token number">0</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">if</span> raceenabled <span class="token punctuation">{<!-- --></span>
+            <span class="token function">racesync</span><span class="token punctuation">(</span>c<span class="token punctuation">,</span> sg<span class="token punctuation">)</span>
+        <span class="token punctuation">}</span>
+        <span class="token keyword">if</span> ep <span class="token operator">!=</span> <span class="token boolean">nil</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token comment">// copy data from sender</span>
+            <span class="token function">recvDirect</span><span class="token punctuation">(</span>c<span class="token punctuation">.</span>elemtype<span class="token punctuation">,</span> sg<span class="token punctuation">,</span> ep<span class="token punctuation">)</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+     <span class="token comment">//##################step4-2####################</span>
+        <span class="token comment">// Queue is full. Take the item at the</span>
+        <span class="token comment">// head of the queue. Make the sender enqueue</span>
+        <span class="token comment">// its item at the tail of the queue. Since the</span>
+        <span class="token comment">// queue is full, those are both the same slot.</span>
+        qp <span class="token operator">:=</span> <span class="token function">chanbuf</span><span class="token punctuation">(</span>c<span class="token punctuation">,</span> c<span class="token punctuation">.</span>recvx<span class="token punctuation">)</span>
+        <span class="token keyword">if</span> raceenabled <span class="token punctuation">{<!-- --></span>
+            <span class="token function">raceacquire</span><span class="token punctuation">(</span>qp<span class="token punctuation">)</span>
+            <span class="token function">racerelease</span><span class="token punctuation">(</span>qp<span class="token punctuation">)</span>
+            <span class="token function">raceacquireg</span><span class="token punctuation">(</span>sg<span class="token punctuation">.</span>g<span class="token punctuation">,</span> qp<span class="token punctuation">)</span>
+            <span class="token function">racereleaseg</span><span class="token punctuation">(</span>sg<span class="token punctuation">.</span>g<span class="token punctuation">,</span> qp<span class="token punctuation">)</span>
+        <span class="token punctuation">}</span>
+        <span class="token comment">// copy data from queue to receiver</span>
+        <span class="token keyword">if</span> ep <span class="token operator">!=</span> <span class="token boolean">nil</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token function">typedmemmove</span><span class="token punctuation">(</span>c<span class="token punctuation">.</span>elemtype<span class="token punctuation">,</span> ep<span class="token punctuation">,</span> qp<span class="token punctuation">)</span>
+        <span class="token punctuation">}</span>
+        <span class="token comment">// copy data from sender to queue</span>
+        <span class="token function">typedmemmove</span><span class="token punctuation">(</span>c<span class="token punctuation">.</span>elemtype<span class="token punctuation">,</span> qp<span class="token punctuation">,</span> sg<span class="token punctuation">.</span>elem<span class="token punctuation">)</span>
+        c<span class="token punctuation">.</span>recvx<span class="token operator">++</span>
+        <span class="token keyword">if</span> c<span class="token punctuation">.</span>recvx <span class="token operator">==</span> c<span class="token punctuation">.</span>dataqsiz <span class="token punctuation">{<!-- --></span>
+            c<span class="token punctuation">.</span>recvx <span class="token operator">=</span> <span class="token number">0</span>
+        <span class="token punctuation">}</span>
+        c<span class="token punctuation">.</span>sendx <span class="token operator">=</span> c<span class="token punctuation">.</span>recvx <span class="token comment">// c.sendx = (c.sendx+1) % c.dataqsiz</span>
+    <span class="token punctuation">}</span>
+    sg<span class="token punctuation">.</span>elem <span class="token operator">=</span> <span class="token boolean">nil</span>
+    gp <span class="token operator">:=</span> sg<span class="token punctuation">.</span>g
+    <span class="token function">unlockf</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+    gp<span class="token punctuation">.</span>param <span class="token operator">=</span> unsafe<span class="token punctuation">.</span><span class="token function">Pointer</span><span class="token punctuation">(</span>sg<span class="token punctuation">)</span>
+    <span class="token keyword">if</span> sg<span class="token punctuation">.</span>releasetime <span class="token operator">!=</span> <span class="token number">0</span> <span class="token punctuation">{<!-- --></span>
+        sg<span class="token punctuation">.</span>releasetime <span class="token operator">=</span> <span class="token function">cputicks</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+    <span class="token punctuation">}</span>
+    <span class="token function">goready</span><span class="token punctuation">(</span>gp<span class="token punctuation">,</span> skip<span class="token operator">+</span><span class="token number">1</span><span class="token punctuation">)</span>
+<span class="token punctuation">}</span>
+
+</code></pre> 
+<p>step4-1：如果是非缓冲型，那么直接从发送者的栈copy到接收者的栈</p> 
+<p>step4-2：缓冲型的，但是buf已经满了，此时recvx和sendx是重合的，如下图</p> 
+<p><img src="https://images2.imgbox.com/43/13/YHug0WGj_o.png" alt="3"></p> 
+<p>首先将recvx处的元素0拷贝到接收地址，然后将下一个元素5拷贝到sendx，然后recvx和sendx分别加1。</p> 
+<p>Step4-3：然后唤醒等待发送队列中的goroutine，等待调度器调度。</p> 
+<h5><a id="5step5_586"></a>（5）step5</h5> 
+<p>没有等待发送的队列，并且buf中有元素，直接把接收游标处的数据copy到接收数据的地址，然后改变hchan中元素数据。</p> 
+<pre><code class="prism language-go"><span class="token keyword">if</span> c<span class="token punctuation">.</span>qcount <span class="token operator">&gt;</span> <span class="token number">0</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token comment">// Receive directly from queue</span>
+        qp <span class="token operator">:=</span> <span class="token function">chanbuf</span><span class="token punctuation">(</span>c<span class="token punctuation">,</span> c<span class="token punctuation">.</span>recvx<span class="token punctuation">)</span>
+        <span class="token keyword">if</span> raceenabled <span class="token punctuation">{<!-- --></span>
+            <span class="token function">raceacquire</span><span class="token punctuation">(</span>qp<span class="token punctuation">)</span>
+            <span class="token function">racerelease</span><span class="token punctuation">(</span>qp<span class="token punctuation">)</span>
+        <span class="token punctuation">}</span>
+        <span class="token keyword">if</span> ep <span class="token operator">!=</span> <span class="token boolean">nil</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token function">typedmemmove</span><span class="token punctuation">(</span>c<span class="token punctuation">.</span>elemtype<span class="token punctuation">,</span> ep<span class="token punctuation">,</span> qp<span class="token punctuation">)</span>
+        <span class="token punctuation">}</span>
+        <span class="token function">typedmemclr</span><span class="token punctuation">(</span>c<span class="token punctuation">.</span>elemtype<span class="token punctuation">,</span> qp<span class="token punctuation">)</span>
+        c<span class="token punctuation">.</span>recvx<span class="token operator">++</span>
+        <span class="token keyword">if</span> c<span class="token punctuation">.</span>recvx <span class="token operator">==</span> c<span class="token punctuation">.</span>dataqsiz <span class="token punctuation">{<!-- --></span>
+            c<span class="token punctuation">.</span>recvx <span class="token operator">=</span> <span class="token number">0</span>
+        <span class="token punctuation">}</span>
+        c<span class="token punctuation">.</span>qcount<span class="token operator">--</span>
+        <span class="token function">unlock</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>c<span class="token punctuation">.</span>lock<span class="token punctuation">)</span>
+        <span class="token keyword">return</span> <span class="token boolean">true</span><span class="token punctuation">,</span> <span class="token boolean">true</span>
+    <span class="token punctuation">}</span>
+
+</code></pre> 
+<h5><a id="6step6_613"></a>（6）step6</h5> 
+<p>如果是非阻塞，那么直接返回；如果是阻塞的，构造sudog，保存各种值；将sudog保存到channel的recvq中，调用goparkunlock将goroutine挂起</p> 
+<pre><code class="prism language-go"><span class="token keyword">if</span> <span class="token operator">!</span>block <span class="token punctuation">{<!-- --></span>
+        <span class="token function">unlock</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>c<span class="token punctuation">.</span>lock<span class="token punctuation">)</span>
+        <span class="token keyword">return</span> <span class="token boolean">false</span><span class="token punctuation">,</span> <span class="token boolean">false</span>
+    <span class="token punctuation">}</span>
+<span class="token comment">// no sender available: block on this channel.</span>
+    gp <span class="token operator">:=</span> <span class="token function">getg</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+    mysg <span class="token operator">:=</span> <span class="token function">acquireSudog</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+    mysg<span class="token punctuation">.</span>releasetime <span class="token operator">=</span> <span class="token number">0</span>
+    <span class="token keyword">if</span> t0 <span class="token operator">!=</span> <span class="token number">0</span> <span class="token punctuation">{<!-- --></span>
+        mysg<span class="token punctuation">.</span>releasetime <span class="token operator">=</span> <span class="token operator">-</span><span class="token number">1</span>
+    <span class="token punctuation">}</span>
+    <span class="token comment">// No stack splits between assigning elem and enqueuing mysg</span>
+    <span class="token comment">// on gp.waiting where copystack can find it.</span>
+    mysg<span class="token punctuation">.</span>elem <span class="token operator">=</span> ep
+    mysg<span class="token punctuation">.</span>waitlink <span class="token operator">=</span> <span class="token boolean">nil</span>
+    gp<span class="token punctuation">.</span>waiting <span class="token operator">=</span> mysg
+    mysg<span class="token punctuation">.</span>g <span class="token operator">=</span> gp
+    mysg<span class="token punctuation">.</span>isSelect <span class="token operator">=</span> <span class="token boolean">false</span>
+    mysg<span class="token punctuation">.</span>c <span class="token operator">=</span> c
+    gp<span class="token punctuation">.</span>param <span class="token operator">=</span> <span class="token boolean">nil</span>
+    c<span class="token punctuation">.</span>recvq<span class="token punctuation">.</span><span class="token function">enqueue</span><span class="token punctuation">(</span>mysg<span class="token punctuation">)</span>
+    <span class="token function">goparkunlock</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>c<span class="token punctuation">.</span>lock<span class="token punctuation">,</span> waitReasonChanReceive<span class="token punctuation">,</span> traceEvGoBlockRecv<span class="token punctuation">,</span> <span class="token number">3</span><span class="token punctuation">)</span>
+
+    <span class="token comment">// someone woke us up</span>
+    <span class="token keyword">if</span> mysg <span class="token operator">!=</span> gp<span class="token punctuation">.</span>waiting <span class="token punctuation">{<!-- --></span>
+        <span class="token function">throw</span><span class="token punctuation">(</span><span class="token string">"G waiting list is corrupted"</span><span class="token punctuation">)</span>
+    <span class="token punctuation">}</span>
+    gp<span class="token punctuation">.</span>waiting <span class="token operator">=</span> <span class="token boolean">nil</span>
+    <span class="token keyword">if</span> mysg<span class="token punctuation">.</span>releasetime <span class="token operator">&gt;</span> <span class="token number">0</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token function">blockevent</span><span class="token punctuation">(</span>mysg<span class="token punctuation">.</span>releasetime<span class="token operator">-</span>t0<span class="token punctuation">,</span> <span class="token number">2</span><span class="token punctuation">)</span>
+    <span class="token punctuation">}</span>
+    closed <span class="token operator">:=</span> gp<span class="token punctuation">.</span>param <span class="token operator">==</span> <span class="token boolean">nil</span>
+    gp<span class="token punctuation">.</span>param <span class="token operator">=</span> <span class="token boolean">nil</span>
+    mysg<span class="token punctuation">.</span>c <span class="token operator">=</span> <span class="token boolean">nil</span>
+    <span class="token function">releaseSudog</span><span class="token punctuation">(</span>mysg<span class="token punctuation">)</span>
+    <span class="token keyword">return</span> <span class="token boolean">true</span><span class="token punctuation">,</span> <span class="token operator">!</span>closed
+
+</code></pre> 
+<p>我们用本节一开始的例子来讲解下，再贴一遍程序</p> 
+<pre><code class="prism language-go"><span class="token keyword">func</span> <span class="token function">goroutineA</span><span class="token punctuation">(</span>a <span class="token operator">&lt;-</span><span class="token keyword">chan</span> <span class="token builtin">int</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    val <span class="token operator">:=</span> <span class="token operator">&lt;-</span> a
+    fmt<span class="token punctuation">.</span><span class="token function">Println</span><span class="token punctuation">(</span><span class="token string">"G1 received data: "</span><span class="token punctuation">,</span> val<span class="token punctuation">)</span>
+    <span class="token keyword">return</span>
+<span class="token punctuation">}</span>
+
+<span class="token keyword">func</span> <span class="token function">goroutineB</span><span class="token punctuation">(</span>b <span class="token operator">&lt;-</span><span class="token keyword">chan</span> <span class="token builtin">int</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    val <span class="token operator">:=</span> <span class="token operator">&lt;-</span> b
+    fmt<span class="token punctuation">.</span><span class="token function">Println</span><span class="token punctuation">(</span><span class="token string">"G2 received data: "</span><span class="token punctuation">,</span> val<span class="token punctuation">)</span>
+    <span class="token keyword">return</span>
+<span class="token punctuation">}</span>
+
+<span class="token keyword">func</span> <span class="token function">main</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    ch <span class="token operator">:=</span> <span class="token function">make</span><span class="token punctuation">(</span><span class="token keyword">chan</span> <span class="token builtin">int</span><span class="token punctuation">)</span>
+    <span class="token keyword">go</span> <span class="token function">goroutineA</span><span class="token punctuation">(</span>ch<span class="token punctuation">)</span>
+    <span class="token keyword">go</span> <span class="token function">goroutineB</span><span class="token punctuation">(</span>ch<span class="token punctuation">)</span>
+    ch <span class="token operator">&lt;-</span> <span class="token number">3</span>
+    time<span class="token punctuation">.</span><span class="token function">Sleep</span><span class="token punctuation">(</span>time<span class="token punctuation">.</span>Second<span class="token punctuation">)</span>
+<span class="token punctuation">}</span>
+
+</code></pre> 
+<p>由于我们创建的channel是无缓冲型的，所以两个goroutine启动的G1和G2会被阻塞，G1和G2被加入到recvq中，状态为waiting，等待被唤醒。此时此刻ch如下图：</p> 
+<p><img src="https://images2.imgbox.com/36/87/7nxGlXjC_o.png" alt="4"></p> 
+<p>问题：当一个channel关闭后，我们是否还能从中读出数据？</p> 
+<pre><code class="prism language-go"><span class="token keyword">package</span> main
+
+<span class="token keyword">import</span> <span class="token string">"fmt"</span>
+
+<span class="token keyword">func</span> <span class="token function">main</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    ch <span class="token operator">:=</span> <span class="token function">make</span><span class="token punctuation">(</span><span class="token keyword">chan</span> <span class="token builtin">int</span><span class="token punctuation">,</span> <span class="token number">6</span><span class="token punctuation">)</span>
+
+    ch <span class="token operator">&lt;-</span> <span class="token number">1</span>
+    ch <span class="token operator">&lt;-</span> <span class="token number">2</span>
+
+    <span class="token function">close</span><span class="token punctuation">(</span>ch<span class="token punctuation">)</span>
+
+    a <span class="token operator">:=</span> <span class="token operator">&lt;-</span>ch
+    fmt<span class="token punctuation">.</span><span class="token function">Println</span><span class="token punctuation">(</span>a<span class="token punctuation">)</span>
+
+    b <span class="token operator">:=</span> <span class="token operator">&lt;-</span>ch
+    fmt<span class="token punctuation">.</span><span class="token function">Println</span><span class="token punctuation">(</span>b<span class="token punctuation">)</span>
+
+    c <span class="token operator">:=</span> <span class="token operator">&lt;-</span>ch
+    fmt<span class="token punctuation">.</span><span class="token function">Println</span><span class="token punctuation">(</span>c<span class="token punctuation">)</span>
+<span class="token punctuation">}</span>
+
+</code></pre> 
+<p>输出会是什么？</p> 
+<pre><code class="prism language-go"><span class="token number">1</span>
+<span class="token number">2</span>
+<span class="token number">0</span>
+
+</code></pre> 
+<p>我们可以看出，当一个channel关闭后，我们依然可以从中读出数据，如果chan的buf中有元素，则读出的是chan中buf的数据，如果buf为空，则输出对应元素类型的零值。那么我们来看下如下的一段程序：</p> 
+<pre><code class="prism language-go"><span class="token keyword">package</span> main
+
+<span class="token keyword">import</span> <span class="token punctuation">(</span>
+    <span class="token string">"fmt"</span>
+    <span class="token string">"os"</span>
+    <span class="token string">"os/signal"</span>
+    <span class="token string">"syscall"</span>
+    <span class="token string">"time"</span>
+<span class="token punctuation">)</span>
+
+<span class="token keyword">var</span> exit1 <span class="token operator">=</span> <span class="token function">make</span><span class="token punctuation">(</span><span class="token keyword">chan</span> <span class="token keyword">struct</span><span class="token punctuation">{<!-- --></span><span class="token punctuation">}</span><span class="token punctuation">,</span> <span class="token number">1</span><span class="token punctuation">)</span>
+
+<span class="token keyword">func</span> <span class="token function">main</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">go</span> <span class="token function">dealSignal1</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+    count <span class="token operator">:=</span> <span class="token number">0</span>
+    t <span class="token operator">:=</span> time<span class="token punctuation">.</span><span class="token function">Tick</span><span class="token punctuation">(</span>time<span class="token punctuation">.</span>Second<span class="token punctuation">)</span>
+    <span class="token keyword">for</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">select</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">case</span> <span class="token operator">&lt;-</span>t<span class="token punctuation">:</span>
+            count<span class="token operator">++</span>
+            fmt<span class="token punctuation">.</span><span class="token function">Printf</span><span class="token punctuation">(</span><span class="token string">"main run %d\n"</span><span class="token punctuation">,</span> count<span class="token punctuation">)</span>
+        <span class="token keyword">case</span> <span class="token operator">&lt;-</span>exit1<span class="token punctuation">:</span>
+            fmt<span class="token punctuation">.</span><span class="token function">Println</span><span class="token punctuation">(</span><span class="token string">"main exit begin"</span><span class="token punctuation">)</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+    fmt<span class="token punctuation">.</span><span class="token function">Println</span><span class="token punctuation">(</span><span class="token string">"main exit over"</span><span class="token punctuation">)</span>
+<span class="token punctuation">}</span>
+
+<span class="token keyword">func</span> <span class="token function">dealSignal1</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    c <span class="token operator">:=</span> <span class="token function">make</span><span class="token punctuation">(</span><span class="token keyword">chan</span> os<span class="token punctuation">.</span>Signal<span class="token punctuation">,</span> <span class="token number">2</span><span class="token punctuation">)</span>
+    signal<span class="token punctuation">.</span><span class="token function">Notify</span><span class="token punctuation">(</span>c<span class="token punctuation">,</span> os<span class="token punctuation">.</span>Interrupt<span class="token punctuation">,</span> syscall<span class="token punctuation">.</span>SIGTERM<span class="token punctuation">)</span>
+    <span class="token keyword">go</span> <span class="token keyword">func</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token operator">&lt;-</span>c
+        <span class="token function">close</span><span class="token punctuation">(</span>exit1<span class="token punctuation">)</span>
+    <span class="token punctuation">}</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+<span class="token punctuation">}</span>
+
+</code></pre> 
+<p>上面这段程序会有什么问题？</p> 
+<h4><a id="5_766"></a>5、发送</h4> 
+<p>我们继续往下走，G1、G2被挂起后，往channel中发送一个数据3，其实调用的是chansend方法，我们还是逐步的去讲解</p> 
+<h5><a id="1step1_770"></a>（1）step1</h5> 
+<p>如果channel=nil，当前goroutine会被挂起</p> 
+<pre><code class="prism language-go"><span class="token keyword">if</span> c <span class="token operator">==</span> <span class="token boolean">nil</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">if</span> <span class="token operator">!</span>block <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">return</span> <span class="token boolean">false</span>
+        <span class="token punctuation">}</span>
+        <span class="token function">gopark</span><span class="token punctuation">(</span><span class="token boolean">nil</span><span class="token punctuation">,</span> <span class="token boolean">nil</span><span class="token punctuation">,</span> waitReasonChanSendNilChan<span class="token punctuation">,</span> traceEvGoStop<span class="token punctuation">,</span> <span class="token number">2</span><span class="token punctuation">)</span>
+        <span class="token function">throw</span><span class="token punctuation">(</span><span class="token string">"unreachable"</span><span class="token punctuation">)</span>
+    <span class="token punctuation">}</span>
+
+</code></pre> 
+<h5><a id="2step2_785"></a>（2）step2</h5> 
+<p>依然是一个不加锁的快速操作，三组条件</p> 
+<blockquote> 
+ <p>条件1：非阻塞</p> 
+ <p>条件2：channel未关闭</p> 
+ <p>条件3：channel是非缓冲型，并且等待接收队列为空；或者缓冲型，并且循环数组已经满了</p> 
+</blockquote> 
+<pre><code class="prism language-go"><span class="token keyword">if</span> <span class="token operator">!</span>block <span class="token operator">&amp;&amp;</span> c<span class="token punctuation">.</span>closed <span class="token operator">==</span> <span class="token number">0</span> <span class="token operator">&amp;&amp;</span> <span class="token punctuation">(</span><span class="token punctuation">(</span>c<span class="token punctuation">.</span>dataqsiz <span class="token operator">==</span> <span class="token number">0</span> <span class="token operator">&amp;&amp;</span> c<span class="token punctuation">.</span>recvq<span class="token punctuation">.</span>first <span class="token operator">==</span> <span class="token boolean">nil</span><span class="token punctuation">)</span> <span class="token operator">||</span>
+        <span class="token punctuation">(</span>c<span class="token punctuation">.</span>dataqsiz <span class="token operator">&gt;</span> <span class="token number">0</span> <span class="token operator">&amp;&amp;</span> c<span class="token punctuation">.</span>qcount <span class="token operator">==</span> c<span class="token punctuation">.</span>dataqsiz<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">return</span> <span class="token boolean">false</span>
+    <span class="token punctuation">}</span>
+
+</code></pre> 
+<h5><a id="3step3_803"></a>（3）step3</h5> 
+<p>加锁，如果channel已经关闭，直接panic</p> 
+<pre><code class="prism language-go">    <span class="token function">lock</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>c<span class="token punctuation">.</span>lock<span class="token punctuation">)</span>
+
+    <span class="token keyword">if</span> c<span class="token punctuation">.</span>closed <span class="token operator">!=</span> <span class="token number">0</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token function">unlock</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>c<span class="token punctuation">.</span>lock<span class="token punctuation">)</span>
+        <span class="token function">panic</span><span class="token punctuation">(</span><span class="token function">plainError</span><span class="token punctuation">(</span><span class="token string">"send on closed channel"</span><span class="token punctuation">)</span><span class="token punctuation">)</span>
+    <span class="token punctuation">}</span>
+
+</code></pre> 
+<h5><a id="4step4_817"></a>（4）step4</h5> 
+<p>如果等待接收队列不为空，说明什么？</p> 
+<blockquote> 
+ <p>情形1：非缓冲型，等待接收队列不为空</p> 
+ <p>情形2：缓冲型，等待接收队列不为空（说明buf为空）</p> 
+</blockquote> 
+<p>两种情形，都是直接将待发送数据直接copy到接收处</p> 
+<pre><code class="prism language-go"><span class="token keyword">if</span> sg <span class="token operator">:=</span> c<span class="token punctuation">.</span>recvq<span class="token punctuation">.</span><span class="token function">dequeue</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span> sg <span class="token operator">!=</span> <span class="token boolean">nil</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token comment">// Found a waiting receiver. We pass the value we want to send</span>
+        <span class="token comment">// directly to the receiver, bypassing the channel buffer (if any).</span>
+        <span class="token function">send</span><span class="token punctuation">(</span>c<span class="token punctuation">,</span> sg<span class="token punctuation">,</span> ep<span class="token punctuation">,</span> <span class="token keyword">func</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span> <span class="token function">unlock</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>c<span class="token punctuation">.</span>lock<span class="token punctuation">)</span> <span class="token punctuation">}</span><span class="token punctuation">,</span> <span class="token number">3</span><span class="token punctuation">)</span><span class="token comment">//直接从ep copy到sg</span>
+        <span class="token keyword">return</span> <span class="token boolean">true</span>
+<span class="token punctuation">}</span>
+<span class="token keyword">func</span> <span class="token function">send</span><span class="token punctuation">(</span>c <span class="token operator">*</span>hchan<span class="token punctuation">,</span> sg <span class="token operator">*</span>sudog<span class="token punctuation">,</span> ep unsafe<span class="token punctuation">.</span>Pointer<span class="token punctuation">,</span> unlockf <span class="token keyword">func</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span> skip <span class="token builtin">int</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">if</span> raceenabled <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">if</span> c<span class="token punctuation">.</span>dataqsiz <span class="token operator">==</span> <span class="token number">0</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token function">racesync</span><span class="token punctuation">(</span>c<span class="token punctuation">,</span> sg<span class="token punctuation">)</span>
+        <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token comment">// Pretend we go through the buffer, even though</span>
+            <span class="token comment">// we copy directly. Note that we need to increment</span>
+            <span class="token comment">// the head/tail locations only when raceenabled.</span>
+            qp <span class="token operator">:=</span> <span class="token function">chanbuf</span><span class="token punctuation">(</span>c<span class="token punctuation">,</span> c<span class="token punctuation">.</span>recvx<span class="token punctuation">)</span>
+            <span class="token function">raceacquire</span><span class="token punctuation">(</span>qp<span class="token punctuation">)</span>
+            <span class="token function">racerelease</span><span class="token punctuation">(</span>qp<span class="token punctuation">)</span>
+            <span class="token function">raceacquireg</span><span class="token punctuation">(</span>sg<span class="token punctuation">.</span>g<span class="token punctuation">,</span> qp<span class="token punctuation">)</span>
+            <span class="token function">racereleaseg</span><span class="token punctuation">(</span>sg<span class="token punctuation">.</span>g<span class="token punctuation">,</span> qp<span class="token punctuation">)</span>
+            c<span class="token punctuation">.</span>recvx<span class="token operator">++</span>
+            <span class="token keyword">if</span> c<span class="token punctuation">.</span>recvx <span class="token operator">==</span> c<span class="token punctuation">.</span>dataqsiz <span class="token punctuation">{<!-- --></span>
+                c<span class="token punctuation">.</span>recvx <span class="token operator">=</span> <span class="token number">0</span>
+            <span class="token punctuation">}</span>
+            c<span class="token punctuation">.</span>sendx <span class="token operator">=</span> c<span class="token punctuation">.</span>recvx <span class="token comment">// c.sendx = (c.sendx+1) % c.dataqsiz</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+    <span class="token keyword">if</span> sg<span class="token punctuation">.</span>elem <span class="token operator">!=</span> <span class="token boolean">nil</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token function">sendDirect</span><span class="token punctuation">(</span>c<span class="token punctuation">.</span>elemtype<span class="token punctuation">,</span> sg<span class="token punctuation">,</span> ep<span class="token punctuation">)</span>
+        sg<span class="token punctuation">.</span>elem <span class="token operator">=</span> <span class="token boolean">nil</span>
+    <span class="token punctuation">}</span>
+    gp <span class="token operator">:=</span> sg<span class="token punctuation">.</span>g
+    <span class="token function">unlockf</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+    gp<span class="token punctuation">.</span>param <span class="token operator">=</span> unsafe<span class="token punctuation">.</span><span class="token function">Pointer</span><span class="token punctuation">(</span>sg<span class="token punctuation">)</span>
+    <span class="token keyword">if</span> sg<span class="token punctuation">.</span>releasetime <span class="token operator">!=</span> <span class="token number">0</span> <span class="token punctuation">{<!-- --></span>
+        sg<span class="token punctuation">.</span>releasetime <span class="token operator">=</span> <span class="token function">cputicks</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+    <span class="token punctuation">}</span>
+    <span class="token function">goready</span><span class="token punctuation">(</span>gp<span class="token punctuation">,</span> skip<span class="token operator">+</span><span class="token number">1</span><span class="token punctuation">)</span>
+<span class="token punctuation">}</span>
+
+</code></pre> 
+<p>两种情形，都直接从一个用一个goroutine操作另一个goroutine的栈，因此在sendDirect方法中会有一次写屏障</p> 
+<pre><code class="prism language-go"><span class="token keyword">func</span> <span class="token function">sendDirect</span><span class="token punctuation">(</span>t <span class="token operator">*</span>_type<span class="token punctuation">,</span> sg <span class="token operator">*</span>sudog<span class="token punctuation">,</span> src unsafe<span class="token punctuation">.</span>Pointer<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token comment">// src is on our stack, dst is a slot on another stack.</span>
+
+    <span class="token comment">// Once we read sg.elem out of sg, it will no longer</span>
+    <span class="token comment">// be updated if the destination's stack gets copied (shrunk).</span>
+    <span class="token comment">// So make sure that no preemption points can happen between read &amp; use.</span>
+    dst <span class="token operator">:=</span> sg<span class="token punctuation">.</span>elem
+    <span class="token function">typeBitsBulkBarrier</span><span class="token punctuation">(</span>t<span class="token punctuation">,</span> <span class="token function">uintptr</span><span class="token punctuation">(</span>dst<span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token function">uintptr</span><span class="token punctuation">(</span>src<span class="token punctuation">)</span><span class="token punctuation">,</span> t<span class="token punctuation">.</span>size<span class="token punctuation">)</span>
+    <span class="token comment">// No need for cgo write barrier checks because dst is always</span>
+    <span class="token comment">// Go memory.</span>
+    <span class="token function">memmove</span><span class="token punctuation">(</span>dst<span class="token punctuation">,</span> src<span class="token punctuation">,</span> t<span class="token punctuation">.</span>size<span class="token punctuation">)</span>
+<span class="token punctuation">}</span>
+
+</code></pre> 
+<h5><a id="5step5_887"></a>（5）step5</h5> 
+<p>如果等待队列为空，并且缓冲区未满，肯定是缓冲型的channel</p> 
+<pre><code class="prism language-go"><span class="token keyword">if</span> c<span class="token punctuation">.</span>qcount <span class="token operator">&lt;</span> c<span class="token punctuation">.</span>dataqsiz <span class="token punctuation">{<!-- --></span>
+        <span class="token comment">// Space is available in the channel buffer. Enqueue the element to send.</span>
+        qp <span class="token operator">:=</span> <span class="token function">chanbuf</span><span class="token punctuation">(</span>c<span class="token punctuation">,</span> c<span class="token punctuation">.</span>sendx<span class="token punctuation">)</span>
+        <span class="token keyword">if</span> raceenabled <span class="token punctuation">{<!-- --></span>
+            <span class="token function">raceacquire</span><span class="token punctuation">(</span>qp<span class="token punctuation">)</span>
+            <span class="token function">racerelease</span><span class="token punctuation">(</span>qp<span class="token punctuation">)</span>
+        <span class="token punctuation">}</span>
+        <span class="token function">typedmemmove</span><span class="token punctuation">(</span>c<span class="token punctuation">.</span>elemtype<span class="token punctuation">,</span> qp<span class="token punctuation">,</span> ep<span class="token punctuation">)</span>
+        c<span class="token punctuation">.</span>sendx<span class="token operator">++</span>
+        <span class="token keyword">if</span> c<span class="token punctuation">.</span>sendx <span class="token operator">==</span> c<span class="token punctuation">.</span>dataqsiz <span class="token punctuation">{<!-- --></span>
+            c<span class="token punctuation">.</span>sendx <span class="token operator">=</span> <span class="token number">0</span>
+        <span class="token punctuation">}</span>
+        c<span class="token punctuation">.</span>qcount<span class="token operator">++</span>
+        <span class="token function">unlock</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>c<span class="token punctuation">.</span>lock<span class="token punctuation">)</span>
+        <span class="token keyword">return</span> <span class="token boolean">true</span>
+    <span class="token punctuation">}</span>
+
+</code></pre> 
+<p>将元素放在sendx处，然后sendx加1，channel总量加1</p> 
+<h5><a id="6step6_913"></a>（6）step6</h5> 
+<p>如果以上情况都没有命中，说明什么？说明channel已经满了，如果是非阻塞的直接返回，否则需要调用gopack将这个goroutine挂起，等待被唤醒。</p> 
+<pre><code class="prism language-go"><span class="token keyword">if</span> <span class="token operator">!</span>block <span class="token punctuation">{<!-- --></span>
+        <span class="token function">unlock</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>c<span class="token punctuation">.</span>lock<span class="token punctuation">)</span>
+        <span class="token keyword">return</span> <span class="token boolean">false</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token comment">// Block on the channel. Some receiver will complete our operation for us.</span>
+    gp <span class="token operator">:=</span> <span class="token function">getg</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+    mysg <span class="token operator">:=</span> <span class="token function">acquireSudog</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+    mysg<span class="token punctuation">.</span>releasetime <span class="token operator">=</span> <span class="token number">0</span>
+    <span class="token keyword">if</span> t0 <span class="token operator">!=</span> <span class="token number">0</span> <span class="token punctuation">{<!-- --></span>
+        mysg<span class="token punctuation">.</span>releasetime <span class="token operator">=</span> <span class="token operator">-</span><span class="token number">1</span>
+    <span class="token punctuation">}</span>
+    <span class="token comment">// No stack splits between assigning elem and enqueuing mysg</span>
+    <span class="token comment">// on gp.waiting where copystack can find it.</span>
+    mysg<span class="token punctuation">.</span>elem <span class="token operator">=</span> ep
+    mysg<span class="token punctuation">.</span>waitlink <span class="token operator">=</span> <span class="token boolean">nil</span>
+    mysg<span class="token punctuation">.</span>g <span class="token operator">=</span> gp
+    mysg<span class="token punctuation">.</span>isSelect <span class="token operator">=</span> <span class="token boolean">false</span>
+    mysg<span class="token punctuation">.</span>c <span class="token operator">=</span> c
+    gp<span class="token punctuation">.</span>waiting <span class="token operator">=</span> mysg
+    gp<span class="token punctuation">.</span>param <span class="token operator">=</span> <span class="token boolean">nil</span>
+    c<span class="token punctuation">.</span>sendq<span class="token punctuation">.</span><span class="token function">enqueue</span><span class="token punctuation">(</span>mysg<span class="token punctuation">)</span>
+    <span class="token function">goparkunlock</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>c<span class="token punctuation">.</span>lock<span class="token punctuation">,</span> waitReasonChanSend<span class="token punctuation">,</span> traceEvGoBlockSend<span class="token punctuation">,</span> <span class="token number">3</span><span class="token punctuation">)</span>
+    <span class="token comment">// Ensure the value being sent is kept alive until the</span>
+    <span class="token comment">// receiver copies it out. The sudog has a pointer to the</span>
+    <span class="token comment">// stack object, but sudogs aren't considered as roots of the</span>
+    <span class="token comment">// stack tracer.</span>
+    <span class="token function">KeepAlive</span><span class="token punctuation">(</span>ep<span class="token punctuation">)</span>
+
+</code></pre> 
+<p>我们对照程序分析下，在前一个小节G1、G2被挂起来了，等待sender的解救；这时候往ch中发送了一个3，（step4）这时sender发现ch的等待接收队列recvq中有receiver，就会出队一个sudog，然后将元素直接copy到sudog的elem处，然后调用goready将G1唤醒，继续执行G1原来的代码，打印出结果。如下图：</p> 
+<p><img src="https://images2.imgbox.com/1a/69/IWA7jpuX_o.png" alt="5"></p> 
+<h4><a id="6_953"></a>6、关闭</h4> 
+<p>close一个channel会调用closechan方法，比较简单，我们也来看下</p> 
+<h5><a id="1step1_957"></a>（1）step1</h5> 
+<p>如果channel为nil，会直接panic</p> 
+<pre><code class="prism language-go"><span class="token keyword">if</span> c <span class="token operator">==</span> <span class="token boolean">nil</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token function">panic</span><span class="token punctuation">(</span><span class="token function">plainError</span><span class="token punctuation">(</span><span class="token string">"close of nil channel"</span><span class="token punctuation">)</span><span class="token punctuation">)</span>
+    <span class="token punctuation">}</span>
+
+</code></pre> 
+<h5><a id="2step2_968"></a>（2）step2</h5> 
+<p>加锁，如果channel已经关闭，再次关闭会panic</p> 
+<pre><code class="prism language-go"><span class="token function">lock</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>c<span class="token punctuation">.</span>lock<span class="token punctuation">)</span>
+    <span class="token keyword">if</span> c<span class="token punctuation">.</span>closed <span class="token operator">!=</span> <span class="token number">0</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token function">unlock</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>c<span class="token punctuation">.</span>lock<span class="token punctuation">)</span>
+        <span class="token function">panic</span><span class="token punctuation">(</span><span class="token function">plainError</span><span class="token punctuation">(</span><span class="token string">"close of closed channel"</span><span class="token punctuation">)</span><span class="token punctuation">)</span>
+    <span class="token punctuation">}</span>
+
+</code></pre> 
+<h5><a id="3step3_981"></a>（3）step3</h5> 
+<p>首选将hchan对应close标志置为1，然后声明一个链表；将等待接收队列中的所有sudog加入到链表，并将其elem赋予一个相应类型的0值；</p> 
+<pre><code class="prism language-go">c<span class="token punctuation">.</span>closed <span class="token operator">=</span> <span class="token number">1</span>
+
+    <span class="token keyword">var</span> glist gList
+
+    <span class="token comment">// release all readers</span>
+    <span class="token keyword">for</span> <span class="token punctuation">{<!-- --></span>
+        sg <span class="token operator">:=</span> c<span class="token punctuation">.</span>recvq<span class="token punctuation">.</span><span class="token function">dequeue</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+        <span class="token keyword">if</span> sg <span class="token operator">==</span> <span class="token boolean">nil</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">break</span>
+        <span class="token punctuation">}</span>
+        <span class="token keyword">if</span> sg<span class="token punctuation">.</span>elem <span class="token operator">!=</span> <span class="token boolean">nil</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token function">typedmemclr</span><span class="token punctuation">(</span>c<span class="token punctuation">.</span>elemtype<span class="token punctuation">,</span> sg<span class="token punctuation">.</span>elem<span class="token punctuation">)</span>
+            sg<span class="token punctuation">.</span>elem <span class="token operator">=</span> <span class="token boolean">nil</span>
+        <span class="token punctuation">}</span>
+        <span class="token keyword">if</span> sg<span class="token punctuation">.</span>releasetime <span class="token operator">!=</span> <span class="token number">0</span> <span class="token punctuation">{<!-- --></span>
+            sg<span class="token punctuation">.</span>releasetime <span class="token operator">=</span> <span class="token function">cputicks</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+        <span class="token punctuation">}</span>
+        gp <span class="token operator">:=</span> sg<span class="token punctuation">.</span>g
+        gp<span class="token punctuation">.</span>param <span class="token operator">=</span> <span class="token boolean">nil</span>
+        <span class="token keyword">if</span> raceenabled <span class="token punctuation">{<!-- --></span>
+            <span class="token function">raceacquireg</span><span class="token punctuation">(</span>gp<span class="token punctuation">,</span> c<span class="token punctuation">.</span><span class="token function">raceaddr</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span>
+        <span class="token punctuation">}</span>
+        glist<span class="token punctuation">.</span><span class="token function">push</span><span class="token punctuation">(</span>gp<span class="token punctuation">)</span>
+    <span class="token punctuation">}</span>
+
+</code></pre> 
+<h5><a id="4step4_1013"></a>（4）step4</h5> 
+<p>将所有等待发送队列的sudog加入链表</p> 
+<pre><code class="prism language-go"><span class="token comment">// release all writers (they will panic)</span>
+    <span class="token keyword">for</span> <span class="token punctuation">{<!-- --></span>
+        sg <span class="token operator">:=</span> c<span class="token punctuation">.</span>sendq<span class="token punctuation">.</span><span class="token function">dequeue</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+        <span class="token keyword">if</span> sg <span class="token operator">==</span> <span class="token boolean">nil</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">break</span>
+        <span class="token punctuation">}</span>
+        sg<span class="token punctuation">.</span>elem <span class="token operator">=</span> <span class="token boolean">nil</span>
+        <span class="token keyword">if</span> sg<span class="token punctuation">.</span>releasetime <span class="token operator">!=</span> <span class="token number">0</span> <span class="token punctuation">{<!-- --></span>
+            sg<span class="token punctuation">.</span>releasetime <span class="token operator">=</span> <span class="token function">cputicks</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+        <span class="token punctuation">}</span>
+        gp <span class="token operator">:=</span> sg<span class="token punctuation">.</span>g
+        gp<span class="token punctuation">.</span>param <span class="token operator">=</span> <span class="token boolean">nil</span>
+        <span class="token keyword">if</span> raceenabled <span class="token punctuation">{<!-- --></span>
+            <span class="token function">raceacquireg</span><span class="token punctuation">(</span>gp<span class="token punctuation">,</span> c<span class="token punctuation">.</span><span class="token function">raceaddr</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span>
+        <span class="token punctuation">}</span>
+        glist<span class="token punctuation">.</span><span class="token function">push</span><span class="token punctuation">(</span>gp<span class="token punctuation">)</span>
+    <span class="token punctuation">}</span>
+    <span class="token function">unlock</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>c<span class="token punctuation">.</span>lock<span class="token punctuation">)</span>
+
+</code></pre> 
+<h5><a id="5step5_1039"></a>（5）step5</h5> 
+<p>唤醒sudog所有goroutine</p> 
+<pre><code class="prism language-go"><span class="token keyword">for</span> <span class="token operator">!</span>glist<span class="token punctuation">.</span><span class="token function">empty</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        gp <span class="token operator">:=</span> glist<span class="token punctuation">.</span><span class="token function">pop</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+        gp<span class="token punctuation">.</span>schedlink <span class="token operator">=</span> <span class="token number">0</span>
+        <span class="token function">goready</span><span class="token punctuation">(</span>gp<span class="token punctuation">,</span> <span class="token number">3</span><span class="token punctuation">)</span>
+    <span class="token punctuation">}</span>
+
+</code></pre> 
+<h3><a id="_1054"></a>三、问题</h3> 
+<h4><a id="11channelpanic_1056"></a>1、问题1：哪些操作会使channel发生panic？</h4> 
+<p>三种情况</p> 
+<blockquote> 
+ <p>情况1：往一个已经关闭的channel写数据</p> 
+ <p>情况2：关闭一个nil的channel</p> 
+ <p>情况3：关闭一个已经关闭的channel</p> 
+</blockquote> 
+<h4><a id="22channel_1066"></a>2、问题2：channel是并发安全的吗？</h4> 
+<blockquote> 
+ <p>是</p> 
+</blockquote> 
+<h4><a id="33channelchannel_1070"></a>3、问题3：当一个channel关闭后，我们是否还能从channel读到数据？</h4> 
+<blockquote> 
+ <p>可以，只不过接收的是无效数据</p> 
+</blockquote> 
+<h4><a id="44channel_1074"></a>4、问题4：channel发送和接收元素的本质是什么？</h4> 
+<blockquote> 
+ <p>值的拷贝</p> 
+</blockquote> 
+<p>看一段示例</p> 
+<pre><code class="prism language-go"><span class="token keyword">package</span> main
+<span class="token keyword">import</span> <span class="token punctuation">(</span>
+    <span class="token string">"fmt"</span>
+    <span class="token string">"time"</span>
+<span class="token punctuation">)</span>
+
+<span class="token keyword">func</span> <span class="token function">print</span><span class="token punctuation">(</span>u <span class="token operator">&lt;-</span><span class="token keyword">chan</span> <span class="token builtin">int</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    time<span class="token punctuation">.</span><span class="token function">Sleep</span><span class="token punctuation">(</span><span class="token number">2</span> <span class="token operator">*</span> time<span class="token punctuation">.</span>Second<span class="token punctuation">)</span>
+    fmt<span class="token punctuation">.</span><span class="token function">Println</span><span class="token punctuation">(</span><span class="token string">"print int"</span><span class="token punctuation">,</span> <span class="token operator">&lt;-</span>u<span class="token punctuation">)</span>
+<span class="token punctuation">}</span>
+
+<span class="token keyword">func</span> <span class="token function">main</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    c <span class="token operator">:=</span> <span class="token function">make</span><span class="token punctuation">(</span><span class="token keyword">chan</span> <span class="token builtin">int</span><span class="token punctuation">,</span> <span class="token number">5</span><span class="token punctuation">)</span>
+    a <span class="token operator">:=</span> <span class="token number">0</span>
+
+    c <span class="token operator">&lt;-</span> a
+    fmt<span class="token punctuation">.</span><span class="token function">Println</span><span class="token punctuation">(</span>a<span class="token punctuation">)</span>
+    <span class="token comment">// modify g</span>
+    a <span class="token operator">=</span> <span class="token number">1</span>
+
+    <span class="token keyword">go</span> <span class="token function">print</span><span class="token punctuation">(</span>c<span class="token punctuation">)</span>
+    time<span class="token punctuation">.</span><span class="token function">Sleep</span><span class="token punctuation">(</span><span class="token number">5</span> <span class="token operator">*</span> time<span class="token punctuation">.</span>Second<span class="token punctuation">)</span>
+    fmt<span class="token punctuation">.</span><span class="token function">Println</span><span class="token punctuation">(</span>a<span class="token punctuation">)</span>
+<span class="token punctuation">}</span>
+
+</code></pre> 
+<p>再看一段复杂一点的</p> 
+<pre><code class="prism language-go"><span class="token keyword">package</span> main
+
+<span class="token keyword">import</span> <span class="token punctuation">(</span>
+    <span class="token string">"fmt"</span>
+    <span class="token string">"time"</span>
+<span class="token punctuation">)</span>
+
+<span class="token keyword">type</span> people <span class="token keyword">struct</span> <span class="token punctuation">{<!-- --></span>
+    name <span class="token builtin">string</span>
+<span class="token punctuation">}</span>
+
+<span class="token keyword">var</span> u <span class="token operator">=</span> people<span class="token punctuation">{<!-- --></span>name<span class="token punctuation">:</span> <span class="token string">"A"</span><span class="token punctuation">}</span>
+
+<span class="token keyword">func</span> <span class="token function">printPeople</span><span class="token punctuation">(</span>u <span class="token operator">&lt;-</span><span class="token keyword">chan</span> <span class="token operator">*</span>people<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    time<span class="token punctuation">.</span><span class="token function">Sleep</span><span class="token punctuation">(</span><span class="token number">2</span> <span class="token operator">*</span> time<span class="token punctuation">.</span>Second<span class="token punctuation">)</span>
+    fmt<span class="token punctuation">.</span><span class="token function">Println</span><span class="token punctuation">(</span><span class="token string">"printPeople"</span><span class="token punctuation">,</span> <span class="token operator">&lt;-</span>u<span class="token punctuation">)</span>
+<span class="token punctuation">}</span>
+
+<span class="token keyword">func</span> <span class="token function">main</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    c <span class="token operator">:=</span> <span class="token function">make</span><span class="token punctuation">(</span><span class="token keyword">chan</span> <span class="token operator">*</span>people<span class="token punctuation">,</span> <span class="token number">5</span><span class="token punctuation">)</span>
+    <span class="token keyword">var</span> a <span class="token operator">=</span> <span class="token operator">&amp;</span>u
+
+    c <span class="token operator">&lt;-</span> a
+    fmt<span class="token punctuation">.</span><span class="token function">Println</span><span class="token punctuation">(</span>a<span class="token punctuation">)</span>
+    <span class="token comment">// modify g</span>
+    a <span class="token operator">=</span> <span class="token operator">&amp;</span>people<span class="token punctuation">{<!-- --></span>name<span class="token punctuation">:</span><span class="token string">"B"</span><span class="token punctuation">}</span>
+
+    <span class="token keyword">go</span> <span class="token function">printPeople</span><span class="token punctuation">(</span>c<span class="token punctuation">)</span>
+    time<span class="token punctuation">.</span><span class="token function">Sleep</span><span class="token punctuation">(</span><span class="token number">5</span> <span class="token operator">*</span> time<span class="token punctuation">.</span>Second<span class="token punctuation">)</span>
+    fmt<span class="token punctuation">.</span><span class="token function">Println</span><span class="token punctuation">(</span>a<span class="token punctuation">)</span>
+<span class="token punctuation">}</span>
+
+</code></pre> 
+<p>输出会是什么</p> 
+<pre><code class="prism language-go"><span class="token operator">&amp;</span><span class="token punctuation">{<!-- --></span>A<span class="token punctuation">}</span>
+printPeople <span class="token operator">&amp;</span><span class="token punctuation">{<!-- --></span>A<span class="token punctuation">}</span>
+<span class="token operator">&amp;</span><span class="token punctuation">{<!-- --></span>B<span class="token punctuation">}</span>
+
+</code></pre> 
+<p>因为chan中保存的是u的地址的值的拷贝，这个地址未发生改变，虽然调用a = &amp;people{name:“B”}重新赋予了a新的地址，但是channel中的未改变。</p> 
+<h3><a id="_1156"></a>四、参考文献</h3> 
+<p>【1】<a href="https://www.cnblogs.com/qcrao-2018/p/11220651.html" rel="nofollow" title="深度解密Go语言之channel">《深度解密Go语言之channel》</a></p> 
+<p>【2】<a href="https://draveness.me/golang/compile/golang-lexer-and-parser.html" rel="nofollow" title="浅谈Go语言编译原理">《浅谈Go语言编译原理》</a></p> 
+<p>【3】<a href="http://www.allitebooks.org/concurrency-in-go/" rel="nofollow" title="Concurrency in Go">《Concurrency in Go》</a></p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/e804b2203d1bb3065face5fff9813254/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">微信小程序如何进行反编译详细教程</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/e4be32a7a05c6e9b716debdf286686d1/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">【预告】括彩云融合CDN管理系统</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

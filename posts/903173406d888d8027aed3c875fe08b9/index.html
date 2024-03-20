@@ -1,0 +1,493 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>go发送smtp邮件时的踩坑记录——auth login、x509: cannot validate certificate for错误 - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="go发送smtp邮件时的踩坑记录——auth login、x509: cannot validate certificate for错误" />
+<meta property="og:description" content="最近在用go写一个小工具，一个小功能是用smtp发邮件，用公司内网的邮箱服务器实现踩了不少坑
+想知道x509: cannot validate certificate for解决的直接看2.2.1，想知道auth login怎么实现看2.2.2
+1 smtp协议 基础知识，回顾一下smtp协议的基本使用
+1.1 命令行通过smtp协议发邮件 smtp协议网上资料很多，这里用最简单的方法过一遍，用的是qq邮箱
+qq邮箱在使用smtp协议的时候，用的不是qq密码，而是一个叫授权码的东西，我们去qq邮箱设置——账户里找到生成授权码
+他会让你用密保手机发短信到某个号码，照做即可获得一个16位字母的授权码，保存好
+去一个在线加密base64的网站，我用的是这个在线加密解密
+把用来发邮件的qq邮箱账号和授权码转成base64编码
+现在打开命令行，连接qq的smtp服务器和端口，qq的是smtp.qq.com:25
+telnet smtp.qq.com 25 要和他打个招呼，后面跟着的不一定要是smtp，我不是很清楚这个有什么区别，我试着是什么都行
+helo smtp 接下来就是验证你的身份，我们实验auth login法
+auth login 分两行，填入刚才转换成base64的账号和授权码，这里也可以把账号和auth login放在一行写，下一行再写密码
+响应235 Authentication successful，表示登陆成功
+现在开始配置好发件人和收件人
+mail from:&lt;你的发件邮箱&gt; rcpt to:&lt;接收邮箱&gt; 输入data，开始写邮件内容，写完后一个.表示邮件结束，返回250 Ok: queued as，邮件就发出去了
+data subject:填写邮件主题 &lt;空一行&gt; 填写邮件内容 ... 邮件内容 . 1.2 smtp auth方式 之前用的是auth login方式，smtp还有很多其他方式，可参考这篇文章 SMTP（Login，Plain，CRAM-MD5）验证
+用ehlo来代替helo命令，就可以查询这个邮件服务器支持的auth方式
+我在qq邮箱和我公司邮件服务器上尝试ehlo，得到的返回如下
+所以qq支持auth login和plain两种方式，我公司的邮件服务器只支持auth login，plain的格式是&lt;NULL&gt;账号&lt;NULL&gt;密码
+2 如何用go发出一封auth login的邮件 2.1 官方是怎么说的 https://golang.org/pkg/net/smtp/#example_PlainAuth
+官方godoc给出了一个plain验证方式的发邮件代码
+package main import ( &#34;" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/903173406d888d8027aed3c875fe08b9/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2019-01-25T11:03:12+08:00" />
+<meta property="article:modified_time" content="2019-01-25T11:03:12+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">go发送smtp邮件时的踩坑记录——auth login、x509: cannot validate certificate for错误</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p>最近在用go写一个小工具，一个小功能是用smtp发邮件，用公司内网的邮箱服务器实现踩了不少坑</p> 
+<p>想知道x509: cannot validate certificate for解决的直接看2.2.1，想知道auth login怎么实现看2.2.2</p> 
+<h2>1 smtp协议</h2> 
+<p>基础知识，回顾一下smtp协议的基本使用</p> 
+<h3>1.1 命令行通过smtp协议发邮件</h3> 
+<p>smtp协议网上资料很多，这里用最简单的方法过一遍，用的是qq邮箱</p> 
+<p>qq邮箱在使用smtp协议的时候，用的不是qq密码，而是一个叫授权码的东西，我们去qq邮箱设置——账户里找到生成授权码</p> 
+<p><img alt="" class="has" height="440" src="https://images2.imgbox.com/44/96/1KnTerlL_o.png" width="925"></p> 
+<p>他会让你用密保手机发短信到某个号码，照做即可获得一个16位字母的授权码，保存好</p> 
+<p>去一个在线加密base64的网站，我用的是这个<a href="http://tool.oschina.net/encrypt?type=3" rel="nofollow">在线加密解密</a></p> 
+<p>把用来发邮件的qq邮箱账号和授权码转成base64编码</p> 
+<p>现在打开命令行，连接qq的smtp服务器和端口，qq的是smtp.qq.com:25</p> 
+<pre class="has"><code class="language-bash">telnet smtp.qq.com 25</code></pre> 
+<p><img alt="" class="has" height="88" src="https://images2.imgbox.com/66/2e/OCXkNdbh_o.png" width="373"></p> 
+<p>要和他打个招呼，后面跟着的不一定要是smtp，我不是很清楚这个有什么区别，我试着是什么都行</p> 
+<pre class="has"><code>helo smtp</code></pre> 
+<p>接下来就是验证你的身份，我们实验auth login法</p> 
+<pre class="has"><code class="language-bash">auth login</code></pre> 
+<p><img alt="" class="has" height="149" src="https://images2.imgbox.com/84/4e/Tfw22u8g_o.png" width="363"></p> 
+<p>分两行，填入刚才转换成base64的账号和授权码，这里也可以把账号和auth login放在一行写，下一行再写密码</p> 
+<p>响应235 Authentication successful，表示登陆成功</p> 
+<p>现在开始配置好发件人和收件人</p> 
+<pre class="has"><code>mail from:&lt;你的发件邮箱&gt;
+rcpt to:&lt;接收邮箱&gt;</code></pre> 
+<p>输入data，开始写邮件内容，写完后一个.表示邮件结束，返回250 Ok: queued as，邮件就发出去了</p> 
+<pre class="has"><code>data
+subject:填写邮件主题
+&lt;空一行&gt;
+填写邮件内容
+...
+邮件内容
+.</code></pre> 
+<h3>1.2 smtp auth方式</h3> 
+<p>之前用的是auth login方式，smtp还有很多其他方式，可参考这篇文章 <a href="https://blog.csdn.net/huayucong/article/details/53056954">SMTP（Login，Plain，CRAM-MD5）验证</a></p> 
+<p>用ehlo来代替helo命令，就可以查询这个邮件服务器支持的auth方式</p> 
+<p>我在qq邮箱和我公司邮件服务器上尝试ehlo，得到的返回如下</p> 
+<p><img alt="" class="has" height="124" src="https://images2.imgbox.com/1c/90/VmUixjZl_o.png" width="149"></p> 
+<p><img alt="" class="has" height="65" src="https://images2.imgbox.com/11/61/sLRNCybW_o.png" width="117"> </p> 
+<p>所以qq支持auth login和plain两种方式，我公司的邮件服务器只支持auth login，plain的格式是&lt;NULL&gt;账号&lt;NULL&gt;密码</p> 
+<p> </p> 
+<h2>2 如何用go发出一封auth login的邮件</h2> 
+<h3><strong>2.1 官方是怎么说的</strong></h3> 
+<p><a href="https://golang.org/pkg/net/smtp/#example_PlainAuth" rel="nofollow">https://golang.org/pkg/net/smtp/#example_PlainAuth</a></p> 
+<p>官方godoc给出了一个plain验证方式的发邮件代码</p> 
+<pre class="has"><code class="language-Go">package main
+
+import (
+	"log"
+	"net/smtp"
+)
+
+func main() {
+	// Set up authentication information.
+	auth := smtp.PlainAuth("", "user@example.com", "password", "mail.example.com")
+
+	// Connect to the server, authenticate, set the sender and recipient,
+	// and send the email all in one step.
+	to := []string{"recipient@example.net"}
+	msg := []byte("To: recipient@example.net\r\n" +
+		"Subject: discount Gophers!\r\n" +
+		"\r\n" +
+		"This is the email body.\r\n")
+	err := smtp.SendMail("mail.example.com:25", auth, "sender@example.org", to, msg)
+	if err != nil {
+		log.Fatal(err)
+	}
+}</code></pre> 
+<p>把上面的收发件人邮箱改好，邮箱服务器的hostname、端口改好，我用的qq邮箱，如果你用别的邮箱，smtp的端口号也查一下，不一定是25</p> 
+<p>密码记得要写授权码</p> 
+<p>运行之后邮件就发出去了</p> 
+<p>看一下内部代码，smtp包里这个SendMail函数，注释是我自己写的，大部分和之前telnet走的流程一致</p> 
+<pre class="has"><code class="language-Go">/*
+	addr:	邮件 smtp 服务器地址
+	a:			验证对象
+	from:	发件箱
+	to:		收件人邮箱列表
+	msg:	发送的邮件信息
+ */
+func SendMail(addr string, a Auth, from string, to []string, msg []byte) error {
+	// 检测收发件邮箱地址是否有回车和换行
+	if err := validateLine(from); err != nil {
+		return err
+	}
+	for _, recp := range to {
+		if err := validateLine(recp); err != nil {
+			return err
+		}
+	}
+
+	// 和邮箱服务器建立 tcp 连接
+	c, err := Dial(addr)
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+
+	// 发送helo信息
+	if err = c.hello(); err != nil {
+		return err
+	}
+
+	// 如果邮箱服务器支持 ssl/tls 加密
+	if ok, _ := c.Extension("STARTTLS"); ok {
+		config := &amp;tls.Config{ServerName: c.serverName}  // tls 配置
+		// 测试安全连接
+		if testHookStartTLS != nil {
+			testHookStartTLS(config)
+		}
+		// 开始 tls 连接
+		if err = c.StartTLS(config); err != nil {
+			return err
+		}
+	}
+
+	// 验证
+	if a != nil &amp;&amp; c.ext != nil {
+		// 若邮箱服务器不支持 auth，报错
+		if _, ok := c.ext["AUTH"]; !ok {
+			return errors.New("smtp: server doesn't support AUTH")
+		}
+		// 验证
+		if err = c.Auth(a); err != nil {
+			return err
+		}
+	}
+
+	// 填写发件邮箱
+	if err = c.Mail(from); err != nil {
+		return err
+	}
+
+	// 填写收件邮箱
+	for _, addr := range to {
+		if err = c.Rcpt(addr); err != nil {
+			return err
+		}
+	}
+
+	// 邮件正文
+	w, err := c.Data()
+	if err != nil {
+		return err
+	}
+	_, err = w.Write(msg)
+	if err != nil {
+		return err
+	}
+	err = w.Close()
+	if err != nil {
+		return err
+	}
+	return c.Quit()
+}</code></pre> 
+<h3>2.2 然而换成我们公司的邮箱服务器就报错</h3> 
+<h4>2.2.1 证书错误</h4> 
+<p>换上我们公司的邮箱服务器，报错</p> 
+<p>x509: cannot validate certificate for 10.141.72.4 because it doesn't contain any IP SANs</p> 
+<p>这篇文章说这个问题和证书有关，我猜测我们公司的邮箱服务器不能提供证书，所以报错，<a href="https://blog.csdn.net/zsd498537806/article/details/79290732">https://blog.csdn.net/zsd498537806/article/details/79290732</a></p> 
+<p>方法就是要修改代码，配置tls连接为跳过证书验证，我直接把smtp包复制了一份，命名为mySmtp/smtp，进行修改，修改注释的那一行就可以，增加InsecureSkipVerify为true的tls配置</p> 
+<pre class="has"><code class="language-Go">func SendMail(addr string, a Auth, from string, to []string, msg []byte) error {
+	if err := validateLine(from); err != nil {
+		return err
+	}
+	for _, recp := range to {
+		if err := validateLine(recp); err != nil {
+			return err
+		}
+	}
+	c, err := Dial(addr)
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+	if err = c.hello(); err != nil {
+		return err
+	}
+	if ok, _ := c.Extension("STARTTLS"); ok {
+		// 跳过证书验证
+		config := &amp;tls.Config{ServerName: c.serverName, InsecureSkipVerify: true}
+		if testHookStartTLS != nil {
+			testHookStartTLS(config)
+		}
+		if err = c.StartTLS(config); err != nil {
+			return err
+		}
+	}
+	if a != nil &amp;&amp; c.ext != nil {
+		if _, ok := c.ext["AUTH"]; !ok {
+			return errors.New("smtp: server doesn't support AUTH")
+		}
+		if err = c.Auth(a); err != nil {
+			return err
+		}
+	}
+	if err = c.Mail(from); err != nil {
+		return err
+	}
+	for _, addr := range to {
+		if err = c.Rcpt(addr); err != nil {
+			return err
+		}
+	}
+	w, err := c.Data()
+	if err != nil {
+		return err
+	}
+	_, err = w.Write(msg)
+	if err != nil {
+		return err
+	}
+	err = w.Close()
+	if err != nil {
+		return err
+	}
+	return c.Quit()
+}</code></pre> 
+<p>另外原来smtp包里还有auth.go，这个文件也要一并复制到mySmtp包里</p> 
+<p>现在main函数里面smtp的调用都变成我们mySmtp包，运行之后</p> 
+<p>504 this command is not implemented</p> 
+<h4>2.2.2 auth login</h4> 
+<p>前面说过，smtp的验证方式有auth login和plain等，go给出的代码用的是plain方式验证，而我们公司的服务器只支持auth login</p> 
+<p>就是说我们还要修改一下auth部分的代码，看一下原来代码是如何auth的</p> 
+<pre class="has"><code class="language-Go">/*
+	身份验证
+ */
+func (c *Client) Auth(a Auth) error {
+	// 发送 ehlo
+	if err := c.hello(); err != nil {
+		return err
+	}
+	encoding := base64.StdEncoding
+
+	// 获取验证所需信息，mech 用于验证的命令，resp 是验证的账号、密码等信息
+	mech, resp, err := a.Start(&amp;ServerInfo{c.serverName, c.tls, c.auth})
+	if err != nil {
+		c.Quit()
+		return err
+	}
+
+	// base64 编码
+	resp64 := make([]byte, encoding.EncodedLen(len(resp)))
+	encoding.Encode(resp64, resp)
+
+	// 发送验证命令
+	code, msg64, err := c.cmd(0, strings.TrimSpace(fmt.Sprintf("AUTH %s %s", mech, resp64)))
+	for err == nil {
+		var msg []byte
+		switch code {
+		// 返回码 334，表示期待用户继续输入信息
+		case 334:
+			msg, err = encoding.DecodeString(msg64)
+		// 返回码 235，表示登陆成功
+		case 235:
+			msg = []byte(msg64)
+		// 其他情况，错误
+		default:
+			err = &amp;textproto.Error{Code: code, Msg: msg64}
+		}
+		// 如果返回码是 334，获取下一步验证所需信息
+		if err == nil {
+			resp, err = a.Next(msg, code == 334)
+		}
+		// 如果出错，停止连接
+		if err != nil {
+			// abort the AUTH
+			c.cmd(501, "*")
+			c.Quit()
+			break
+		}
+
+		// 进行下一步验证
+		if resp == nil {
+			break
+		}
+		resp64 = make([]byte, encoding.EncodedLen(len(resp)))
+		encoding.Encode(resp64, resp)
+		code, msg64, err = c.cmd(0, string(resp64))
+	}
+	return err
+}</code></pre> 
+<p>通过代码看出，Auth这个接口有两个方法，Start和Next，我们构建auth login的Auth对象的时候写好这两个方法就可以了</p> 
+<p>为了进一步了解，看一下plain的Auth对象，这个包里还有CRAMMD5的验证方法，感兴趣可以自己看</p> 
+<pre class="has"><code class="language-Go">/*
+	验证服务器基本信息，返回验证所需信息
+ */
+func (a *plainAuth) Start(server *ServerInfo) (string, []byte, error) {
+	// 如果不是安全连接，也不是本地的服务器，报错，不允许不安全的连接
+	if !server.TLS &amp;&amp; !isLocalhost(server.Name) {
+		return "", nil, errors.New("unencrypted connection")
+	}
+	// 如果服务器信息和 Auth 对象的服务器信息不一致，报错
+	if server.Name != a.host {
+		return "", nil, errors.New("wrong host name")
+	}
+	// 验证时需要的账号密码，\x00表示&lt;NULL&gt;
+	resp := []byte(a.identity + "\x00" + a.username + "\x00" + a.password)
+	// "auth plain" 命令
+	return "PLAIN", resp, nil
+}
+
+/*
+	进一步进行验证
+ */
+func (a *plainAuth) Next(fromServer []byte, more bool) ([]byte, error) {
+	// 如果服务器需要更多验证，报错
+	if more {
+		return nil, errors.New("unexpected server challenge")
+	}
+	return nil, nil
+}</code></pre> 
+<p>了解了这两个方法，以及smtp是如何调用这两个方法进行验证的，我们就可以写出自己的用于auth login的Auth代码了</p> 
+<pre class="has"><code class="language-Go">/*
+	auth login
+ */
+type loginAuth struct {
+	username, password string
+	host                         string
+}
+
+/*
+	auth login 验证
+ */
+func LoginAuth(username, password, host string) Auth {
+	return &amp;loginAuth{username, password, host}
+}
+
+/*
+	初步验证服务器信息，输入账号
+ */
+func (a *loginAuth) Start(server *ServerInfo) (string, []byte, error) {
+	// 如果不是安全连接，也不是本地的服务器，报错，不允许不安全的连接
+	if !server.TLS &amp;&amp; !isLocalhost(server.Name) {
+		return "", nil, errors.New("unencrypted connection")
+	}
+	// 如果服务器信息和 Auth 对象的服务器信息不一致，报错
+	if server.Name != a.host {
+		return "", nil, errors.New("wrong host name")
+	}
+	// 验证时需要的账号
+	resp := []byte(a.username)
+	// "auth login" 命令
+	return "LOGIN", resp, nil
+}
+
+/*
+	进一步进行验证，输入密码
+ */
+func (a *loginAuth) Next(fromServer []byte, more bool) ([]byte, error) {
+	// 如果服务器需要更多验证，报错
+	if more {
+		return []byte(a.password), nil
+	}
+	return nil, nil
+}</code></pre> 
+<p>主函数调用我们自己写的Auth和smtp，运行，发送成功</p> 
+<pre class="has"><code class="language-Go">func main() {
+	hostname := "邮箱IP"
+	auth := mySmtp.LoginAuth("发件邮箱", "密码", hostname)
+
+	// Connect to the server, authenticate, set the sender and recipient,
+	// and send the email all in one step.
+	to := []string{"收件人邮箱"}
+	msg := []byte("To: 收件人邮箱\r\n" +
+		"Subject: 测试!\r\n" +
+		"\r\n" +
+		"This is the email body.\r\n")
+	err := mySmtp.SendMail("邮箱IP:SMTP端口", auth, "发件邮箱", to, msg)
+	if err != nil {
+		log.Fatal(err)
+	}
+}</code></pre> 
+<p> </p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/39e09e9ac7a9488051023dc6abd4dc96/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">对SSB信号的调制以及相干解调过程进行仿真</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/19177409d19ca4b008b8773d2aeb27a1/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">安装caffe过程中遇到的hdf5问题</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

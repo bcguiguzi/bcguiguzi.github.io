@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>【Spark内核源码】SparkContext中的组件和初始化 - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="【Spark内核源码】SparkContext中的组件和初始化" />
+<meta property="og:description" content="目录
+SparkContext概述
+SparkContext组件概述
+SparkContext初始化过程
+第一步：确保当前线程中没有SparkContext在运行
+第二步：版本反馈
+第三步：真正的初始化
+第四步：确认启动成功
+SparkContext概述 在【Spark内核源码】Word Count程序的简单分析 当中使用Spark Shell编写了简单的Word Count程序，在进入Spark Shell的时候，Spark Shell为我们自动创建了SparkContext sc。
+Spark应用程序的第一步就是创建并初始化SparkContext，SparkContext的初始化过程包含了内部组件的创建和准备，主要涉及网络通信、分布式、消息、存储、计算、调度、缓存、度量、清理、文件服务和UI等方面。它是Spark主要功能的入口点，链接Spark集群，创建RDD、累加器和广播变量，一个线程只能运行一个SparkContext。SparkContext在应用程序中将外部数据转换成RDD，因此建立了第一个RDD，也就是说SparkContext建立了RDD血缘关系的根，是DAG的根源。
+SparkContext组件概述 SparkContext的组件如下图所示：
+各组件的说明如下：
+listenerBus：Spark事件总线，接收各个使用方的事件，以异步的方式对事件进行匹配和处理。
+_ui:Spark用户界面,间接依赖于计算引擎、调度系统、存储体系、作业、阶段、存储、执行器等组件的监控数据，以SparkListenerEnvent的形式投递给LiveListener，SparkUI从SparkListener中读取数据。
+_taskScheduler:任务调度器，调度系统中最重要的组件之一，按照调度算法对集群管理器已经分配给应用程序的资源进行二次调度后分配任务,TaskScheduler调度的task是DAGScheduler创建的，因此DAGScheduler是TaskScheduler的前置调度器。
+_statusTracker：状态跟踪器，提供对作业、stage等的监控信息。
+_shutdownHookRef：任务退出时执行清理任务。
+_schedulerBackend：用于对接不同的资源管理系统。
+_progressBar：进度条，利用SparkStatusTracker的API，在控制台展示Stage的进度。
+_jobProgressListener：作业进度监听器，会注册到LiveListenerBus中作为时间监听器使用。
+_cleaner：上下文清理器，用异步方式清理超出应用程序范围的RDD、ShuffleDependency和BroadCast。
+_conf：Spark配置，以k-v的形式保存着Spark应用程序的配置信息。
+_dagScheduler：DAG调度器，调度系统中最重要的组件之一，负责创建job，将DAG的RDD划分为不同的stage，提交stage。
+_env：Spark运行时环境。
+_eventLogger：将事件日志的监听器，Spark可选组件，spark.eventLog.enabled=true时启动。
+_executorAllocationManager：Executor动态分配管理器，根据工作负载动态调整Executor的数量，在spark.dynamicAllocation.enabled=true的前提下，和非local模式下或者spark.dynamicAllocation.testing=true时启动。
+_hadoopConfiguration：hadoop的配置信息，如果使用的是系统SPARK_YARN_MODE=true或者环境变量SPARK_YARN_MODE=true时，启用yarn配置，否则启用hadoop配置。
+_heartbeatReceiver：心跳接收器，Executor都会向heartbeatReceiver发送心跳信息，heartbeatReceiver接收到信息后，更新executor最后的可见时间，然后传递给taskScheduler做进一步处理。
+SparkContext初始化过程 在将SparkContext初始化过程之前，需要先了解SparkContext伴生对象中的两个变量，它们分别是activeContext: AtomicReference[SparkContext]和contextBeingConstructed: Option[SparkContext]。
+activeContext: AtomicReference[SparkContext]记录了当前SparkContext是否处于活跃状态，当活跃的时候activeContext的value就是当前SparkContext，否则value就是null。
+contextBeingConstructed: Option[SparkContext]则是SparkContext正在启动时的一个标识，SparkContext初始化时有很多组件需要进行初始化设置，需要消耗一些时间，同时又要保证一个线程中只运行一个SparkContext，通过设置SparkContext启动时的表示，来保证一个线程中只运行一个SparkContext，当SparkContext正在启动时，contextBeingConstructed=Some(sc)，否则contextBeingConstructed=None。
+下面来看看SparkContext启动的具体步骤，
+第一步：确保当前线程中没有SparkContext在运行 markPartiallyConstructed方法中当assertNoOtherContextIsRunning方法执行通过之后，设置contextBeingConstructed = Some(sc)，表示当前线程中正在建立SparkContext，如果这个线程中再建立SparkContext，就要出问题了，assertNoOtherContextIsRunning就是做这个检验用的。
+assertNoOtherContextIsRunning方法中确保一个线程中吃运行一个SparkContext，如果检测到右其他的SparkContext在运行，就抛出异常。如果其他线程在构建SparkContext，就提出一个警告，这个警告是为了当SparkContext构建过程中出现错误，可以很清楚的区分开是哪个线程的SparkContext出的错误。
+第二步：版本反馈 输出Spark版本，检验java和scala版本，spark 2.1.0需要使用java7和scala2.10会有警告
+第三步：真正的初始化 初始化过程分为十几个步骤：
+/**
+* SparkConext初始化第三步：
+* 通过克隆的方式获取sparkconf，在sparkContext初始化的过程中做了以下几件事：
+* 1、会对conf中的配置信息进行校验（部署模式、appName、yarn模式校验等等）
+* 2、处理或设置参数：
+* 2.1、driver的IP、端口号和ID
+* 2.2、处理jar路径和文件路径" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/eed7686abc9182a7186be65a4856151d/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2018-11-18T14:53:59+08:00" />
+<meta property="article:modified_time" content="2018-11-18T14:53:59+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">【Spark内核源码】SparkContext中的组件和初始化</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p id="main-toc"><strong>目录</strong></p> 
+<p id="SparkContext%E6%A6%82%E8%BF%B0-toc" style="margin-left:40px;"><a href="#SparkContext%E6%A6%82%E8%BF%B0" rel="nofollow">SparkContext概述</a></p> 
+<p id="SparkContext%E7%BB%84%E4%BB%B6%E6%A6%82%E8%BF%B0-toc" style="margin-left:40px;"><a href="#SparkContext%E7%BB%84%E4%BB%B6%E6%A6%82%E8%BF%B0" rel="nofollow">SparkContext组件概述</a></p> 
+<p id="SparkContext%E5%88%9D%E5%A7%8B%E5%8C%96%E8%BF%87%E7%A8%8B-toc" style="margin-left:40px;"><a href="#SparkContext%E5%88%9D%E5%A7%8B%E5%8C%96%E8%BF%87%E7%A8%8B" rel="nofollow">SparkContext初始化过程</a></p> 
+<p id="%E7%AC%AC%E4%B8%80%E6%AD%A5%EF%BC%9A%E7%A1%AE%E4%BF%9D%E5%BD%93%E5%89%8D%E7%BA%BF%E7%A8%8B%E4%B8%AD%E6%B2%A1%E6%9C%89SparkContext%E5%9C%A8%E8%BF%90%E8%A1%8C-toc" style="margin-left:80px;"><a href="#%E7%AC%AC%E4%B8%80%E6%AD%A5%EF%BC%9A%E7%A1%AE%E4%BF%9D%E5%BD%93%E5%89%8D%E7%BA%BF%E7%A8%8B%E4%B8%AD%E6%B2%A1%E6%9C%89SparkContext%E5%9C%A8%E8%BF%90%E8%A1%8C" rel="nofollow">第一步：确保当前线程中没有SparkContext在运行</a></p> 
+<p id="%E7%AC%AC%E4%BA%8C%E6%AD%A5%EF%BC%9A%E7%89%88%E6%9C%AC%E5%8F%8D%E9%A6%88-toc" style="margin-left:80px;"><a href="#%E7%AC%AC%E4%BA%8C%E6%AD%A5%EF%BC%9A%E7%89%88%E6%9C%AC%E5%8F%8D%E9%A6%88" rel="nofollow">第二步：版本反馈</a></p> 
+<p id="%E7%AC%AC%E4%B8%89%E6%AD%A5%EF%BC%9A%E7%9C%9F%E6%AD%A3%E7%9A%84%E5%88%9D%E5%A7%8B%E5%8C%96-toc" style="margin-left:80px;"><a href="#%E7%AC%AC%E4%B8%89%E6%AD%A5%EF%BC%9A%E7%9C%9F%E6%AD%A3%E7%9A%84%E5%88%9D%E5%A7%8B%E5%8C%96" rel="nofollow">第三步：真正的初始化</a></p> 
+<p id="%E7%AC%AC%E5%9B%9B%E6%AD%A5%EF%BC%9A%E7%A1%AE%E8%AE%A4%E5%90%AF%E5%8A%A8%E6%88%90%E5%8A%9F-toc" style="margin-left:80px;"><a href="#%E7%AC%AC%E5%9B%9B%E6%AD%A5%EF%BC%9A%E7%A1%AE%E8%AE%A4%E5%90%AF%E5%8A%A8%E6%88%90%E5%8A%9F" rel="nofollow">第四步：确认启动成功</a></p> 
+<hr id="hr-toc"> 
+<h3 id="SparkContext%E6%A6%82%E8%BF%B0">SparkContext概述</h3> 
+<p>在<a href="https://blog.csdn.net/lazy_moon/article/details/82490626">【Spark内核源码】Word Count程序的简单分析 </a>当中使用Spark Shell编写了简单的Word Count程序，在进入Spark Shell的时候，Spark Shell为我们自动创建了SparkContext sc。</p> 
+<p><img alt="" class="has" height="376" src="https://images2.imgbox.com/61/18/U8ynsbCj_o.png" width="575"></p> 
+<p>Spark应用程序的第一步就是创建并初始化SparkContext，SparkContext的初始化过程包含了内部组件的创建和准备，主要涉及<span style="color:#f33b45;">网络通信、分布式、消息、存储、计算、调度、缓存、度量、清理、文件服务和UI</span>等方面。它是Spark主要功能的入口点，链接Spark集群，创建RDD、累加器和广播变量，一个线程只能运行一个SparkContext。SparkContext在应用程序中将外部数据转换成RDD，因此建立了第一个RDD，也就是说SparkContext建立了RDD血缘关系的根，是DAG的根源。</p> 
+<h3 id="SparkContext%E7%BB%84%E4%BB%B6%E6%A6%82%E8%BF%B0">SparkContext组件概述</h3> 
+<p>SparkContext的组件如下图所示：</p> 
+<p><img alt="" class="has" height="461" src="https://images2.imgbox.com/fa/7a/kIgzNP39_o.png" width="1079"></p> 
+<p>各组件的说明如下：</p> 
+<p>listenerBus：Spark事件总线，接收各个使用方的事件，以异步的方式对事件进行匹配和处理。</p> 
+<p>_ui:Spark用户界面,间接依赖于计算引擎、调度系统、存储体系、作业、阶段、存储、执行器等组件的监控数据，以SparkListenerEnvent的形式投递给LiveListener，SparkUI从SparkListener中读取数据。</p> 
+<p>_taskScheduler:任务调度器，调度系统中最重要的组件之一，按照调度算法对集群管理器已经分配给应用程序的资源进行二次调度后分配任务,TaskScheduler调度的task是DAGScheduler创建的，因此DAGScheduler是TaskScheduler的前置调度器。</p> 
+<p>_statusTracker：状态跟踪器，提供对作业、stage等的监控信息。</p> 
+<p>_shutdownHookRef：任务退出时执行清理任务。</p> 
+<p>_schedulerBackend：用于对接不同的资源管理系统。</p> 
+<p>_progressBar：进度条，利用SparkStatusTracker的API，在控制台展示Stage的进度。</p> 
+<p>_jobProgressListener：作业进度监听器，会注册到LiveListenerBus中作为时间监听器使用。</p> 
+<p>_cleaner：上下文清理器，用异步方式清理超出应用程序范围的RDD、ShuffleDependency和BroadCast。</p> 
+<p>_conf：Spark配置，以k-v的形式保存着Spark应用程序的配置信息。</p> 
+<p>_dagScheduler：DAG调度器，调度系统中最重要的组件之一，负责创建job，将DAG的RDD划分为不同的stage，提交stage。</p> 
+<p>_env：Spark运行时环境。</p> 
+<p>_eventLogger：将事件日志的监听器，Spark可选组件，spark.eventLog.enabled=true时启动。</p> 
+<p>_executorAllocationManager：Executor动态分配管理器，根据工作负载动态调整Executor的数量，在spark.dynamicAllocation.enabled=true的前提下，和非local模式下或者spark.dynamicAllocation.testing=true时启动。</p> 
+<p>_hadoopConfiguration：hadoop的配置信息，如果使用的是系统SPARK_YARN_MODE=true或者环境变量SPARK_YARN_MODE=true时，启用yarn配置，否则启用hadoop配置。</p> 
+<p>_heartbeatReceiver：心跳接收器，Executor都会向heartbeatReceiver发送心跳信息，heartbeatReceiver接收到信息后，更新executor最后的可见时间，然后传递给taskScheduler做进一步处理。</p> 
+<h3 id="SparkContext%E5%88%9D%E5%A7%8B%E5%8C%96%E8%BF%87%E7%A8%8B">SparkContext初始化过程</h3> 
+<p>在将SparkContext初始化过程之前，需要先了解SparkContext伴生对象中的两个变量，它们分别是activeContext: AtomicReference[SparkContext]和contextBeingConstructed: Option[SparkContext]。</p> 
+<p>activeContext: AtomicReference[SparkContext]记录了当前SparkContext是否处于活跃状态，当活跃的时候activeContext的value就是当前SparkContext，否则value就是null。</p> 
+<p>contextBeingConstructed: Option[SparkContext]则是SparkContext正在启动时的一个标识，SparkContext初始化时有很多组件需要进行初始化设置，需要消耗一些时间，同时又要保证一个线程中只运行一个SparkContext，通过设置SparkContext启动时的表示，来保证一个线程中只运行一个SparkContext，当SparkContext正在启动时，contextBeingConstructed=Some(sc)，否则contextBeingConstructed=None。</p> 
+<p>下面来看看SparkContext启动的具体步骤，</p> 
+<h4 id="%E7%AC%AC%E4%B8%80%E6%AD%A5%EF%BC%9A%E7%A1%AE%E4%BF%9D%E5%BD%93%E5%89%8D%E7%BA%BF%E7%A8%8B%E4%B8%AD%E6%B2%A1%E6%9C%89SparkContext%E5%9C%A8%E8%BF%90%E8%A1%8C">第一步：确保当前线程中没有SparkContext在运行</h4> 
+<p><img alt="" class="has" height="102" src="https://images2.imgbox.com/14/9f/fbeTZLmX_o.png" width="693"></p> 
+<p>markPartiallyConstructed方法中当assertNoOtherContextIsRunning方法执行通过之后，设置contextBeingConstructed = Some(sc)，表示当前线程中正在建立SparkContext，如果这个线程中再建立SparkContext，就要出问题了，assertNoOtherContextIsRunning就是做这个检验用的。</p> 
+<p><img alt="" class="has" height="221" src="https://images2.imgbox.com/19/ed/409oFMms_o.png" width="782"></p> 
+<p>assertNoOtherContextIsRunning方法中确保一个线程中吃运行一个SparkContext，如果检测到右其他的SparkContext在运行，就抛出异常。如果其他线程在构建SparkContext，就提出一个警告，这个警告是为了当SparkContext构建过程中出现错误，可以很清楚的区分开是哪个线程的SparkContext出的错误。</p> 
+<p><img alt="" class="has" height="407" src="https://images2.imgbox.com/cd/9f/PeKDXDih_o.png" width="918"></p> 
+<h4 id="%E7%AC%AC%E4%BA%8C%E6%AD%A5%EF%BC%9A%E7%89%88%E6%9C%AC%E5%8F%8D%E9%A6%88">第二步：版本反馈</h4> 
+<p>输出Spark版本，检验java和scala版本，spark 2.1.0需要使用java7和scala2.10会有警告</p> 
+<p><img alt="" class="has" height="155" src="https://images2.imgbox.com/52/c6/FqKG6L4c_o.png" width="592"></p> 
+<h4 id="%E7%AC%AC%E4%B8%89%E6%AD%A5%EF%BC%9A%E7%9C%9F%E6%AD%A3%E7%9A%84%E5%88%9D%E5%A7%8B%E5%8C%96">第三步：真正的初始化</h4> 
+<p>初始化过程分为十几个步骤：</p> 
+<p>  /**<br>     * SparkConext初始化第三步：<br>     * 通过克隆的方式获取sparkconf，在sparkContext初始化的过程中做了以下几件事：<br>     * 1、会对conf中的配置信息进行校验（部署模式、appName、yarn模式校验等等）<br>     * 2、处理或设置参数：<br>     *   2.1、driver的IP、端口号和ID<br>     *   2.2、处理jar路径和文件路径<br>     *   2.3、事件日志路径、是否压缩事件<br>     *   2.4、设置是否启动yarn配置的属性<br>     * 3、初始化并启动一些组件（以下按照创建顺序）：<br>     *   3.1、创建任务进度监听器，并增加到事件总线中<br>     *   3.2、创建spark运行环境<br>     *   3.3、创建状态跟踪器<br>     *   3.4、创建进度条<br>     *   3.5、创建Spark UI<br>     *   3.6、创建hadoop的配置信息（SPARK_YARN_MODE=true时，采用yarn配置信息）<br>     *   3.7、加载jar和file<br>     *   3.8、配置Executor运行环境<br>     *   3.9、创建心跳接收器，在创建taskScheduler之前创建，因为Executor需要再构造函数中检索heartbeatReceiver<br>     *   3.10、创建schedulerBackend和taskScheduler<br>     *   3.11、创建dagScheduler，向dagScheduler引入了taskScheduler<br>     *   3.12、根据taskScheduler生成的_applicationId启动度量系统，并且将监控信息发送给SparkUI进行展示<br>     *   3.13、创建事件日志监听器，并增加到总线中<br>     *   3.14、创建并启动Executor动态分配管理器<br>     *   3.15、创建并启动上下文清理器<br>     *   3.16、设置并启动事件总线<br>     *   3.17、发布环境更新事件<br>     *   3.18、发布应用程序启动事件<br>     *   3.19、taskScheduler需要等待SchedulerBackend<br>     *   3.20、将dagScheduler、BlockManagerSource和ExecutorAllocationManager注册到度量系统中<br>     * */</p> 
+<p>1、通过克隆的方式获取sparkconf，会对conf中的配置信息进行校验（部署模式、appName、yarn模式校验等等）</p> 
+<p><img alt="" class="has" height="400" src="https://images2.imgbox.com/95/3a/RK7TajLF_o.png" width="915"></p> 
+<p>2、处理或设置参数：<br> 2.1、driver的IP、端口号和ID</p> 
+<p><img alt="" class="has" height="200" src="https://images2.imgbox.com/76/4f/zqhNT0uh_o.png" width="808"><br> 2.2、处理jar路径和文件路径</p> 
+<p><img alt="" class="has" height="197" src="https://images2.imgbox.com/e3/3d/tp5sTfHN_o.png" width="942"><br> 2.3、事件日志路径、是否压缩事件</p> 
+<p><img alt="" class="has" height="549" src="https://images2.imgbox.com/2e/84/yCc5i8Mb_o.png" width="938"><br> 2.4、设置是否启动yarn配置的属性</p> 
+<p><img alt="" class="has" height="66" src="https://images2.imgbox.com/56/cd/6eWJT1Dd_o.png" width="932"><br> 3、初始化并启动一些组件（以下按照创建顺序）：<br> 3.1、创建任务进度监听器，并增加到事件总线中</p> 
+<p><img alt="" class="has" height="141" src="https://images2.imgbox.com/40/7a/NFeNpW2j_o.png" width="779"><br> 3.2、创建spark运行环境</p> 
+<p><img alt="" class="has" height="112" src="https://images2.imgbox.com/e5/51/vKOB37Wc_o.png" width="736"><br> 3.3、创建状态跟踪器</p> 
+<p><img alt="" class="has" height="78" src="https://images2.imgbox.com/b3/de/OmS4ReGN_o.png" width="623"><br> 3.4、创建进度条</p> 
+<p><img alt="" class="has" height="215" src="https://images2.imgbox.com/30/74/SNupNS1k_o.png" width="975"><br> 3.5、创建Spark UI</p> 
+<p><img alt="" class="has" height="280" src="https://images2.imgbox.com/fc/4f/jhyTdZQM_o.png" width="871"><br> 3.6、创建hadoop的配置信息（SPARK_YARN_MODE=true时，采用yarn配置信息）</p> 
+<p><img alt="" class="has" height="130" src="https://images2.imgbox.com/56/15/qMTMDWrO_o.png" width="837"><br> 3.7、加载jar和file</p> 
+<p><img alt="" class="has" height="253" src="https://images2.imgbox.com/a4/d6/aQqLreV0_o.png" width="779"><br> 3.8、配置Executor运行环境</p> 
+<p><img alt="" class="has" height="491" src="https://images2.imgbox.com/31/b2/ESlBviGA_o.png" width="973"><br> 3.9、创建心跳接收器，在创建taskScheduler之前创建，因为Executor需要再构造函数中检索heartbeatReceiver</p> 
+<p><img alt="" class="has" height="103" src="https://images2.imgbox.com/32/7d/jQgNJ6RR_o.png" width="916"><br> 3.10、创建schedulerBackend和taskScheduler</p> 
+<p><img alt="" class="has" height="138" src="https://images2.imgbox.com/ff/07/7ySn4ugP_o.png" width="785"><br> 3.11、创建dagScheduler，向dagScheduler引入了taskScheduler</p> 
+<p><img alt="" class="has" height="73" src="https://images2.imgbox.com/2e/18/QiNiwK0o_o.png" width="683"><br> 3.12、启动taskScheduler，并根据taskScheduler生成的_applicationId启动度量系统，并且将监控信息发送给SparkUI进行展示</p> 
+<p><img alt="" class="has" height="567" src="https://images2.imgbox.com/6d/d4/dW2JyO69_o.png" width="965"><br> 3.13、创建事件日志监听器，并增加到总线中</p> 
+<p><img alt="" class="has" height="305" src="https://images2.imgbox.com/b6/7a/NVR6wgoE_o.png" width="847"><br> 3.14、创建并启动Executor动态分配管理器</p> 
+<p><img alt="" class="has" height="365" src="https://images2.imgbox.com/96/cb/dZg6jF8v_o.png" width="970"><br> 3.15、创建并启动上下文清理器</p> 
+<p><img alt="" class="has" height="197" src="https://images2.imgbox.com/e1/d2/7vjI5aJv_o.png" width="864"><br> 3.16、设置并启动事件总线</p> 
+<p><img alt="" class="has" height="66" src="https://images2.imgbox.com/2e/c4/jSLGwGHi_o.png" width="434"><br> 3.17、发布环境更新事件</p> 
+<p><img alt="" class="has" height="62" src="https://images2.imgbox.com/8c/9b/2Ao6hBQ2_o.png" width="436"><br> 3.18、发布应用程序启动事件</p> 
+<p><img alt="" class="has" height="64" src="https://images2.imgbox.com/2e/07/cGjRXPNc_o.png" width="479"><br> 3.19、taskScheduler需要等待SchedulerBackend</p> 
+<p><img alt="" class="has" height="100" src="https://images2.imgbox.com/6b/af/CExUkcpS_o.png" width="639"><br> 3.20、将dagScheduler、BlockManagerSource和ExecutorAllocationManager注册到度量系统中</p> 
+<p><img alt="" class="has" height="168" src="https://images2.imgbox.com/f7/96/oVqWRc4B_o.png" width="853"></p> 
+<h4 id="%E7%AC%AC%E5%9B%9B%E6%AD%A5%EF%BC%9A%E7%A1%AE%E8%AE%A4%E5%90%AF%E5%8A%A8%E6%88%90%E5%8A%9F">第四步：确认启动成功</h4> 
+<p>设置activeContext的状态</p> 
+<p><img alt="" class="has" height="121" src="https://images2.imgbox.com/39/43/QKiCfBYv_o.png" width="889"></p> 
+<p>这一步的处理逻辑和第一步类似，都是先调用assertNoOtherContextIsRunning方法，确保当前线程中没有其他SparkContext在创建，然后将contextBeingConstructed设置为None和activeContext的value设置为当前SparkContext</p> 
+<p><img alt="" class="has" height="260" src="https://images2.imgbox.com/ea/94/WVT7viOH_o.png" width="700"></p> 
+<p>这里吐槽一句：老外写的代码真的很奇葩，初始化的代码真的是翻山越岭才构造完,第一步在90多行，第二步在200多行，第三步在500多行，第四步在2400多行，这每一步中间穿插着很多的成员变量、方法，就不能写在一块吗？</p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/44902a112da36166eac6eeffee41160d/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">Map 与 Json</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/f9479d7c0b282cb1c7a74cd7568631d6/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">JS中对于for循环中点击事件的理解（通俗版）</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>RabbitMQ多种问题出现的解决方案 - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="RabbitMQ多种问题出现的解决方案" />
+<meta property="og:description" content="消息丢失 1、只要订单完成我们就会发送一条消息给MQ，这个途中突然MQ服务器网络中断，导致消息无法抵达
+做好容错方法需要在消息发送前加上异常处理
+try { rabbitTemplate.convertAndSend(&#34;order-event-exchange&#34;, &#34;order.release.other&#34;, orderTo); } catch (Exception e) { //将没法送成功的消息进行重试发送 } 还可以将消息存入数据库，把失败的消息定期重新再发一遍
+2、当消息发送给MQ，通过Brock通过交换机抵达队列，MQ关机了，只有抵达队列才能实现消息持久化
+这时候需要使用生产者的确认机制
+只要消息收到了会自动持久化，如果进入另一个回调方法说明报错了，需要修改数据库使消息重发
+3、自动ACK的状态下。消费者收到消息，但没来得及消息然后宕机
+一定开启手动ACK，消费成功才移除，失败或者没来得及处理就noAck并重新入队
+消息重复# 1、消息消费成功，事务已经提交，ack时，机器宕机。导致没有ack成功，Broker的消息重新由unack变为ready，并发送给其他消费者
+在ack的时候宕机，导致消息没有确认，又需要重新发送
+2、消息消费失败，由于重试机制，自动又将消息发送出去
+关闭订单的时候，没有成功，又重新进入队列再次执行，这种是可以允许的
+解决办法：
+消费者的业务消费接口应该设计为幂等性的。比如扣库存有工作单的状态标志使用防重表（redis/mysql），发送消息每一个都有业务的唯一标识，处理过就不用处理rabbitMQ的每一个消息都有redelivered字段，可以获取是否是被重新投递过来的，而不是第一次投递过来的 判断当前消息是否是第二次及以后被派发过来的
+消息积压# 消费者宕机积压消费者消费能力不足积压发送者发送流量太大上线更多的消费者，进行正常消费上线专门的队列消费服务，将消息先批量取出来，记录数据库，离线慢慢处理 这也是实现了柔性事务-可靠消息&#43;最终一致性解决方案
+做好消息确认机制（生产者、消费者）&#43;手动确认机制" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/6d8499f5c0a414600988f2ba6e6aa7c8/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2022-07-31T10:03:22+08:00" />
+<meta property="article:modified_time" content="2022-07-31T10:03:22+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">RabbitMQ多种问题出现的解决方案</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <h2>消息丢失</h2> 
+<p><strong>1、只要订单完成我们就会发送一条消息给MQ，这个途中突然MQ服务器网络中断，导致消息无法抵达</strong></p> 
+<p>做好容错方法需要在消息发送前加上异常处理</p> 
+<pre><code> try {  rabbitTemplate.convertAndSend("order-event-exchange", "order.release.other", orderTo);    } catch (Exception e) {   //将没法送成功的消息进行重试发送    }
+</code></pre> 
+<p>还可以将消息存入数据库，把失败的消息定期重新再发一遍</p> 
+<p><strong>2、当消息发送给MQ，通过Brock通过交换机抵达队列，MQ关机了，只有抵达队列才能实现消息持久化</strong></p> 
+<p>这时候需要使用生产者的确认机制</p> 
+<p class="img-center"><img alt="" src="https://images2.imgbox.com/23/b9/klWyrMvi_o.png"></p> 
+<p>只要消息收到了会自动持久化，如果进入另一个回调方法说明报错了，需要修改数据库使消息重发</p> 
+<p><strong>3、自动ACK的状态下。消费者收到消息，但没来得及消息然后宕机</strong></p> 
+<p>一定开启手动ACK，消费成功才移除，失败或者没来得及处理就noAck并重新入队</p> 
+<h2>消息重复#</h2> 
+<p>1、消息消费成功，事务已经提交，ack时，机器宕机。导致没有ack成功，Broker的消息重新由unack变为ready，并发送给其他消费者</p> 
+<p class="img-center"><img alt="" src="https://images2.imgbox.com/3b/b4/7f5JVfnA_o.png"></p> 
+<p>在ack的时候宕机，导致消息没有确认，又需要重新发送</p> 
+<p>2、消息消费失败，由于重试机制，自动又将消息发送出去</p> 
+<p class="img-center"><img alt="" src="https://images2.imgbox.com/66/4e/UYhrAL82_o.png"></p> 
+<p>关闭订单的时候，没有成功，又重新进入队列再次执行，这种是可以允许的</p> 
+<p><strong>解决办法：</strong></p> 
+<ul><li>消费者的业务消费接口应该设计为<strong>幂等性</strong>的。比如扣库存有工作单的状态标志</li><li>使用<strong>防重表</strong>（redis/mysql），发送消息每一个都有业务的唯一标识，处理过就不用处理</li><li>rabbitMQ的每一个消息都有redelivered字段，可以获取<strong>是否是被重新投递过来的</strong>，而不是第一次投递过来的</li></ul> 
+<p class="img-center"><img alt="" src="https://images2.imgbox.com/8c/cd/FsWyQ7Wt_o.png"></p> 
+<p>判断当前消息是否是第二次及以后被派发过来的</p> 
+<h2>消息积压#</h2> 
+<ul><li>消费者宕机积压</li><li>消费者消费能力不足积压</li><li>发送者发送流量太大上线更多的消费者，进行正常消费上线专门的队列消费服务，将消息先批量取出来，记录数据库，离线慢慢处理</li></ul> 
+<p>这也是实现了<strong>柔性事务-可靠消息+最终一致性解决方案</strong></p> 
+<p>做好消息确认机制（生产者、消费者）+手动确认机制</p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/aea7d8d9cce17ef6b999e402344a11a1/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">1001 害死人不偿命的(3n&#43;1)猜想（JAVA）</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/cc3e0d25524ea33fe076f1dfe4886ad3/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">【IDEA】报错：Package ‘java.lang‘ is declared in module ‘java.base‘, which is not in the module graph</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

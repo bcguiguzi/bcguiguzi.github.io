@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>最火的监控软件？一文带你吃透 Prometheus - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="最火的监控软件？一文带你吃透 Prometheus" />
+<meta property="og:description" content="众所周知，大数据产品作为底层平台，其运维监控一直是生产实践的痛点难点，且在稳定运行的基础之上往往还需要对性能进行评估优化，所以其监控系统的建设显得尤为重要。
+Prometheus 作为云原生时代最火的监控软件，很多大数据组件或原生或以第三方插件/exporter 的形式对 Prometheus 做了支持。
+我使用的大数据平台是基于 K8s 运行的，有部署灵活管理方便的优点，更容易与 Prometheus 进行结合。
+下面将对设计思路和技术实现进行阐述探讨。
+一、设计思路 监控系统的核心任务是将暴露出来的指标数据进行抓取，在此之上进行分析、告警，所以有以下几个要明确的问题：
+监控对象是什么
+监控对象如何暴露指标数据
+监控系统如何对指标进行抓取
+如何实现告警规则动态配置、管理
+监控对象 以 pod（容器）形式运行在 kubernetes 集群上的各个大数据组件。
+指标暴露方式 各组件根据对 Prometheus 的支持程度，可分为 3 种类型的指标暴露方式：
+直接暴露 Prometheus 指标数据 (直接，拉)
+主动将指标数据推送到 prometheus-pushGateway，由 pushGateway 暴露数据（间接，推）
+自定义 exporter 将其他形式的指标数据转换为符合 Prometheus 标准的格式进行暴露（exporter，直接，拉）
+个别组件同时支持多种方式，如 flink 支持直接和间接方式，spark 支持直接方式而且也有第三方 exporter。
+大部分组件都有官方/第三方的 exporter，极少数需要自己开发。一般情况下直接方式就可以了。
+需要注意的是，像 flink（spark） on yarn 模式运行的时候，flink 节点是跑在 yarn 容器里面的。
+这种情况下 Prometheus 很难对其直接进行抓取，这种时候就只能用间接方式，主动将数据推送到 pushGateway。另外那些短暂生命周期的组件也建议用主动 push 到 pushGateway。
+指标抓取方式 不管是 exporter 还是 pushGateway，到最后必然是由 Prometheus 主动对这些目标进行抓取。" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/f0def0156e6c53b30143fac8147d7fca/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2024-03-18T10:14:47+08:00" />
+<meta property="article:modified_time" content="2024-03-18T10:14:47+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">最火的监控软件？一文带你吃透 Prometheus</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p>众所周知，大数据产品作为底层平台，其运维监控一直是生产实践的痛点难点，且在稳定运行的基础之上往往还需要对性能进行评估优化，所以其监控系统的建设显得尤为重要。</p> 
+<p>Prometheus 作为云原生时代最火的监控软件，很多大数据组件或原生或以第三方插件/exporter 的形式对 Prometheus 做了支持。</p> 
+<p>我使用的大数据平台是基于 K8s 运行的，有部署灵活管理方便的优点，更容易与 Prometheus 进行结合。</p> 
+<p>下面将对设计思路和技术实现进行阐述探讨。</p> 
+<h3>一、设计思路</h3> 
+<p>监控系统的核心任务是将暴露出来的指标数据进行抓取，在此之上进行分析、告警，所以有以下几个要明确的问题：</p> 
+<ol><li> <p>监控对象是什么</p> </li><li> <p>监控对象如何暴露指标数据</p> </li><li> <p>监控系统如何对指标进行抓取</p> </li><li> <p>如何实现告警规则动态配置、管理</p> </li></ol> 
+<h4>监控对象</h4> 
+<p>以 pod（容器）形式运行在 kubernetes 集群上的各个大数据组件。</p> 
+<h4>指标暴露方式</h4> 
+<p>各组件根据对 Prometheus 的支持程度，可分为 3 种类型的指标暴露方式：</p> 
+<ol><li> <p>直接暴露 Prometheus 指标数据 (直接，拉)</p> </li><li> <p>主动将指标数据推送到 prometheus-pushGateway，由 pushGateway 暴露数据（间接，推）</p> </li><li> <p>自定义 exporter 将其他形式的指标数据转换为符合 Prometheus 标准的格式进行暴露（exporter，直接，拉）</p> </li></ol> 
+<p>个别组件同时支持多种方式，如 flink 支持直接和间接方式，spark 支持直接方式而且也有第三方 exporter。</p> 
+<p>大部分组件都有官方/第三方的 exporter，极少数需要自己开发。一般情况下直接方式就可以了。</p> 
+<p>需要注意的是，像 flink（spark） on yarn 模式运行的时候，flink 节点是跑在 yarn 容器里面的。</p> 
+<p>这种情况下 Prometheus 很难对其直接进行抓取，这种时候就只能用间接方式，主动将数据推送到 pushGateway。另外那些短暂生命周期的组件也建议用主动 push 到 pushGateway。</p> 
+<h4>指标抓取方式</h4> 
+<p>不管是 exporter 还是 pushGateway，到最后必然是由 Prometheus 主动对这些目标进行抓取。</p> 
+<p>Prometheus 主要通过 Pull 的方式来抓取目标服务暴露出来的监控接口，<br> 因此需要配置对应的抓取任务来请求监控数据并写入到 Prometheus 提供的存储中，</p> 
+<p>目前 Prometheus 服务提供了如下几个任务的配置：</p> 
+<ul><li> <p>原生 Job 配置：提供 Prometheus 原生抓取 Job 的配置。</p> </li><li> <p>Pod Monitor：在 K8S 生态下，基于 Prometheus Operator 来抓取 Pod 上对应的监控数据。</p> </li><li> <p>Service Monitor：在 K8S 生态下，基于 Prometheus Operator 来抓取 Service 对应 Endpoints 上的监控数据。</p> </li></ul> 
+<blockquote> 
+ <p>参考：https://cloud.tencent.com/document/product/1416/55995</p> 
+</blockquote> 
+<p>既然都上了 K8s 环境了，一般当然是推荐直接用 podMonitor。配置更简洁易懂。</p> 
+<p>podMonitorSelector 的过滤在 <code>prometheus-prometheus.yaml</code> 配置。</p> 
+<blockquote> 
+ <p>prometheus-prometheus.yaml 是核心配置文件，不宜频繁修改（会导致 Prometheus 重启）。</p> 
+</blockquote> 
+<p><strong>主要配置项为</strong>：serviceMonitorSelector、podMonitorSelector、ruleSelector、alertmanagers。</p> 
+<p>其中 service 监控选择器和 pod 监控选择器默认选择所有，这里建议把 ruleSelector 也修改为选择所有</p> 
+<p>不过一个 podMonitor 一般只对应一种类型的 pod，在已有 pod 类型较多的情况下，</p> 
+<p>还可以考虑一种更取巧的方法就是 Prometheus 的 K8s 服务发现功能。即 <code>kubernetes_sd_config</code>。</p> 
+<p>这种属于原生 Job 配置，建议使用 additional-scrape-config 进行配置。</p> 
+<p>kubernetes_sd_config 赋予了 Prometheus 通过 kubernetes rest api 感知 K8s 资源的功能，</p> 
+<p>利用该能力，可以使用原生 Job 配置自动发现 pod，将其作为监控目标。</p> 
+<p>再利用 Prometheus 的 Relabel 功能可以改写发现的标签，进行前置处理、转换。实现pod筛选，修改抓取配置的效果。</p> 
+<p>而自动发现的 pod 的标签的来源又可以是 pod 资源的 label/annotation等。</p> 
+<p>最终实现的效果如下，</p> 
+<p>这是一个 pushGateway 的 pod 的配置，则 Prometheus 会通过其 19091端口访问/metrics 路径获取其指标数据</p> 
+<pre><code> annotations:</code><code>    prometheus.io/scrape: "true"</code><code>    prometheus.io/scheme: "http"</code><code>    prometheus.io/path: "/metrics"</code><code>    prometheus.io/port: "19091"</code></pre> 
+<p>podMonitor 是官方支持，简洁易懂。kubernetes_sd_config+relabel 的方案较复杂，难度较高，但不用写那么多的 podMonitor。自行抉择就行，也可以一起用。</p> 
+<h3>告警设计</h3> 
+<h4>告警流程</h4> 
+<p>prometheus 的监控告警基本流程是：</p> 
+<ol><li> <p>服务发生异常</p> </li><li> <p>触发 prometheus 服务器发出告警信息（alert）</p> </li><li> <p>alertmanager 收到告警信息</p> </li><li> <p>alertmanager 根据预配置的规则对告警信息进行处理，实现业务逻辑，如分组、抑制、触发短信邮箱等</p> </li><li> <p>当然具体的流程没那么简单，有很多细节需要注意，特别是触发告警时机，是个重点。</p> </li></ol> 
+<h4>告警的动态配置</h4> 
+<p>kube-prometheus 的告警规则分两部分：</p> 
+<ol><li> <p>alertmanager：即对告警信息的处理策略</p> </li><li> <p>alertRule：即具体的告警规则</p> </li></ol> 
+<h4>接入自定义告警平台</h4> 
+<p>从个人实践的角度来看，AlertManager处理web hook之外的告警接收插件，如短信、邮箱等只适合测着玩。</p> 
+<p>生产使用还是要通过web hook将告警信息发送到自己的告警平台。可以根据业务需要对告警信息做高度定制化处理、记录等。</p> 
+<p>另外可以在告警信息中携带具体告警规则等信息指导告警平台进行处理。</p> 
+<p>这里要做个区分，AlertManager 是告警信息的前置处理，负责非业务性前置操作，如告警信息分组、平抑等。</p> 
+<p>而自定义告警平台则负责告警信息的业务处理，如记录、去敏、发送到多终端等。</p> 
+<p>AlertManager 可能收到 1w 条告警信息，经过处理最终只发了1条到自定义告警平台。</p> 
+<p>而自定义告警平台可以将这1条告警信息记录起来，修改内容，同时使用邮箱、短信通知到多个负责人。</p> 
+<h4>告警层级标签设计</h4> 
+<p>监控对象的粒度决定告警的层级，体现在配置上则是告警规则的分组。</p> 
+<p>分组信息决定 alertManager 的处理方式。</p> 
+<p>alertManager 对告警信息的路由策略是树状的，所以可通过多个分组标签实现多层级路由处理。</p> 
+<p>具体设计应结合业务需求，不在这里展开，感兴趣的可以看我下面的实现举例。</p> 
+<h3>二、技术实现</h3> 
+<p>技术实现主要分以下几部分：</p> 
+<ol><li> <p>kubernetes 环境下 prometheus 的部署（kube-prometheus）</p> </li><li> <p>kube-prometheus 的增强配置：即 kubernetes_sd_config+relabel 方案的实现</p> </li><li> <p>bigdata-exporter 的实现</p> </li><li> <p>告警设计实例</p> </li></ol> 
+<p><strong>1.Kubernetes 环境下 prometheus 的部署</strong></p> 
+<p><strong>1）kube-prometheus vs prometheus-operator</strong></p> 
+<p>github 上 coreos 下有两个项目：kube-prometheus 和 prometheus-operator</p> 
+<p>两者都可以实现 prometheus 的创建及管理。</p> 
+<p>需要注意的是，kube-prometheus 上的配置操作也是基于 prometheus-operator 的，并提供了大量的默认配置，故这里使用的是 kube-prometheus 项目的配置。</p> 
+<blockquote> 
+ <p>另外使用前需注意 K8s 版本要求，找到对应的 kube-prometheus 版本，弄清楚对应的 prometheus-operator 版本</p> 
+ <p>如：k8s1.14 版本最高可使用 kube-prometheus 0.3，对应的 prometheus-operator 版本是 0.32</p> 
+ <p>阅读文档时注意对应版本。</p> 
+</blockquote> 
+<p>2）kube-prometheus 使用前说明</p> 
+<p>kube-prometheus 使用 jsonnet 编写配置模板文件，生成 K8s 配置清单。</p> 
+<p>已提供默认清单文件，在 manifests 文件夹下。</p> 
+<p>如果需要修改默认清单配置，需要在 Go 环境下使用 jp 编译清单。</p> 
+<p>下面都以默认配置为例</p> 
+<p><strong>2. kubernetes_sd_config+relabel 方案的实现</strong></p> 
+<blockquote> 
+ <p>见：https://github.com/linshenkx/kube-prometheus-enhance</p> 
+</blockquote> 
+<p><strong>3. bigdata-exporter的实现</strong></p> 
+<p>hdfs、yarn、hbase、yarn 等组件都提供了 web 获取 jmx 指标的方式。</p> 
+<p>这里的思路是使用一个 bigdata-exporter，去采集多个组件多个节点的指标数据，并进行转换，然后以 Prometheus 规定的格式对外公开。</p> 
+<p>指标数据的转换规则可以查看 github 上的一些项目，要注意版本，也可以像我一样自己写，更可靠。</p> 
+<p><strong>bigdata-exporter 如何感知到采集目标？</strong></p> 
+<p>除了部署 IP 不同，不同组件不同角色的指标对外端口、路径、内容（解析规则）也都不一样。</p> 
+<p>这里可以参考上面 kubernetes_sd_config+relabel 的方案，做得优雅一些：</p> 
+<ol><li> <p>授予 bigdata-exporter 调用kubernetes app的能力，</p> </li><li> <p>利用 label 和 annotations 进行筛选和信息传递，确定捕捉目标和途径。</p> </li><li> <p>使用 role 代表解析内容的类型，根据 role 确定解析规则</p> </li></ol> 
+<pre><code>  labels:</code><code>    bigData.metrics.object: pod</code><code>  annotations:</code><code>    bigData.metrics/scrape: "true"</code><code>    bigData.metrics/scheme: "https"</code><code>    bigData.metrics/path: "/jmx"</code><code>    bigData.metrics/port: "29871"</code><code>    bigData.metrics/role: "hdfs-nn,common"</code></pre> 
+<p><strong>4.告警设计示例</strong></p> 
+<p>这里以组和实例两个维度为例，用 groupId 和 instanceId 表示。</p> 
+<p><strong>1) alertManager配置示例</strong></p> 
+<p>以下是 alertmanager 的规则配置，有两个接收者</p> 
+<p>其中 test.web.hook 指向自定义告警平台</p> 
+<p>default 是空白接收者，不做处理。</p> 
+<p>路由策略是根据 groupId，instanceId 分组，对节点磁盘使用率、kafka队列堆积两个组处理，instanceId还没有展开。</p> 
+<p>旧版本是用 secret 的 data 字段，需要将配置内容转成 base64 编码格式。</p> 
+<p>新版本直接用 stringData 字段。推荐用 stringData 字段配置。</p> 
+<p>其实只要看一下 kube-prometheus 的 alertmanager-secret.yaml 文件就知道怎么回事了。</p> 
+<p><strong>使用data字段的配置方法：</strong></p> 
+<p>写好 config 文件，以 alertmanager.yaml 命名（不能使用其他名称）。</p> 
+<p>执行以下命令，即可更新 secret。</p> 
+<pre><code>kubectl -n monitoring create secret generic alertmanager-main --from-file=alertmanager.yaml --dry-run -o yaml  |  kubectl -n=monitoring apply -f -</code></pre> 
+<pre></pre> 
+<pre><code>global:</code><code>    resolve_timeout: 5m</code><code>receivers:</code><code>  - name: 'default'</code><code>  - name: 'test.web.hook'</code><code>    webhook_configs:</code><code>      - url: 'http://alert-url'</code><code>route:</code><code>  receiver: 'default'</code><code>  group_wait: 30s</code><code>  group_interval: 5m</code><code>  repeat_interval: 2h</code><code>  group_by: [groupId,instanceId]</code><code>  routes:</code><code>    - receiver: 'test.web.hook'</code><code>      continue: true</code><code>      match:</code><code>        groupId: node-disk-usage</code><code>    - receiver: 'test.web.hook'</code><code>      continue: true</code><code>      match:</code><code>        groupId: kafka-topic-highstore</code></pre> 
+<p><strong>2）alertRule配置示例</strong></p> 
+<p>组代表一个类型的所有目标：即所有节点</p> 
+<p>实例则代表具体的某个节点</p> 
+<p><code>disk-usage.yaml.ftl</code>磁盘使用率告警配置示例如下：</p> 
+<p><strong>注意：</strong><code>$</code>为监控的磁盘路径，$为使用率阈值，需自行替换</p> 
+<p>labels 中的 userIds 和 receivers 为传递给自定义告警平台的参数，以指导告警平台如何操作。</p> 
+<p>在这个任务中，我们的目标是组粒度的（所有节点），所以不需要设置 instanceId。</p> 
+<pre><code>apiVersion: monitoring.coreos.com/v1</code><code>kind: PrometheusRule</code><code>metadata:</code><code>   creationTimestamp: null</code><code>   labels:</code><code>      role: alert-rules</code><code>   name: node-disk-usage</code><code>   namespace: monitoring</code><code>spec:</code><code>   groups:</code><code>      - name: node-disk-usage</code><code>        rules:</code><code>           - alert: node-disk-usage</code><code>             expr: 100*(1-node_filesystem_avail_bytes{mountpoint="${path}"}/node_filesystem_size_bytes{mountpoint="${path}"} ) &gt; ${thresholdValue}</code><code>             for: 1m</code><code>             labels:</code><code>                groupId: node-disk-usage</code><code>                userIds: super</code><code>                receivers: SMS</code><code>             annotations:</code><code>                title: "磁盘警告：节点{<!-- -->{$labels.instance}}的 ${path} 目录使用率已达到{<!-- -->{$value}}%"</code><code>                content: "磁盘警告：节点{<!-- -->{$labels.instance}}的 ${path} 目录使用率已达到{<!-- -->{$value}}%"</code></pre> 
+<p>kafka-topic-highstore.yaml.ftl kafka 队列消费堆积告警配置示例如下：<br> 我们只关心个别队列的消费情况，所以这里的粒度为 instance。</p> 
+<p><strong>注意</strong>：<code>$</code>为队列名，<code>$</code>为消费组名称，<code>$</code>为堆积数量阈值</p> 
+<pre><code>apiVersion: monitoring.coreos.com/v1</code><code>kind: PrometheusRule</code><code>metadata:</code><code>  creationTimestamp: null</code><code>  labels:</code><code>    role: alert-rules</code><code>  name: kafka-topic-highstore-${uniqueName}</code><code>  namespace: monitoring</code><code>spec:</code><code>  groups:</code><code>    - name: kafka-topic-highstore</code><code>      rules:</code><code>      - alert: kafka-topic-highstore-${uniqueName}</code><code>        expr: sum(kafka_consumergroup_lag{exporterType="kafka",consumergroup="${consumergroup}"}) &gt; ${thresholdValue}</code><code>        for: 1m</code><code>        labels:</code><code>          groupId: kafka-topic-highstore</code><code>          instanceId: ${uniqueName}</code><code>          userIds: super</code><code>          receivers: SMS</code><code>        annotations:</code><code>          title: "KAFKA警告：消费组${consumergroup}的堆积数量达到:{<!-- -->{$value}}"</code><code>          content: "KAFKA警告：消费组${consumergroup}的堆积数量达到:{<!-- -->{$value}}"</code></pre> 
+<h3>三、其他</h3> 
+<h4>告警流程示例</h4> 
+<p>这里以两个节点 node1 和 node2 配置了磁盘空间监控为例，空间使用到达阈值则触发告警。</p> 
+<p>（测试过程中可通过生成、删除指定体积的文件来控制空间占用）</p> 
+<p>其中配置项如下：</p> 
+<ul><li> <p>告警规则: node-disk-usage</p> 
+  <ul><li> <p>for 为 1m</p> </li></ul></li><li> <p>告警中心 : alertManager</p> 
+  <ul><li> <p>group_wait: 30s</p> </li><li> <p>group_interval: 5m</p> </li><li> <p>repeat_interval: 10m</p> </li></ul></li></ul> 
+<p>收到的告警短信内容及时间线如下：</p> 
+<pre><code>10:23:14 收到第一次警报：node1 于 10:22:44 进入异常</code><code>10:28:14 收到第二次警报：node1 于 10:22:44 进入异常 node2 于 10:24:44 进入异常</code><code>10:38:29 收到第三次警报：node1 于 10:22:44 进入异常 node2 于 10:24:44 进入异常</code><code>10:48:44 收到第四次警报：node1 于 10:22:44 进入异常 node2 于 10:24:44 进入异常</code><code>10:58:44 收到第五次警报：恢复告警 node1 于 10:22:44 进入异常，并于 10:55:44 恢复 node2 于 10:24:44 进入异常，并于 10:49:14 恢复</code></pre> 
+<p><strong>总共收到 5 次短信：</strong></p> 
+<p>第 1 次是 node1 异常，</p> 
+<p>第 2 到 4 次是 node1 和 node2 都异常，因为属于同个分组 group，所以合并发送。</p> 
+<p>第 5 次是已经恢复正常了。</p> 
+<p>根据短信内容和时间，整理出告警逻辑时间线如下：</p> 
+<pre><code>node1 等待 for 1 分钟 后警报进入 group</code><code>node1 记录异常时间为 10:22:44，实际异常状态至少在 10:22:44 的一分钟前</code>
+<code>group 等待 group_wait 30s 后发送第一次告警</code><code>firing:node1</code>
+<code>node2 等待 for 1 分钟 后警报进入 group</code><code>node2 记录异常时间为 10:24:44，实际异常状态至少在 10:24:44 的一分钟前，此时 group 中有两个异常目标 node1 和 node2。</code>
+<code>group 等待 group_interval 5m 后发送第二次告警</code><code>firing:node1,node2</code><code>注意：因为 group 发生了变化，所以这里用的是 group_interval。</code>
+<code>group 等待 repeat_interval 10m 后发送第三次告警</code><code>firing:node1,node2</code><code>注意：因为 group 没有变化，属于重复告警，用的是 repeat_interval。</code>
+<code>group 等待 repeat_interval 10m 后发送第四次告警</code><code>firing:node1,node2</code><code>同上一次。</code>
+<code>第四次告警后的 前 5 分钟：node2 恢复正常</code>
+<code>第四次告警后的 后 5 分钟：node1 恢复正常</code>
+<code>group 等待 repeat_interval 10m 后发送第五次告警</code><code>resolved:node1,node2</code><code>注意，这里 node1,node2 都恢复正常用的也是 repeat_interval。</code></pre> 
+<p><strong>综上：</strong></p> 
+<ul><li> <p>for 是告警规则个体的监控配置，用来衡量服务多久检测不通过才算异常。</p> </li><li> <p>group_wait：初次发送告警的等待时间<br> 用于 group 创建后的等待，这个值通常设置较小，在几分钟以内。</p> </li><li> <p>group_interval：同一个组其他新发生的告警发送时间间隔<br> 是 group 内容发生变化后的告警间隔。</p> </li><li> <p>repeat_interval：重复发送同一个告警的时间间隔<br> group 内容没有变化且上一次发生成功时用的发生间隔。</p> </li></ul> 
+<p>需要注意，恢复正常不属于 group 变化，用的是 repeat_interval。这有点反直觉，且个人认为不是很合理，不知道是不是测试有问题，也没有找到比较好的资料说明。希望知道的可以指教一下。</p> 
+<p><strong>exporter 的位置</strong></p> 
+<p>exporter 可以以 sidecar 的形式和原容器放在同一个 pod 内（1 对 1），也可以以独立部署的形式存在（1 对 1/1 对多）。</p> 
+<p>这个视具体情况而定，技术上没什么不同，sidecar 可以绑定生命周期，视为对原有组件的补充。独立部署则耦合度更低，更灵活。像单节点的 mysql，用 sidecar 则只需要 1 个 pod，不会太复杂。</p> 
+<p>而如果像多节点的 kafka 集群，用独立部署则只需要一个 exporter 就可以实现对多个节点的采集监控。</p> 
+<p>这里出于减小耦合、节省资源的目的，我主要使用的是独立部署形式。</p> 
+<p><strong>使用 promtool 检查指标格式是否正确</strong></p> 
+<p>promtool 使用方法：</p> 
+<pre><code># 进入pod</code><code>$ kubectl -n=monitoring exec -it prometheus-k8s-0  sh</code><code># 查看帮助</code><code>$ promtool -h</code><code># 检查指标格式</code><code>$ curl -s http://ip:9999/metrics | promtool check metrics</code></pre> 
+<p>比方说 指标 name、labelname 不能使用小数点</p> 
+<p><strong>使用 port-forward 临时提供 Prometheus 外部访问</strong></p> 
+<pre><code># prometheus</code><code>$ nohup  kubectl port-forward --address 0.0.0.0 service/prometheus-k8s 19090:9090 -n=monitoring &amp;</code><code># grafana</code><code>$ nohup kubectl port-forward --address 0.0.0.0 service/grafana 13000:3000 -n=monitoring &amp;</code><code># alertmanager</code><code>$ nohup  kubectl port-forward --address 0.0.0.0 service/alertmanager-main 9093:9093 -n=monitoring &amp;</code></pre> 
+<p>用 <code>jobs -l</code> 可以查看</p> 
+<p>来源：https://www.linshenkx.cn/archives/kube-prometheus-bigdata</p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/f6630095e6b1629f0174b69cffdc0189/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">wps技巧二实现每一行文字后面统一添加数据</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/e550d238f063fd338462e3e1f47dea44/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">【Sql Server】eclipse 连接sql server实现登录注册功能</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

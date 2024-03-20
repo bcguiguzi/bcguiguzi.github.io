@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>【MQ】扎心！线上服务宕机时，如何保证数据100%不丢失？ - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="【MQ】扎心！线上服务宕机时，如何保证数据100%不丢失？" />
+<meta property="og:description" content=" 目录
+一、写在前面
+二、业务场景回顾
+三、意外宕机，问题凸现
+四、总结 tips
+一、写在前面 上篇文章《同学，消息中间件在你们生产项目里如何落地使用的？》，我们用一个简单易懂的电商场景给大家引入说明了一个消息中间件的使用场景。
+同时，我们还基于RabbitMQ的HelloWorld级别的代码，给出了订单服务和仓储服务如何基于MQ中间件收发消息的示例。
+二、业务场景回顾 这篇文章，我们来稍微深入探讨一些MQ中间件使用中的基础技术问题。
+首先回顾一下上篇文章做出来的一个架构图，看看订单服务和消息服务是如何基于MQ来收发消息的。
+我们稍微把这个图细化一点，简单来说就是多个订单服务实例给queue推送消息，多个仓储服务每个消费一部分消息。如下图所示：
+三、意外宕机，问题凸现 假如你线上对MQ技术的使用就到此为止了，那么基本可以跟offer说拜拜了。。。
+因为如果是我的话，作为一个面试官就没法继续往下问了。你这个MQ的使用以及理解的深度仅此而已的话，那基本就是刚刚对MQ技术入门的程度。
+如果面试官要继续问，完全可以问下面的问题：
+那你说说如果仓储服务作为消费者服务，刚收到了一个订单消息，但是在完成消息的处理之前，也就是还没对订单完成仓储调度发货，结果这个仓储服务突然就宕机了，这个时候会发生什么事情？
+所以说，大家还是要对这个技术了解的稍微深入一点点，否则随便被问几个问题就完蛋了。
+大伙儿先来看看下面的图，感受一下车祸现场。
+RabbitMQ这个中间件默认的一个行为，就是只要仓储服务收到一个订单消息，RabbitMQ就会立马把这条订单消息给标记为删除，这个行为叫做自动ack，也就是投递完成一条消息就自动确认这个消息处理完毕了。
+但是接着如果此时仓储服务收到了一个订单消息，但是还没来得及对仓库系统完成商品的调度发货，结果直接就宕机了。
+此时，明显这个订单消息就丢失了啊，因为RabbitMQ那里已经没有了。。。
+这会导致什么样的尴尬体验呢？就是一个用户支付了8999元，对一个iphone8下了订单，结果呢，死等活等了好几天，就是不见网站上显示他的iphone8在发货。
+搞了半天，原因就是他的那个iphone8的订单在仓储服务那里，还没来得及调度发货直接就宕机了，导致这个订单消息就一直丢失了，始终没有给这个用户通知仓库系统进行发货。
+这个问题，是不是很尴尬？所以说，技术问题是会严重影响企业的核心业务流程的！
+各位小伙伴，还记得上一讲咱们的仓储服务消费消息的代码中，有一行关键的代码：
+这行代码对channel.basicConsume()方法，传入的第二个参数：true，其实就是一个关键的参数。
+这个true就代表了一个核心的含义，他的意思是，RabbitMQ只要把一个消息投递到仓储服务手上，立马就标记这个消息删除了。
+但是在这个默认的配置之下，要是仓储服务收到一个订单消息，结果还没来得及完成耗时几十秒的仓储调度发货的业务逻辑，结果突然宕机了，那么这个订单消息就永久性丢失了！
+找了半天，原来问题的症结在这里啊！大家是不是明白了，上一篇文章最后为什么我会说，这个代码目前为止还有很多的问题。
+所以这个时候，我们如果希望不要因为仓储服务的突然宕机导致一条订单消息丢失，就需要改造一下仓储服务消费消息的代码了。
+首先，我们需要把那个参数从true改为false，如下代码所示：
+只要修改为false之后，RabbitMQ就不会盲目的投递消息到仓储服务，立马就删除消息了，说白了就是关闭autoAck的行为，不要自作主张的认为消息处理成功了。
+接着，我们需要改造一下处理订单消息的代码，如下代码所示。
+这段代码，说白了，就是在对订单完成了调度发货之后，在finally代码块中手动执行了ack操作，说我自己已经完成了耗时几十秒的业务逻辑的处理，现在可以手动ack通知RabbitMQ，这个消息处理完毕了。
+此时整个架构运行流程大致看起来跟下面的图那样子。
+架构流程改成上面那样后，就意味着只有完成了仓储调度发货的代码业务逻辑，确保仓库系统收到通知之后，仓储服务才会在代码中手动发送ack消息给RabbitMQ。
+此时，RabbitMQ收到了这个ack消息，才会标记对应的订单消息被删除了。
+如果说在仓储服务收到了订单消息，但是还没来得及完成仓储调度发货的业务逻辑，那也就绝对不会执行这条订单消息的ack操作，然后RabbitMQ也就不会收到这条订单消息的ack通知。
+一旦RabbitMQ发现代表消费者的某个仓储服务实例突然宕机了，而这个仓储服务收到的一些订单消息还没来得及处理，没给自己发送那些消息的ack通知。
+此时，RabbitMQ会自动对这条订单消息重发推送给其他在运行中的仓储服务实例，让其他的仓储服务实例去处理这条订单消息。
+这样的话，就可以保证这条订单消息不会因为某个仓储服务实例的宕机而丢失，他会确保必须由某个仓储服务实例完成这条订单消息的调度发货处理，然后才会删除那条订单消息。
+四、总结 tips 最后再来一张图，大家直观的感受一下：
+好了，各位同学，这篇文章是不是相对稍微深入一点点，让大家了解到了一些使用MQ技术时候要考虑的一些问题？
+实际上无论是RocketMQ、Kafka还是RabbitMQ，都有类似的autoAck或者是手动ack的机制。
+线上生产环境中运行时，你必须要考虑到消费者服务可能宕机的问题。
+如果消费者服务没处理完消息就自己宕机了，那么一定会导致部分消息的丢失，进而影响核心业务流程的运转。
+因此大家在线上使用MQ时，一定要充分考虑这些潜在问题，同时结合具体的MQ提供的一些API、参数来进行合理设置，确保消息不要随意丢失。
+转载自：石杉的架构笔记 " />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/05770fb3b5be2dec558e7e00d4631037/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2019-07-16T15:59:21+08:00" />
+<meta property="article:modified_time" content="2019-07-16T15:59:21+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">【MQ】扎心！线上服务宕机时，如何保证数据100%不丢失？</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p id="main-toc"><strong>目录</strong></p> 
+<p id="%E4%B8%80%E3%80%81%E5%86%99%E5%9C%A8%E5%89%8D%E9%9D%A2-toc" style="margin-left:40px;"><a href="#%E4%B8%80%E3%80%81%E5%86%99%E5%9C%A8%E5%89%8D%E9%9D%A2" rel="nofollow">一、写在前面</a></p> 
+<p id="%E4%BA%8C%E3%80%81%E4%B8%9A%E5%8A%A1%E5%9C%BA%E6%99%AF%E5%9B%9E%E9%A1%BE-toc" style="margin-left:40px;"><a href="#%E4%BA%8C%E3%80%81%E4%B8%9A%E5%8A%A1%E5%9C%BA%E6%99%AF%E5%9B%9E%E9%A1%BE" rel="nofollow">二、业务场景回顾</a></p> 
+<p id="%E4%B8%89%E3%80%81%E6%84%8F%E5%A4%96%E5%AE%95%E6%9C%BA%EF%BC%8C%E9%97%AE%E9%A2%98%E5%87%B8%E7%8E%B0-toc" style="margin-left:40px;"><a href="#%E4%B8%89%E3%80%81%E6%84%8F%E5%A4%96%E5%AE%95%E6%9C%BA%EF%BC%8C%E9%97%AE%E9%A2%98%E5%87%B8%E7%8E%B0" rel="nofollow">三、意外宕机，问题凸现</a></p> 
+<p id="%E5%9B%9B%E3%80%81%E6%80%BB%E7%BB%93%20%C2%A0tips-toc" style="margin-left:40px;"><a href="#%E5%9B%9B%E3%80%81%E6%80%BB%E7%BB%93%20%C2%A0tips" rel="nofollow">四、总结  tips</a></p> 
+<hr id="hr-toc"> 
+<h3><strong><strong>一、写在前面</strong></strong></h3> 
+<p>上篇文章《<a href="https://blog.csdn.net/l18848956739/article/details/96141298">同学，消息中间件在你们生产项目里如何落地使用的？</a>》，我们用一个简单易懂的电商场景给大家引入说明了一个消息中间件的使用场景。</p> 
+<p>同时，我们还基于RabbitMQ的HelloWorld级别的代码，给出了订单服务和仓储服务如何基于MQ中间件收发消息的示例。</p> 
+<h3 id="%E4%BA%8C%E3%80%81%E4%B8%9A%E5%8A%A1%E5%9C%BA%E6%99%AF%E5%9B%9E%E9%A1%BE"><strong><strong>二、业务场景回顾</strong></strong></h3> 
+<p>这篇文章，我们来稍微深入探讨一些MQ中间件使用中的基础技术问题。</p> 
+<p>首先回顾一下上篇文章做出来的一个架构图，看看订单服务和消息服务是如何基于MQ来收发消息的。</p> 
+<p>我们稍微把这个图细化一点，简单来说就是多个订单服务实例给queue推送消息，多个仓储服务每个消费一部分消息。如下图所示：</p> 
+<p><img alt="" class="has" height="309" src="https://images2.imgbox.com/5c/89/Iv1QqiKZ_o.png" width="1032"></p> 
+<h3 id="%E4%B8%89%E3%80%81%E6%84%8F%E5%A4%96%E5%AE%95%E6%9C%BA%EF%BC%8C%E9%97%AE%E9%A2%98%E5%87%B8%E7%8E%B0"><strong><strong>三、意外宕机，问题凸现</strong></strong></h3> 
+<p>假如你线上对MQ技术的使用就到此为止了，那么基本可以跟offer说拜拜了。。。</p> 
+<p>因为如果是我的话，作为一个面试官就没法继续往下问了。你这个MQ的使用以及理解的深度仅此而已的话，那基本就是刚刚对MQ技术入门的程度。</p> 
+<p>如果面试官要继续问，完全可以问下面的问题：</p> 
+<ul><li> <p>那你说说如果仓储服务作为消费者服务，刚收到了一个订单消息，但是在完成消息的处理之前，也就是还没对订单完成仓储调度发货，结果这个仓储服务突然就宕机了，这个时候会发生什么事情？</p> </li></ul> 
+<p>所以说，大家还是要对这个技术了解的稍微深入一点点，否则随便被问几个问题就完蛋了。</p> 
+<p>大伙儿先来看看下面的图，感受一下车祸现场。</p> 
+<p><img alt="" class="has" height="257" src="https://images2.imgbox.com/4e/f9/uisYQEWG_o.png" width="1054"></p> 
+<p>RabbitMQ这个中间件默认的一个行为，就是只要仓储服务收到一个订单消息，RabbitMQ就会立马把这条订单消息给标记为删除，<strong>这个行为叫做自动ack，</strong>也就是投递完成一条消息就自动确认这个消息处理完毕了。</p> 
+<p>但是接着如果此时仓储服务收到了一个订单消息，但是还没来得及对仓库系统完成商品的调度发货，结果直接就宕机了。</p> 
+<p>此时，明显这个订单消息就丢失了啊，因为RabbitMQ那里已经没有了。。。</p> 
+<p>这会导致什么样的尴尬体验呢？就是一个用户支付了8999元，对一个iphone8下了订单，结果呢，死等活等了好几天，就是不见网站上显示他的iphone8在发货。</p> 
+<p>搞了半天，原因就是他的那个iphone8的订单在仓储服务那里，还没来得及调度发货直接就宕机了，导致这个订单消息就一直丢失了，始终没有给这个用户通知仓库系统进行发货。</p> 
+<p>这个问题，是不是很尴尬？所以说，技术问题是会严重影响企业的核心业务流程的！</p> 
+<p>各位小伙伴，还记得上一讲咱们的仓储服务消费消息的代码中，有一行关键的代码：</p> 
+<p><img alt="" class="has" height="93" src="https://images2.imgbox.com/4d/1a/MlehVPK6_o.png" width="590"></p> 
+<p>这行代码对<strong>channel.basicConsume()</strong>方法，传入的第二个参数：<strong>true</strong>，其实就是一个关键的参数。</p> 
+<p>这个true就代表了一个核心的含义，<strong>他的意思是，RabbitMQ只要把一个消息投递到仓储服务手上，立马就标记这个消息删除了。</strong></p> 
+<p>但是在这个默认的配置之下，要是仓储服务收到一个订单消息，结果还没来得及完成耗时几十秒的仓储调度发货的业务逻辑，结果突然宕机了，那么这个订单消息就永久性丢失了！</p> 
+<p>找了半天，原来问题的症结在这里啊！大家是不是明白了，上一篇文章最后为什么我会说，这个代码目前为止还有很多的问题。</p> 
+<p>所以这个时候，我们如果希望不要因为仓储服务的突然宕机导致一条订单消息丢失，就需要改造一下仓储服务消费消息的代码了。</p> 
+<p><strong>首先，我们需要把那个参数从true改为false</strong>，如下代码所示：</p> 
+<p><img alt="" class="has" height="89" src="https://images2.imgbox.com/70/f2/NUg3BoiN_o.png" width="595"></p> 
+<p>只要修改为false之后，RabbitMQ就不会盲目的投递消息到仓储服务，立马就删除消息了，说白了就是关闭autoAck的行为，不要自作主张的认为消息处理成功了。</p> 
+<p>接着，我们需要改造一下处理订单消息的代码，如下代码所示。</p> 
+<p>这段代码，说白了，就是在对订单完成了调度发货之后，<strong>在finally代码块中手动执行了ack操作</strong>，说我自己已经完成了耗时几十秒的业务逻辑的处理，现在可以手动ack通知RabbitMQ，这个消息处理完毕了。</p> 
+<p><img alt="" class="has" height="298" src="https://images2.imgbox.com/fc/c2/La6czFHv_o.png" width="946"></p> 
+<p>此时整个架构运行流程大致看起来跟下面的图那样子。</p> 
+<p> </p> 
+<p><img alt="" class="has" height="268" src="https://images2.imgbox.com/c1/b5/ni4qwFuP_o.png" width="946"></p> 
+<p>架构流程改成上面那样后，就意味着只有完成了仓储调度发货的代码业务逻辑，确保仓库系统收到通知之后，仓储服务才会在代码中手动发送ack消息给RabbitMQ。</p> 
+<p>此时，RabbitMQ收到了这个ack消息，才会标记对应的订单消息被删除了。</p> 
+<p>如果说在仓储服务收到了订单消息，但是还没来得及完成仓储调度发货的业务逻辑，那也就绝对不会执行这条订单消息的ack操作，然后RabbitMQ也就不会收到这条订单消息的ack通知。</p> 
+<p>一旦RabbitMQ发现代表消费者的某个仓储服务实例突然宕机了，而这个仓储服务收到的一些订单消息还没来得及处理，没给自己发送那些消息的ack通知。</p> 
+<p>此时，RabbitMQ会自动对这条订单消息重发推送给其他在运行中的仓储服务实例，让其他的仓储服务实例去处理这条订单消息。</p> 
+<p>这样的话，就可以保证这条订单消息不会因为某个仓储服务实例的宕机而丢失，他会确保必须由某个仓储服务实例完成这条订单消息的调度发货处理，然后才会删除那条订单消息。</p> 
+<h3 id="%E5%9B%9B%E3%80%81%E6%80%BB%E7%BB%93%20%C2%A0tips"><strong><strong>四、总结  tips</strong></strong></h3> 
+<p>最后再来一张图，大家直观的感受一下：</p> 
+<p> </p> 
+<p><img alt="" class="has" height="294" src="https://images2.imgbox.com/57/ff/yBe6liKv_o.png" width="953"></p> 
+<p>好了，各位同学，这篇文章是不是相对稍微深入一点点，让大家了解到了一些使用MQ技术时候要考虑的一些问题？</p> 
+<p>实际上无论是RocketMQ、Kafka还是RabbitMQ，都有类似的autoAck或者是手动ack的机制。</p> 
+<p><strong>线上生产环境中运行时，你必须要考虑到消费者服务可能宕机的问题。</strong></p> 
+<p>如果消费者服务没处理完消息就自己宕机了，那么一定会导致部分消息的丢失，进而影响核心业务流程的运转。</p> 
+<p>因此大家在线上使用MQ时，一定要充分考虑这些潜在问题，同时结合具体的MQ提供的一些API、参数来进行合理设置，确保消息不要随意丢失。</p> 
+<p>转载自：<a href="https://mp.weixin.qq.com/s?__biz=MzU0OTk3ODQ3Ng==&amp;mid=2247484204&amp;idx=1&amp;sn=6fc43b0620857b653dbef20693d1c6c6&amp;chksm=fba6eb2fccd16239056e4b52dc0895585292b830bfd2652dea81b7360556fe36aceac0951761&amp;scene=21#wechat_redirect" rel="nofollow" id="js_name">石杉的架构笔记</a> </p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/832c8e441b17dcd934f4af0ee29fabd3/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">ArrayList,Vector,LinkedList三者的比较</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/5a07e012dbbb5e8f937d23edff7f843e/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">【MQ】消息中间件集群崩溃，如何保证百万生产数据不丢失？</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

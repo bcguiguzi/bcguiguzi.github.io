@@ -1,0 +1,312 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>第9讲 g2o求解BA - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="第9讲 g2o求解BA" />
+<meta property="og:description" content="g2o使用图模型来描述问题的结构，所以我们要用节点来表示相机和路标，然后用边来表示他们之间的观测。
+我们把旋转、平移、焦距和畸变参数定义在同一个相机顶点中，然后定义相机到路标点之间的观测边。这里，我们使用的是BAL数据集。
+下面是bundle_adjustment_g2o.cpp的代码
+#include &lt;g2o/core/base_vertex.h&gt; #include &lt;g2o/core/base_binary_edge.h&gt; #include &lt;g2o/core/block_solver.h&gt; #include &lt;g2o/core/optimization_algorithm_levenberg.h&gt; #include &lt;g2o/solvers/csparse/linear_solver_csparse.h&gt; #include &lt;g2o/core/robust_kernel_impl.h&gt; #include &lt;iostream&gt; #include &#34;common.h&#34; #include &#34;sophus/se3.hpp&#34; using namespace Sophus; using namespace Eigen; using namespace std; /// 姿态和内参的结构 struct PoseAndIntrinsics { PoseAndIntrinsics() {} /// set from given data address explicit PoseAndIntrinsics(double *data_addr) { rotation = SO3d::exp(Vector3d(data_addr[0], data_addr[1], data_addr[2])); translation = Vector3d(data_addr[3], data_addr[4], data_addr[5]); focal = data_addr[6]; k1 = data_addr[7]; k2 = data_addr[8]; } /// 将估计值放入内存 void set_to(double *data_addr) { auto r = rotation." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/2f6cc22cf6e0e3f25217875fb65af6fe/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2019-10-18T21:26:36+08:00" />
+<meta property="article:modified_time" content="2019-10-18T21:26:36+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">第9讲 g2o求解BA</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p>g2o使用图模型来描述问题的结构，所以我们要用节点来表示相机和路标，然后用边来表示他们之间的观测。</p> 
+<p>我们把旋转、平移、焦距和畸变参数定义在同一个相机顶点中，然后定义相机到路标点之间的观测边。这里，我们使用的是BAL数据集。<br> 下面是<strong>bundle_adjustment_g2o.cpp</strong>的代码</p> 
+<pre><code class="prism language-cpp"><span class="token macro property">#<span class="token directive keyword">include</span> <span class="token string">&lt;g2o/core/base_vertex.h&gt;</span></span>
+<span class="token macro property">#<span class="token directive keyword">include</span> <span class="token string">&lt;g2o/core/base_binary_edge.h&gt;</span></span>
+<span class="token macro property">#<span class="token directive keyword">include</span> <span class="token string">&lt;g2o/core/block_solver.h&gt;</span></span>
+<span class="token macro property">#<span class="token directive keyword">include</span> <span class="token string">&lt;g2o/core/optimization_algorithm_levenberg.h&gt;</span></span>
+<span class="token macro property">#<span class="token directive keyword">include</span> <span class="token string">&lt;g2o/solvers/csparse/linear_solver_csparse.h&gt;</span></span>
+<span class="token macro property">#<span class="token directive keyword">include</span> <span class="token string">&lt;g2o/core/robust_kernel_impl.h&gt;</span></span>
+<span class="token macro property">#<span class="token directive keyword">include</span> <span class="token string">&lt;iostream&gt;</span></span>
+
+<span class="token macro property">#<span class="token directive keyword">include</span> <span class="token string">"common.h"</span></span>
+<span class="token macro property">#<span class="token directive keyword">include</span> <span class="token string">"sophus/se3.hpp"</span></span>
+
+<span class="token keyword">using</span> <span class="token keyword">namespace</span> Sophus<span class="token punctuation">;</span>
+<span class="token keyword">using</span> <span class="token keyword">namespace</span> Eigen<span class="token punctuation">;</span>
+<span class="token keyword">using</span> <span class="token keyword">namespace</span> std<span class="token punctuation">;</span>
+
+<span class="token comment">/// 姿态和内参的结构</span>
+<span class="token keyword">struct</span> PoseAndIntrinsics <span class="token punctuation">{<!-- --></span>
+    <span class="token function">PoseAndIntrinsics</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span><span class="token punctuation">}</span>
+
+    <span class="token comment">/// set from given data address</span>
+    <span class="token keyword">explicit</span> <span class="token function">PoseAndIntrinsics</span><span class="token punctuation">(</span><span class="token keyword">double</span> <span class="token operator">*</span>data_addr<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        rotation <span class="token operator">=</span> SO3d<span class="token operator">::</span><span class="token function">exp</span><span class="token punctuation">(</span><span class="token function">Vector3d</span><span class="token punctuation">(</span>data_addr<span class="token punctuation">[</span><span class="token number">0</span><span class="token punctuation">]</span><span class="token punctuation">,</span> data_addr<span class="token punctuation">[</span><span class="token number">1</span><span class="token punctuation">]</span><span class="token punctuation">,</span> data_addr<span class="token punctuation">[</span><span class="token number">2</span><span class="token punctuation">]</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        translation <span class="token operator">=</span> <span class="token function">Vector3d</span><span class="token punctuation">(</span>data_addr<span class="token punctuation">[</span><span class="token number">3</span><span class="token punctuation">]</span><span class="token punctuation">,</span> data_addr<span class="token punctuation">[</span><span class="token number">4</span><span class="token punctuation">]</span><span class="token punctuation">,</span> data_addr<span class="token punctuation">[</span><span class="token number">5</span><span class="token punctuation">]</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        focal <span class="token operator">=</span> data_addr<span class="token punctuation">[</span><span class="token number">6</span><span class="token punctuation">]</span><span class="token punctuation">;</span>
+        k1 <span class="token operator">=</span> data_addr<span class="token punctuation">[</span><span class="token number">7</span><span class="token punctuation">]</span><span class="token punctuation">;</span>
+        k2 <span class="token operator">=</span> data_addr<span class="token punctuation">[</span><span class="token number">8</span><span class="token punctuation">]</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token comment">/// 将估计值放入内存</span>
+    <span class="token keyword">void</span> <span class="token function">set_to</span><span class="token punctuation">(</span><span class="token keyword">double</span> <span class="token operator">*</span>data_addr<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">auto</span> r <span class="token operator">=</span> rotation<span class="token punctuation">.</span><span class="token function">log</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">for</span> <span class="token punctuation">(</span><span class="token keyword">int</span> i <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span> i <span class="token operator">&lt;</span> <span class="token number">3</span><span class="token punctuation">;</span> <span class="token operator">++</span>i<span class="token punctuation">)</span> data_addr<span class="token punctuation">[</span>i<span class="token punctuation">]</span> <span class="token operator">=</span> r<span class="token punctuation">[</span>i<span class="token punctuation">]</span><span class="token punctuation">;</span>
+        <span class="token keyword">for</span> <span class="token punctuation">(</span><span class="token keyword">int</span> i <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span> i <span class="token operator">&lt;</span> <span class="token number">3</span><span class="token punctuation">;</span> <span class="token operator">++</span>i<span class="token punctuation">)</span> data_addr<span class="token punctuation">[</span>i <span class="token operator">+</span> <span class="token number">3</span><span class="token punctuation">]</span> <span class="token operator">=</span> translation<span class="token punctuation">[</span>i<span class="token punctuation">]</span><span class="token punctuation">;</span>
+        data_addr<span class="token punctuation">[</span><span class="token number">6</span><span class="token punctuation">]</span> <span class="token operator">=</span> focal<span class="token punctuation">;</span>
+        data_addr<span class="token punctuation">[</span><span class="token number">7</span><span class="token punctuation">]</span> <span class="token operator">=</span> k1<span class="token punctuation">;</span>
+        data_addr<span class="token punctuation">[</span><span class="token number">8</span><span class="token punctuation">]</span> <span class="token operator">=</span> k2<span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    SO3d rotation<span class="token punctuation">;</span>
+    Vector3d translation <span class="token operator">=</span> Vector3d<span class="token operator">::</span><span class="token function">Zero</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">double</span> focal <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+    <span class="token keyword">double</span> k1 <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">,</span> k2 <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span><span class="token punctuation">;</span>
+
+<span class="token comment">/// 位姿加相机内参的顶点，9维，前三维为so3，接下去为t, f, k1, k2</span>
+<span class="token keyword">class</span> <span class="token class-name">VertexPoseAndIntrinsics</span> <span class="token operator">:</span> <span class="token keyword">public</span> g2o<span class="token operator">::</span>BaseVertex<span class="token operator">&lt;</span><span class="token number">9</span><span class="token punctuation">,</span> PoseAndIntrinsics<span class="token operator">&gt;</span> <span class="token punctuation">{<!-- --></span>
+<span class="token keyword">public</span><span class="token operator">:</span>
+    EIGEN_MAKE_ALIGNED_OPERATOR_NEW<span class="token punctuation">;</span>
+
+    <span class="token function">VertexPoseAndIntrinsics</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span><span class="token punctuation">}</span>
+
+    <span class="token keyword">virtual</span> <span class="token keyword">void</span> <span class="token function">setToOriginImpl</span><span class="token punctuation">(</span><span class="token punctuation">)</span> override <span class="token punctuation">{<!-- --></span>
+        _estimate <span class="token operator">=</span> <span class="token function">PoseAndIntrinsics</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token keyword">virtual</span> <span class="token keyword">void</span> <span class="token function">oplusImpl</span><span class="token punctuation">(</span><span class="token keyword">const</span> <span class="token keyword">double</span> <span class="token operator">*</span>update<span class="token punctuation">)</span> override <span class="token punctuation">{<!-- --></span>
+        _estimate<span class="token punctuation">.</span>rotation <span class="token operator">=</span> SO3d<span class="token operator">::</span><span class="token function">exp</span><span class="token punctuation">(</span><span class="token function">Vector3d</span><span class="token punctuation">(</span>update<span class="token punctuation">[</span><span class="token number">0</span><span class="token punctuation">]</span><span class="token punctuation">,</span> update<span class="token punctuation">[</span><span class="token number">1</span><span class="token punctuation">]</span><span class="token punctuation">,</span> update<span class="token punctuation">[</span><span class="token number">2</span><span class="token punctuation">]</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token operator">*</span> _estimate<span class="token punctuation">.</span>rotation<span class="token punctuation">;</span>
+        _estimate<span class="token punctuation">.</span>translation <span class="token operator">+</span><span class="token operator">=</span> <span class="token function">Vector3d</span><span class="token punctuation">(</span>update<span class="token punctuation">[</span><span class="token number">3</span><span class="token punctuation">]</span><span class="token punctuation">,</span> update<span class="token punctuation">[</span><span class="token number">4</span><span class="token punctuation">]</span><span class="token punctuation">,</span> update<span class="token punctuation">[</span><span class="token number">5</span><span class="token punctuation">]</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        _estimate<span class="token punctuation">.</span>focal <span class="token operator">+</span><span class="token operator">=</span> update<span class="token punctuation">[</span><span class="token number">6</span><span class="token punctuation">]</span><span class="token punctuation">;</span>
+        _estimate<span class="token punctuation">.</span>k1 <span class="token operator">+</span><span class="token operator">=</span> update<span class="token punctuation">[</span><span class="token number">7</span><span class="token punctuation">]</span><span class="token punctuation">;</span>
+        _estimate<span class="token punctuation">.</span>k2 <span class="token operator">+</span><span class="token operator">=</span> update<span class="token punctuation">[</span><span class="token number">8</span><span class="token punctuation">]</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token comment">/// 根据估计值投影一个点</span>
+    Vector2d <span class="token function">project</span><span class="token punctuation">(</span><span class="token keyword">const</span> Vector3d <span class="token operator">&amp;</span>point<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        Vector3d pc <span class="token operator">=</span> _estimate<span class="token punctuation">.</span>rotation <span class="token operator">*</span> point <span class="token operator">+</span> _estimate<span class="token punctuation">.</span>translation<span class="token punctuation">;</span>
+        pc <span class="token operator">=</span> <span class="token operator">-</span>pc <span class="token operator">/</span> pc<span class="token punctuation">[</span><span class="token number">2</span><span class="token punctuation">]</span><span class="token punctuation">;</span>
+        <span class="token keyword">double</span> r2 <span class="token operator">=</span> pc<span class="token punctuation">.</span><span class="token function">squaredNorm</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">double</span> distortion <span class="token operator">=</span> <span class="token number">1.0</span> <span class="token operator">+</span> r2 <span class="token operator">*</span> <span class="token punctuation">(</span>_estimate<span class="token punctuation">.</span>k1 <span class="token operator">+</span> _estimate<span class="token punctuation">.</span>k2 <span class="token operator">*</span> r2<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">return</span> <span class="token function">Vector2d</span><span class="token punctuation">(</span>_estimate<span class="token punctuation">.</span>focal <span class="token operator">*</span> distortion <span class="token operator">*</span> pc<span class="token punctuation">[</span><span class="token number">0</span><span class="token punctuation">]</span><span class="token punctuation">,</span>
+                        _estimate<span class="token punctuation">.</span>focal <span class="token operator">*</span> distortion <span class="token operator">*</span> pc<span class="token punctuation">[</span><span class="token number">1</span><span class="token punctuation">]</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token keyword">virtual</span> <span class="token keyword">bool</span> <span class="token function">read</span><span class="token punctuation">(</span>istream <span class="token operator">&amp;</span>in<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span><span class="token punctuation">}</span>
+
+    <span class="token keyword">virtual</span> <span class="token keyword">bool</span> <span class="token function">write</span><span class="token punctuation">(</span>ostream <span class="token operator">&amp;</span>out<span class="token punctuation">)</span> <span class="token keyword">const</span> <span class="token punctuation">{<!-- --></span><span class="token punctuation">}</span>
+<span class="token punctuation">}</span><span class="token punctuation">;</span>
+
+<span class="token keyword">class</span> <span class="token class-name">VertexPoint</span> <span class="token operator">:</span> <span class="token keyword">public</span> g2o<span class="token operator">::</span>BaseVertex<span class="token operator">&lt;</span><span class="token number">3</span><span class="token punctuation">,</span> Vector3d<span class="token operator">&gt;</span> <span class="token punctuation">{<!-- --></span>
+<span class="token keyword">public</span><span class="token operator">:</span>
+    EIGEN_MAKE_ALIGNED_OPERATOR_NEW<span class="token punctuation">;</span>
+
+    <span class="token function">VertexPoint</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span><span class="token punctuation">}</span>
+
+    <span class="token keyword">virtual</span> <span class="token keyword">void</span> <span class="token function">setToOriginImpl</span><span class="token punctuation">(</span><span class="token punctuation">)</span> override <span class="token punctuation">{<!-- --></span>
+        _estimate <span class="token operator">=</span> <span class="token function">Vector3d</span><span class="token punctuation">(</span><span class="token number">0</span><span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token keyword">virtual</span> <span class="token keyword">void</span> <span class="token function">oplusImpl</span><span class="token punctuation">(</span><span class="token keyword">const</span> <span class="token keyword">double</span> <span class="token operator">*</span>update<span class="token punctuation">)</span> override <span class="token punctuation">{<!-- --></span>
+        _estimate <span class="token operator">+</span><span class="token operator">=</span> <span class="token function">Vector3d</span><span class="token punctuation">(</span>update<span class="token punctuation">[</span><span class="token number">0</span><span class="token punctuation">]</span><span class="token punctuation">,</span> update<span class="token punctuation">[</span><span class="token number">1</span><span class="token punctuation">]</span><span class="token punctuation">,</span> update<span class="token punctuation">[</span><span class="token number">2</span><span class="token punctuation">]</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token keyword">virtual</span> <span class="token keyword">bool</span> <span class="token function">read</span><span class="token punctuation">(</span>istream <span class="token operator">&amp;</span>in<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span><span class="token punctuation">}</span>
+
+    <span class="token keyword">virtual</span> <span class="token keyword">bool</span> <span class="token function">write</span><span class="token punctuation">(</span>ostream <span class="token operator">&amp;</span>out<span class="token punctuation">)</span> <span class="token keyword">const</span> <span class="token punctuation">{<!-- --></span><span class="token punctuation">}</span>
+<span class="token punctuation">}</span><span class="token punctuation">;</span>
+
+<span class="token keyword">class</span> <span class="token class-name">EdgeProjection</span> <span class="token operator">:</span>
+    <span class="token keyword">public</span> g2o<span class="token operator">::</span>BaseBinaryEdge<span class="token operator">&lt;</span><span class="token number">2</span><span class="token punctuation">,</span> Vector2d<span class="token punctuation">,</span> VertexPoseAndIntrinsics<span class="token punctuation">,</span> VertexPoint<span class="token operator">&gt;</span> <span class="token punctuation">{<!-- --></span>
+<span class="token keyword">public</span><span class="token operator">:</span>
+    EIGEN_MAKE_ALIGNED_OPERATOR_NEW<span class="token punctuation">;</span>
+
+    <span class="token keyword">virtual</span> <span class="token keyword">void</span> <span class="token function">computeError</span><span class="token punctuation">(</span><span class="token punctuation">)</span> override <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">auto</span> v0 <span class="token operator">=</span> <span class="token punctuation">(</span>VertexPoseAndIntrinsics <span class="token operator">*</span><span class="token punctuation">)</span> _vertices<span class="token punctuation">[</span><span class="token number">0</span><span class="token punctuation">]</span><span class="token punctuation">;</span>
+        <span class="token keyword">auto</span> v1 <span class="token operator">=</span> <span class="token punctuation">(</span>VertexPoint <span class="token operator">*</span><span class="token punctuation">)</span> _vertices<span class="token punctuation">[</span><span class="token number">1</span><span class="token punctuation">]</span><span class="token punctuation">;</span>
+        <span class="token keyword">auto</span> proj <span class="token operator">=</span> v0<span class="token operator">-</span><span class="token operator">&gt;</span><span class="token function">project</span><span class="token punctuation">(</span>v1<span class="token operator">-</span><span class="token operator">&gt;</span><span class="token function">estimate</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        _error <span class="token operator">=</span> proj <span class="token operator">-</span> _measurement<span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token comment">// use numeric derivatives</span>
+    <span class="token keyword">virtual</span> <span class="token keyword">bool</span> <span class="token function">read</span><span class="token punctuation">(</span>istream <span class="token operator">&amp;</span>in<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span><span class="token punctuation">}</span>
+
+    <span class="token keyword">virtual</span> <span class="token keyword">bool</span> <span class="token function">write</span><span class="token punctuation">(</span>ostream <span class="token operator">&amp;</span>out<span class="token punctuation">)</span> <span class="token keyword">const</span> <span class="token punctuation">{<!-- --></span><span class="token punctuation">}</span>
+
+<span class="token punctuation">}</span><span class="token punctuation">;</span>
+
+<span class="token keyword">void</span> <span class="token function">SolveBA</span><span class="token punctuation">(</span>BALProblem <span class="token operator">&amp;</span>bal_problem<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+<span class="token keyword">int</span> <span class="token function">main</span><span class="token punctuation">(</span><span class="token keyword">int</span> argc<span class="token punctuation">,</span> <span class="token keyword">char</span> <span class="token operator">*</span><span class="token operator">*</span>argv<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>argc <span class="token operator">!=</span> <span class="token number">2</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        cout <span class="token operator">&lt;&lt;</span> <span class="token string">"usage: bundle_adjustment_g2o bal_data.txt"</span> <span class="token operator">&lt;&lt;</span> endl<span class="token punctuation">;</span>
+        <span class="token keyword">return</span> <span class="token number">1</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    BALProblem <span class="token function">bal_problem</span><span class="token punctuation">(</span>argv<span class="token punctuation">[</span><span class="token number">1</span><span class="token punctuation">]</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    bal_problem<span class="token punctuation">.</span><span class="token function">Normalize</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    bal_problem<span class="token punctuation">.</span><span class="token function">Perturb</span><span class="token punctuation">(</span><span class="token number">0.1</span><span class="token punctuation">,</span> <span class="token number">0.5</span><span class="token punctuation">,</span> <span class="token number">0.5</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    bal_problem<span class="token punctuation">.</span><span class="token function">WriteToPLYFile</span><span class="token punctuation">(</span><span class="token string">"initial.ply"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token function">SolveBA</span><span class="token punctuation">(</span>bal_problem<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    bal_problem<span class="token punctuation">.</span><span class="token function">WriteToPLYFile</span><span class="token punctuation">(</span><span class="token string">"final.ply"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token keyword">return</span> <span class="token number">0</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+<span class="token keyword">void</span> <span class="token function">SolveBA</span><span class="token punctuation">(</span>BALProblem <span class="token operator">&amp;</span>bal_problem<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">const</span> <span class="token keyword">int</span> point_block_size <span class="token operator">=</span> bal_problem<span class="token punctuation">.</span><span class="token function">point_block_size</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">const</span> <span class="token keyword">int</span> camera_block_size <span class="token operator">=</span> bal_problem<span class="token punctuation">.</span><span class="token function">camera_block_size</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">double</span> <span class="token operator">*</span>points <span class="token operator">=</span> bal_problem<span class="token punctuation">.</span><span class="token function">mutable_points</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">double</span> <span class="token operator">*</span>cameras <span class="token operator">=</span> bal_problem<span class="token punctuation">.</span><span class="token function">mutable_cameras</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token comment">// pose dimension 9, landmark is 3</span>
+    <span class="token keyword">typedef</span> g2o<span class="token operator">::</span>BlockSolver<span class="token operator">&lt;</span>g2o<span class="token operator">::</span>BlockSolverTraits<span class="token operator">&lt;</span><span class="token number">9</span><span class="token punctuation">,</span> <span class="token number">3</span><span class="token operator">&gt;&gt;</span> BlockSolverType<span class="token punctuation">;</span>
+    <span class="token keyword">typedef</span> g2o<span class="token operator">::</span>LinearSolverCSparse<span class="token operator">&lt;</span>BlockSolverType<span class="token operator">::</span>PoseMatrixType<span class="token operator">&gt;</span> LinearSolverType<span class="token punctuation">;</span>
+    <span class="token comment">// use LM</span>
+    <span class="token keyword">auto</span> solver <span class="token operator">=</span> <span class="token keyword">new</span> g2o<span class="token operator">::</span><span class="token function">OptimizationAlgorithmLevenberg</span><span class="token punctuation">(</span>
+        g2o<span class="token operator">::</span>make_unique<span class="token operator">&lt;</span>BlockSolverType<span class="token operator">&gt;</span><span class="token punctuation">(</span>g2o<span class="token operator">::</span>make_unique<span class="token operator">&lt;</span>LinearSolverType<span class="token operator">&gt;</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    g2o<span class="token operator">::</span>SparseOptimizer optimizer<span class="token punctuation">;</span>
+    optimizer<span class="token punctuation">.</span><span class="token function">setAlgorithm</span><span class="token punctuation">(</span>solver<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    optimizer<span class="token punctuation">.</span><span class="token function">setVerbose</span><span class="token punctuation">(</span><span class="token boolean">true</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token comment">/// build g2o problem</span>
+    <span class="token keyword">const</span> <span class="token keyword">double</span> <span class="token operator">*</span>observations <span class="token operator">=</span> bal_problem<span class="token punctuation">.</span><span class="token function">observations</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token comment">// vertex</span>
+    vector<span class="token operator">&lt;</span>VertexPoseAndIntrinsics <span class="token operator">*</span><span class="token operator">&gt;</span> vertex_pose_intrinsics<span class="token punctuation">;</span>
+    vector<span class="token operator">&lt;</span>VertexPoint <span class="token operator">*</span><span class="token operator">&gt;</span> vertex_points<span class="token punctuation">;</span>
+    <span class="token keyword">for</span> <span class="token punctuation">(</span><span class="token keyword">int</span> i <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span> i <span class="token operator">&lt;</span> bal_problem<span class="token punctuation">.</span><span class="token function">num_cameras</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span> <span class="token operator">++</span>i<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        VertexPoseAndIntrinsics <span class="token operator">*</span>v <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token function">VertexPoseAndIntrinsics</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">double</span> <span class="token operator">*</span>camera <span class="token operator">=</span> cameras <span class="token operator">+</span> camera_block_size <span class="token operator">*</span> i<span class="token punctuation">;</span>
+        v<span class="token operator">-</span><span class="token operator">&gt;</span><span class="token function">setId</span><span class="token punctuation">(</span>i<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        v<span class="token operator">-</span><span class="token operator">&gt;</span><span class="token function">setEstimate</span><span class="token punctuation">(</span><span class="token function">PoseAndIntrinsics</span><span class="token punctuation">(</span>camera<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        optimizer<span class="token punctuation">.</span><span class="token function">addVertex</span><span class="token punctuation">(</span>v<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        vertex_pose_intrinsics<span class="token punctuation">.</span><span class="token function">push_back</span><span class="token punctuation">(</span>v<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+    <span class="token keyword">for</span> <span class="token punctuation">(</span><span class="token keyword">int</span> i <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span> i <span class="token operator">&lt;</span> bal_problem<span class="token punctuation">.</span><span class="token function">num_points</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span> <span class="token operator">++</span>i<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        VertexPoint <span class="token operator">*</span>v <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token function">VertexPoint</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">double</span> <span class="token operator">*</span>point <span class="token operator">=</span> points <span class="token operator">+</span> point_block_size <span class="token operator">*</span> i<span class="token punctuation">;</span>
+        v<span class="token operator">-</span><span class="token operator">&gt;</span><span class="token function">setId</span><span class="token punctuation">(</span>i <span class="token operator">+</span> bal_problem<span class="token punctuation">.</span><span class="token function">num_cameras</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        v<span class="token operator">-</span><span class="token operator">&gt;</span><span class="token function">setEstimate</span><span class="token punctuation">(</span><span class="token function">Vector3d</span><span class="token punctuation">(</span>point<span class="token punctuation">[</span><span class="token number">0</span><span class="token punctuation">]</span><span class="token punctuation">,</span> point<span class="token punctuation">[</span><span class="token number">1</span><span class="token punctuation">]</span><span class="token punctuation">,</span> point<span class="token punctuation">[</span><span class="token number">2</span><span class="token punctuation">]</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token comment">// g2o在BA中需要手动设置待Marg的顶点</span>
+        v<span class="token operator">-</span><span class="token operator">&gt;</span><span class="token function">setMarginalized</span><span class="token punctuation">(</span><span class="token boolean">true</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        optimizer<span class="token punctuation">.</span><span class="token function">addVertex</span><span class="token punctuation">(</span>v<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        vertex_points<span class="token punctuation">.</span><span class="token function">push_back</span><span class="token punctuation">(</span>v<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token comment">// edge</span>
+    <span class="token keyword">for</span> <span class="token punctuation">(</span><span class="token keyword">int</span> i <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span> i <span class="token operator">&lt;</span> bal_problem<span class="token punctuation">.</span><span class="token function">num_observations</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span> <span class="token operator">++</span>i<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        EdgeProjection <span class="token operator">*</span>edge <span class="token operator">=</span> <span class="token keyword">new</span> EdgeProjection<span class="token punctuation">;</span>
+        edge<span class="token operator">-</span><span class="token operator">&gt;</span><span class="token function">setVertex</span><span class="token punctuation">(</span><span class="token number">0</span><span class="token punctuation">,</span> vertex_pose_intrinsics<span class="token punctuation">[</span>bal_problem<span class="token punctuation">.</span><span class="token function">camera_index</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">[</span>i<span class="token punctuation">]</span><span class="token punctuation">]</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        edge<span class="token operator">-</span><span class="token operator">&gt;</span><span class="token function">setVertex</span><span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">,</span> vertex_points<span class="token punctuation">[</span>bal_problem<span class="token punctuation">.</span><span class="token function">point_index</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">[</span>i<span class="token punctuation">]</span><span class="token punctuation">]</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        edge<span class="token operator">-</span><span class="token operator">&gt;</span><span class="token function">setMeasurement</span><span class="token punctuation">(</span><span class="token function">Vector2d</span><span class="token punctuation">(</span>observations<span class="token punctuation">[</span><span class="token number">2</span> <span class="token operator">*</span> i <span class="token operator">+</span> <span class="token number">0</span><span class="token punctuation">]</span><span class="token punctuation">,</span> observations<span class="token punctuation">[</span><span class="token number">2</span> <span class="token operator">*</span> i <span class="token operator">+</span> <span class="token number">1</span><span class="token punctuation">]</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        edge<span class="token operator">-</span><span class="token operator">&gt;</span><span class="token function">setInformation</span><span class="token punctuation">(</span>Matrix2d<span class="token operator">::</span><span class="token function">Identity</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        edge<span class="token operator">-</span><span class="token operator">&gt;</span><span class="token function">setRobustKernel</span><span class="token punctuation">(</span><span class="token keyword">new</span> g2o<span class="token operator">::</span><span class="token function">RobustKernelHuber</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        optimizer<span class="token punctuation">.</span><span class="token function">addEdge</span><span class="token punctuation">(</span>edge<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    optimizer<span class="token punctuation">.</span><span class="token function">initializeOptimization</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    optimizer<span class="token punctuation">.</span><span class="token function">optimize</span><span class="token punctuation">(</span><span class="token number">40</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token comment">// set to bal problem</span>
+    <span class="token keyword">for</span> <span class="token punctuation">(</span><span class="token keyword">int</span> i <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span> i <span class="token operator">&lt;</span> bal_problem<span class="token punctuation">.</span><span class="token function">num_cameras</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span> <span class="token operator">++</span>i<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">double</span> <span class="token operator">*</span>camera <span class="token operator">=</span> cameras <span class="token operator">+</span> camera_block_size <span class="token operator">*</span> i<span class="token punctuation">;</span>
+        <span class="token keyword">auto</span> vertex <span class="token operator">=</span> vertex_pose_intrinsics<span class="token punctuation">[</span>i<span class="token punctuation">]</span><span class="token punctuation">;</span>
+        <span class="token keyword">auto</span> estimate <span class="token operator">=</span> vertex<span class="token operator">-</span><span class="token operator">&gt;</span><span class="token function">estimate</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        estimate<span class="token punctuation">.</span><span class="token function">set_to</span><span class="token punctuation">(</span>camera<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+    <span class="token keyword">for</span> <span class="token punctuation">(</span><span class="token keyword">int</span> i <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span> i <span class="token operator">&lt;</span> bal_problem<span class="token punctuation">.</span><span class="token function">num_points</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span> <span class="token operator">++</span>i<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">double</span> <span class="token operator">*</span>point <span class="token operator">=</span> points <span class="token operator">+</span> point_block_size <span class="token operator">*</span> i<span class="token punctuation">;</span>
+        <span class="token keyword">auto</span> vertex <span class="token operator">=</span> vertex_points<span class="token punctuation">[</span>i<span class="token punctuation">]</span><span class="token punctuation">;</span>
+        <span class="token keyword">for</span> <span class="token punctuation">(</span><span class="token keyword">int</span> k <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span> k <span class="token operator">&lt;</span> <span class="token number">3</span><span class="token punctuation">;</span> <span class="token operator">++</span>k<span class="token punctuation">)</span> point<span class="token punctuation">[</span>k<span class="token punctuation">]</span> <span class="token operator">=</span> vertex<span class="token operator">-</span><span class="token operator">&gt;</span><span class="token function">estimate</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">[</span>k<span class="token punctuation">]</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+
+</code></pre>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/cb2b05ecf8fb775a8a063a8686f53134/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">JavaScript 50道 面试题</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/c498b09df65f8f2569feadace8c1411b/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">【NLP】GPT原理</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

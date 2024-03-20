@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>光流法目标跟踪 - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="光流法目标跟踪" />
+<meta property="og:description" content="#include &lt;opencv2/video/video.hpp&gt; #include &lt;opencv2/highgui/highgui.hpp&gt; #include &lt;opencv2/imgproc/imgproc.hpp&gt; #include &lt;opencv2/core/core.hpp&gt; #include &lt;iostream&gt; #include &lt;cstdio&gt; using namespace std; using namespace cv; void tracking(Mat &amp;frame, Mat &amp;output); bool addNewPoints(); bool acceptTrackedPoint(int i); //-----------------------------------【全局变量声明】----------------------------------------- //	描述：声明全局变量 //------------------------------------------------------------------------------------------------- string window_name = &#34;optical flow tracking&#34;; Mat gray;	// 当前图片 Mat gray_prev;	// 预测图片 vector&lt;Point2f&gt; points[2];	// point0为特征点的原来位置，point1为特征点的新位置 vector&lt;Point2f&gt; initial;	// 初始化跟踪点的位置 vector&lt;Point2f&gt; features;	// 检测的特征 int maxCount = 500;	// 检测的最大特征数 double qLevel = 0.01;	// 特征检测的等级 double minDist = 10." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/304894cc7fc6065ed3514b47a664d817/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2016-12-03T14:58:06+08:00" />
+<meta property="article:modified_time" content="2016-12-03T14:58:06+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">光流法目标跟踪</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <pre><code class="language-cpp">
+#include &lt;opencv2/video/video.hpp&gt;
+#include &lt;opencv2/highgui/highgui.hpp&gt;
+#include &lt;opencv2/imgproc/imgproc.hpp&gt;
+#include &lt;opencv2/core/core.hpp&gt;
+#include &lt;iostream&gt;
+#include &lt;cstdio&gt;
+
+using namespace std;
+using namespace cv;
+
+
+void tracking(Mat &amp;frame, Mat &amp;output);
+bool addNewPoints();
+bool acceptTrackedPoint(int i);
+
+//-----------------------------------【全局变量声明】-----------------------------------------
+//		描述：声明全局变量
+//-------------------------------------------------------------------------------------------------
+string window_name = "optical flow tracking";
+Mat gray;	// 当前图片
+Mat gray_prev;	// 预测图片
+vector&lt;Point2f&gt; points[2];	// point0为特征点的原来位置，point1为特征点的新位置
+vector&lt;Point2f&gt; initial;	// 初始化跟踪点的位置
+vector&lt;Point2f&gt; features;	// 检测的特征
+int maxCount = 500;	// 检测的最大特征数
+double qLevel = 0.01;	// 特征检测的等级
+double minDist = 10.0;	// 两特征点之间的最小距离
+vector&lt;uchar&gt; status;	// 跟踪特征的状态，特征的流发现为1，否则为0
+vector&lt;float&gt; err;
+
+
+int main()
+{
+
+	Mat frame;
+	Mat result;
+
+	//VideoCapture capture("1.avi");
+	VideoCapture capture(0);
+
+	if(capture.isOpened())	// 摄像头读取文件开关
+	{
+		while(true)
+		{
+			capture &gt;&gt; frame;
+
+			if(!frame.empty())
+			{ 
+				tracking(frame, result);
+			}
+			else
+			{ 
+				printf(" --(!) No captured frame -- Break!");
+				break;
+			}
+
+			int c = waitKey(50);
+			if( (char)c == 27 )
+			{
+				break; 
+			} 
+		}
+	}
+	return 0;
+}
+
+//-------------------------------------------------------------------------------------------------
+// function: tracking
+// brief: 跟踪
+// parameter: frame	输入的视频帧
+//			  output 有跟踪结果的视频帧
+// return: void
+//-------------------------------------------------------------------------------------------------
+void tracking(Mat &amp;frame, Mat &amp;output)
+{
+
+	//此句代码的OpenCV3版为：
+	cvtColor(frame, gray, COLOR_BGR2GRAY);
+	//此句代码的OpenCV2版为：
+	//cvtColor(frame, gray, CV_BGR2GRAY);
+
+	frame.copyTo(output);
+
+	// 添加特征点
+	if (addNewPoints())
+	{
+		goodFeaturesToTrack(gray, features, maxCount, qLevel, minDist);
+		points[0].insert(points[0].end(), features.begin(), features.end());
+		initial.insert(initial.end(), features.begin(), features.end());
+	}
+
+	if (gray_prev.empty())
+	{
+		gray.copyTo(gray_prev);
+	}
+	// l-k光流法运动估计
+	calcOpticalFlowPyrLK(gray_prev, gray, points[0], points[1], status, err);
+	// 去掉一些不好的特征点
+	int k = 0;
+	for (size_t i=0; i&lt;points[1].size(); i++)
+	{
+		if (acceptTrackedPoint(i))
+		{
+			initial[k] = initial[i];
+			points[1][k++] = points[1][i];
+		}
+	}
+	points[1].resize(k);
+	initial.resize(k);
+	// 显示特征点和运动轨迹
+	for (size_t i=0; i&lt;points[1].size(); i++)
+	{
+		line(output, initial[i], points[1][i], Scalar(0, 0, 255));
+		circle(output, points[1][i], 3, Scalar(0, 255, 0), -1);
+	}
+
+	// 把当前跟踪结果作为下一此参考
+	swap(points[1], points[0]);
+	swap(gray_prev, gray);
+
+	imshow(window_name, output);
+}
+
+//-------------------------------------------------------------------------------------------------
+// function: addNewPoints
+// brief: 检测新点是否应该被添加
+// parameter:
+// return: 是否被添加标志
+//-------------------------------------------------------------------------------------------------
+bool addNewPoints()
+{
+	return points[0].size() &lt;= 10;
+}
+
+//-------------------------------------------------------------------------------------------------
+// function: acceptTrackedPoint
+// brief: 决定哪些跟踪点被接受
+// parameter:
+// return:
+//-------------------------------------------------------------------------------------------------
+bool acceptTrackedPoint(int i)
+{
+	return status[i] &amp;&amp; ((abs(points[0][i].x - points[1][i].x) + abs(points[0][i].y - points[1][i].y)) &gt; 2);
+}
+
+</code></pre> 
+<br>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/78f19ecb3d711830d4dc608b536e8134/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">光流法 HS与LK</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/f03d319df50b968aba73b2ade978934e/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">编译原理初探（续）</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

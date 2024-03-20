@@ -1,0 +1,254 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>构建Hadoop集群 - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="构建Hadoop集群" />
+<meta property="og:description" content="集群规范 Hadopp运行在商业硬件上。用户可以选择普通硬件供应商生产的标准化的、广泛有效的硬件来构建集群。Hadoop一般使用多核CPU和多磁盘，以充分利用硬件的强大功能。（建议采用ECC内存，因为非ECC内存会产生校验和错误。）
+注：为何不使用RAID？尽管建议采用RAID作为namenode的存储器以保护元数据，但是若将RAID作为datanode的存储设备则不会给HDFS带来益处。HDFS所提供的节点间数据复制技术已可满足数据备份需求，无需使用RAID的冗余机制。尽管RAID条带化技术被广泛用于提升性能，但是其速度仍然比用在HDFS里的JBOD(Just a Bunch Of Disks)配置慢。JBOD在所有磁盘之间循环调度HDFS块，RAID0的读/写操作受限于磁盘阵列中响应最慢的盘片的速度，而JBOD的磁盘操作均独立，因而平均读/写速度高于最慢盘片的读/写速度。若JBOD配置的某一磁盘出现故障，HDFS可以忽略该磁盘，继续工作。而RAID的某一盘片故障会导致整个磁盘阵列不可用，进而使相应节点失效。
+集群的构建和安装 1.安装Java
+2.创建用户账号：最好创建特定的用户账号以区分各Hadoop进程，及区分同一机器上的其他服务。HDFS、MapReduce和YARN服务通常作为独立的用户运行，分别命名为hdfs、mapred和yarn。它们都属于同一hadoop组。
+3.安装Hadoop：鉴于hadoop用户的home目录可能挂载在NFS上，Hadoop系统最好不要安装在该目录上。比如可以选择：cd /usr/local
+此外，还需将Hadoop文件的拥有者改为Hadoop用户和组：sudo chown -R hadoop:hadoop hadoop-x.y.z
+4.SSH配置
+Hadoop控制脚本依赖SSH来执行针对整个集群的操作。为了支持无缝式工作，SSH安装好之后，需要允许来自集群内机器的hdfs用户和yarn用户能够无需密码即可登录。最简单的方法是创建一个公钥私钥对，存放在NFS之中，让整个集群共享该密钥对。首先，键入以下指令来产生一个RSA密钥对。你需要做两次，一次以hdfs用户身份，一次以yarn用户身份：ssh -keygen -t rsa -f ~/.ssh/id_rsa
+尽管期望无密码登陆，但无口令的密钥并不是一个好的选择。可以使用ssh-agent以免为每个连接逐一输入密码。私钥放在由-f选项指定的文件之中。存放公钥的文件名称与私钥类似，但是以“.pub”作为后缀，例如~/.ssh/id_rsa.pub。接下来，需确保公钥存放在用户打算连接的所有机器的~/.ssh/authorized_keys文件中。如果用户的home目录是存储在NFS文件系统中，则可以键入如下指令在整个集群内共享密钥(第一次作为hdfs用户，第二次作为yarn用户)：cat ~/.ssh/id_rsa.pub &gt;&gt;~/.ssh/authorized_keys 。如果home目录并没有通过NFS共享，则需要利用其他方法共享公钥，比如ssh-copy-id。
+5.配置Hadoop（附后）
+6.格式化HDFS文件系统：在能够使用之前，全新的HDFS安装需要进行格式化。通过创建存储目录和初始版本的namenode持久数据结构，格式化进程将创建一个空的文件系统。由于namenode管理所有的文件系统元数据，datanode可以动态加入或离开集群，所以初始的格式化进程不涉及到datanode。同样原因，创建文件系统时也无需指定大小，这是由集群中的datanode数目决定的。格式化HDFS是一个快速操作，以hdfs用户身份运行以下命令：hdfs namenode -format
+7.启动和停止守护进程：Hadoop自带脚本。为使用这些脚本(在sbin目录下)，需要告诉Hadoop集群中有哪些机器。文件slaves正是用于此目的，该文件包含了机器主机名或IP地址的列表，每行代表一个机器信息。文件slaves列举了可以运行datanode和节点管理器的机器。以hdfs用户身份运行以下命令可以启动HDFS守护进程：start -dfs.sh 。
+脚本所做的事情如下：⓵在每台机器上启动一个namenode，这些机器由执行hdfs getconf -namenodes得到的返回值所确定。⓶在slaves文件列举的每台机器上启动一个datanode。⓷在每台机器上启动一个辅助namenode，这些机器由执行hdfs getconf -secondarynamenode得到的返回值所确定。
+YARN守护进程以相同的方式启动，以yarn用户身份运行以下命令：start -yarn.sh 。在这种情况下，资源管理器总是和start -yarn.sh脚本运行在用一机器上：⓵在本地机器上启动一个资源管理器⓶在slaves文件列举的每台机器上启动一个节点管理器。
+对于以上脚本，还提供了stop -dfs.sh和stop -yarn.sh脚本用于停止由相应的启动脚本启动的守护进程。
+这些脚本实质是使用了hadoop-deamon.sh脚本启动和停止Hadoop守护进程。如果你使用了前面提到的脚本，那么你不能直接调用hadoop-deamon.sh。但是如果你需要从另一个系统或从你自己的脚本来控制Hadoop守护进程，hadoop-deamon.sh脚本是一个很好的切入点。最后，仅有一个MapReduce守护进程，即作业历史服务器，是以mapred用户身份用以下命令启动的：mr -jobhistory-deamon.sh start historyserver
+8.创建用户目录：一旦建立并运行了Hadoop集群，就需要给用户提供访问手段。涉及到为每个用户创建home目录，给目录设置用户访问许可：hadoop fs -mkdir /user/username。 hadoop fs -chown username：username /user/username。
+Hadoop配置 重要的配置文件都放在Hadoop的etc/hadoop目录中。配置目录可以被重新安置在文件系统的其他地方，只要启动守护进程时使用 --config选项或使用HADOOP_CONF_DIR环境变量集说明目录所在位置。
+文件名称格式描述hadoop-env.shBash脚本脚本中要用到的环境变量，以运行Hadoopmapred-env.shBash脚本脚本中要用到的环境变量，以运行MapReduce(覆盖hadoop-env.sh中设置的变量)yarn-env.shBash脚本脚本中要用到的环境变量，以运行YARN(覆盖hadoop-env.sh中设置的变量)core-site.xml Hadoop配置XML
+Hadoop Core的配置项，例如HDFS、MapReduce和YARN常用的I/O设置等。hdfs-site.xmlHadoop配置XMLHadoop守护进程的配置项，包括namenode、辅助namenode和datanode等。mapred-site.xmlHadoop配置XMLMapReduce守护进程的配置项，包括作业历史服务器yarn-site.xmlHadoop配置XMLYARN守护进程的配置项，包括资源管理器】web应用代理服务器和节点管理器slaves纯文本运行datanode和节点管理器的机器列表(每行一个)hadoop-metrics2.propertiesJava属性控制如何在Hadoop上发布度量的属性log4j.propertiesJava属性系统日志文件、namenode审计日志、任务JVM进程的任务日志的属性hadooop-policy.xmlHadoop配置XML安全模式下运行Hadoop时的访问控制列表的配置项 1.配置管理：Hadoop并没有将所有配置信息放在一个单独的全局位置中。反之，集群的每个Hadoop节点，都各自保存一系列配置文件。Hadoop集群管理工具例如Cloudera Manager和Apache Ambari表现突出，因为在集群间传递修改信息是它们的关注点。" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/24f3199271bb565d7d25cd9708424ddc/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2018-12-03T21:20:41+08:00" />
+<meta property="article:modified_time" content="2018-12-03T21:20:41+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">构建Hadoop集群</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <blockquote> 
+ <ul><li>集群规范</li></ul> 
+</blockquote> 
+<p>        Hadopp运行在商业硬件上。用户可以选择普通硬件供应商生产的标准化的、广泛有效的硬件来构建集群。Hadoop一般使用多核CPU和多磁盘，以充分利用硬件的强大功能。（建议采用ECC内存，因为非ECC内存会产生校验和错误。）</p> 
+<p>        注：为何不使用RAID？尽管建议采用RAID作为namenode的存储器以保护元数据，但是若将RAID作为datanode的存储设备则不会给HDFS带来益处。HDFS所提供的节点间数据复制技术已可满足数据备份需求，无需使用RAID的冗余机制。尽管RAID条带化技术被广泛用于提升性能，但是其速度仍然比用在HDFS里的JBOD(Just a Bunch Of Disks)配置慢。JBOD在所有磁盘之间循环调度HDFS块，RAID0的读/写操作受限于磁盘阵列中响应最慢的盘片的速度，而JBOD的磁盘操作均独立，因而平均读/写速度高于最慢盘片的读/写速度。若JBOD配置的某一磁盘出现故障，HDFS可以忽略该磁盘，继续工作。而RAID的某一盘片故障会导致整个磁盘阵列不可用，进而使相应节点失效。</p> 
+<blockquote> 
+ <ul><li>集群的构建和安装</li></ul> 
+</blockquote> 
+<p>         1.安装Java</p> 
+<p>         2.创建用户账号：最好创建特定的用户账号以区分各Hadoop进程，及区分同一机器上的其他服务。HDFS、MapReduce和YARN服务通常作为独立的用户运行，分别命名为hdfs、mapred和yarn。它们都属于同一hadoop组。</p> 
+<p>         3.安装Hadoop：鉴于hadoop用户的home目录可能挂载在NFS上，Hadoop系统最好不要安装在该目录上。比如可以选择：cd /usr/local</p> 
+<p>此外，还需将Hadoop文件的拥有者改为Hadoop用户和组：sudo chown -R hadoop:hadoop hadoop-x.y.z</p> 
+<p>         4.SSH配置</p> 
+<p>Hadoop控制脚本依赖SSH来执行针对整个集群的操作。为了支持无缝式工作，SSH安装好之后，需要允许来自集群内机器的hdfs用户和yarn用户能够无需密码即可登录。最简单的方法是创建一个公钥私钥对，存放在NFS之中，让整个集群共享该密钥对。首先，键入以下指令来产生一个RSA密钥对。你需要做两次，一次以hdfs用户身份，一次以yarn用户身份：ssh -keygen -t rsa -f ~/.ssh/id_rsa</p> 
+<p>        尽管期望无密码登陆，但无口令的密钥并不是一个好的选择。可以使用ssh-agent以免为每个连接逐一输入密码。私钥放在由-f选项指定的文件之中。存放公钥的文件名称与私钥类似，但是以“.pub”作为后缀，例如~/.ssh/id_rsa.pub。接下来，需确保公钥存放在用户打算连接的所有机器的~/.ssh/authorized_keys文件中。如果用户的home目录是存储在NFS文件系统中，则可以键入如下指令在整个集群内共享密钥(第一次作为hdfs用户，第二次作为yarn用户)：cat ~/.ssh/id_rsa.pub &gt;&gt;~/.ssh/authorized_keys 。如果home目录并没有通过NFS共享，则需要利用其他方法共享公钥，比如ssh-copy-id。</p> 
+<p>       5.配置Hadoop（附后）</p> 
+<p>       6.格式化HDFS文件系统：在能够使用之前，全新的HDFS安装需要进行格式化。通过创建存储目录和初始版本的namenode持久数据结构，格式化进程将创建一个空的文件系统。由于namenode管理所有的文件系统元数据，datanode可以动态加入或离开集群，所以初始的格式化进程不涉及到datanode。同样原因，创建文件系统时也无需指定大小，这是由集群中的datanode数目决定的。格式化HDFS是一个快速操作，以hdfs用户身份运行以下命令：hdfs namenode -format</p> 
+<p>       7.启动和停止守护进程：Hadoop自带脚本。为使用这些脚本(在sbin目录下)，需要告诉Hadoop集群中有哪些机器。文件slaves正是用于此目的，该文件包含了机器主机名或IP地址的列表，每行代表一个机器信息。文件slaves列举了可以运行datanode和节点管理器的机器。以hdfs用户身份运行以下命令可以启动HDFS守护进程：start -dfs.sh 。</p> 
+<p>脚本所做的事情如下：⓵在每台机器上启动一个namenode，这些机器由执行hdfs getconf -namenodes得到的返回值所确定。⓶在slaves文件列举的每台机器上启动一个datanode。⓷在每台机器上启动一个辅助namenode，这些机器由执行hdfs getconf -secondarynamenode得到的返回值所确定。</p> 
+<p>YARN守护进程以相同的方式启动，以yarn用户身份运行以下命令：start -yarn.sh 。在这种情况下，资源管理器总是和start -yarn.sh脚本运行在用一机器上：⓵在本地机器上启动一个资源管理器⓶在slaves文件列举的每台机器上启动一个节点管理器。</p> 
+<p>对于以上脚本，还提供了stop -dfs.sh和stop -yarn.sh脚本用于停止由相应的启动脚本启动的守护进程。</p> 
+<p>这些脚本实质是使用了hadoop-deamon.sh脚本启动和停止Hadoop守护进程。如果你使用了前面提到的脚本，那么你不能直接调用hadoop-deamon.sh。但是如果你需要从另一个系统或从你自己的脚本来控制Hadoop守护进程，hadoop-deamon.sh脚本是一个很好的切入点。最后，仅有一个MapReduce守护进程，即作业历史服务器，是以mapred用户身份用以下命令启动的：mr -jobhistory-deamon.sh start historyserver</p> 
+<p>       8.创建用户目录：一旦建立并运行了Hadoop集群，就需要给用户提供访问手段。涉及到为每个用户创建home目录，给目录设置用户访问许可：hadoop fs -mkdir /user/username。 hadoop fs -chown username：username /user/username。</p> 
+<blockquote> 
+ <ul><li>Hadoop配置</li></ul> 
+</blockquote> 
+<p>重要的配置文件都放在Hadoop的etc/hadoop目录中。配置目录可以被重新安置在文件系统的其他地方，只要启动守护进程时使用 --config选项或使用HADOOP_CONF_DIR环境变量集说明目录所在位置。</p> 
+<table align="left" border="1" cellpadding="1" cellspacing="1" style="width:682px;"><tbody><tr><td style="width:130px;">文件名称</td><td style="width:128px;">格式</td><td style="width:406px;">描述</td></tr><tr><td style="width:130px;">hadoop-env.sh</td><td style="width:128px;">Bash脚本</td><td style="width:406px;">脚本中要用到的环境变量，以运行Hadoop</td></tr><tr><td style="width:130px;">mapred-env.sh</td><td style="width:128px;">Bash脚本</td><td style="width:406px;">脚本中要用到的环境变量，以运行MapReduce(覆盖hadoop-env.sh中设置的变量)</td></tr><tr><td style="width:130px;">yarn-env.sh</td><td style="width:128px;">Bash脚本</td><td style="width:406px;">脚本中要用到的环境变量，以运行YARN(覆盖hadoop-env.sh中设置的变量)</td></tr><tr><td style="width:130px;">core-site.xml</td><td style="width:128px;"> <p>Hadoop配置XML</p> </td><td style="width:406px;">Hadoop Core的配置项，例如HDFS、MapReduce和YARN常用的I/O设置等。</td></tr><tr><td style="width:130px;">hdfs-site.xml</td><td style="width:128px;">Hadoop配置XML</td><td style="width:406px;">Hadoop守护进程的配置项，包括namenode、辅助namenode和datanode等。</td></tr><tr><td style="width:130px;">mapred-site.xml</td><td style="width:128px;">Hadoop配置XML</td><td style="width:406px;">MapReduce守护进程的配置项，包括作业历史服务器</td></tr><tr><td style="width:130px;">yarn-site.xml</td><td style="width:128px;">Hadoop配置XML</td><td style="width:406px;">YARN守护进程的配置项，包括资源管理器】web应用代理服务器和节点管理器</td></tr><tr><td style="width:130px;">slaves</td><td style="width:128px;">纯文本</td><td style="width:406px;">运行datanode和节点管理器的机器列表(每行一个)</td></tr><tr><td style="width:130px;">hadoop-metrics2.properties</td><td style="width:128px;">Java属性</td><td style="width:406px;">控制如何在Hadoop上发布度量的属性</td></tr><tr><td style="width:130px;">log4j.properties</td><td style="width:128px;">Java属性</td><td style="width:406px;">系统日志文件、namenode审计日志、任务JVM进程的任务日志的属性</td></tr><tr><td style="width:130px;">hadooop-policy.xml</td><td style="width:128px;">Hadoop配置XML</td><td style="width:406px;">安全模式下运行Hadoop时的访问控制列表的配置项</td></tr></tbody></table> 
+<p> </p> 
+<p> </p> 
+<p> </p> 
+<p> </p> 
+<p> </p> 
+<p> </p> 
+<p> </p> 
+<p> </p> 
+<p> </p> 
+<p> </p> 
+<p> </p> 
+<p> </p> 
+<p> </p> 
+<p> </p> 
+<p> </p> 
+<p> </p> 
+<p> </p> 
+<p>1.配置管理：Hadoop并没有将所有配置信息放在一个单独的全局位置中。反之，集群的每个Hadoop节点，都各自保存一系列配置文件。Hadoop集群管理工具例如Cloudera Manager和Apache Ambari表现突出，因为在集群间传递修改信息是它们的关注点。</p> 
+<p>2.环境变量：</p> 
+<p>⓵Java：需要设置Hadoop系统的Java安装的位置。方法一是在hadoop-env.sh文件中设置JAVA_HOME项；方法二是在shell中设置。相比之下，方法一更好，因为只需操作一次就能够保证整个集群使用同一版本的Java。</p> 
+<p>⓶内存堆大小：默认情况下，Hadoop为各个守护进程分配1000MB内存。该内存由hadoop-env.sh文件的HADOOP_HEAPSIZE参数控制。</p> 
+<p>⓷系统日志文件：默认情况下，Hadoop生成的系统日志文件存放在$HADOOP_HOME/logs目录之中，也可以通过hadoop-env.sh文件中的HADOOP_LOG_DIR来进行修改。建议修改默认设置，使之独立于Hadoop的安装目录。export HADOOP_LOG_DIR=/var/log/hadoop 。日志文件名称中的“用户名称”部分实际对应hadoop-env.sh文件中的HADOOP_IDENT_STRING项，可以修改此项，改变其他名称。</p> 
+<p>⓸SSH设置：借助SSH协议，用户在主节点上使用控制脚本就能在(远程)工作节点上运行一系列指令。</p> 
+<p>3.Hadoop守护进程的关键属性</p> 
+<p>⓵HDFS：运行HDFS需要将一台机器指定为namenode。表一：HDFS守护进程的关键属性</p> 
+<table align="left" border="1" cellpadding="1" cellspacing="1"><tbody><tr><td>属性名称</td><td style="width:131px;">类型</td><td style="width:252px;">默认值</td><td style="width:216px;">说明</td></tr><tr><td>fs.defaultFS</td><td style="width:131px;">URI</td><td style="width:252px;">file:///</td><td style="width:216px;">默认文件系统。URI定义主机名称和namenode的RPC服务器工作的端口号，默认值是8020.本属性保存在core-site.xml中</td></tr><tr><td> <p>dfs.namenode.name.dir</p> </td><td style="width:131px;">以逗号分隔的目录名称</td><td style="width:252px;">file://${hadoop.tmp.dir}/dir/name</td><td style="width:216px;">namenode存储永久性的元数据的目录列表。namenode在列表上的各个目录中均存放相同的元数据文件。</td></tr><tr><td>dfs.datanode.data.dir</td><td style="width:131px;">以逗号分隔的目录名称</td><td style="width:252px;">file://${hadoop.tmp.dir}/dfs/data</td><td style="width:216px;">datanode存放数据块的目录列表。各个数据块分别存放于某一个目录中</td></tr><tr><td>dfs.namenode.checkpoint.dir</td><td style="width:131px;">以逗号分隔的目录名称</td><td style="width:252px;">file://${hadoop.tmp.dir}/dfs/namesecondary</td><td style="width:216px;">辅助namenode存放检查点的目录列表。在所列每个目录中均存放一份检查点文件和副本。</td></tr></tbody></table> 
+<p> </p> 
+<p> </p> 
+<p> </p> 
+<p> </p> 
+<p> </p> 
+<p> </p> 
+<p> </p> 
+<p> </p> 
+<p> </p> 
+<p> </p> 
+<p> </p> 
+<p>⓶YARN：为了运行YARN，需要指定一台机器作为资源管理器。在MapReduce客户端配置中，需要通过RPC连接到资源管理器时，会用到yarn.resourcemanager.hostname这个属性。与Mapreduce1不同，YARN没有tasktracker，它依赖于shuffle句柄将map任务的输出送给reduce任务。shuffle句柄是长期运行于节点管理器的附加服务。将yarn-site.xml文件中的yarn.nodemanager.aux-services属性设置为mapreduce_shuffle来显示启用MapReduce的shuffle句柄。表二：YARN守护进程的关键属性</p> 
+<table align="left" border="1" cellpadding="1" cellspacing="1"><tbody><tr><td style="width:261px;">属性名称</td><td style="width:125px;">类型</td><td style="width:108px;">默认值</td><td style="width:312px;">说明</td></tr><tr><td style="width:261px;">yarn.resourcemanager.hostname</td><td style="width:125px;">主机名</td><td style="width:108px;">0.0.0.0</td><td style="width:312px;">运行资源管理器的机器主机名。以下缩写为${y.rm.hostname}</td></tr><tr><td style="width:261px;">yarn.resourcemanager.address</td><td style="width:125px;">主机名和端口号</td><td style="width:108px;">${y.rm.hostname}:8032</td><td style="width:312px;">运行资源管理器的RPC服务器的主机名和端口</td></tr><tr><td style="width:261px;">yarn.nodemanager.local-dirs</td><td style="width:125px;">逗号分隔的目录名称</td><td style="width:108px;">${hadoop.tmp.dir}/nm-local-dir</td><td style="width:312px;">目录列表，节点管理器允许容器将中间数据存于其中。当应用结束时，数据被清除。</td></tr><tr><td style="width:261px;">yarn.nodemanager.aux-services</td><td style="width:125px;">逗号分隔的服务名称</td><td style="width:108px;"> </td><td style="width:312px;">节点管理器运行的附加服务列表。每项服务由属性yarn.nodemanager.auxservices.servicename.class所定义的类实现。默认情况下，不指定附加服务。</td></tr><tr><td style="width:261px;">yarn.nodemanager.resource.memorymb</td><td style="width:125px;">int</td><td style="width:108px;">8192</td><td style="width:312px;">节点管理器运行的容器可以分配到的物理内存容量(单位时MB)</td></tr><tr><td style="width:261px;">yarn.nodemanager.vmem-pmem-ratio</td><td style="width:125px;">float</td><td style="width:108px;">2.1</td><td style="width:312px;">容器所占的虚拟内存和物理内存之比。该值指示了虚拟内存的使用可以超过所分配的内存的量。</td></tr><tr><td style="width:261px;">yarn.nodemanager.resource.cpuvcores</td><td style="width:125px;">int</td><td style="width:108px;">8</td><td style="width:312px;">节点管理器运行的容器可以分配到的CPU核数目</td></tr></tbody></table> 
+<p> </p> 
+<p> </p> 
+<p> </p> 
+<p> </p> 
+<p> </p> 
+<p> </p> 
+<p> </p> 
+<p> </p> 
+<p> </p> 
+<p> </p> 
+<p> </p> 
+<p> </p> 
+<p> </p> 
+<p>⓷YARN和MapReduce中的内存设置：与MapReduce1的基于slot的模型相比，YARN以更精细化的方式来管理内存。在一个特定节点上运行的任务数量取决于这些任务对内存的总需求量。单个作业的内存设置，有两种主要控制方法：一个是控制YARN分配的容器大小，另一个是控制容器中运行的Java进程堆大小。表3:MapReduce作业内存属性</p> 
+<table align="left" border="1" cellpadding="1" cellspacing="1"><tbody><tr><td>属性名称</td><td>类型</td><td>默认值</td><td style="width:457px;">说明</td></tr><tr><td>mapreduce.map.memory.mb</td><td>int</td><td>1024</td><td style="width:457px;">map容器所用的内存容量</td></tr><tr><td>mapreduce.reduce.memory.mb</td><td>int</td><td>1024</td><td style="width:457px;">reduce容器所用的内存容量</td></tr><tr><td>mapreduce.child.java.opts</td><td>String</td><td>-Xmx200m</td><td style="width:457px;">JVM选项，用于启动运行map和reduce任务的容器进程。除了用于设置内存，该属性还包括JVM属性设置，以支持调试</td></tr><tr><td>mapreduce.map.java.opts</td><td>String</td><td>-Xmx200m</td><td style="width:457px;">JVM选项，针对运行map任务的子进程</td></tr><tr><td>mapreduce.reduce.java.opts</td><td>String</td><td>-Xmx200m</td><td style="width:457px;">JVM选项，针对运行reduce任务的子进程</td></tr></tbody></table> 
+<p> </p> 
+<p> </p> 
+<p> </p> 
+<p> </p> 
+<p> </p> 
+<p> </p> 
+<p> </p> 
+<p>⓸YARN和MapReduce中的CPU设置：通过属性yarn.nodemanager.resource.cpuvcores可以设置节点管理器分配给容器的核数量。通过设置属性mapreduce.map.cpu.vcores和mapreduce.reduce.cpu.vcores，MapReduce作业能够控制分配给map和reduce容器的核数量。</p> 
+<p>4.Hadoop守护进程的地址和端口</p> 
+<p>        Hadoop守护进程一般同时运行RPC和HTTP两个服务器，RPC服务器支持守护进程间的通信，HTTP服务器则提供与用户交互的web页面。用于设置服务器RPC和HTTP地址的属性担负着双重责任：一方面它们决定了服务器将绑定的网络接口，另一方面客户端或集群中的其他机器使用它们连接服务器。</p> 
+<p>        用户经常希望服务器同时可以绑定多个网络接口，将网络地址设为0.0.0.0可以达到这个目的，但是却破坏了上述第二种情况。通过将yarn.resourcemanager.hostname设定为主机名或IP地址，yarn.resourcemanager.bind-host设定为0.0.0.0，可以确保资源管理器能够与机器上的所有地址绑定，且同时能为节点管理器和客户端提供可解析的地址。</p> 
+<p>表：RPC服务器的属性</p> 
+<table align="left" border="1" cellpadding="1" cellspacing="1"><tbody><tr><td>属性名称</td><td>默认值</td><td style="width:485px;">说明</td></tr><tr><td>fs.defaultFS</td><td>file:///</td><td style="width:485px;">设为一个HDFS的URI时，该属性描述namenode的RPC服务器地址和端口。如果不指定，则默认的端口号是8020</td></tr><tr><td>dfs.namenode.rpc-bind-host</td><td> </td><td style="width:485px;">namenode的RPC服务器将绑定的地址。如果没有设置(默认情况)，绑定地址由fs.defaultFS决定。可以设为0.0.0.0，使得namenode可以监听所有接口</td></tr><tr><td>dfs.datanode.ipc.address</td><td>0.0.0.0:50020</td><td style="width:485px;">datanode的RPC服务器地址和端口</td></tr><tr><td>mapreduce.jobhistory.address</td><td>0.0.0.0:10020</td><td style="width:485px;">作业历史服务器的RPC服务器地址和端口，客户端(一般在集群外部)用于查询作业历史</td></tr><tr><td>mapreduce.jobhistory.bind-host</td><td> </td><td style="width:485px;">作业历史服务器的RPC和HTTP服务器将绑定的地址</td></tr><tr><td>yarn.resoucemanager.hostname</td><td>0.0.0.0</td><td style="width:485px;">资源管理器运行所在的机器主机名。以下缩写为${y.rm.hostname}</td></tr><tr><td>yarn.resourcemanager.bind-host</td><td> </td><td style="width:485px;">资源管理器的RPC和HTTP服务器将绑定的地址</td></tr><tr><td>yarn.resourcemanager.address</td><td>${y.rm.hostname}:8032</td><td style="width:485px;">资源管理器的RPC服务器地址和端口。客户端(一般在集群外部)通过它与资源管理器通信</td></tr><tr><td>yarn.resourcemanager.admin.address</td><td> <p>${y.rm.hostname}:8033</p> </td><td style="width:485px;">资源管理器的admin RPC服务器地址和端口。admin客户端借此与资源管理器通信</td></tr><tr><td>yarn.resourcemanager.scheduler.address</td><td>${y.rm.hostname}:8030</td><td style="width:485px;">资源管理器的调度器RPC服务器地址和端口。application master借此与资源管理器通信</td></tr><tr><td>yarn.resourcemanager.resourcetracker.address</td><td>${y.rm.hostname}:8031</td><td style="width:485px;">资源管理器的resource tracker的RPC服务器地址和端口。节点管理器借此与资源管理器通信</td></tr><tr><td>yarn.nodemanager.hostname</td><td>0.0.0.0</td><td style="width:485px;">节点管理器运行所在的机器的主机名。以下缩写为${y.nm.hostname}</td></tr><tr><td>yarn.nodemanager.bind-host</td><td> </td><td style="width:485px;">节点管理器的RPC和HTTP服务器将绑定的地址</td></tr><tr><td>yarn.nodemanager.address</td><td>${y.nm.hostname}:0</td><td style="width:485px;">节点管理器的RPC服务器地址和端口。application master借此与节点管理器通信</td></tr><tr><td>yarn.nodemanager.localizer.address</td><td>${y.nm.hostname}:8040</td><td style="width:485px;">节点管理器的localizer的RPC服务器地址和端口</td></tr></tbody></table> 
+<p> </p> 
+<p> </p> 
+<p> </p> 
+<p> </p> 
+<p> </p> 
+<p> </p> 
+<p> </p> 
+<p> </p> 
+<p> </p> 
+<p> </p> 
+<p> </p> 
+<p> </p> 
+<p> </p> 
+<p> </p> 
+<p> </p> 
+<p> </p> 
+<p> </p> 
+<p> </p> 
+<p> </p> 
+<p> </p> 
+<p> </p> 
+<p> </p> 
+<p>表：HTTP服务器的属性</p> 
+<table align="left" border="1" cellpadding="1" cellspacing="1"><tbody><tr><td style="width:287px;">属性名称</td><td style="width:76px;">默认值</td><td style="width:485px;">说明</td></tr><tr><td style="width:287px;">dfs.namenode.http-address</td><td style="width:76px;">0.0.0.0:50070</td><td style="width:485px;">namenode的HTTP服务器地址和端口</td></tr><tr><td style="width:287px;">dfs.namenode.http-bind-host</td><td style="width:76px;"> </td><td style="width:485px;">namenode的HTTP服务器将绑定的地址</td></tr><tr><td style="width:287px;">dfs.namenode.secondary.http-address</td><td style="width:76px;">0.0.0.0:50090</td><td style="width:485px;">辅助namenode的HTTP服务器地址和端口</td></tr><tr><td style="width:287px;">dfs.datanode.http.address</td><td style="width:76px;">0.0.0.0:50075</td><td style="width:485px;">datanode的HTTP服务器地址和端口。注意，属性名和namenode的属性名不一样</td></tr><tr><td style="width:287px;">mapreduce.jobhistory.webapp.address</td><td style="width:76px;">0.0.0.0:19888</td><td style="width:485px;">MapReduce作业历史服务器地址和端口。该属性在mapred-site.xml文件中设置</td></tr><tr><td style="width:287px;">mapreduce.shuffle.port</td><td style="width:76px;">13562</td><td style="width:485px;">shuffle句柄的HTTP端口号。为map输出结果服务，但不是用户可访问的Web UI。该属性在mapred-site.xml文件中设置。</td></tr><tr><td style="width:287px;">yarn.resourcemanager.webapp.address</td><td style="width:76px;">${y.rm.hostname}:8088</td><td style="width:485px;">资源管理器的HTTP服务器地址和端口</td></tr><tr><td style="width:287px;">yarn.nodemanager.webapp.address</td><td style="width:76px;">${y.nm.hostname}:8042</td><td style="width:485px;">节点管理器的HTTP服务器地址和端口</td></tr><tr><td style="width:287px;">yarn.web-proxy.address</td><td style="width:76px;"> </td><td style="width:485px;">Web应用代理服务器的HTTP服务器地址和端口。如果该属性没有设置(默认情况)，Web应用代理服务器将在资源管理器进程中运行。</td></tr></tbody></table> 
+<p> </p> 
+<p> </p> 
+<p> </p> 
+<p> </p> 
+<p> </p> 
+<p> </p> 
+<p> </p> 
+<p> </p> 
+<p> </p> 
+<p> </p> 
+<p> </p> 
+<p> </p> 
+<p> </p> 
+<p> </p> 
+<p> </p> 
+<p> </p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/bf19f05a84d1dd823d1a72f84f4b1283/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">编译原理系列之五 自底向上优先分析(1)-简单优先分析法</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/c554ca714943def31acd76eee6e00b23/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">通信之自相关、互相关函数</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

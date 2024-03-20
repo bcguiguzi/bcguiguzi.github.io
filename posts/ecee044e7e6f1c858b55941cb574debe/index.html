@@ -1,0 +1,317 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>详解TCP如何确保可靠传输（确认应答，重传机制，滑动窗口，流量控制） - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="详解TCP如何确保可靠传输（确认应答，重传机制，滑动窗口，流量控制）" />
+<meta property="og:description" content="TCP确保可靠传输的机制 TCP协议格式TCP的可靠传输检验和确认应答(序列号)重传机制超时重传RTO超时时间设置 快速重传选择确认 SACKD- SACK 滑动窗口窗口大小流量控制窗口关闭 / 探测糊涂窗口综合症累计确认延迟应答捎带应答 TCP协议格式 源端口和目的端口各占2字节、
+序号: 占4字节，范围 [0 ~ 232-1]，使用 mod 232计算（即序号到232-1下一个为0）。TCP面向字节流，在传输的字节流中每个字节都按顺序编号，整个传送的字节流的起始序号在建立连接时设置（三次握手）。
+首部序号字段的值是本报文发送数据起始序号（第一个字节的序号）
+确认序号：占4字节，是期望收到对方下一个报文段的起始序号(对方发送第一个数据字节的序号)
+确认序号 = 对方前一条发送的起始序号 &#43; 数据长度（字节）
+若确认号=N,则表明:到序号 N-1 为止的所有数据都已正确收到。
+数据偏移：4位首部长度，即报文数据的起始处距离报文的起始处有多远（因为首部长度不确定）。4位二进制所能表示最大值为1111，即15；数据偏移的单位是32位（4字节），所以TCP首部最大长度15*4 = 60字节（即选项小于等于40字节）
+保留位：6位
+窗口：16位窗口大小（2字节）。是指发送本报文方的接收窗口大小；窗口值告诉对方：从本报文段首部的确认号算起，接受方允许对方数据的发送量（字节）；因为TCP全双工通信，接收方数据缓存空间是有限的
+窗口值是接收方让发送方设置其发送窗口大小依据
+紧急指针:占2字节。仅在URG=1时才有意义，指出本报文段中的紧急数据的字节数(紧急数据结束后就是普通数据)。因此，紧急指针指出了紧急数据的末尾在报文段中的位置。当所有紧急数据都处理完时，TCP就告诉应用程序恢复到正常操作。值得注意的是，即使窗口为零时也可发送紧急数据。
+选项（变长）
+MSS 是TCP连接双方每次发送数据的最大值 （TCP报文段长度 - TCP首部长度）
+有MSS，IP就不用在对数据进行分片，也受数据链路层MTU（最大传输单元）的限制
+ip header &#43; tcp header &#43; MSS &lt;= MTU
+TCP的可靠传输 TCP主要提供了检验和、序列号/确认应答、超时重传、最大消息长度、滑动窗口控制等方法实现了可靠性传输。
+检验和 检验和
+占2字节。检验和字段检验的范围包括首部和数据这两部分。和UDP一样，在计算检验和时，要在TCP报文段的前面加上12字节的伪首部。伪首部的格式与图中UDP用户数据报的伪首部一样。但应把伪首部第4个字段中的17改为6(TCP的协议号是6)，把第5字段中的UDP长度改为TCP长度。接收方收到此报文段后，仍要加上这个伪首部来计算检验和。若使用IPv6，则相应的伪首部也要改变。
+UDP伪首部格式
+通过检验和的方式，接收端可以检测出来数据是否有差错和异常，假如有差错就会直接丢弃TCP段，重新发送。
+确认应答(序列号) 回顾序号与确认序号概念
+即发送方发送消息需要接收方确认；本质上是对序号的确认，就是通过确认序号告诉发送方下一次需要发送的数据，也表明上一个序号及之前的数据都收到了
+上述过程中，只要发送端有一个包传输，接收端没有回应确认包（ACK包），都会重发。或者接收端的应答包，发送端没有收到也会重发数据。这就可以保证数据的完整与可靠。
+重传机制 TCP 针对数据包丢失的情况，会用重传机制解决。
+接下来说说常见的重传机制：
+1.超时重传 2.快速重传 3.SACK
+超时重传 重传机制的其中一个方式，在发送数据时，设定一个定时器，当超过指定的时间后，没有收到对方的 ACK 确认应答报文，就会重发该数据" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/ecee044e7e6f1c858b55941cb574debe/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2022-09-02T23:10:56+08:00" />
+<meta property="article:modified_time" content="2022-09-02T23:10:56+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">详解TCP如何确保可靠传输（确认应答，重传机制，滑动窗口，流量控制）</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-dracula">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p></p> 
+<div class="toc"> 
+ <h4>TCP确保可靠传输的机制</h4> 
+ <ul><li><a href="#TCP_1" rel="nofollow">TCP协议格式</a></li><li><a href="#TCP_34" rel="nofollow">TCP的可靠传输</a></li><li><ul><li><a href="#_36" rel="nofollow">检验和</a></li><li><a href="#_46" rel="nofollow">确认应答(序列号)</a></li><li><a href="#_55" rel="nofollow">重传机制</a></li><li><ul><li><a href="#_60" rel="nofollow">超时重传</a></li><li><a href="#RTO_64" rel="nofollow">RTO超时时间设置</a></li></ul> 
+   </li><li><a href="#_85" rel="nofollow">快速重传</a></li><li><a href="#_SACK_101" rel="nofollow">选择确认 SACK</a></li><li><ul><li><a href="#D_SACK_111" rel="nofollow">D- SACK</a></li></ul> 
+   </li><li><a href="#_132" rel="nofollow">滑动窗口</a></li><li><ul><li><a href="#_140" rel="nofollow">窗口大小</a></li><li><a href="#_167" rel="nofollow">流量控制</a></li><li><a href="#___181" rel="nofollow">窗口关闭 / 探测</a></li><li><a href="#_198" rel="nofollow">糊涂窗口综合症</a></li><li><a href="#_203" rel="nofollow">累计确认</a></li><li><a href="#_206" rel="nofollow">延迟应答</a></li><li><a href="#_233" rel="nofollow">捎带应答</a></li></ul> 
+  </li></ul> 
+ </li></ul> 
+</div> 
+<p></p> 
+<h2><a id="TCP_1"></a>TCP协议格式</h2> 
+<p><img src="https://images2.imgbox.com/87/cc/rewR99EG_o.png" alt="在这里插入图片描述"></p> 
+<ol><li> <p><strong>源端口</strong>和<strong>目的端口</strong>各占2字节、</p> </li><li> <p><strong>序号</strong>: 占4字节，范围 [0 ~ 2<sup>32</sup>-1]，使用 mod 2<sup>32</sup>计算（即序号到2<sup>32</sup>-1下一个为0）。TCP面向字节流，在<strong>传输的字节流中每个字节都按顺序编号</strong>，<strong>整个传送的字节流的起始序号在建立连接时设置（三次握手）</strong>。<br> <mark>首部序号字段的值是<strong>本报文发送数据起始序号</strong>（第一个字节的序号）</mark></p> </li><li> <p><strong>确认序号</strong>：占4字节，是<strong>期望收到对方下一个报文段的起始序号</strong>(对方发送第一个数据字节的序号)<br> <font color="green">确认序号 = 对方前一条发送的起始序号 + 数据长度（字节）<br> <strong>若确认号=N,则表明:到序号 N-1 为止的所有数据都已正确收到。</strong></font></p> </li><li> <p>数据偏移：<strong>4位</strong>首部长度，即报文数据的起始处距离报文的起始处有多远（因为首部长度不确定）。4位二进制所能表示最大值为1111，即15；数据偏移的单位是32位（4字节），所以TCP首部最大长度15*4 = <strong>60字节</strong>（即选项小于等于40字节）</p> </li><li> <p>保留位：6位<br> <img src="https://images2.imgbox.com/e0/66/3vgZ8p5w_o.png" alt="在这里插入图片描述"></p> </li><li> <p><strong>窗口</strong>：16位窗口大小（2字节）。是指发送本报文方的<strong>接收窗口</strong>大小；窗口值<strong>告诉对方</strong>：从本报文段首部的确认号算起，接受方允许对方数据的发送量（字节）；因为TCP全双工通信，接收方数据缓存空间是有限的<br>   <strong>窗口值是接收方让发送方设置其发送窗口大小依据</strong></p> </li><li> <p>紧急指针:占2字节。仅在URG=1时才有意义，指出本报文段中的紧急数据的字节数(紧急数据结束后就是普通数据)。因此，紧急指针指出了紧急数据的末尾在报文段中的位置。当所有紧急数据都处理完时，TCP就告诉应用程序恢复到正常操作。值得注意的是，<strong>即使窗口为零时也可发送紧急数据</strong>。</p> </li><li> <p><strong>选项</strong>（变长）</p> </li></ol> 
+<blockquote> 
+ <p><img src="https://images2.imgbox.com/68/d8/UIVHEySs_o.png" alt="在这里插入图片描述"></p> 
+</blockquote> 
+<p><font color="red"> <strong>MSS 是TCP连接双方每次发送数据的最大值</strong> （TCP报文段长度 - TCP首部长度）</font><br> 有MSS，IP就不用在对数据进行分片，也受数据链路层MTU（最大传输单元）的限制</p> 
+<blockquote> 
+ <p><strong>ip header + tcp header + MSS &lt;= MTU</strong></p> 
+ <blockquote> 
+  <p><img src="https://images2.imgbox.com/22/03/Jr3mCl1K_o.png" alt="在这里插入图片描述"></p> 
+ </blockquote> 
+</blockquote> 
+<p> <br>  </p> 
+<h2><a id="TCP_34"></a>TCP的可靠传输</h2> 
+<p>TCP主要提供了检验和、序列号/确认应答、超时重传、最大消息长度、滑动窗口控制等方法实现了可靠性传输。</p> 
+<h3><a id="_36"></a>检验和</h3> 
+<p><strong>检验和</strong><br> 占2字节。检验和字段检验的范围包括首部和数据这两部分。和UDP一样，在计算检验和时，要在TCP报文段的前面加上<strong>12字节的伪首部</strong>。伪首部的格式与图中UDP用户数据报的伪首部一样。但应把伪首部第4个字段中的17改为6(TCP的协议号是6)，把第5字段中的UDP长度改为TCP长度。接收方收到此报文段后，仍要加上这个伪首部来计算检验和。若使用IPv6，则相应的伪首部也要改变。</p> 
+<blockquote> 
+ <p>UDP伪首部格式</p> 
+ <blockquote> 
+  <p><img src="https://images2.imgbox.com/ca/2a/W0z5h1ws_o.png" alt="在这里插入图片描述"></p> 
+ </blockquote> 
+</blockquote> 
+<p>通过检验和的方式，接收端可以检测出来数据是否有差错和异常，假如有差错就会直接丢弃TCP段，重新发送。</p> 
+<blockquote> 
+ <p><img src="https://images2.imgbox.com/8c/2f/AJXUdFUO_o.png" alt="在这里插入图片描述"></p> 
+</blockquote> 
+<p> </p> 
+<h3><a id="_46"></a>确认应答(序列号)</h3> 
+<p>回顾序号与确认序号概念<br> <img src="https://images2.imgbox.com/04/11/D7mn1ieL_o.png" alt="在这里插入图片描述"></p> 
+<blockquote> 
+ <blockquote> 
+  <p><img src="https://images2.imgbox.com/52/a6/5c8WFMsA_o.png" alt="在这里插入图片描述"></p> 
+ </blockquote> 
+</blockquote> 
+<p>即发送方发送消息需要接收方确认；本质上是<strong>对序号的确认</strong>，就是通过确认序号<strong>告诉发送方下一次需要发送的数据</strong>，也表明上一个序号及之前的数据都收到了</p> 
+<p>上述过程中，只要发送端有一个包传输，接收端<strong>没有回应确认包（ACK包），都会重发</strong>。或者接收端的应答包，发送端没有收到也会重发数据。这就可以保证数据的完整与可靠。<br>  </p> 
+<h3><a id="_55"></a>重传机制</h3> 
+<p>TCP 针对数据包丢失的情况，会用重传机制解决。</p> 
+<p>接下来说说常见的重传机制：<br> 1.超时重传 2.快速重传 3.SACK</p> 
+<h4><a id="_60"></a>超时重传</h4> 
+<p>重传机制的其中一个方式，在发送数据时，设定一个定时器，当超过指定的时间后，没有收到对方的 ACK 确认应答报文，就会重发该数据</p> 
+<blockquote> 
+ <p>一般发生超时重传的两种常见情况</p> 
+ <blockquote> 
+  <ol><li>是数据包丢失 2. 是确认应答的ack丢失<img src="https://images2.imgbox.com/35/ec/TfHG5J01_o.png" alt="在这里插入图片描述"></li></ol> 
+ </blockquote> 
+</blockquote> 
+<h4><a id="RTO_64"></a>RTO超时时间设置</h4> 
+<p><strong>RTT</strong> 报文往返时间: 数据发送到接受确认的时间差值</p> 
+<blockquote> 
+ <p><img src="https://images2.imgbox.com/1e/04/Lg2Ni8eb_o.png" alt="在这里插入图片描述"></p> 
+</blockquote> 
+<p><strong>RTO 超时重传时间</strong>：超时重传时间 RTO 的值应该略大于报文往返 RTT 的值。</p> 
+<p>因为如果当超时时间 RTO 较大时，重发慢，丢了半天才重发，效率低，性能差；<br> 当超时时间 RTO 较小时，会导致可能并没有丢就重发，重发的快，但是会增加网络拥塞，可能导致更多的超时，更多的超时导致更多的重发，恶性循环。</p> 
+<blockquote> 
+ <p>《计算机网络第七版》 <img src="https://images2.imgbox.com/ae/34/NWECB4fb_o.png" alt="在这里插入图片描述"></p> 
+</blockquote> 
+<p>实际上「报文往返 RTT 的值」是经常变化的，因为我们的网络也是时常变化的。也就因为「报文往返 RTT 的值」 是<strong>经常波动变化</strong>的，所以「超时重传时间 RTO 的值」应该是一个<strong>动态变化的值</strong>。<br> <img src="https://images2.imgbox.com/59/59/ri4xaKDd_o.png" alt="在这里插入图片描述"></p> 
+<blockquote> 
+ <p><img src="https://images2.imgbox.com/fb/25/yaUhUMAa_o.png" alt="在这里插入图片描述"><br> <img src="https://images2.imgbox.com/95/69/Sa5IW9GK_o.png" alt="在这里插入图片描述"></p> 
+</blockquote> 
+<p>如果超时重发的数据，再次超时的时候，又需要重传的时候，TCP 的策略是超时间隔加倍。</p> 
+<p>也就是<strong>每当遇到一次超时重传的时候，都会将下一次超时时间间隔设为先前值的两倍。两次超时，就说明网络环境差，不宜频繁反复发送。</strong><br>  </p> 
+<h3><a id="_85"></a>快速重传</h3> 
+<p>采用快重传算法可以让发送方<strong>尽早知道发生了个别报文段的丢失</strong>。快重传算法首先要求接收方不要等待自己发送数据时才进行捎带确认，而是要<strong>立即发送确认</strong>，即使收到了失序的报文段也要立即发出对己收到的报文段的重复确认。</p> 
+<p>快重传算法规定，发送方<mark>只要连收到3个重复确认</mark>，就知道接收方确实没有收到报文段，因而应当立即进行重传(即“快重传”)，这样就不会出现超时，发送方也不就会误认为出现了网络拥塞。<strong>使用快重传可以使整个网络的吞吐量提高约20%。</strong></p> 
+<blockquote> 
+ <p>如图5-26所示，接收方收到了M1和M2后都分别及时发出了确认。现假定接收方没有收到M3但却收到了M4。本来接收方可以什么都不做。但按照<strong>快重传</strong>算法，接收方必须立即发送对M2的重复确认，以便让发送方及早知道接收方没有收到报文段M3。发送方接着发送Ms和M6。接收方收到后也仍要再次分别发出对M2的重复确认。这样，发送方共收到了接收方的4个对M2的确认，其中后3个都是重复确认。发送方只要连收到3个重复确认，就知道接收方确实没有收到报文段M3<img src="https://images2.imgbox.com/ee/39/B8DuIxd6_o.png" alt="在这里插入图片描述"></p> 
+</blockquote> 
+<p><font color="green"><strong>所以，快速重传的工作方式是当收到三个相同的 ACK 报文时，会在定时器过期之前，重传丢失的报文段。</strong></font></p> 
+<p>问题：快速重传机制只解决了一个问题，就是超时时间的问题，但是它依然面临着另外一个问题。就是重传的时候，是重传一个，还是重传所有的问题。</p> 
+<blockquote> 
+ <p><img src="https://images2.imgbox.com/d3/e1/J22fBMox_o.png" alt="在这里插入图片描述"><br> 如果只选择重传 Seq2 一个报文，那么重传的效率很低。因为对于丢失的 Seq3 报文，还得在后续收到三个重复的 ACK3 才能触发重传。<br> 如果选择重传 Seq2 之后已发送的所有报文，虽然能同时重传已丢失的 Seq2 和 Seq3 报文，但是 Seq4、Seq5、Seq6 的报文是已经被接收过了，对于重传 Seq4 ～Seq6 折部分数据相当于做了一次无用功，浪费资源。</p> 
+</blockquote> 
+<p>所以 SACK 选择确认派上了用场<br>  </p> 
+<h3><a id="_SACK_101"></a>选择确认 SACK</h3> 
+<p>若收到的报文段无差错，只是未按序号，中间还缺少一些序号的数据，那么<strong>能否设法只传送缺少的数据而不重传已经正确到达接收方的数据</strong>?<br> 答案是可以的。选择确认就是-种可行的处理方法。</p> 
+<p>在TCP首部的选项字段提供了<strong>SACK</strong>的选项，它可以将已收到的数据的信息（边界信息）发送给「发送方」，这样发送方就可以知道哪些数据收到了，哪些数据没收到，知道了这些信息，就可以<mark>只重传丢失的数据</mark>。</p> 
+<blockquote> 
+ <p>RFC2018 规定，如果要使用<strong>选择确认SACK</strong>,那么<strong>在建立TCP连接时，就要在TCP首部的选项中加上“允许SACK"的选项</strong>，而双方必须都事先商定好。如果使用选择确认，那么原来首部中的“确认号字段”的用法仍然不变。只是以后在TCP报文段的首部中都增加了SACK 选项以便报告收到不连续字节块的<strong>边界</strong>。</p> 
+</blockquote> 
+<p>实际场景：</p> 
+<blockquote> 
+ <p>发送方收到了三次同样的 ACK 确认报文，于是就会触发快速重发机制，通过 SACK 信息发现只有 200~299 这段数据丢失，则重发时，就只选择了这个 TCP 段进行重复<img src="https://images2.imgbox.com/91/9a/2DUKcGEM_o.png" alt="在这里插入图片描述"><br>  </p> 
+</blockquote> 
+<h4><a id="D_SACK_111"></a>D- SACK</h4> 
+<p>Duplicate SACK，即重复的选择确认，使用了 <strong>SACK 来告诉「发送方」有哪些数据被重复接收了</strong>。</p> 
+<p>主要有下列两种常见情况：</p> 
+<ol><li>ACK包丢失</li></ol> 
+<blockquote> 
+ <p>「接收方」发给「发送方」的两个 ACK 确认应答都丢失了，所以发送方超时后，重传第一个数据包（3000 ~ 3499）<br> 于是「接收方」发现数据是重复收到的，于是回了一个 SACK = 3000~3500，<strong>告诉「发送方」 3000~3500 的数据早已被接收了</strong>，因为 ACK 都到了 4000 了，已经意味着 4000 之前的所有数据都已收到，所以这个 SACK 就代表着 D-SACK。<br> 这样「发送方」就知道了，数据没有丢，是「接收方」的 ACK 确认报文丢了。<img src="https://images2.imgbox.com/7c/9e/H04HglN9_o.png" alt="在这里插入图片描述"></p> 
+</blockquote> 
+<ol start="2"><li>网络延时</li></ol> 
+<blockquote> 
+ <p>数据包（1000~1499） 被网络延迟了，导致「发送方」没有收到 Ack 1500 的确认报文。<br> 而后面报文到达的三个相同的 ACK 确认报文，就触发了快速重传机制，但是在重传后，被延迟的数据包（1000~1499）又到了「接收方」；<br> 所以「接收方」回了一个 SACK=1000~1500，因为 ACK 已经到了 3000，所以这个 SACK 是 D-SACK，表示收到了重复的包。<br> 这样发送方就知道快速重传触发的原因不是发出去的包丢了，也不是因为回应的 ACK 包丢了，而是因为网络延迟了。<img src="https://images2.imgbox.com/77/50/veaqt7Q9_o.png" alt="在这里插入图片描述"></p> 
+</blockquote> 
+<p>使用D-SACK的好处：</p> 
+<ol><li>可以让「<strong>发送方</strong>」知道是发出去的包丢了，还是接收方回应的 ACK 包丢了;</li><li>可以知道是不是「<strong>发送方</strong>」的数据包被网络延迟了;</li><li>可以知道网络中是不是把「<strong>发送方</strong>」的数据包给复制了;<br>  <br>  </li></ol> 
+<h3><a id="_132"></a>滑动窗口</h3> 
+<p>因为TCP 是每发送一个数据，都要进行一次确认应答。当上一个数据包收到了应答了，再发送下一个；这样一问一答的模式显然效率低下，数据包的往返时间越长，通信的效率就越低，网络吞吐量越低<br> 所以为了<strong>提高传输的数据量</strong>，引入了窗口的概念</p> 
+<p><font color="red"> TCP是<strong>全双工通信</strong>，通信的每一方都在发送和接受报文段，都有自己的发送窗口和接受窗口，注意区分！</font></p> 
+<p><font color="red"><strong>滑动窗口机制</strong></font>：允许窗口中的数据发送到网路进行传输（不需要等待确认），提高数据吞吐量。<br> <font color="red"><strong>窗口大小</strong></font>就是指无需等待确认应答，而可以继续发送数据的最大值</p> 
+<h4><a id="_140"></a>窗口大小</h4> 
+<p>TCP 头里有一个字段叫 Window，也就是窗口大小<br> <strong>这个字段是接收端告诉发送端自己还有多少缓冲区可以接收数据。于是发送端就可以根据这个接收端的处理能力来发送数据</strong></p> 
+<blockquote> 
+ <p><img src="https://images2.imgbox.com/dc/cf/oJChYDRG_o.png" alt="在这里插入图片描述"></p> 
+</blockquote> 
+<p><mark><strong>发送方窗口</strong></mark></p> 
+<blockquote> 
+ <p><img src="https://images2.imgbox.com/ff/de/2w51xf71_o.png" alt="在这里插入图片描述"><br> 发送方把数据「全部」都一下发送出去后，可用窗口的大小就为 <code>0</code> 了，表明可用窗口耗尽，在没收到 ACK 确认之前是无法继续发送数据了。</p> 
+</blockquote> 
+<blockquote> 
+ <p>当收到之前发送的数据 32~36 字节的 ACK 确认应答后，如果发送窗口的大小没有变化，则滑动窗口往右边移动 5 个字节，因为有 5 个字节的数据被应答确认，接下来 52~56 字节又变成了可用窗口，那么后续也就可以发送 52~56 这 5 个字节的数据了。<img src="https://images2.imgbox.com/07/f4/sF5mvHqV_o.png" alt="在这里插入图片描述"></p> 
+</blockquote> 
+<p>接收方窗口</p> 
+<blockquote> 
+ <p><img src="https://images2.imgbox.com/02/62/8SGTgNx4_o.png" alt="在这里插入图片描述"></p> 
+</blockquote> 
+<p><strong>接收窗口的大小是<code>约等于</code>发送窗口的大小的</strong>。</p> 
+<p>因为滑动窗口并不是一成不变的。比如，当接收方的应用进程读取数据的速度非常快的话，这样的话接收窗口可以很快的就空缺出来。那么新的接收窗口大小，是通过 TCP 报文中的 Windows 字段来告诉发送方。那么这个传输过程是存在<strong>时延</strong>的，所以接收窗口和发送窗口是约等于的关系。</p> 
+<blockquote> 
+ <p><img src="https://images2.imgbox.com/23/3b/nXmtbIRy_o.png" alt="在这里插入图片描述"><br> 第一，<strong>缓存空间和序号空间都是有限的</strong>，并且都是循环使用的。最好是把它们画成圆环状的。但这里为了画图的方便，我们还是把它们画成长条状的。<br> 第二，由于实际上缓存或窗口中的字节数是非常之大的，因此图5-19 仅仅是个示意<br> 图，没有标出具体的数值。但用这样的图来说明缓存和发送窗口以及接收窗口的关系是很清楚的。</p> 
+</blockquote> 
+<p> </p> 
+<h4><a id="_167"></a>流量控制</h4> 
+<p><strong>接收端处理数据的速度是有限的，如果发送端发的太快</strong>，导致接收端的缓冲区被打满，这个时候如果发送端继续发送，就会造成丢包，继而引起丢包重传等等一系列反应。</p> 
+<p><font color="red">因而TCP支持让「发送方」根据「接收方」的实际接收能力控制发送的数据量这个机制就叫做<strong>流量控制</strong>（Tlow Control）。</font></p> 
+<p>TCP是利用窗口来实现流量控制的</p> 
+<blockquote> 
+ <p><img src="https://images2.imgbox.com/94/c9/RikyOevs_o.png" alt="在这里插入图片描述"></p> 
+</blockquote> 
+<blockquote> 
+ <p><img src="https://images2.imgbox.com/c1/d2/Z0ULBghu_o.png" alt="在这里插入图片描述"></p> 
+</blockquote> 
+<p><strong>窗口扩大因子M：</strong><br> 接收端如何把窗口大小告诉发送端呢？在我们的TCP首部中，有一个16为窗口字段，就是存放了窗口大小信息；16位数字最大表示65535,，那么TCP窗口最大就是65536字节吗？<br> 实际上，TCP首部40字节选项上还包含了一个窗口扩大因子M，实际窗口大小是窗口字段的值左移M位；</p> 
+<h4><a id="___181"></a>窗口关闭 / 探测</h4> 
+<p>TCP 通过让接收方指明希望从发送方接收的数据大小（窗口大小）来进行流量控制。<br> 如果窗口大小为 0 时，就会<strong>阻止发送方给接收方传递数据，直到窗口变为非 0 为止</strong>，这就是<font color="red"><strong>窗口关闭</strong>。</font></p> 
+<blockquote> 
+ <p><img src="https://images2.imgbox.com/d7/b8/QGln0uGF_o.png" alt="在这里插入图片描述"><br> 如不采取措施，这种<strong>相互等待</strong>的过程，会造成了<strong>死锁</strong>的现象。</p> 
+</blockquote> 
+<p>TCP 为每个连接设有一个持续定时器，<strong>只要 TCP 连接一方收到对方的零窗口通知，就启动持续计时器。</strong></p> 
+<p>如果持续计时器超时，就会发送<strong>窗口探测 ( Window probe ) 报文</strong>，而对方在确认这个探测报文时，给出自己现在的接收窗口大小。</p> 
+<blockquote> 
+ <p><img src="https://images2.imgbox.com/7c/f5/QNVVwJLp_o.png" alt="在这里插入图片描述"><br> 如果接收窗口仍然为 0，那么收到这个报文的一方就会<strong>重新启动持续计时器</strong>；<br> 如果接收窗口不是 0，那么死锁的局面就可以被打破了。</p> 
+</blockquote> 
+<p>窗口探测的次数一般为 3 次，每次大约 30-60 秒（不同的实现可能会不一样）。如果 3 次过后接收窗口还是 0 的话，有的 TCP 实现就会发 RST （复位标志,用于非正常地关闭连接）报文来中断连接。<br>  </p> 
+<h4><a id="_198"></a>糊涂窗口综合症</h4> 
+<p>如果接收方太忙了，来不及取走接收窗口里的数据，那么就会导致发送方的发送窗口越来越小。<br> 到最后，如果接收方腾出几个字节并告诉发送方现在有几个字节的窗口，而发送方会义无反顾地发送这几个字节，这就是<strong>糊涂窗口综合症</strong>。</p> 
+<p>详细参考：<a href="https://xiaolincoding.com/network/3_tcp/tcp_feature.html#%E7%B3%8A%E6%B6%82%E7%AA%97%E5%8F%A3%E7%BB%BC%E5%90%88%E7%97%87" rel="nofollow">糊涂窗口综合症</a></p> 
+<h4><a id="_203"></a>累计确认</h4> 
+<blockquote> 
+ <p>图中的 ACK 600 确认应答报文丢失，也没关系，因为可以通过下一个确认应答进行确认，只要发送方收到了 ACK 700 确认应答，就意味着 700 之前的所有数据「接收方」都收到了。这个模式就叫<strong>累计确认</strong>或者累计应答。<img src="https://images2.imgbox.com/21/6b/EQMqPkkU_o.png" alt="在这里插入图片描述"></p> 
+</blockquote> 
+<h4><a id="_206"></a>延迟应答</h4> 
+<p>为什么要延迟？</p> 
+<ol><li>每次接收方回复确认应答的时候，会在TCP头部当中携带<strong>窗口大小</strong>， 来告知发送方<strong>自己的接收能力</strong>。</li><li>发送方是要通过接收方通告的窗口大小来调整<strong>发送窗口</strong>的</li></ol> 
+<p>假设不考虑网络的情况下:<br> ● 接收方通告的窗口大小越大，则发送窗口越大， 则发送方发送的数据越多<br> ● 接收方通告的窗口大小越小，则发送窗口越小， 则发送方发送的数据越少</p> 
+<p>如果接收方收到数据就立即返回ACK应答，这时候的缓冲区中接受的数据许多还没能够处理，缓冲区的剩余大小就是窗口大小，所以此时返回的窗口值会比较小。<br> <strong>在收到数据以后并不立即返回确认应答，延迟一小会，等待缓冲区中数据被处理，接收缓冲区空间变大一些，再进行应答</strong>（此时确认应答的窗口值会大一些）——这是延迟应答。</p> 
+<blockquote> 
+ <p><img src="https://images2.imgbox.com/e9/4a/TMdPQHrA_o.png" alt="在这里插入图片描述"></p> 
+</blockquote> 
+<p><strong>窗口越大，网络吞吐量就越大，传输效率就越高，我们的目标是在保证网络不拥堵的情况下尽量提高传输效率!</strong><br> <img src="https://images2.imgbox.com/61/76/g9xLPFBc_o.png" alt="在这里插入图片描述"></p> 
+<p>那么所有的包都可以延迟应答吗?? 不是的，与以下有关：<br> ● 数量限制：每隔N个包就应答一次；<br> ● 时间限制：超过最大延迟时间就应答一次；<br> 具体的数量和超时时间，依操作系统不同也有差异；一般N取2，超时时间取200ms;</p> 
+<p>在系统中，有一个固定的定时器每隔200ms会来检查是否需要发送ACK包，这样做有两个目的。</p> 
+<ol><li>这样做的目的是ACK是可以合并的，也就是指如果连续收到两个TCP包，并不一定需要ACK两次，只要回复最终的ACK就可以了，可以降低网络流量；</li><li>如果接收方有数据要发送，那么就会在发送数据的TCP数据包里，带上ACK信息，这样做，可以避免大量的ACK以一个单独的TCP包发送，减少了网络流量。</li></ol> 
+<h4><a id="_233"></a>捎带应答</h4> 
+<p><strong>捎带应答是指在同一个TCP包中即发送数据又发送确认应答的一种机制</strong>。本质上就是回复的TCP数据当中的PSH标志位和ACK标志位被置为1了</p> 
+<blockquote> 
+ <p>根据应用层协议，发送出去的消息到达对端，对端进行处理之后，会返回一个回执。即在很多情况下，客户端服务器在应用层也是“一发一收”的，意味着客户端给服务器说了“How are you”，服务器也会给客户端回一个“Fine，thank you”；<br> 那么这个时候ACK就可以搭顺风车了，和服务器回应的“Fine，thank you”一起回给客户端。</p> 
+</blockquote> 
+<blockquote> 
+ <p>例子有：电子邮件协议的AMTP或POP、文件传输协议FTP中的连接控制部分等，例如远程登录中针对输入的字符进行回送校验也是对发送消息的一种回执。</p> 
+</blockquote> 
+<p>在此类通信中，TCP的确认应答和回执数据可以通过一个包发送，这种方式叫做捎带应答。通过这种机制，可以使收发的数据量较减少。</p> 
+<p>另外接受数据以后如果立刻返回数据，就无法实现捎带应答，所以是在<strong>延迟应答</strong>的基础上，进行的捎带应答。</p> 
+<p><img src="https://images2.imgbox.com/7a/27/80ybGFho_o.png" alt="在这里插入图片描述"><br> 网络的利用率会提高，计算机的负荷也会减轻。不过，确认应答必须等到应用层处理完数据并将作为回执的数据返回为止，才能进行捎带应答。</p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/0bdff4fa801a2fd9ba56daf04f42fd1c/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">解决pycharm无法使用install package</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/452fb00571e2ddaa9cf59c97bb7a18cf/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">springboot配置读取顺序</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

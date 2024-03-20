@@ -1,0 +1,518 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Linux块设备IO子系统_驱动模型 - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="Linux块设备IO子系统_驱动模型" />
+<meta property="og:description" content="块设备是Linux三大设备之一，其驱动模型主要针对磁盘，Flash等存储类设备，块设备（blockdevice） 是一种具有一定结构的随机存取设备，对这种设备的读写是按块 (所以叫块设备)进行的，他使用缓冲区来存放暂时的数据，待条件成熟后，从缓存一次性写入设备或者从设备一次性读到缓冲区。作为存储设备，块设备驱动的核心问题就是哪些page-&gt;segment-&gt;block-&gt;sector与哪些sector有数据交互 ，本文以3.14为蓝本，探讨内核中的块设备驱动模型。
+框架 下图是Linux中的块设备模型示意图，应用层程序有两种方式访问一个块设备：/dev和文件系统挂载点，前者和字符设备一样，通常用于配置，后者就是我们mount之后通过文件系统直接访问一个块设备了。
+read()系统调用最终会调用一个适当的VFS函数(read()--&gt;sys_read()--&gt;vfs_read())，将文件描述符fd和文件内的偏移量offset传递给它。VFS会判断这个SCI的处理方式，如果访问的内容已经被缓存在RAM中（磁盘高速缓存机制），就直接访问，否则从磁盘中读取为了从物理磁盘中读取，内核依赖映射层mapping layer，即上图中的磁盘文件系统 确定该文件所在文件系统的块的大小，并根据文件块的大小计算所请求数据的长度。本质上，文件被拆成很多块，因此内核需要确定请求数据所在的块映射层调用一个具体的文件系统的函数，这个层的函数会访问文件的磁盘节点，然后根据逻辑块号确定所请求数据在磁盘上的位置。内核利用通用块层(generic block layer)启动IO操作来传达所请求的数据，通常，一个IO操作只针对磁盘上一组连续的块。IO调度程序根据预先定义的内核策略将待处理的IO进行重排和合并块设备驱动程序向磁盘控制器硬件接口发送适当的指令，进行实际的数据操作 块设备 VS 字符设备 作为一种存储设备，和字符设备相比，块设备有以下几种不同：
+字符设备块设备1byte块，硬件块各有不同，但是内核都使用512byte描述顺序访问随机访问没有缓存，实时操作有缓存，不是实时操作一般提供接口给应用层块设备一般提供接口给文件系统是被用户程序调用由文件系统程序调用 此外，大多数情况下，磁盘控制器都是直接使用DMA方式进行数据传送。
+IO调度 就是电梯算法。我们知道，磁盘是的读写是通过机械性的移动磁头来实现读写的，理论上磁盘设备满足块设备的随机读写的要求，但是出于节约磁盘，提高效率的考虑，我们希望当磁头处于某一个位置的时候，一起将最近需要写在附近的数据写入，而不是这写一下，那写一下然后再回来，IO调度就是将上层发下来的IO请求的顺序进行重新排序 以及对多个请求进行合并 ，这样就可以实现上述的提高效率、节约磁盘的目的。这种解决问题的思路使用电梯算法，一个运行中的电梯，一个人20楼-&gt;1楼，另外一个人15-&gt;5楼，电梯不会先将第一个人送到1楼再去15楼接第二个人将其送到5楼，而是从20楼下来，到15楼的时候停下接人，到5楼将第二个放下，最后到达1楼，一句话，电梯算法最终服务的优先顺序并不按照按按钮的先后顺序。Linux内核中提供了下面的几种电梯算法来实现IO调度：
+No-op I/O scheduler 只实现了简单的FIFO的，只进行最简单的合并，比较适合基于Flash的存储Anticipatory I/O scheduler 推迟IO请求(大约几个微秒)，以期能对他们进行排序，获得更高效率Deadline I/O scheduler 试图把每次请求的延迟降到最低，同时也会对BIO重新排序，特别适用于读取较多的场合，比如数据库CFQ I/O scheduler 为系统内所有的任务分配均匀的IO带宽，提供一个公平的工作环境，在多媒体环境中，能保证音视频及时从磁盘中读取数据，是当前内核默认的调度器 我们可以通过内核传参的方式指定使用的调度算法
+kernel elevator=deadline 或者，使用如下命令改变内核调度算法
+echo SCHEDULER &gt; /sys/block/DEVICE/queue/scheduler Page-&gt;Segment-&gt;Block-&gt;Sector VS Sector VS左面的是数据交互中的内存部分，Page就是内存映射的最小单位; Segment就是一个Page中我们要操作的一部分，由若干个相邻的块组成; Block 是逻辑上的进行数据存取的最小单位，是文件系统的抽象，逻辑块的大小是在格式化的时候确定的, 一个 Block 最多仅能容纳一个文件（即不存在多个文件同一个block的情况）。如果一个文件比block小，他也会占用一个block，因而block中空余的空间会浪费掉。而一个大文件，可以占多个甚至数十个成百上千万的block。Linux内核要求 Block_Size = Sector_Size * (2的n次方)，并且Block_Size &lt;= 内存的Page_Size(页大小）, 如ext2 fs的block缺省是4k。若block太大，则存取小文件时，有空间浪费的问题；若block太小，则硬盘的 Block 数目会大增，而造成 inode 在指向 block 的时候的一些搜寻时间的增加，又会造成大文件读写方面的效率较差，block是VFS和文件系统传送数据的基本单位。 block对应磁盘上的一个或多个相邻的扇区，而VFS将其看成是一个单一的数据单元，块设备的block的大小不是唯一的，创建一个磁盘文件系统时，管理员可以选择合适的扇区的大小，同一个磁盘的几个分区可以使用不同的块大小。此外，对块设备文件的每次读或写操作是一种&#34;原始&#34;访问，因为它绕过了磁盘文件系统，内核通过使用最大的块(4096)执行该操作。Linux对内存中的block会被进一步划分为Sector，Sector是硬件设备传送数据的基本单位， 这个Sector就是512byte，和物理设备上的概念不一样，如果实际的设备的sector不是512byte，而是4096byte(eg SSD)，那么只需要将多个内核sector对应一个设备sector即可" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/45d25724fecce5cdd9e163600b959090/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-04-01T19:59:15+08:00" />
+<meta property="article:modified_time" content="2023-04-01T19:59:15+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Linux块设备IO子系统_驱动模型</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p>块设备是Linux三大设备之一，其驱动模型主要针对磁盘，Flash等存储类设备，<strong>块设备（blockdevice）</strong> 是一种具有一定结构的随机存取设备，对这种设备的读写是按<strong>块</strong> (所以叫块设备)进行的，他使用缓冲区来存放暂时的数据，待条件成熟后，从缓存一次性写入设备或者从设备一次性读到缓冲区。<strong>作为存储设备，块设备驱动的核心问题就是哪些page-&gt;segment-&gt;block-&gt;sector与哪些sector有数据交互</strong> ，本文以3.14为蓝本，探讨内核中的块设备驱动模型。</p> 
+<h3>框架</h3> 
+<p>下图是Linux中的块设备模型示意图，应用层程序有两种方式访问一个块设备：/dev和文件系统挂载点，前者和字符设备一样，通常用于配置，后者就是我们mount之后通过文件系统直接访问一个块设备了。</p> 
+<ol><li>read()系统调用最终会调用一个适当的VFS函数(read()--&gt;sys_read()--&gt;vfs_read())，将文件描述符fd和文件内的偏移量offset传递给它。</li><li>VFS会判断这个SCI的处理方式，如果访问的内容已经被缓存在RAM中（磁盘高速缓存机制），就直接访问，否则从磁盘中读取</li><li>为了从物理磁盘中读取，内核依赖映射层mapping layer，即上图中的磁盘文件系统 
+  <ol><li>确定该文件所在文件系统的块的大小，并根据文件块的大小计算所请求数据的长度。本质上，文件被拆成很多块，因此内核需要确定请求数据所在的块</li><li>映射层调用一个具体的文件系统的函数，这个层的函数会访问文件的磁盘节点，然后根据逻辑块号确定所请求数据在磁盘上的位置。</li></ol></li><li>内核利用通用块层(generic block layer)启动IO操作来传达所请求的数据，通常，一个IO操作只针对磁盘上一组连续的块。</li><li>IO调度程序根据预先定义的内核策略将待处理的IO进行重排和合并</li><li>块设备驱动程序向磁盘控制器硬件接口发送适当的指令，进行实际的数据操作</li></ol> 
+<p class="img-center"><img alt="" src="https://images2.imgbox.com/00/c4/ZYNInwVb_o.png"></p> 
+<h4>块设备 VS 字符设备</h4> 
+<p>作为一种存储设备，和字符设备相比，块设备有以下几种不同：</p> 
+<table><tbody><tr><th>字符设备</th><th>块设备</th></tr><tr><td>1byte</td><td>块，硬件块各有不同，但是内核都使用512byte描述</td></tr><tr><td>顺序访问</td><td>随机访问</td></tr><tr><td>没有缓存，实时操作</td><td>有缓存，不是实时操作</td></tr><tr><td>一般提供接口给应用层</td><td>块设备一般提供接口给文件系统</td></tr><tr><td>是被用户程序调用</td><td>由文件系统程序调用</td></tr></tbody></table> 
+<p>此外，大多数情况下，磁盘控制器都是直接使用DMA方式进行数据传送。</p> 
+<h4>IO调度</h4> 
+<p>就是电梯算法。我们知道，磁盘是的读写是通过机械性的移动磁头来实现读写的，理论上磁盘设备满足块设备的随机读写的要求，但是出于节约磁盘，提高效率的考虑，我们希望当磁头处于某一个位置的时候，一起将最近需要写在附近的数据写入，而不是这写一下，那写一下然后再回来，IO调度就是将上层发下来的IO请求的顺序进行<strong>重新排序</strong> 以及对多个请求进行<strong>合并</strong> ，这样就可以实现上述的提高效率、节约磁盘的目的。这种解决问题的思路使用电梯算法，一个运行中的电梯，一个人20楼-&gt;1楼，另外一个人15-&gt;5楼，电梯不会先将第一个人送到1楼再去15楼接第二个人将其送到5楼，而是从20楼下来，到15楼的时候停下接人，到5楼将第二个放下，最后到达1楼，一句话，电梯算法最终服务的优先顺序并不按照按按钮的先后顺序。Linux内核中提供了下面的几种电梯算法来实现IO调度：</p> 
+<ul><li><strong>No-op I/O scheduler</strong> 只实现了简单的FIFO的，只进行最简单的合并，比较适合基于Flash的存储</li><li><strong>Anticipatory I/O scheduler</strong> 推迟IO请求(大约几个微秒)，以期能对他们进行排序，获得更高效率</li><li><strong>Deadline I/O scheduler</strong> 试图把每次请求的延迟降到最低，同时也会对BIO重新排序，特别适用于读取较多的场合，比如数据库</li><li><strong>CFQ I/O scheduler</strong> 为系统内所有的任务分配均匀的IO带宽，提供一个公平的工作环境，在多媒体环境中，能保证音视频及时从磁盘中读取数据，是当前内核默认的调度器</li></ul> 
+<p>我们可以通过内核传参的方式指定使用的调度算法</p> 
+<pre><code>kernel elevator=deadline</code></pre> 
+<p>或者，使用如下命令改变内核调度算法</p> 
+<pre><code>echo SCHEDULER &gt; /sys/block/DEVICE/queue/scheduler</code></pre> 
+<h4>Page-&gt;Segment-&gt;Block-&gt;Sector VS Sector</h4> 
+<p>VS左面的是数据交互中的内存部分，Page就是内存映射的最小单位; Segment就是一个Page中我们要操作的一部分，由若干个相邻的块组成; <strong>Block</strong> 是逻辑上的进行数据存取的最小单位，是文件系统的抽象，逻辑块的大小是在格式化的时候确定的, 一个 Block 最多仅能容纳一个文件（即不存在多个文件同一个block的情况）。如果一个文件比block小，他也会占用一个block，因而block中空余的空间会浪费掉。而一个大文件，可以占多个甚至数十个成百上千万的block。Linux内核要求 Block_Size = Sector_Size * (2的n次方)，并且Block_Size &lt;= 内存的Page_Size(页大小）, 如ext2 fs的block缺省是4k。若block太大，则存取小文件时，有空间浪费的问题；若block太小，则硬盘的 Block 数目会大增，而造成 inode 在指向 block 的时候的一些搜寻时间的增加，又会造成大文件读写方面的效率较差，<strong>block是VFS和文件系统传送数据的基本单位。</strong> block对应磁盘上的一个或多个相邻的扇区，而VFS将其看成是一个单一的数据单元，块设备的block的大小不是唯一的，创建一个磁盘文件系统时，管理员可以选择合适的扇区的大小，同一个磁盘的几个分区可以使用不同的块大小。此外，对块设备文件的每次读或写操作是一种"原始"访问，因为它绕过了磁盘文件系统，内核通过使用最大的块(4096)执行该操作。Linux对内存中的block会被进一步划分为Sector，<strong>Sector是硬件设备传送数据的基本单位，</strong> 这个Sector就是512byte，和物理设备上的概念不一样，如果实际的设备的sector不是512byte，而是4096byte(eg SSD)，那么只需要将多个内核sector对应一个设备sector即可</p> 
+<p>VS右边是物理上的概念，磁盘中一个Sector是512Byte，SSD中一个Sector是4K</p> 
+<h3>核心结构与方法简述</h3> 
+<h4>核心结构</h4> 
+<ul><li><strong>gendisk</strong> 是一个物理磁盘或分区在内核中的描述</li><li><strong>block_device_operations</strong> 描述磁盘的操作方法集，block_device_operations之于gendisk，类似于file_operations之于cdev</li><li><strong>request_queue</strong> 对象表示针对一个gendisk对象的所有请求的队列，是相应gendisk对象的一个域</li><li><strong>request</strong> 表示经过IO调度之后的针对一个gendisk(磁盘)的一个"请求"，是request_queue的一个节点。多个request构成了一个request_queue</li><li><strong>bio</strong> 表示应用程序对一个gendisk(磁盘)原始的访问请求，一个bio由多个bio_vec，多个bio经过IO调度和合并之后可以形成一个request。</li><li><strong>bio_vec</strong> 描述的应用层准备读写一个gendisk(磁盘)时需要使用的内存页<strong>page的一部分</strong> ，即上文中的"段"，多个bio_vec和bio_iter形成一个bio</li><li><strong>bvec_iter</strong> 描述一个bio_vec中的一个sector信息</li></ul> 
+<p class="img-center"><img alt="" src="https://images2.imgbox.com/02/e2/qrGHMyHm_o.png"></p> 
+<h4>核心方法</h4> 
+<ul><li><strong>set_capacity()</strong> 设置gendisk对应的磁盘的物理参数</li><li><strong>blk_init_queue()</strong> 分配+初始化+绑定一个有IO调度的gendisk的requst_queue，处理函数是*<em>void (request_fn_proc) (struct request_queue</em><em>q);</em> 类型</li><li><strong>blk_alloc_queue()</strong> 分配+初始化一个没有IO调度的gendisk的request_queue,</li><li><strong>blk_queue_make_request()</strong> 绑定处理函数到一个没有IO调度的request_queue，处理函数函数是**void (make_request_fn) (struct request_queue <em>q, struct bio</em><em>bio);</em> 类型</li><li><strong>__rq_for_each_bio()</strong> 遍历一个request中的所有的bio</li><li><strong>bio_for_each_segment()</strong> 遍历一个bio中所有的segment</li><li><strong>rq_for_each_segment()</strong> 遍历一个request中的所有的bio中的所有的segment<br> 最后三个遍历算法都是用在request_queue绑定的处理函数中，这个函数负责对上层请求的处理。</li></ul> 
+<h3>核心结构与方法详述</h3> 
+<h3>gendisk</h3> 
+<p>同样是面向对象的设计方法，Linux内核使用gendisk对象描述一个系统的中的块设备，类似于Windows系统中的磁盘分区和物理磁盘的关系，OS眼中的磁盘都是逻辑磁盘，也就是一个磁盘分区，一个物理磁盘可以对应多个磁盘分区，在Linux中，这个gendisk就是用来描述一个逻辑磁盘，也就是一个磁盘分区。</p> 
+<pre><code>165 struct gendisk {
+169         int major;                      /* major number of driver */
+170         int first_minor;
+171         int minors;   
+174         char disk_name[DISK_NAME_LEN];  /* name of major driver */
+175         char *(*devnode)(struct gendisk *gd, umode_t *mode);
+177         unsigned int events;            /* supported events */
+178         unsigned int async_events;      /* async events, subset of all */
+185         struct disk_part_tbl __rcu *part_tbl;
+186         struct hd_struct part0;
+188         const struct block_device_operations *fops;
+189         struct request_queue *queue;
+190         void *private_data;
+192         int flags;
+193         struct device *driverfs_dev;  // FIXME: remove
+194         struct kobject *slave_dir;
+196         struct timer_rand_state *random;
+197         atomic_t sync_io;               /* RAID */
+198         struct disk_events *ev;
+200         struct blk_integrity *integrity;
+202         int node_id;
+203 };</code></pre> 
+<blockquote> 
+ <strong>struct gendisk</strong> 
+ <br> --169--&gt;驱动的主设备号 
+ <br> --170--&gt;第一个次设备号 
+ <br> --171--&gt;次设备号的数量，即允许的最大分区的数量，1表示不允许分区 
+ <br> --174--&gt;设备名称 
+ <br> --185--&gt;分区表数组首地址 
+ <br> --186--&gt;第一个分区,相当于part_tbl-&gt;part[0] 
+ <br> --188--&gt; 
+ <strong>操作方法集</strong> 指针 
+ <br> --189--&gt;请求对象指针 
+ <br> --190--&gt;私有数据指针 
+ <br> --193--&gt;表示这是一个设备 
+</blockquote> 
+<p>gendisk是一个动态分配的结构体，所以不要自己手动来分配，而是使用内核相应的API来分配，其中会做一些初始化的工作</p> 
+<pre><code>struct gendisk *alloc_disk(int minors);
+
+//注册gendisk类型对象到内核
+void add_disk(struct gendisk *disk);
+
+//从内核注销gendisk对象
+void del_gendisk(struct gendisk *gp);</code></pre> 
+<p>上面几个API是一个块设备驱动中必不可少的部分，下面的两个主要是用来内核对于设备管理用的，通常不要驱动来实现</p> 
+<pre><code>//对gendisk的引用计数+1
+struct kobject *get_disk(struct gendisk *disk);
+
+//对gendisk的引用计数-1
+void put_disk(struct gendisk *disk);</code></pre> 
+<p>这两个API最终回调用kobject *get_disk() 和kobject_put()来实现对设备的引用计数</p> 
+<h3>block_device_operations</h3> 
+<p>和字符设备一样，如果使用/dev接口访问块设备，最终就会回调这个操作方法集的注册函数</p> 
+<pre><code>//include/linux/blkdev.h
+1558 struct block_device_operations {
+1559         int (*open) (struct block_device *, fmode_t);
+1560         void (*release) (struct gendisk *, fmode_t);
+1561         int (*ioctl) (struct block_device *, fmode_t, unsigned, unsigned long);
+1562         int (*compat_ioctl) (struct block_device *, fmode_t, unsigned, unsigned long);
+1563         int (*direct_access) (struct block_device *, sector_t,
+1564                                                 void **, unsigned long *);
+1565         unsigned int (*check_events) (struct gendisk *disk,
+1566                                       unsigned int clearing);
+1568         int (*media_changed) (struct gendisk *);
+1569         void (*unlock_native_capacity) (struct gendisk *);
+1570         int (*revalidate_disk) (struct gendisk *);
+1571         int (*getgeo)(struct block_device *, struct hd_geometry *);
+1573         void (*swap_slot_free_notify) (struct block_device *, unsigned long);
+1574         struct module *owner;
+1575 };</code></pre> 
+<blockquote> 
+ <strong>struct block_device_operations</strong> 
+ <br> --1559--&gt;当应用层打开一个块设备的时候被回调 
+ <br> --1560--&gt;当应用层关闭一个块设备的时候被回调 
+ <br> --1562--&gt;相当于file_operations里的compat_ioctl，不过块设备的ioctl包含大量的标准操作，所以在这个接口实现的操作很少 
+ <br> --1567--&gt;在移动块设备中测试介质是否改变的方法，已经过时，同样的功能被check_event()实现 
+ <br> --1571--&gt;即get geometry，获取驱动器的几何信息，获取到的信息会被填充在一个hd_geometry结构中 
+ <br> --1574--&gt;模块所属，通常填THIS_MODULE 
+</blockquote> 
+<h3>request_queue</h3> 
+<p>每一个gendisk对象都有一个request_queue对象，前文说过，块设备有两种访问接口，一种是/dev下，一种是通过文件系统，后者经过IO调度在这个gendisk-&gt;request_queue上增加请求，最终回调与request_queue绑定的处理函数，将这些请求向下变成具体的硬件操作</p> 
+<pre><code>294 struct request_queue {
+ 298         struct list_head        queue_head; 
+ 300         struct elevator_queue   *elevator;
+ 472 };</code></pre> 
+<blockquote> 
+ <strong>struct request_queue</strong> 
+ <br> --298--&gt;请求队列的链表头 
+ <br> --300--&gt;请求队列使用的IO调度算法, 通过内核启动参数来选择: kernel elevator=deadline 
+ <br> request_queue_t和gendisk一样需要使用内核API来分配并初始化,里面大量的成员不要直接操作, 此外, 请求队列如果要正常工作还需要绑定到一个处理函数中, 当请求队列不为空时, 处理函数会被回调, 这就是块设备驱动中处理请求的核心部分! 
+</blockquote> 
+<p>从驱动模型的角度来说, 块设备主要分为两类需要IO调度的和不需要IO调度的, 前者包括磁盘, 光盘等, 后者包括Flash, SD卡等, 为了保证模型的统一性 , Linux中对这两种使用同样的模型但是通过不同的API来完成上述的<strong>初始化</strong> 和<strong>绑定</strong></p> 
+<h4>有IO调度类设备API</h4> 
+<pre><code>//初始化+绑定
+struct request_queue *blk_init_queue(request_fn_proc *rfn, spinlock_t *lock)</code></pre> 
+<h4>无IO调度类设备API</h4> 
+<pre><code>//初始化
+struct request_queue *blk_alloc_queue(gfp_t gfp_mask) 
+
+//绑定
+ void blk_queue_make_request(struct request_queue *q, make_request_fn *mfn)</code></pre> 
+<h4>共用API</h4> 
+<p>针对请求队列的操作是块设备的一个核心任务, 其实质就是对请求队列操作函数的编写, 这个函数的主要功能就是从请求队列中获取请求并根据请求进行相应的操作 内核中已经提供了大量的API供该函数使用</p> 
+<pre><code>//清除请求队列, 通常在卸载函数中使用
+void blk_cleanup_queue(struct request_queue *q)  
+
+//从队列中去除请求
+blkdev_dequeue_request()
+
+//提取请求
+struct request *blk_fetch_request(struct request_queue *q)
+
+//从队列中去除请求
+struct request *blk_peek_request(struct request_queue *q)
+
+//启停请求队列, 当设备进入到不能处理请求队列的状态时,应通知通用块层
+void blk_stop_queue(struct request_queue *q) 
+void blk_start_queue(struct request_queue *q)</code></pre> 
+<h3>request</h3> 
+<pre><code>97 struct request {
+  98         struct list_head queuelist;
+ 104         struct request_queue *q;
+ 117         struct bio *bio;
+ 118         struct bio *biotail;
+ 119 
+ 120         struct hlist_node hash; /* merge hash */
+ 126         union {
+ 127                 struct rb_node rb_node; /* sort/lookup */
+ 128                 void *completion_data;
+ 129         };
+ 137         union {
+ 138                 struct {
+ 139                         struct io_cq            *icq;
+ 140                         void                    *priv[2];
+ 141                 } elv;
+ 142 
+ 143                 struct {
+ 144                         unsigned int            seq;
+ 145                         struct list_head        list;          
+ 146                         rq_end_io_fn            *saved_end_io;
+ 147                 } flush;
+ 148         };
+ 149 
+ 150         struct gendisk *rq_disk;
+ 151         struct hd_struct *part;         
+ 199 };</code></pre> 
+<blockquote> 
+ <strong>struct request</strong> 
+ <br> --98--&gt;将这个request挂接到链表的节点 
+ <br> --104--&gt;这个request从属的request_queue 
+ <br> --117--&gt;组成这个request的bio链表的头指针 
+ <br> --118--&gt;组成这个request的bio链表的尾指针 
+ <br> --120--&gt;内核hash表头指针 
+</blockquote> 
+<h3>bio</h3> 
+<p>bio用来描述单一的I/O请求，它记录了一次I/O操作所必需的相关信息，如用于I/O操作的数据缓存位置，，I/O操作的块设备起始扇区，是读操作还是写操作等等</p> 
+<pre><code>46 struct bio {
+ 47         struct bio              *bi_next;       /* request queue link */
+ 48         struct block_device     *bi_bdev;
+ 49         unsigned long           bi_flags;       /* status, command, etc */
+ 50         unsigned long           bi_rw;          /* bottom bits READ/WRITE,
+ 51                                                  * top bits priority
+ 52                                                  */
+ 54         struct bvec_iter        bi_iter;
+ 59         unsigned int            bi_phys_segments;
+ 65         unsigned int            bi_seg_front_size;
+ 66         unsigned int            bi_seg_back_size;
+ 68         atomic_t                bi_remaining;
+ 70         bio_end_io_t            *bi_end_io;
+ 72         void                    *bi_private;
+ 85         unsigned short          bi_vcnt;        /* how many bio_vec's */
+ 91         unsigned short          bi_max_vecs;    /* max bvl_vecs we can hold */
+104         struct bio_vec          bi_inline_vecs[0];
+105 };</code></pre> 
+<blockquote> 
+ <strong>struct bio</strong> 
+ <br> --47--&gt;指向链表中下一个bio的指针bi_next 
+ <br> --50--&gt;bi_rw低位表示读写READ/WRITE, 高位表示优先级 
+ <br> --90--&gt;bio对象包含bio_vec对象的数目 
+ <br> --91--&gt;这个bio能承载的最大的io_vec的数目 
+ <br> --95--&gt;该bio描述的第一个io_vec 
+ <br> --104--&gt;表示这个bio包含的bio_vec变量的数组，即这个bio对应的某一个page中的一"段"内存 
+</blockquote> 
+<h3>bio_vec</h3> 
+<p>描述指定page中的一块连续的区域，在bio中描述的就是一个page中的一个"段"(segment)</p> 
+<pre><code>25 struct bio_vec {   
+ 26         struct page     *bv_page;
+ 27         unsigned int    bv_len; 
+ 28         unsigned int    bv_offset;
+ 29 };</code></pre> 
+<blockquote> 
+ <strong>struct bio_vec</strong> 
+ <br> --26--&gt;描述的page 
+ <br> --27--&gt;描述的长度 
+ <br> --28--&gt;描述的起始地址偏移量 
+</blockquote> 
+<h3>bio_iter</h3> 
+<p>用于记录当前bvec被处理的情况，用于遍历bio</p> 
+<pre><code>31 struct bvec_iter {                                                        
+ 32         sector_t                bi_sector;      /* device address in 512 byt
+ 33                                                    sectors */
+ 34         unsigned int            bi_size;        /* residual I/O count */
+ 35 
+ 36         unsigned int            bi_idx;         /* current index into bvl_ve
+ 37 
+ 38         unsigned int            bi_bvec_done;   /* number of bytes completed
+ 39                                                    current bvec */
+ 40 };</code></pre> 
+<h3>__rq_for_each_bio()</h3> 
+<p>遍历一个request中的每一个bio</p> 
+<pre><code>738 #define __rq_for_each_bio(_bio, rq)     \                                
+ 739         if ((rq-&gt;bio))                  \    
+ 740                 for (_bio = (rq)-&gt;bio; _bio; _bio = _bio-&gt;bi_next)</code></pre> 
+<h3>bio_for_each_segment()</h3> 
+<p>遍历一个bio中的每一个segment</p> 
+<pre><code>242 #define bio_for_each_segment(bvl, bio, iter)                            \   
+243         __bio_for_each_segment(bvl, bio, iter, (bio)-&gt;bi_iter)</code></pre> 
+<h3>rq_for_each_segment()</h3> 
+<p>遍历一个request中的每一个segment</p> 
+<pre><code>742 #define rq_for_each_segment(bvl, _rq, _iter)                    \
+ 743         __rq_for_each_bio(_iter.bio, _rq)                       \
+ 744                 bio_for_each_segment(bvl, _iter.bio, _iter.iter)</code></pre> 
+<h3>小结</h3> 
+<p>遍历request_queue，绑定函数的一个必要的工作就是将request_queue中的数据取出, 所以遍历是必不可少的, 针对有IO调度的设备, 我们需要从中提取请求再继续操作, 对于没有IO调度的设备, 我们可以直接从request_queue中提取bio进行操作, 这两种处理函数的接口就不一样，下面的例子是对LDD3中的代码进行了修剪而来的，相应的API使用的是3.14版本，可以看出这两种模式的使用方法的不同。</p> 
+<blockquote>
+  sbull_init 
+ <br> └── setup_device 
+ <br> ├──sbull_make_request 
+ <br> │ ├──sbull_xfer_bio 
+ <br> │ └──sbull_transfer 
+ <br> └──sbull_full_request 
+ <br> ├──blk_fetch_request 
+ <br> └──sbull_xfer_request 
+ <br> ├── __rq_for_each_bio 
+ <br> └── sbull_xfer_bio 
+ <br> └──sbull_transfer 
+</blockquote> 
+<pre><code>/*
+ * Handle an I/O request.
+ * 实现扇区的读写
+ */
+static void sbull_transfer(struct sbull_dev *dev, unsigned long sector,unsigned long nsect, char *buffer, int write)
+{
+	unsigned long offset = sector*KERNEL_SECTOR_SIZE;
+	unsigned long nbytes = nsect*KERNEL_SECTOR_SIZE;
+	if (write)
+		memcpy(dev-&gt;data + offset, buffer, nbytes);
+	else
+		memcpy(buffer, dev-&gt;data + offset, nbytes);
+}
+/*
+ * Transfer a single BIO.
+ */
+static int sbull_xfer_bio(struct sbull_dev *dev, struct bio *bio)
+{
+	struct bvec_iter i;	//用来遍历bio_vec对象
+	struct bio_vec bvec;
+	sector_t sector = bio-&gt;bi_iter.bi_sector;
+	/* Do each segment independently. */
+	bio_for_each_segment(bvec, bio, i) { //bvec会遍历bio中每一个bio_vec对象 
+		char *buffer = __bio_kmap_atomic(bio, i, KM_USER0);
+		sbull_transfer(dev, sector, bio_cur_bytes(bio)&gt;&gt;9 ,buffer, bio_data_dir(bio) == WRITE);
+		sector += bio_cur_bytes(bio)&gt;&gt;9;
+		__bio_kunmap_atomic(bio, KM_USER0);
+	}
+	return 0; /* Always "succeed" */
+}
+
+/*
+ * Transfer a full request.
+ */
+static int sbull_xfer_request(struct sbull_dev *dev, struct request *req)
+{
+	struct bio *bio;
+	int nsect = 0;
+  
+	__rq_for_each_bio(bio, req) { 
+		sbull_xfer_bio(dev, bio);
+		nsect += bio-&gt;bi_size/KERNEL_SECTOR_SIZE;
+	}
+	return nsect;
+}
+
+/*
+ * Smarter request function that "handles clustering".*/
+static void sbull_full_request(struct request_queue *q)
+{
+	struct request *req;
+	int nsect;
+	struct sbull_dev *dev ;
+	int i = 0;
+	while ((req = blk_fetch_request(q)) != NULL) {
+		dev = req-&gt;rq_disk-&gt;private_data;
+		nsect = sbull_xfer_request(dev, req);
+       	__blk_end_request(req, 0, (nsect&lt;&lt;9)); 
+		printk ("i = %d\n", ++i);
+	}
+}
+
+//The direct make request version
+static void sbull_make_request(struct request_queue *q, struct bio *bio)
+{
+	struct sbull_dev *dev = q-&gt;queuedata;
+	int status;
+
+	status = sbull_xfer_bio(dev, bio);
+	bio_endio(bio, status);  
+
+	return;
+}
+/*
+ * The device operations structure.
+ */
+static struct block_device_operations sbull_ops = {
+	.owner  = THIS_MODULE,
+	.open   = sbull_open,
+	.release= sbull_release,
+	.getgeo	= sbull_getgeo,
+};
+
+/*
+ * Set up our internal device.
+ */
+static void setup_device(struct sbull_dev *dev, int which)
+{
+	/*
+	 * Get some memory.
+	 */
+	memset (dev, 0, sizeof (struct sbull_dev));
+	dev-&gt;size = nsectors * hardsect_size;
+	dev-&gt;data = vmalloc(dev-&gt;size);
+
+	
+	/*
+	 * The I/O queue, depending on whether we are using our own
+	 * make_request function or not.
+	 */
+	switch (request_mode) {
+	case RM_NOQUEUE:
+		dev-&gt;queue = blk_alloc_queue(GFP_KERNEL);
+		blk_queue_make_request(dev-&gt;queue, sbull_make_request);
+		break;
+
+	case RM_FULL:
+		dev-&gt;queue = blk_init_queue(sbull_full_request, &amp;dev-&gt;lock);
+		break;
+	}
+	dev-&gt;queue-&gt;queuedata = dev;
+	/*
+	 * And the gendisk structure.
+	 */
+	dev-&gt;gd = alloc_disk(SBULL_MINORS);
+	dev-&gt;gd-&gt;major = sbull_major;
+	dev-&gt;gd-&gt;first_minor = which*SBULL_MINORS;
+	dev-&gt;gd-&gt;fops = &amp;sbull_ops;
+	dev-&gt;gd-&gt;queue = dev-&gt;queue;
+	dev-&gt;gd-&gt;private_data = dev;
+	snprintf (dev-&gt;gd-&gt;disk_name, 32, "sbull%c", which + 'a');
+	set_capacity(dev-&gt;gd, nsectors*(hardsect_size/KERNEL_SECTOR_SIZE));
+	add_disk(dev-&gt;gd);
+	return;
+}
+
+static int __init sbull_init(void)
+{
+	int i;
+	/*
+	 * Get registered.
+	 */
+	sbull_major = register_blkdev(sbull_major, "sbull");
+	/*
+	 * Allocate the device array, and initialize each one.
+	 */
+	Devices = (struct sbull_dev *)kmalloc(ndevices*sizeof (struct sbull_dev), GFP_KERNEL);
+	for (i = 0; i &lt; ndevices; i++) 
+		setup_device(Devices + i, i);
+	return 0;
+}</code></pre> 
+<p><strong>内核资料直通车：</strong><a href="https://link.zhihu.com/?target=https%3A//docs.qq.com/doc/DUGZVQk1qWVBHTEl3" rel="nofollow" title="Linux内核源码技术学习路线+视频教程代码资料">Linux内核源码技术学习路线+视频教程代码资料</a></p> 
+<p><strong>学习直通车：</strong><a href="https://link.zhihu.com/?target=https%3A//ke.qq.com/course/4032547%3FflowToken%3D1044374" rel="nofollow" title="Linux内核源码/内存调优/文件系统/进程管理/设备驱动/网络协议栈">Linux内核源码/内存调优/文件系统/进程管理/设备驱动/网络协议栈</a></p> 
+<p>原文作者：<a href="https://www.zhihu.com/people/linuxbian-cheng-zhan" rel="nofollow" title="精通Linux内核">精通Linux内核</a></p> 
+<p>原文地址：<a href="https://zhuanlan.zhihu.com/p/618765796" rel="nofollow" title="Linux块设备IO子系统_驱动模型 - 知乎">Linux块设备IO子系统_驱动模型 - 知乎</a>（版权归原文作者所有，侵权留言联系删除）</p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/44a510d3c391444c6d3c592cd76b29a4/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">【python基础】多方法实现1-100累加求和</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/eb5938e439b44105376f12e29b80e6d8/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">django开发小程序实现openid登录功能</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

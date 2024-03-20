@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>mysql iblogfile_mysql的innodb中事务日志ib_logfile概念、作用、特点介绍 - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="mysql iblogfile_mysql的innodb中事务日志ib_logfile概念、作用、特点介绍" />
+<meta property="og:description" content="mysql的innodb中事务日志ib_logfile(0/1)
+概念：
+事务日志或称redo日志，在mysql中默认以ib_logfile0,ib_logfile1名称存在,可以手工修改参数，调节开启几组日志来服务于当前mysql数据库,mysql采用顺序，循环写方式，每开启一个事务时，会把一些相关信息记录事务日志中(记录对数据文件数据修改的物理位置或叫做偏移量);
+这个系列文件个数由参数innodb_log_files_in_group控制，若设置为4，则命名为ib_logfile0~3。
+这些文件的写入是顺序、循环写的，logfile0写完从logfile1继续，logfile3写完则logfile0继续。
+作用:
+在系统崩溃重启时，作事务重做；在系统正常时，每次checkpoint时间点，会将之前写入事务应用到数据文件中。
+Ib_logfile的checkpoint field
+实际上不仅要记录checkpoint做到哪儿(LOG_CHECKPOINT_LSN)，还要记录用到了哪个位置(LOG_CHECKPOINT_OFFSET)等其他信息。所以在ib_logfile0的头部预留了空间，用于记录这些信息。
+因此即使使用后面的logfile，每次checkpoint完成后，ib_logfile0都是要更新的。同时你会发现所谓的顺序写盘，也并不是绝对的
+相关的一些数字
+a) InnoDB留了两个checkpoint filed，按照注释的解释，目的是为了能够“write alternately”
+b) 每个checkpint field需要的大小空间为304字节。(相关定义在log0log.h)
+c) 第一个checkpoint的起始位置在ib_logfile0的第512字节(OS_FILE_LOG_BLOCK_SIZE)处；
+d) 第二个在1536 (3 * OS_FILE_LOG_BLOCK_SIZE)字节处。
+特点：
+redo log只是记录所有innodb表数据的变化。
+redo log只是记录正在执行中的dml以及ddl语句。
+redo log可以作为异常down机或者介质故障后的数据恢复使用
+引入一个问题：
+在m/s环境中,innodb写完ib_logfile后,服务异常关闭，会不会主库能用ib_logfile恢复数据，而
+binlog没写导致从库同步时少了这个事务？从而导致主从不一致;
+redo日志写入方式：1.ib_logfile写入当前事务更新数据，并标上事务准备trx_prepare2.写入bin-log3.ib_logfile当前事务提交提交trx_commit
+恢复方式:
+如果ib_logfile已经写入事务准备,那么在恢复过程中，会依据bin-log中该事务是否存在恢复数据。
+假设:1)结束后异常,因没有写入bin-log，从库不会同步这个事务，主库上，重启时，在恢复日志中这个事务没有commit，即rollback这个事务.2)结束后异常，这会bin-log已经写入，从库会同步这个事务。主库依据恢复日志和bin-log，也正常恢复此事务
+综上描述:
+bin-log写入完成，主从会正常完成事务；bin-log没有写入，主从库rollback事务;不会出现主从库不一致问题.
+相关参数(全局&amp;静态):
+innodb_log_buffer_size
+innodb_log_file_size
+innodb_log_files_in_group
+innodb_log_group_home_dir
+innodb_flush_log_at_trx_commit
+innodb_log_buffer_size:
+事务日志缓存区,可设置1M~8M,默认8M,延迟事务日志写入磁盘,把事务日志缓存区想象形如&#34;漏斗&#34;状,会不停向磁盘记录缓存的日志记录,而何时写入通过参数innodb_flush_log_at_trx_commit控制,稍后解释,启用大的事务日志缓存,可以将完整运行大事务日志，
+暂时存放在事务缓存区中,不必(事务提交前)写入磁盘保存,同时也起到节约磁盘空间占用;
+innodb_log_file_size:控制事务日志ib_logfile的大小,范围5MB~4G；所有事务日志ib_logfile0&#43;ib_logfile1&#43;..累加大小不能超过4G，事务日志大，checkpoint会少,节省磁盘IO，但是大的事务日志意味着数据库crash时，恢复起来较慢.
+引入问题:修改该参数大小，导致ib_logfile文件的大小和之前存在的文件大小不匹配
+解决方式：在干净关闭数据库情况下，删除ib_logfile，而后重启数据库，会自行创建该文件;
+innodb_log_files_in_group:DB中设置几组事务日志，默认是2；
+innodb_log_group_home_dir:事务日志存放目录，不设置，ib_logfile0...存在在数据文件目录下
+innodb_flush_log_at_trx_commit：控制事务日志何时写盘和刷盘，安全递增：0,2,1事务缓存区:log_buffer;0:每秒一次事务缓存区刷新到文件系统，同时文件系统到磁盘同步，但是事务提交时，不会触发log_buffer到文件系统同步；2:每次事务提交时,会把事务缓存区日志刷新到文件系统中去，且每秒文件系统到磁盘同步;1:每次事务提交时刷新到磁盘，最安全;
+适用环境:0:磁盘IO能力有限,安全方便较差,无复制或复制延迟可以接受，如日志性业务，mysql损坏丢失1s事务数据;2:数据安全性有要求，可以丢失一点事务日志，复制延迟也可以接受，OS损坏时才可能丢失数据;1:数据安全性要求非常高，且磁盘IO能力足够支持业务，如充值消费，敏感业务;
+引入ib_logfile的写入策略
+1、基本概念
+a)、ib_logfile文件个数由innodb_log_files_in_group配置决定，若为2，则在datadir目录下有两个文件，命令从0开始，分别为ib_logfile0和ib_logfile.
+b)、文件为顺序写入，当达到最后一个文件末尾时，会从第一个文件开始顺序复用。
+c)、lsn: Log Sequence Number，是一个递增的整数。 Ib_logfile中的每次写入操作都包含至少1个log，每个log都带有一个lsn。在内存page修复过程中，只有大于page_lsn的log才会被使用。
+d)、lsn的保存在全局变量log_sys中。递增数值等于每个log的实际内容长度。即如果新增的一个log长度是len，则log_sys-&gt;lsn &#43;= len." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/058630f88a86361877bc2f14edde4936/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2021-01-21T00:51:28+08:00" />
+<meta property="article:modified_time" content="2021-01-21T00:51:28+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">mysql iblogfile_mysql的innodb中事务日志ib_logfile概念、作用、特点介绍</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <div style="font-size:16px;"> 
+ <p>mysql的innodb中事务日志ib_logfile(0/1)</p> 
+ <p>概念：</p> 
+ <p>事务日志或称redo日志，在mysql中默认以ib_logfile0,ib_logfile1名称存在,可以手工修改参数，调节开启几组日志来服务于当前mysql数据库,mysql采用顺序，循环写方式，每开启一个事务时，会把一些相关信息记录事务日志中(记录对数据文件数据修改的物理位置或叫做偏移量);</p> 
+ <p>这个系列文件个数由参数innodb_log_files_in_group控制，若设置为4，则命名为ib_logfile0~3。</p> 
+ <p>这些文件的写入是顺序、循环写的，logfile0写完从logfile1继续，logfile3写完则logfile0继续。</p> 
+ <p>作用:</p> 
+ <p>在系统崩溃重启时，作事务重做；在系统正常时，每次checkpoint时间点，会将之前写入事务应用到数据文件中。</p> 
+ <p>Ib_logfile的checkpoint field</p> 
+ <p>实际上不仅要记录checkpoint做到哪儿(LOG_CHECKPOINT_LSN)，还要记录用到了哪个位置(LOG_CHECKPOINT_OFFSET)等其他信息。所以在ib_logfile0的头部预留了空间，用于记录这些信息。</p> 
+ <p>因此即使使用后面的logfile，每次checkpoint完成后，ib_logfile0都是要更新的。同时你会发现所谓的顺序写盘，也并不是绝对的</p> 
+ <p>相关的一些数字</p> 
+ <p>a) InnoDB留了两个checkpoint filed，按照注释的解释，目的是为了能够“write alternately”</p> 
+ <p>b) 每个checkpint field需要的大小空间为304字节。(相关定义在log0log.h)</p> 
+ <p>c) 第一个checkpoint的起始位置在ib_logfile0的第512字节(OS_FILE_LOG_BLOCK_SIZE)处；</p> 
+ <p>d) 第二个在1536 (3 * OS_FILE_LOG_BLOCK_SIZE)字节处。</p> 
+ <p>特点：</p> 
+ <p>redo log只是记录所有innodb表数据的变化。</p> 
+ <p>redo log只是记录正在执行中的dml以及ddl语句。</p> 
+ <p>redo log可以作为异常down机或者介质故障后的数据恢复使用</p> 
+ <p>引入一个问题：</p> 
+ <p>在m/s环境中,innodb写完ib_logfile后,服务异常关闭，会不会主库能用ib_logfile恢复数据，而</p> 
+ <p>binlog没写导致从库同步时少了这个事务？从而导致主从不一致;</p> 
+ <p>redo日志写入方式：1.ib_logfile写入当前事务更新数据，并标上事务准备trx_prepare2.写入bin-log3.ib_logfile当前事务提交提交trx_commit</p> 
+ <p>恢复方式:</p> 
+ <p>如果ib_logfile已经写入事务准备,那么在恢复过程中，会依据bin-log中该事务是否存在恢复数据。</p> 
+ <p>假设:1)结束后异常,因没有写入bin-log，从库不会同步这个事务，主库上，重启时，在恢复日志中这个事务没有commit，即rollback这个事务.2)结束后异常，这会bin-log已经写入，从库会同步这个事务。主库依据恢复日志和bin-log，也正常恢复此事务</p> 
+ <p>综上描述:</p> 
+ <p>bin-log写入完成，主从会正常完成事务；bin-log没有写入，主从库rollback事务;不会出现主从库不一致问题.</p> 
+ <p>相关参数(全局&amp;静态):</p> 
+ <p>innodb_log_buffer_size</p> 
+ <p>innodb_log_file_size</p> 
+ <p>innodb_log_files_in_group</p> 
+ <p>innodb_log_group_home_dir</p> 
+ <p>innodb_flush_log_at_trx_commit</p> 
+ <p>innodb_log_buffer_size:</p> 
+ <p>事务日志缓存区,可设置1M~8M,默认8M,延迟事务日志写入磁盘,把事务日志缓存区想象形如"漏斗"状,会不停向磁盘记录缓存的日志记录,而何时写入通过参数innodb_flush_log_at_trx_commit控制,稍后解释,启用大的事务日志缓存,可以将完整运行大事务日志，</p> 
+ <p>暂时存放在事务缓存区中,不必(事务提交前)写入磁盘保存,同时也起到节约磁盘空间占用;</p> 
+ <p>innodb_log_file_size:控制事务日志ib_logfile的大小,范围5MB~4G；所有事务日志ib_logfile0+ib_logfile1+..累加大小不能超过4G，事务日志大，checkpoint会少,节省磁盘IO，但是大的事务日志意味着数据库crash时，恢复起来较慢.</p> 
+ <p>引入问题:修改该参数大小，导致ib_logfile文件的大小和之前存在的文件大小不匹配</p> 
+ <p>解决方式：在干净关闭数据库情况下，删除ib_logfile，而后重启数据库，会自行创建该文件;</p> 
+ <p>innodb_log_files_in_group:DB中设置几组事务日志，默认是2；</p> 
+ <p>innodb_log_group_home_dir:事务日志存放目录，不设置，ib_logfile0...存在在数据文件目录下</p> 
+ <p>innodb_flush_log_at_trx_commit：控制事务日志何时写盘和刷盘，安全递增：0,2,1事务缓存区:log_buffer;0:每秒一次事务缓存区刷新到文件系统，同时文件系统到磁盘同步，但是事务提交时，不会触发log_buffer到文件系统同步；2:每次事务提交时,会把事务缓存区日志刷新到文件系统中去，且每秒文件系统到磁盘同步;1:每次事务提交时刷新到磁盘，最安全;</p> 
+ <p>适用环境:0:磁盘IO能力有限,安全方便较差,无复制或复制延迟可以接受，如日志性业务，mysql损坏丢失1s事务数据;2:数据安全性有要求，可以丢失一点事务日志，复制延迟也可以接受，OS损坏时才可能丢失数据;1:数据安全性要求非常高，且磁盘IO能力足够支持业务，如充值消费，敏感业务;</p> 
+ <p>引入ib_logfile的写入策略</p> 
+ <p>1、基本概念</p> 
+ <p>a)、ib_logfile文件个数由innodb_log_files_in_group配置决定，若为2，则在datadir目录下有两个文件，命令从0开始，分别为ib_logfile0和ib_logfile.</p> 
+ <p>b)、文件为顺序写入，当达到最后一个文件末尾时，会从第一个文件开始顺序复用。</p> 
+ <p>c)、lsn: Log Sequence Number，是一个递增的整数。 Ib_logfile中的每次写入操作都包含至少1个log，每个log都带有一个lsn。在内存page修复过程中，只有大于page_lsn的log才会被使用。</p> 
+ <p>d)、lsn的保存在全局变量log_sys中。递增数值等于每个log的实际内容长度。即如果新增的一个log长度是len，则log_sys-&gt;lsn += len.</p> 
+ <p>e)、ib_logfile每次写入以512(OS_FILE_LOG_BLOCK_SIZE)字节为单位。实际写入函数 log_group_write_buf (log/log0log.c)</p> 
+ <p>f)、每次写盘后是否flush，由参数innodb_flush_log_at_trx_commit控制。</p> 
+ <p>2、log_sys介绍</p> 
+ <p>log_sys是一个全局内存结构。以下说明几个成员的意义。</p> 
+ <p>lsn</p> 
+ <p>表示已经分配的最后一个lsn的值。</p> 
+ <p>written_to_all_lsn</p> 
+ <p>n表示实际已经写盘的lsn。需要这个值是因为并非每次生成log后就写盘。</p> 
+ <p>flushed_to_disk_lsn</p> 
+ <p>表示刷到磁盘的lsn。需要这个值是因为并非每次写盘后就flush。</p> 
+ <p>buf</p> 
+ <p>待写入的内容保存在buf中</p> 
+ <p>buf_size</p> 
+ <p>buf的大小。由配置中innodb_log_buffer_size决定，实际大小为innodb_log_buffer_size /16k * 16k。</p> 
+ <p>buf_next_to_write</p> 
+ <p>buf中下一个要写入磁盘的位置</p> 
+ <p>buf_free</p> 
+ <p>buf中实际内容的最后位置。当buf_free&gt; buf_next_to_write时，说明内存中还有数据未写盘。</p> 
+ <p>3、相关更新</p> 
+ <p>用一个简单的更新语句来说明log_sys以及ib_logfile的更新内容的过程。假设我们的更新只涉及到非索引的固定长度字段。</p> 
+ <p>a) 在bufferpool中写入undo log。 对于一个单一的语句，需要先创建一个undolog头。</p> 
+ <p>b) 在bufferpool中写入undo log的实际内容。</p> 
+ <p>c) 在log_sys-&gt;buf中写入buffer page的更新内容。此处保存了更新的完整信息。</p> 
+ <p>d) 在log_sys-&gt;buf中写入启动事务(trx_prepare)的日志</p> 
+ <p>e) 将c、d更新的log内容写入ib_logfile中。</p> 
+ <p>f) 在log_sys-&gt;buf中写入事务结束(trx_commit)的日志</p> 
+ <p>g) 将f步骤的log内容写入ib_logfile中。</p> 
+ <p>4、说明</p> 
+ <p>a) 完成上述所有操作时，数据文件还没有更新。</p> 
+ <p>b) 每次写入log_sys-&gt;buf时同时更新lsn和buf_free。 每次写ib_logfile时同时更新written_to_all_lsn和buf_next_to_write；</p> 
+ <p>c) 每次写ib_logfile时以512字节为对齐，如需写入600字节，则实际写入1k。写到最后一个文件末尾则从第一个文件重复使用。</p> 
+ <p>d) 从上述流程看到，在a～d过程中若出现异常关闭，由于没有写入到磁盘中，因此整个事务放弃；若在e刚完成时出现异常关闭，虽然事务内容已经写盘，但没有提交。在重启恢复的时候，发现这个事务还没有提交，逻辑上整个事务放弃。 (重启日志中会有Found 1 prepared transaction(s) in InnoDB字样)。在g完成后出现异常关闭，则能够在重启恢复中正常提交。</p> 
+ <p>在e和f之间会写mysql的bin-log，若bin-log写完前异常关闭，事务无效，bin-log写入成功后，则异常重启后能够根据bin-log恢复事务的修改。</p> 
+ <p>e) 若涉及到索引更新，在步骤c之后会增加索引更新的log。由于索引可能有merge过程，因此在merge过程中会另外增加写入一个log。但事务完全提交仍在步骤g中。索引的更新由于已经写盘，并不会因此丢失。</p> 
+ <p>参考文档：</p> 
+</div>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/a3089590d5bb6eb549552e643a4e69c2/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">骁龙888在AI-Benchmark榜单上发布，引领下一轮AI算力的军备竞赛？</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/9c1ca75144e7165d81225121584928ac/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">ivms4200门禁怎么下发权限_门禁太难？小编整理8个基础知识点</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

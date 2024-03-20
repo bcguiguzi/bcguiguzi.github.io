@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>wayland简介 - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="wayland简介" />
+<meta property="og:description" content="Wayland Wayland旨在作为X的更简单的替代品，更易于开发和维护。
+Wayland复用了所有Linux内核的图形、输入输出技术：KMS、evdev，因此已支持的驱动可以直接拿来用。Wayland没有传统的Server/Client的模式，取而代之的是：Compositor/ClientWayland是供合成器与其客户对话的协议，以及该协议的C库实现Wayland合成器可以是在Linux内核模式设置和evdev输入设备上运行的独立显示服务器 了解wayland之前需要先了解X Linux 本身是没有图形化界面的，所谓的图形化界面系统只不过中 Linux 下的应用程序。
+什么是 X X 协议由 X server 和 X client 组成。X server 管理主机上与显示相关的硬件设置（如显卡、硬盘、鼠标等），它负责屏幕画面的绘制与显示，以及将输入设置（如键盘、鼠标）的动作告知 X client。X client (即 X 应用程序) 则主要负责事件的处理。 大多数基于Linux和Unix的系统都依赖X作为用于构建位图图形界面的底层协议。在这些系统上，X堆栈已增长为可以包含在客户端库，帮助程序库或主机操作系统内核中的功能。
+对PCI资源管理，显示配置管理，直接渲染和内存管理等功能的支持已集成到X堆栈中，从而产生了一些局限性，例如对独立应用程序的有限支持，在其他项目中的重复，以及将多个元素组合在一起的系统的高度复杂性（例如fb驱动程序和X驱动程序之间的内存映射处理或VT切换)。 而且，X已经成长为合并了诸如屏幕外渲染和场景合成之类的功能，但受到X体系结构的限制,例如，composition的X实现增加了其他上下文切换，并使输入重定向之类的事情变得困难。
+X的工作流程:
+内核从输入设备获取事件，并通过evdev输入驱动程序将其发送到X。内核通过驱动设备并将不同的设备特定事件协议转换为linux evdev输入事件标准来完成所有艰苦的工作。X服务器确定事件影响哪个窗口，并将其发送到在该窗口上为该事件选择的客户端。X服务器实际上并不知道如何正确执行此操作，因为屏幕上的窗口位置是由合成器控制的，并且可能以X服务器无法理解的许多方式进行转换（缩小，旋转，摆动，等等）。客户查看事件并决定要做什么。UI通常必须响应事件而改变-也许单击了复选框或指针输入了必须突出显示的按钮。因此，客户端将渲染请求发送回X服务器。X服务器接收到渲染请求后，会将其发送给驱动程序，以使其对硬件进行编程以进行渲染。X服务器还计算渲染的边界区域，并将其作为损伤事件发送到合成器。损坏事件告诉合成器窗口中发生了某些更改，并且必须重新合成可见该窗口的屏幕部分。合成器负责根据其场景图和X窗口的内容渲染整个屏幕内容。但是，它必须通过X服务器来呈现它。X服务器从合成器接收渲染请求，然后将合成器后缓冲区复制到前缓冲区或进行页面翻转。在一般情况下，X服务器必须执行此步骤，以便它可以考虑重叠的窗口，这可能需要裁剪并确定是否可以翻页。但是，对于始终为全屏显示的合成器，这是另一个不必要的上下文切换。 如上所述，这种方法存在一些问题。X服务器没有信息来决定哪个窗口应该接收事件，它也不能将屏幕坐标转换为窗口局部坐标。即使X将屏幕的最终绘制工作移交给了合成管理器，X仍然控制着前缓冲区和模式设置。 X服务器用于处理的大多数复杂性现在都可以在内核或自包含的库中找到（KMS，evdev，mesa，fontconfig，freetype，cairo，Qt等）。
+通常，X服务器现在只是一个中间人，它在应用程序和合成器之间引入了一个额外的步骤，在合成器和硬件之间引入了一个额外的步骤。
+walyland工作流程
+在Wayland中，合成器是显示服务器。我们将KMS和evdev的控制权转移给合成器。wayland协议允许合成器将输入事件直接发送到客户端，并让客户端将损坏事件直接发送到合成器：
+内核获取一个事件，并将其发送到合成器。这与X情况类似，这非常好，因为我们可以重用内核中的所有输入驱动程序。合成器通过其场景图进行查看，以确定应该接收该事件的窗口。场景图与屏幕上的内容相对应，并且合成器了解它可能已应用于场景图中的元素的转换。因此，合成器可以选择右窗口，并通过应用逆变换将屏幕坐标转换为窗口局部坐标。可以应用于窗口的转换类型仅限于合成器可以执行的操作，只要它可以计算输入事件的逆转换即可。与X情况一样，当客户端收到事件时，它会更新UI以作为响应。但是在路途中，渲染发生在客户端中，而客户端只是向合成器发送请求以指示更新的区域。合成器从其客户端收集损坏请求，然后重新合成屏幕。然后，合成器可以直接发出ioctl来调度带有KMS的翻页。 walyland渲染
+在上面的概述中遗漏的细节之一是客户如何在Wayland下实际渲染。通过从图片中删除X服务器，还删除了X客户端通常呈现的机制。但是已经在X下的DRI2中使用了另一种机制：直接渲染。通过直接渲染，客户端和服务器共享视频内存缓冲区。客户端链接到诸如OpenGL之类的渲染库，该库知道如何对硬件进行编程并将其直接渲染到缓冲区中。
+当合成器合成桌面时，合成器又可以获取该缓冲区并将其用作纹理。初始设置后，客户端仅需要告诉合成器要使用哪个缓冲区以及何时何地向其提供了新内容。
+这为应用程序留下了两种更新窗口内容的方法：
+将新内容呈现到新缓冲区中，并告知合成器使用该内容代替旧缓冲区。应用程序可以在每次需要更新窗口内容时分配一个新的缓冲区，也可以保留两个（或多个）缓冲区并在它们之间循环。缓冲区管理完全在应用程序控制之下。将新内容呈现到以前告诉合成器使用的缓冲区中。
+尽管可以直接渲染到与合成器共享的缓冲区中，但这可能会与合成器竞争。合成器重新绘制桌面可能会中断重新绘制窗口内容。如果应用程序在清除窗口后但呈现内容之前被中断，则合成器将从空白缓冲区进行贴图。结果是应用程序窗口将在空白窗口或半渲染内容之间闪烁。
+避免这种情况的传统方法是将新内容呈现到后台缓冲区，然后从那里复制到合成器表面。后台缓冲区可以动态分配，大小足以容纳新内容，或者应用程序可以保留缓冲区。同样，这在应用程序控制之下。
+无论哪种情况，应用程序都必须告诉合成器表面的哪个区域容纳新内容。当应用程序直接呈现到共享缓冲区时，需要注意合成器存在新内容。而且，在交换缓冲区时，合成器不假定任何更改，并且需要应用程序发出请求才能重新绘制桌面。即使应用程序将新缓冲区传递给合成器，该缓冲区只有一小部分也可能会有所不同，例如闪烁的光标或微调框。
+合成器的类型
+合成器的类型不同，具体取决于它们在操作系统的总体体系结构中所扮演的角色。例如，系统合成器可用于引导系统，处理多用户切换，可能的控制台终端仿真器等。一个不同的合成器，一个会话合成器 将提供实际的桌面环境。不同类型的合成器可以通过多种方式共存。
+系统合成器: 系统合成器可以从早期启动一直运行到关机为止。它有效地替代了内核vt系统，并可以与系统的图形启动设置和多座支持配合使用。
+系统合成器可以托管不同类型的会话合成器，并让我们在多个会话之间切换（快速用户切换或安全/个人桌面切换）。
+系统合成器的Linux实现通常使用libudev，例如egl，kms，evdev和cairo。
+对于全屏客户端，系统合成器可以重新编程视频扫描地址，以直接从客户端提供的缓冲区中读取。
+会话合成器 会话合成器负责单个用户会话。如果存在系统合成器，则会话合成器将嵌套在系统合成器下运行。嵌套是可行的，因为该协议是异步的。当涉及嵌套时，往返将太昂贵。如果没有系统合成器，则会话合成器可以直接在硬件上运行。
+嵌入式合成器 X11允许客户端从其他客户端嵌入窗口，或者让客户端将其他客户端渲染的像素图内容复制到其窗口中。这通常用于面板中的applet，浏览器插件等。Wayland不允许直接这样做，但是客户端可以带外传送GEM缓冲区名称，例如，使用D-Bus，或在面板启动小程序时使用命令行参数。另一种选择是使用嵌套的Wayland实例。为此，Wayland服务器必须是主机应用程序链接到的库。然后，主机应用程序会将Wayland服务器套接字名称传递给嵌入式应用程序，并且需要实现Wayland合成器接口。主机应用程序将客户端表面作为其窗口的一部分进行合成，也就是说，在网页或面板中。嵌套Wayland服务器的好处在于，它提供嵌入式客户端向主机通知缓冲区更新所需的请求，以及用于转发来自主机应用程序的输入事件的机制。
+这种设置的一个示例是将Flash Player嵌入为专用合成器的firefox。
+Wayland协议和操作模型
+Wayland协议是一种异步的面向对象的协议。所有请求都是对某个对象的方法调用。该请求包括一个对象ID，该ID唯一地标识服务器上的一个对象。每个对象都实现一个接口，并且请求包括一个操作码，该操作码标识接口中要调用的方法。
+该协议是基于消息的。客户端发送到服务器的消息称为请求。从服务器到客户端的消息称为事件。一条消息包含许多参数，每个参数都有特定的类型。
+此外，该协议可以指定枚举的准名称来特定数字枚举值。这些本质上仅是描述性的：在有线格式级别，枚举只是整数。但是它们还具有辅助目的，以增强类型安全性或添加用于语言绑定或其他此类代码的上下文。仅在引入这些属性之前编写的代码，在此之后仍然有效时，才支持后一种用法。换句话说，添加枚举不会破坏API。
+枚举可以仅定义为一组整数，也可以定义为位域。这是通过枚举定义中的布尔值属性指定的。如果此属性为true，则打算主要使用按位操作来访问该枚举，例如，当任意多个枚举可以一起进行“或”运算时；如果为false，或者省略了属性，则枚举参数只是一系列数值。
+服务器将事件发送回客户端，每个事件都是从一个对象发出的。事件可能是错误条件。事件包括对象ID和事件操作码，客户端可以从中确定事件的类型。事件是响应请求（在这种情况下，请求和事件构成往返）而生成的，或者是在服务器状态更改时自发生成的。
+状态更改时发出事件。客户端必须侦听这些更改并缓存状态。不需要查询服务器状态。
+服务器将广播许多全局对象的存在，而这些对象又将广播其当前状态。" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/07a1505da1416ab31da79e023ec5ab48/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2020-06-20T15:20:23+08:00" />
+<meta property="article:modified_time" content="2020-06-20T15:20:23+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">wayland简介</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <h2><a id="Wayland_1"></a>Wayland</h2> 
+<hr> 
+<p><strong>Wayland</strong>旨在作为<strong>X</strong>的更简单的替代品，更易于开发和维护。</p> 
+<blockquote> 
+ <ul><li>Wayland复用了所有Linux内核的图形、输入输出技术：KMS、evdev，因此已支持的驱动可以直接拿来用。</li><li>Wayland没有传统的Server/Client的模式，取而代之的是：Compositor/Client</li><li>Wayland是供合成器与其客户对话的协议，以及该协议的C库实现</li><li>Wayland合成器可以是在Linux内核模式设置和evdev输入设备上运行的独立显示服务器</li></ul> 
+</blockquote> 
+<hr> 
+<hr> 
+<h4><a id="waylandXhttpswwwcnblogscomlixiaochunp8547815html_20"></a><a href="https://www.cnblogs.com/lixiaochun/p/8547815.html" rel="nofollow">了解wayland之前需要先了解X</a></h4> 
+<blockquote> 
+ <p>Linux 本身是没有图形化界面的，所谓的图形化界面系统只不过中 Linux 下的应用程序。</p> 
+</blockquote> 
+<h4><a id="_X_24"></a>什么是 X</h4> 
+<blockquote> 
+ <ul><li>X 协议由 X server 和 X client 组成。</li><li>X server 管理主机上与显示相关的硬件设置（如显卡、硬盘、鼠标等），它负责屏幕画面的绘制与显示，以及将输入设置（如键盘、鼠标）的动作告知 X client。</li><li>X client (即 X 应用程序) 则主要负责事件的处理。</li></ul> 
+</blockquote> 
+<ul><li>大多数基于Linux和Unix的系统都依赖X作为用于构建位图图形界面的底层协议。在这些系统上，X堆栈已增长为可以包含在客户端库，帮助程序库或主机操作系统内核中的功能。<br> 对PCI资源管理，显示配置管理，直接渲染和内存管理等功能的支持已集成到X堆栈中，从而产生了一些局限性，例如对独立应用程序的有限支持，在其他项目中的重复，以及将多个元素组合在一起的系统的高度复杂性（例如fb驱动程序和X驱动程序之间的内存映射处理或VT切换)。</li></ul> 
+<p>而且，X已经成长为合并了诸如屏幕外渲染和场景合成之类的功能，<strong>但受到X体系结构的限制</strong>,例如，composition的X实现增加了其他上下文切换，并使输入重定向之类的事情变得困难。</p> 
+<p><strong>X的工作流程:</strong></p> 
+<blockquote> 
+ <ul><li>内核从输入设备获取事件，并通过evdev输入驱动程序将其发送到X。内核通过驱动设备并将不同的设备特定事件协议转换为linux evdev输入事件标准来完成所有艰苦的工作。</li><li>X服务器确定事件影响哪个窗口，并将其发送到在该窗口上为该事件选择的客户端。X服务器实际上并不知道如何正确执行此操作，因为屏幕上的窗口位置是由合成器控制的，并且可能以X服务器无法理解的许多方式进行转换（缩小，旋转，摆动，等等）。</li><li>客户查看事件并决定要做什么。UI通常必须响应事件而改变-也许单击了复选框或指针输入了必须突出显示的按钮。因此，客户端将渲染请求发送回X服务器。</li><li>X服务器接收到渲染请求后，会将其发送给驱动程序，以使其对硬件进行编程以进行渲染。X服务器还计算渲染的边界区域，并将其作为损伤事件发送到合成器。</li><li>损坏事件告诉合成器窗口中发生了某些更改，并且必须重新合成可见该窗口的屏幕部分。合成器负责根据其场景图和X窗口的内容渲染整个屏幕内容。但是，它必须通过X服务器来呈现它。</li><li>X服务器从合成器接收渲染请求，然后将合成器后缓冲区复制到前缓冲区或进行页面翻转。在一般情况下，X服务器必须执行此步骤，以便它可以考虑重叠的窗口，这可能需要裁剪并确定是否可以翻页。但是，对于始终为全屏显示的合成器，这是另一个不必要的上下文切换。</li></ul> 
+</blockquote> 
+<p>如上所述，这种方法存在一些<strong>问题</strong>。X服务器没有信息来决定哪个窗口应该接收事件，它也不能将屏幕坐标转换为窗口局部坐标。<strong>即使X将屏幕的最终绘制工作移交给了合成管理器，X仍然控制着前缓冲区和模式设置。</strong> X服务器用于处理的大多数复杂性现在都可以在内核或自包含的库中找到（KMS，evdev，mesa，fontconfig，freetype，cairo，Qt等）。</p> 
+<p>通常，X服务器现在只是一个中间人，它在应用程序和合成器之间引入了一个额外的步骤，在合成器和硬件之间引入了一个额外的步骤。</p> 
+<hr> 
+<p>walyland工作流程</p> 
+<p>在Wayland中，合成器是显示服务器。我们将KMS和evdev的<strong>控制权转移给合成器</strong>。wayland协议允许合成器将输入事件直接发送到客户端，并让客户端将损坏事件直接发送到合成器：</p> 
+<blockquote> 
+ <ul><li>内核获取一个事件，并将其发送到合成器。这与X情况类似，这非常好，因为我们可以重用内核中的所有输入驱动程序。</li><li>合成器通过其场景图进行查看，以确定应该接收该事件的窗口。场景图与屏幕上的内容相对应，并且合成器了解它可能已应用于场景图中的元素的转换。因此，合成器可以选择右窗口，并通过应用逆变换将屏幕坐标转换为窗口局部坐标。可以应用于窗口的转换类型仅限于合成器可以执行的操作，只要它可以计算输入事件的逆转换即可。</li><li>与X情况一样，当客户端收到事件时，它会更新UI以作为响应。但是在路途中，渲染发生在客户端中，而客户端只是向合成器发送请求以指示更新的区域。</li><li>合成器从其客户端收集损坏请求，然后重新合成屏幕。然后，合成器可以直接发出ioctl来调度带有KMS的翻页。</li></ul> 
+</blockquote> 
+<hr> 
+<p>walyland渲染</p> 
+<p>在上面的概述中遗漏的细节之一是客户如何在Wayland下实际渲染。通过从图片中删除X服务器，还删除了X客户端通常呈现的机制。但是已经在X下的DRI2中使用了另一种机制：<strong>直接渲染</strong>。通过<strong>直接渲染</strong>，客户端和服务器共享视频内存缓冲区。客户端链接到诸如OpenGL之类的渲染库，该库知道如何对硬件进行编程并将其直接渲染到缓冲区中。</p> 
+<p>当合成器合成桌面时，合成器又可以获取该缓冲区并将其用作纹理。初始设置后，客户端仅需要告诉合成器要使用哪个缓冲区以及何时何地向其提供了新内容。</p> 
+<p>这为应用程序留下了两种<strong>更新窗口内容的方法</strong>：</p> 
+<p>将新内容呈现到新缓冲区中，并告知合成器使用该内容代替旧缓冲区。<strong>应用程序可以在每次需要更新窗口内容时分配一个新的缓冲区，也可以保留两个（或多个）缓冲区并在它们之间循环</strong>。缓冲区管理完全在应用程序控制之下。将新内容呈现到以前告诉合成器使用的缓冲区中。<br> <strong>尽管可以直接渲染到与合成器共享的缓冲区中，但这可能会与合成器竞争。合成器重新绘制桌面可能会中断重新绘制窗口内容</strong>。如果应用程序在清除窗口后但呈现内容之前被中断，则合成器将从空白缓冲区进行贴图。结果是应用程序窗口将在空白窗口或半渲染内容之间闪烁。<br> 避免这种情况的传统方法是将新内容呈现到后台缓冲区，然后从那里复制到合成器表面。后台缓冲区可以动态分配，大小足以容纳新内容，或者应用程序可以保留缓冲区。同样，这在应用程序控制之下。<br> 无论哪种情况，应用程序都必须告诉合成器表面的哪个区域容纳新内容。当应用程序直接呈现到共享缓冲区时，需要注意合成器存在新内容。而且，在交换缓冲区时，合成器不假定任何更改，并且需要应用程序发出请求才能重新绘制桌面。即使应用程序将新缓冲区传递给合成器，该缓冲区只有一小部分也可能会有所不同，例如闪烁的光标或微调框。</p> 
+<hr> 
+<p>合成器的类型<br> 合成器的类型不同，具体取决于它们在操作系统的总体体系结构中所扮演的角色。例如，系统合成器可用于引导系统，处理多用户切换，可能的控制台终端仿真器等。一个不同的合成器，一个会话合成器 将提供实际的桌面环境。不同类型的合成器可以通过多种方式共存。</p> 
+<ul><li>系统合成器:</li></ul> 
+<blockquote> 
+ <p>系统合成器可以从早期启动一直运行到关机为止。它有效地替代了内核vt系统，并可以与系统的图形启动设置和多座支持配合使用。<br> 系统合成器可以托管不同类型的会话合成器，并让我们在多个会话之间切换（快速用户切换或安全/个人桌面切换）。<br> 系统合成器的Linux实现通常使用libudev，例如egl，kms，evdev和cairo。<br> 对于全屏客户端，系统合成器可以重新编程视频扫描地址，以直接从客户端提供的缓冲区中读取。</p> 
+</blockquote> 
+<ul><li>会话合成器</li></ul> 
+<blockquote> 
+ <p>会话合成器负责单个用户会话。如果存在系统合成器，则会话合成器将嵌套在系统合成器下运行。嵌套是可行的，因为该协议是<strong>异步</strong>的。当涉及嵌套时，往返将太昂贵。如果没有系统合成器，则会话合成器可以直接在硬件上运行。</p> 
+</blockquote> 
+<ul><li>嵌入式合成器</li></ul> 
+<blockquote> 
+ <p>X11允许客户端从其他客户端嵌入窗口，或者让客户端将其他客户端渲染的像素图内容复制到其窗口中。这通常用于面板中的applet，浏览器插件等。Wayland不允许直接这样做，但是客户端可以带外传送GEM缓冲区名称，例如，<strong>使用D-Bus</strong>，或在面板启动小程序时<strong>使用命令行参数</strong>。另一种选择是使用嵌套的Wayland实例。为此，Wayland服务器必须是主机应用程序链接到的库。然后，主机应用程序会将Wayland服务器套接字名称传递给嵌入式应用程序，并且需要实现Wayland合成器接口。主机应用程序将客户端表面作为其窗口的一部分进行合成，也就是说，在网页或面板中。嵌套Wayland服务器的好处在于，它提供嵌入式客户端向主机通知缓冲区更新所需的请求，以及用于转发来自主机应用程序的输入事件的机制。<br> 这种设置的一个示例是将Flash Player嵌入为专用合成器的firefox。</p> 
+</blockquote> 
+<hr> 
+<p>Wayland协议和操作模型<br> Wayland协议是一种<strong>异步</strong>的面向对象的协议。所有请求都是对某个对象的方法调用。该请求包括一个对象ID，该ID唯一地标识服务器上的一个对象。每个对象都实现一个接口，并且请求包括一个操作码，该操作码标识接口中要调用的方法。</p> 
+<p>该协议是基于消息的。客户端发送到服务器的消息称为<strong>请求</strong>。从服务器到客户端的消息称为<strong>事件</strong>。一条消息包含许多参数，每个参数都有特定的类型。</p> 
+<p>此外，该协议可以指定枚举的准名称来特定数字枚举值。这些本质上仅是描述性的：在有线格式级别，枚举只是整数。但是它们还具有辅助目的，以增强类型安全性或添加用于语言绑定或其他此类代码的上下文。仅在引入这些属性之前编写的代码，在此之后仍然有效时，才支持后一种用法。换句话说，添加枚举不会破坏API。</p> 
+<p>枚举可以仅定义为一组整数，也可以定义为位域。这是通过枚举定义中的布尔值属性指定的。如果此属性为true，则打算主要使用按位操作来访问该枚举，例如，当任意多个枚举可以一起进行“或”运算时；如果为false，或者省略了属性，则枚举参数只是一系列数值。</p> 
+<p>服务器将事件发送回客户端，每个事件都是从一个对象发出的。事件可能是错误条件。事件包括对象ID和事件操作码，客户端可以从中确定事件的类型。事件是响应请求（在这种情况下，请求和事件构成往返）而生成的，或者是在服务器状态更改时自发生成的。</p> 
+<ul><li> <p>状态更改时发出事件。客户端必须侦听这些更改并缓存状态。<strong>不需要查询服务器状态</strong>。</p> </li><li> <p>服务器将广播许多全局对象的存在，而这些对象又将广播其当前状态。</p> </li></ul> 
+<hr> 
+<p>连线格式<br> 每条消息的结构都是32位字。值以主机的字节顺序表示。标题中包含2个字：</p> 
+<p>第一个字是发送者的对象ID（32位）。<br> 第二个具有2个部分的16位。高16位是消息大小，以字节为单位，从标头开始（即最小值为8）。低位是请求/事件操作码。</p> 
+<p>有效负载描述了请求/事件参数。每个参数始终与32位对齐。在需要填充的地方，填充字节的值是不确定的。没有描述类型的前缀，但是可以从xml规范中隐式地推断出来。</p> 
+<p><strong>参数类型的</strong>表示如下：</p> 
+<p>int，uint</p> 
+<blockquote> 
+ <p>该值是有符号/无符号int的32位值。</p> 
+</blockquote> 
+<p>fixed</p> 
+<blockquote> 
+ <p>签名24.8个十进制数字。它是带符号的十进制类型，提供一个符号位，23位的整数精度和8位的十进制精度。在C API方面，这是不透明的结构，带有转换辅助函数，往返于double和int之间。</p> 
+</blockquote> 
+<p>string</p> 
+<blockquote> 
+ <p>以无符号的32位长度开始，然后是字符串内容，包括终止空字节，然后填充到32位边界。</p> 
+</blockquote> 
+<p>object</p> 
+<blockquote> 
+ <p>32位对象ID。</p> 
+</blockquote> 
+<p>new_id</p> 
+<blockquote> 
+ <p>32位对象ID。根据请求，客户端确定ID。带有new_id的唯一事件是全局变量的通告，并且服务器将使用0x10000以下的ID。</p> 
+</blockquote> 
+<p>array</p> 
+<blockquote> 
+ <p>从32位数组大小（以字节为单位）开始，然后逐字逐行排列数组内容，最后填充到32位边界。</p> 
+</blockquote> 
+<p>fd</p> 
+<blockquote> 
+ <p>文件描述符不是存储在消息缓冲区中，而是存储在UNIX域套接字消息（msg_control）的辅助数据中。</p> 
+</blockquote> 
+<p>该协议包括几个用于与服务器交互的接口。每个接口都如上所述提供请求，事件和错误（实际上只是特殊事件）。特定的合成器实现可能有自己的接口作为扩展提供，但是总有几种可能会出现。</p> 
+<hr> 
+<p>核心接口</p> 
+<p>wl_display</p> 
+<blockquote> 
+ <p>核心全局对象</p> 
+</blockquote> 
+<p>wl_registry</p> 
+<blockquote> 
+ <p>全局注册表对象<br> wl_callback<br> 回调对象</p> 
+</blockquote> 
+<p>wl_compositor</p> 
+<blockquote> 
+ <p>合成器单例</p> 
+</blockquote> 
+<p>wl_shm_pool</p> 
+<blockquote> 
+ <p>共享内存池</p> 
+</blockquote> 
+<p>wl_shm</p> 
+<blockquote> 
+ <p>共享内存支持</p> 
+</blockquote> 
+<p>wl_buffer</p> 
+<blockquote> 
+ <p>wl_surface的内容</p> 
+</blockquote> 
+<p>wl_data_offer</p> 
+<blockquote> 
+ <p>提供传输数据</p> 
+</blockquote> 
+<p>wl_data_source</p> 
+<blockquote> 
+ <p>提供传输数据</p> 
+</blockquote> 
+<p>wl_data_device</p> 
+<blockquote> 
+ <p>数据传输装置</p> 
+</blockquote> 
+<p>wl_data_device_manager</p> 
+<blockquote> 
+ <p>数据传输接口</p> 
+</blockquote> 
+<p>wl_shell</p> 
+<blockquote> 
+ <p>创建桌面样式的表面</p> 
+</blockquote> 
+<p>wl_shell_surface</p> 
+<blockquote> 
+ <p>桌面式元数据界面</p> 
+</blockquote> 
+<p>wl_surface</p> 
+<blockquote> 
+ <p>屏幕上的表面</p> 
+</blockquote> 
+<p>wl_seat</p> 
+<blockquote> 
+ <p>输入设备组</p> 
+</blockquote> 
+<p>wl_pointer</p> 
+<blockquote> 
+ <p>指针输入设备</p> 
+</blockquote> 
+<p>wl_keyboard</p> 
+<blockquote> 
+ <p>键盘输入设备</p> 
+</blockquote> 
+<p>wl_touch</p> 
+<blockquote> 
+ <p>触摸屏输入设备</p> 
+</blockquote> 
+<p>wl_output</p> 
+<blockquote> 
+ <p>合成器输出区域</p> 
+</blockquote> 
+<p>wl_region</p> 
+<blockquote> 
+ <p>区域界面</p> 
+</blockquote> 
+<p>wl_subcompositor</p> 
+<blockquote> 
+ <p>次表面合成</p> 
+</blockquote> 
+<p>wl_subsurface</p> 
+<blockquote> 
+ <p>wl_surface的接口</p> 
+</blockquote> 
+<ul><li>拖放<br> 使用该wl_data_device.start_drag请求开始拖放操作 。此请求将导致指针抓取，该抓取将在数据设备上生成输入，移动和离开事件。数据源作为start_drag的参数提供，并且与之关联的数据提供在wl_data_device.enter事件中的指针下方提供给客户端表面 。在wl_data_device.data_offer事件进入事件之前，将数据报价引入到客户端 。</li></ul> 
+<p>希望客户端通过wl_data_offer.accept使用其接受的mime类型调用请求来向数据发送客户端提供反馈。 如果接收方客户端不支持任何广告的mime类型，则应为接受请求提供NULL。接受请求使发送客户端接收到wl_data_source.target具有所选mime类型的事件。</p> 
+<p>拖动结束后，接收方客户端会收到一个 wl_data_device.drop事件，预计将使用该wl_data_offer.receive请求传输数据 。</p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/e9f47fbba073b4aeb67743cb78930874/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">JAVA基本数据类型与byte互相转换（位运算，原码，补码）</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/91b4d9f65bcaf15add074d4cba55f6b5/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">学习笔记 | 通用能力提升</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

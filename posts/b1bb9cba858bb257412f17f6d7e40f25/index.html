@@ -1,0 +1,1545 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Elasticsearch父子关联 - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="Elasticsearch父子关联" />
+<meta property="og:description" content="目录
+1、Elasticsearch父子关联简介 2、使用对象数组存在的问题
+3、嵌套对象
+3.1、在索引中使用嵌套对象
+3.2、嵌套对象的搜索
+3.3、嵌套对象的聚集
+3.3.1、嵌套聚集
+3.3.2、反转嵌套聚集
+4、join字段
+4.1、在索引中使用join字段
+4.2、join字段的搜索
+4.2.1、以父搜子
+4.2.2、以子搜父
+4.2.3、父文档主键搜索
+4.3、join字段的聚集
+4.3.1、children聚集
+4.3.2、parent聚集
+5、在应用层关联数据
+6、小结
+1、Elasticsearch父子关联简介 在使用关系数据库进行开发的过程中，你可能会经常使用外键来表示父表和子表之间的关联关系，在Elasticsearch中，有哪些方法可以用来让开发者解决索引之间一对多和多对多的关联关系的问题呢？由于多对多的关联可以转换为两个一对多的关联来处理，所以这篇文章将主要探讨在Elasticsearch中解决索引之间一对多父子关联的方法。
+在列举一对多的关系实例时，会以一个作者包含多本书籍的数据为例，来说明Elasticsearch支持的几种不同方式在解决父子关联的问题时有哪些不同的特点。这篇文章的主要内容有以下几点：
+用对象数组保存父子关联关系时存在的问题。对比嵌套对象和对象数组的区别，了解嵌套对象的使用、搜索和统计方法以及优缺点。使用join字段类型解决父子关系的存储和搜索问题，以对join字段做统计分析。join字段的优缺点。在应用层解决父子关联的问题，有哪些优缺点。 2、使用对象数组存在的问题 在Elasticsearch中，你可以很方便地把一个对象以数组的形式放在索引的字段中。下面的请求将建立一个author索引，里面包含对象字段“books”，它用来存放作者包含的多本书籍的数据，从而在作者和书籍之间建立起一对多的关联。
+PUT author-obj-array { &#34;settings&#34;: { &#34;number_of_shards&#34;: 3, &#34;number_of_replicas&#34;: 1 }, &#34;mappings&#34;: { &#34;properties&#34;: { &#34;author_id&#34;:{ &#34;type&#34;: &#34;integer&#34; }, &#34;author_name&#34;:{ &#34;type&#34;: &#34;keyword&#34; }, &#34;author_birth&#34;:{ &#34;type&#34;: &#34;date&#34;, &#34;format&#34;: [&#34;yyyy-MM-dd HH:mm:ss&#34;] }, &#34;author_desc&#34;:{ &#34;type&#34;: &#34;text&#34;, &#34;fields&#34;: { &#34;keyword&#34;:{ &#34;type&#34;:&#34;keyword&#34;, &#34;ignore_above&#34;:256 } } }, &#34;books&#34;:{ &#34;properties&#34;: { &#34;" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/b1bb9cba858bb257412f17f6d7e40f25/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-10-30T15:30:59+08:00" />
+<meta property="article:modified_time" content="2023-10-30T15:30:59+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Elasticsearch父子关联</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p id="main-toc"><strong>目录</strong></p> 
+<p id="-toc" style="margin-left:40px;"></p> 
+<p id="1%E3%80%81Elasticsearch%E7%88%B6%E5%AD%90%E5%85%B3%E8%81%94%E7%AE%80%E4%BB%8B%C2%A0%20%C2%A0%20%C2%A0%20%C2%A0-toc" style="margin-left:40px;"><a href="#1%E3%80%81Elasticsearch%E7%88%B6%E5%AD%90%E5%85%B3%E8%81%94%E7%AE%80%E4%BB%8B%C2%A0%20%C2%A0%20%C2%A0%20%C2%A0" rel="nofollow">1、Elasticsearch父子关联简介       </a></p> 
+<p id="2%E3%80%81%E4%BD%BF%E7%94%A8%E5%AF%B9%E8%B1%A1%E6%95%B0%E7%BB%84%E5%AD%98%E5%9C%A8%E7%9A%84%E9%97%AE%E9%A2%98-toc" style="margin-left:40px;"><a href="#2%E3%80%81%E4%BD%BF%E7%94%A8%E5%AF%B9%E8%B1%A1%E6%95%B0%E7%BB%84%E5%AD%98%E5%9C%A8%E7%9A%84%E9%97%AE%E9%A2%98" rel="nofollow">2、使用对象数组存在的问题</a></p> 
+<p id="3%E3%80%81%E5%B5%8C%E5%A5%97%E5%AF%B9%E8%B1%A1-toc" style="margin-left:40px;"><a href="#3%E3%80%81%E5%B5%8C%E5%A5%97%E5%AF%B9%E8%B1%A1" rel="nofollow">3、嵌套对象</a></p> 
+<p id="3.1%E3%80%81%E5%9C%A8%E7%B4%A2%E5%BC%95%E4%B8%AD%E4%BD%BF%E7%94%A8%E5%B5%8C%E5%A5%97%E5%AF%B9%E8%B1%A1-toc" style="margin-left:80px;"><a href="#3.1%E3%80%81%E5%9C%A8%E7%B4%A2%E5%BC%95%E4%B8%AD%E4%BD%BF%E7%94%A8%E5%B5%8C%E5%A5%97%E5%AF%B9%E8%B1%A1" rel="nofollow">3.1、在索引中使用嵌套对象</a></p> 
+<p id="3.2%E3%80%81%E5%B5%8C%E5%A5%97%E5%AF%B9%E8%B1%A1%E7%9A%84%E6%90%9C%E7%B4%A2-toc" style="margin-left:80px;"><a href="#3.2%E3%80%81%E5%B5%8C%E5%A5%97%E5%AF%B9%E8%B1%A1%E7%9A%84%E6%90%9C%E7%B4%A2" rel="nofollow">3.2、嵌套对象的搜索</a></p> 
+<p id="3.3%E3%80%81%E5%B5%8C%E5%A5%97%E5%AF%B9%E8%B1%A1%E7%9A%84%E8%81%9A%E9%9B%86-toc" style="margin-left:80px;"><a href="#3.3%E3%80%81%E5%B5%8C%E5%A5%97%E5%AF%B9%E8%B1%A1%E7%9A%84%E8%81%9A%E9%9B%86" rel="nofollow">3.3、嵌套对象的聚集</a></p> 
+<p id="3.3.1%E3%80%81%E5%B5%8C%E5%A5%97%E8%81%9A%E9%9B%86-toc" style="margin-left:120px;"><a href="#3.3.1%E3%80%81%E5%B5%8C%E5%A5%97%E8%81%9A%E9%9B%86" rel="nofollow">3.3.1、嵌套聚集</a></p> 
+<p id="3.3.2%E3%80%81%E5%8F%8D%E8%BD%AC%E5%B5%8C%E5%A5%97%E8%81%9A%E9%9B%86-toc" style="margin-left:120px;"><a href="#3.3.2%E3%80%81%E5%8F%8D%E8%BD%AC%E5%B5%8C%E5%A5%97%E8%81%9A%E9%9B%86" rel="nofollow">3.3.2、反转嵌套聚集</a></p> 
+<p id="4%E3%80%81join%E5%AD%97%E6%AE%B5-toc" style="margin-left:40px;"><a href="#4%E3%80%81join%E5%AD%97%E6%AE%B5" rel="nofollow">4、join字段</a></p> 
+<p id="4.1%E3%80%81%E5%9C%A8%E7%B4%A2%E5%BC%95%E4%B8%AD%E4%BD%BF%E7%94%A8join%E5%AD%97%E6%AE%B5-toc" style="margin-left:80px;"><a href="#4.1%E3%80%81%E5%9C%A8%E7%B4%A2%E5%BC%95%E4%B8%AD%E4%BD%BF%E7%94%A8join%E5%AD%97%E6%AE%B5" rel="nofollow">4.1、在索引中使用join字段</a></p> 
+<p id="4.2%E3%80%81join%E5%AD%97%E6%AE%B5%E7%9A%84%E6%90%9C%E7%B4%A2-toc" style="margin-left:80px;"><a href="#4.2%E3%80%81join%E5%AD%97%E6%AE%B5%E7%9A%84%E6%90%9C%E7%B4%A2" rel="nofollow">4.2、join字段的搜索</a></p> 
+<p id="4.2.1%E3%80%81%E4%BB%A5%E7%88%B6%E6%90%9C%E5%AD%90-toc" style="margin-left:120px;"><a href="#4.2.1%E3%80%81%E4%BB%A5%E7%88%B6%E6%90%9C%E5%AD%90" rel="nofollow">4.2.1、以父搜子</a></p> 
+<p id="4.2.2%E3%80%81%E4%BB%A5%E5%AD%90%E6%90%9C%E7%88%B6-toc" style="margin-left:120px;"><a href="#4.2.2%E3%80%81%E4%BB%A5%E5%AD%90%E6%90%9C%E7%88%B6" rel="nofollow">4.2.2、以子搜父</a></p> 
+<p id="4.2.3%E3%80%81%E7%88%B6%E6%96%87%E6%A1%A3%E4%B8%BB%E9%94%AE%E6%90%9C%E7%B4%A2-toc" style="margin-left:120px;"><a href="#4.2.3%E3%80%81%E7%88%B6%E6%96%87%E6%A1%A3%E4%B8%BB%E9%94%AE%E6%90%9C%E7%B4%A2" rel="nofollow">4.2.3、父文档主键搜索</a></p> 
+<p id="4.3%E3%80%81join%E5%AD%97%E6%AE%B5%E7%9A%84%E8%81%9A%E9%9B%86-toc" style="margin-left:80px;"><a href="#4.3%E3%80%81join%E5%AD%97%E6%AE%B5%E7%9A%84%E8%81%9A%E9%9B%86" rel="nofollow">4.3、join字段的聚集</a></p> 
+<p id="4.3.1%E3%80%81children%E8%81%9A%E9%9B%86-toc" style="margin-left:120px;"><a href="#4.3.1%E3%80%81children%E8%81%9A%E9%9B%86" rel="nofollow">4.3.1、children聚集</a></p> 
+<p id="4.3.2%E3%80%81parent%E8%81%9A%E9%9B%86-toc" style="margin-left:120px;"><a href="#4.3.2%E3%80%81parent%E8%81%9A%E9%9B%86" rel="nofollow">4.3.2、parent聚集</a></p> 
+<p id="5%E3%80%81%E5%9C%A8%E5%BA%94%E7%94%A8%E5%B1%82%E5%85%B3%E8%81%94%E6%95%B0%E6%8D%AE-toc" style="margin-left:40px;"><a href="#5%E3%80%81%E5%9C%A8%E5%BA%94%E7%94%A8%E5%B1%82%E5%85%B3%E8%81%94%E6%95%B0%E6%8D%AE" rel="nofollow">5、在应用层关联数据</a></p> 
+<p id="6%E3%80%81%E5%B0%8F%E7%BB%93-toc" style="margin-left:40px;"><a href="#6%E3%80%81%E5%B0%8F%E7%BB%93" rel="nofollow">6、小结</a></p> 
+<hr id="hr-toc"> 
+<p></p> 
+<h3 id="1%E3%80%81Elasticsearch%E7%88%B6%E5%AD%90%E5%85%B3%E8%81%94%E7%AE%80%E4%BB%8B%C2%A0%20%C2%A0%20%C2%A0%20%C2%A0" style="background-color:transparent;">1、Elasticsearch父子关联简介       </h3> 
+<p>        在使用关系数据库进行开发的过程中，你可能会经常使用外键来表示父表和子表之间的关联关系，在Elasticsearch中，有哪些方法可以用来让开发者解决索引之间一对多和多对多的关联关系的问题呢？由于多对多的关联可以转换为两个一对多的关联来处理，所以这篇文章将主要探讨在Elasticsearch中解决索引之间一对多父子关联的方法。</p> 
+<p>        在列举一对多的关系实例时，会以一个作者包含多本书籍的数据为例，来说明Elasticsearch支持的几种不同方式在解决父子关联的问题时有哪些不同的特点。这篇文章的主要内容有以下几点：</p> 
+<ul><li>用对象数组保存父子关联关系时存在的问题。</li><li>对比嵌套对象和对象数组的区别，了解嵌套对象的使用、搜索和统计方法以及优缺点。</li><li>使用join字段类型解决父子关系的存储和搜索问题，以对join字段做统计分析。join字段的优缺点。</li><li>在应用层解决父子关联的问题，有哪些优缺点。</li></ul> 
+<h3 id="2%E3%80%81%E4%BD%BF%E7%94%A8%E5%AF%B9%E8%B1%A1%E6%95%B0%E7%BB%84%E5%AD%98%E5%9C%A8%E7%9A%84%E9%97%AE%E9%A2%98">2、使用对象数组存在的问题</h3> 
+<p>        在Elasticsearch中，你可以很方便地把一个对象以数组的形式放在索引的字段中。下面的请求将建立一个author索引，里面包含对象字段“books”，它用来存放作者包含的多本书籍的数据，从而在作者和书籍之间建立起一对多的关联。</p> 
+<pre><code>PUT author-obj-array
+{
+  "settings": {
+    "number_of_shards": 3,
+    "number_of_replicas": 1
+  },
+  "mappings": {
+    "properties": {
+      "author_id":{
+        "type": "integer"
+      },
+      "author_name":{
+        "type": "keyword"
+      },
+      "author_birth":{
+        "type": "date",
+        "format": ["yyyy-MM-dd HH:mm:ss"]
+      },
+      "author_desc":{
+        "type": "text",
+        "fields": {
+          "keyword":{
+            "type":"keyword",
+            "ignore_above":256
+          }
+        }
+      },
+      "books":{
+        "properties": {
+          "book_id":{
+            "type":"integer"
+          },
+          "book_name":{
+            "type":"keyword"
+          },
+          "book_price":{
+            "type":"double"
+          },
+          "book_time":{
+            "type": "date",
+            "format": ["yyyy-MM-dd HH:mm:ss"]
+          },
+          "book_desc":{
+            "type":"text",
+            "fields": {
+            "keyword":{
+              "type":"keyword",
+              "ignore_above":256
+            }
+           }
+          }
+        }
+      }
+    }
+  }
+}</code></pre> 
+<p>        向这个索引中添加一条作者数据，里面包含两个书籍的数据。</p> 
+<pre><code>PUT author-obj-array/_doc/1
+{
+  "author_id" : "1",
+  "author_name" : "张三",
+  "author_birth" : "2001-01-22 11:00:00",
+  "author_desc" : "张三是一个写小说的",
+  "books" : [
+    {
+      "book_id" : "1",
+      "book_name" : "绿楼梦",
+      "book_price" : "28.00",
+      "book_time" : "2023-01-01 12:00:00",
+      "book_desc" : "这是一本描写绿梦的小说"
+    },
+    {
+      "book_id" : "2",
+      "book_name" : "黄楼梦",
+      "book_price" : "38.00",
+      "book_time" : "2023-02-01 12:00:00",
+      "book_desc" : "这是一本描写黄梦的小说"
+    }
+  ]
+}</code></pre> 
+<p>        上面的数据把书籍数据关联到作者数据中，但是在做多条件搜索的时候会出现问题，比如下面的布尔查询相关代码，其中包含两个简单的match搜索条件。</p> 
+<p>        从业务的角度讲，由于“黄楼梦”的创建日期是“2023-02-01 12:00:00”，所以这一搜索不应该搜到书籍数据，然而实际上却能搜到，代码如下。</p> 
+<pre><code>{
+  "took" : 758,
+  "timed_out" : false,
+  "_shards" : {
+    "total" : 3,
+    "successful" : 3,
+    "skipped" : 0,
+    "failed" : 0
+  },
+  "hits" : {
+    "total" : {
+      "value" : 1,
+      "relation" : "eq"
+    },
+    "max_score" : 1.3616575,
+    "hits" : [
+      {
+        "_index" : "author-obj-array",
+        "_type" : "_doc",
+        "_id" : "1",
+        "_score" : 1.3616575,
+        "_source" : {
+          "author_id" : "1",
+          "author_name" : "张三",
+          "author_birth" : "2001-01-22 11:00:00",
+          "author_desc" : "张三是一个写小说的",
+          "books" : [
+            {
+              "book_id" : "1",
+              "book_name" : "绿楼梦",
+              "book_price" : "28.00",
+              "book_time" : "2023-01-01 12:00:00",
+              "book_desc" : "这是一本描写绿梦的小说"
+            },
+            {
+              "book_id" : "2",
+              "book_name" : "黄楼梦",
+              "book_price" : "38.00",
+              "book_time" : "2023-02-01 12:00:00",
+              "book_desc" : "这是一本描写黄梦的小说"
+            }
+          ]
+        }
+      }
+    ]
+  }
+}
+</code></pre> 
+<p>        之所以会产生这种效果，是因为Elasticsearch在保存对象数组的时候会把数据展平，产生类似下面代码的效果。</p> 
+<pre><code>"books.book_name" : [ "黄楼梦", "绿楼梦" ],
+"books.book_time" : [ "2023-01-01 12:00:00", "2023-02-01 12:00:00" ]</code></pre> 
+<p>        这导致的直接后果是你无法将每个书籍的数据以独立整体的形式进行检索，使得检索结果存在错误。因此在实际项目中，开发人员一般应避免使用对象数组。</p> 
+<h3 id="3%E3%80%81%E5%B5%8C%E5%A5%97%E5%AF%B9%E8%B1%A1">3、嵌套对象</h3> 
+<p>        嵌套对象可以用于很好地解决使用对象数组时搜索过程中存在的问题，它会把子表中的每条数据作为一个独立的文档进行保存。要使用嵌套对象，就需要在创建索引映射的时候把相应的字段定义好。</p> 
+<h4 id="3.1%E3%80%81%E5%9C%A8%E7%B4%A2%E5%BC%95%E4%B8%AD%E4%BD%BF%E7%94%A8%E5%B5%8C%E5%A5%97%E5%AF%B9%E8%B1%A1" style="background-color:transparent;">3.1、在索引中使用嵌套对象</h4> 
+<p>        下面的请求会新建一个作者索引author-nested，该映射结构包含嵌套对象的字段类型nested，它的properties属性定义了每个作者数据所关联的书籍信息。</p> 
+<pre><code>PUT author-nested
+{
+  "settings": {
+    "number_of_shards": 3,
+    "number_of_replicas": 1
+  },
+  "mappings": {
+    "properties": {
+      "author_id":{
+        "type": "integer"
+      },
+      "author_name":{
+        "type": "keyword"
+      },
+      "author_birth":{
+        "type": "date",
+        "format": ["yyyy-MM-dd HH:mm:ss"]
+      },
+      "author_desc":{
+        "type": "text",
+        "fields": {
+          "keyword":{
+            "type":"keyword",
+            "ignore_above":256
+          }
+        }
+      },
+      "books":{
+        "type": "nested", 
+        "properties": {
+          "book_id":{
+            "type":"integer"
+          },
+          "book_name":{
+            "type":"keyword"
+          },
+          "book_price":{
+            "type":"double"
+          },
+          "book_time":{
+            "type": "date",
+            "format": ["yyyy-MM-dd HH:mm:ss"]
+          },
+          "book_desc":{
+            "type":"text",
+            "fields": {
+            "keyword":{
+              "type":"keyword",
+              "ignore_above":256
+            }
+           }
+          }
+        }
+      }
+    }
+  }
+}</code></pre> 
+<p>        然后往作者索引中新增一条数据</p> 
+<pre><code>PUT author-nested/_doc/1
+{
+  "author_id" : "1",
+  "author_name" : "张三",
+  "author_birth" : "2001-01-22 11:00:00",
+  "author_desc" : "张三是一个写小说的",
+  "books" : [
+    {
+      "book_id" : "1",
+      "book_name" : "绿楼梦",
+      "book_price" : "28.00",
+      "book_time" : "2023-01-01 12:00:00",
+      "book_desc" : "这是一本描写绿梦的小说"
+    },
+    {
+      "book_id" : "2",
+      "book_name" : "黄楼梦",
+      "book_price" : "38.00",
+      "book_time" : "2023-02-01 12:00:00",
+      "book_desc" : "这是一本描写黄梦的小说"
+    }
+  ]
+}</code></pre> 
+<p>        数据就这样被添加成功了。但如果该作者的书籍列表发生了变化需要修改，例如你想给作者添加一条书籍数据，就需要在修改books字段时提供最新的完整书籍列表，代码如下。</p> 
+<pre><code>POST author-nested/_update/1
+{
+  "doc": {
+      "author_id" : "1",
+      "author_name" : "张三",
+      "author_birth" : "2001-01-22 11:00:00",
+      "author_desc" : "张三是一个写小说的",
+      "books" : [
+        {
+          "book_id" : "1",
+          "book_name" : "绿楼梦",
+          "book_price" : "28.00",
+          "book_time" : "2023-01-01 12:00:00",
+          "book_desc" : "这是一本描写绿梦的小说"
+        },
+        {
+          "book_id" : "2",
+          "book_name" : "黄楼梦",
+          "book_price" : "38.00",
+          "book_time" : "2023-02-01 12:00:00",
+          "book_desc" : "这是一本描写黄梦的小说"
+        },
+        {
+          "book_id" : "3",
+          "book_name" : "蓝楼梦",
+          "book_price" : "48.00",
+          "book_time" : "2023-03-01 12:00:00",
+          "book_desc" : "这是一本描写紫梦的小说"
+        }
+  ]
+ }
+}</code></pre> 
+<p>        也就是说，使用嵌套对象时，如果子表数据需要修改或删除，无法单独修改嵌套对象中的某一条数据，必须把最新的子表数据全部写入嵌套对象，子表的修改会变得较为麻烦。</p> 
+<h4 id="3.2%E3%80%81%E5%B5%8C%E5%A5%97%E5%AF%B9%E8%B1%A1%E7%9A%84%E6%90%9C%E7%B4%A2">3.2、嵌套对象的搜索</h4> 
+<p>        下面来测试嵌套对象在搜索时是否会出现对象数组那样的问题，嵌套对象在搜索时需要使用nested查询，对于该查询需要在参数path中指定嵌套对象的路径。</p> 
+<pre><code>GET author-nested/_search
+{
+  "query": {
+    "nested": {
+      "path": "books",
+      "query": {
+        "bool": {
+          "must": [
+            {
+              "match": {
+                "books.book_name": "黄楼梦"
+              }
+            },
+            {
+              "match": {
+                "books.book_time": "2023-01-01 12:00:00"
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}</code></pre> 
+<p>        这个请求无法搜索到之前添加的作者数据，说明嵌套对象的每个文档是独立保存的，解决了对象数组在搜索时会跨对象检索的问题。</p> 
+<p>        如果你想把嵌套对象中匹配搜索条件的文档单独展示出来，可以使用inner_hits参数，它会指明命中搜索条件的子文档，这个过程还可以实现字段高亮。</p> 
+<pre><code>GET author-nested/_search
+{
+  "query": {
+    "nested": {
+      "path": "books",
+      "query": {
+        "bool": {
+          "must": [
+            {
+              "match": {
+                "books.book_name": "黄楼梦"
+              }
+            }
+          ]
+        }
+      },
+      "inner_hits": {
+        "highlight": {
+          "fields": {
+            "*":{}
+          }
+        }
+      }
+    }
+  }
+}</code></pre> 
+<p>        可以在搜索结果中找到嵌套对象中命中的子文档，在_nested字段里面包含命中子文档的offset（偏移量），highlight字段包含搜索命中的高亮效果。</p> 
+<pre><code>        "inner_hits" : {
+          "books" : {
+            "hits" : {
+              "total" : {
+                "value" : 1,
+                "relation" : "eq"
+              },
+              "max_score" : 0.9808291,
+              "hits" : [
+                {
+                  "_index" : "author-nested",
+                  "_type" : "_doc",
+                  "_id" : "1",
+                  "_nested" : {
+                    "field" : "books",
+                    "offset" : 1
+                  },
+                  "_score" : 0.9808291,
+                  "_source" : {
+                    "book_price" : "38.00",
+                    "book_time" : "2023-02-01 12:00:00",
+                    "book_id" : "2",
+                    "book_name" : "黄楼梦",
+                    "book_desc" : "这是一本描写黄梦的小说"
+                  },
+                  "highlight" : {
+                    "books.book_name" : [
+                      "&lt;em&gt;黄楼梦&lt;/em&gt;"
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        }</code></pre> 
+<p>        你还可以对搜索结果按照嵌套对象的某个字段进行排序，由于子文档有多个，你需要指定将嵌套对象的文档之和、最大值或最小值作为排序依据。下面再添加一条作者数据到索引order-nested中。</p> 
+<pre><code>PUT author-nested/_doc/2
+{
+  "author_id" : "2",
+  "author_name" : "李四",
+  "author_birth" : "2001-04-22 11:00:00",
+  "author_desc" : "李四是一个写小说的",
+  "books" : [
+    {
+      "book_id" : "1",
+      "book_name" : "黑楼梦",
+      "book_price" : "18.00",
+      "book_time" : "2023-03-01 12:00:00",
+      "book_desc" : "这是一本描写黑梦的小说"
+    },
+    {
+      "book_id" : "2",
+      "book_name" : "白楼梦",
+      "book_price" : "55.00",
+      "book_time" : "2023-02-01 12:00:00",
+      "book_desc" : "这是一本描写白梦的小说"
+    }
+  ]
+}</code></pre> 
+<p>        构建一个match_all查询，将搜索结果按照子文档书籍价格之和降序排列。</p> 
+<pre><code>GET author-nested/_search
+{
+  "query": {
+    "match_all": {}
+  },
+  "sort": [
+    {
+      "books.book_price": {
+        "order": "desc",
+        "nested_path": "books",
+        "mode": "sum"
+      }
+    }
+  ]
+}</code></pre> 
+<p>        在上述代码的排序参数中，books.book_price表示排序字段的路径，path用来设置嵌套对象的字段，mode用于设置排序模式，这里选择了子文档书籍价格之和作为作者列表的排序依据，得到的结果如下，可以看到sort中的值确实是子文档书籍价格之和。</p> 
+<pre><code>    "hits" : [
+      {
+        "_index" : "author-nested",
+        "_type" : "_doc",
+        "_id" : "1",
+        "_score" : null,
+        "_source" : {
+          "author_id" : "1",
+          "author_name" : "张三",
+          "author_birth" : "2001-01-22 11:00:00",
+          "author_desc" : "张三是一个写小说的",
+          "books" : [
+            {
+              "book_price" : "28.00",
+              "book_time" : "2023-01-01 12:00:00",
+              "book_id" : "1",
+              "book_name" : "绿楼梦",
+              "book_desc" : "这是一本描写绿梦的小说"
+            },
+            {
+              "book_price" : "38.00",
+              "book_time" : "2023-02-01 12:00:00",
+              "book_id" : "2",
+              "book_name" : "黄楼梦",
+              "book_desc" : "这是一本描写黄梦的小说"
+            },
+            {
+              "book_price" : "48.00",
+              "book_time" : "2023-03-01 12:00:00",
+              "book_id" : "3",
+              "book_name" : "蓝楼梦",
+              "book_desc" : "这是一本描写紫梦的小说"
+            }
+          ]
+        },
+        "sort" : [
+          114.0
+        ]
+      },
+      {
+        "_index" : "author-nested",
+        "_type" : "_doc",
+        "_id" : "2",
+        "_score" : null,
+        "_source" : {
+          "author_id" : "2",
+          "author_name" : "李四",
+          "author_birth" : "2001-04-22 11:00:00",
+          "author_desc" : "李四是一个写小说的",
+          "books" : [
+            {
+              "book_id" : "1",
+              "book_name" : "黑楼梦",
+              "book_price" : "18.00",
+              "book_time" : "2023-03-01 12:00:00",
+              "book_desc" : "这是一本描写黑梦的小说"
+            },
+            {
+              "book_id" : "2",
+              "book_name" : "白楼梦",
+              "book_price" : "55.00",
+              "book_time" : "2023-02-01 12:00:00",
+              "book_desc" : "这是一本描写白梦的小说"
+            }
+          ]
+        },
+        "sort" : [
+          73.0
+        ]
+      }
+    ]</code></pre> 
+<p>        注意：由于float和double类型都是浮点数类型，在做求和操作时可能会丢失精度，这一点需要在开发时做一些灵活处理。例如需要存储包含两位小数的金额数据时，可以先乘100并将其保存到integer变量中，计算完再除以100。</p> 
+<h4 id="3.3%E3%80%81%E5%B5%8C%E5%A5%97%E5%AF%B9%E8%B1%A1%E7%9A%84%E8%81%9A%E9%9B%86">3.3、嵌套对象的聚集</h4> 
+<h5 id="3.3.1%E3%80%81%E5%B5%8C%E5%A5%97%E8%81%9A%E9%9B%86" style="background-color:transparent;">3.3.1、嵌套聚集</h5> 
+<p>        如果你想对索引中的嵌套对象做聚集统计，需要使用一种专门的聚集方式：嵌套聚集。你可以在嵌套聚集中指定嵌套对象的路径，从而对嵌套在文档中的子文档进行聚集统计。下面的代码会发起一个嵌套聚集请求，它指定对索引中的嵌套路径为books的子文档做terms聚集。</p> 
+<pre><code class="hljs">GET author-nested/_search
+{
+  "query": {
+    "match_all": {}
+  },
+  "size": 0, 
+  "aggs": {
+    "net_agg": {
+      "nested": {
+        "path": "books"
+      },
+      "aggs": {
+        "items": {
+          "terms": {
+            "field": "books.book_name"
+          }
+        }
+      }
+    }
+  }
+}</code></pre> 
+<p>        可以看到，在请求中设置了聚集类型为nested，它里面包含一个terms聚集。该请求可以查看所有作者中每个书籍的总数，代码如下。</p> 
+<pre><code class="hljs">  "aggregations" : {
+    "net_agg" : {
+      "doc_count" : 5,
+      "items" : {
+        "doc_count_error_upper_bound" : 0,
+        "sum_other_doc_count" : 0,
+        "buckets" : [
+          {
+            "key" : "白楼梦",
+            "doc_count" : 1
+          },
+          {
+            "key" : "绿楼梦",
+            "doc_count" : 1
+          },
+          {
+            "key" : "蓝楼梦",
+            "doc_count" : 1
+          },
+          {
+            "key" : "黄楼梦",
+            "doc_count" : 1
+          },
+          {
+            "key" : "黑楼梦",
+            "doc_count" : 1
+          }
+        ]
+      }
+    }
+  }</code></pre> 
+<h5 id="3.3.2%E3%80%81%E5%8F%8D%E8%BD%AC%E5%B5%8C%E5%A5%97%E8%81%9A%E9%9B%86" style="background-color:transparent;">3.3.2、反转嵌套聚集</h5> 
+<p>        虽然使用嵌套聚集可以让开发人员很方便地统计索引的子文档数据，但有时候你可能会想查看每个子文档对应的父文档的统计结果，这时就需要用到反转嵌套聚集(reverse nested aggregation)。       </p> 
+<p>        只需在前面介绍的嵌套聚集中嵌入一个反转嵌套聚集，就可以反向获取每个子文档对应的父文档，然后在父文档上嵌入一个词条聚集，就能获取每个书籍的作者名称统计数据。</p> 
+<p>        再新增一条数据</p> 
+<pre><code class="hljs">PUT author-nested/_doc/3
+{
+  "author_id" : "3",
+  "author_name" : "王五",
+  "author_birth" : "2001-03-22 11:00:00",
+  "author_desc" : "王五是一个写小说的",
+  "books" : [
+    {
+      "book_id" : "1",
+      "book_name" : "绿楼梦",
+      "book_price" : "28.00",
+      "book_time" : "2023-01-01 12:00:00",
+      "book_desc" : "这是一本描写绿梦的小说"
+    },
+    {
+      "book_id" : "2",
+      "book_name" : "黄楼梦",
+      "book_price" : "38.00",
+      "book_time" : "2023-02-01 12:00:00",
+      "book_desc" : "这是一本描写黄梦的小说"
+    },
+    {
+      "book_id" : "3",
+      "book_name" : "白楼梦",
+      "book_price" : "55.00",
+      "book_time" : "2023-02-01 12:00:00",
+      "book_desc" : "这是一本描写白梦的小说"
+    }
+  ]
+}</code></pre> 
+<p>         编写统计数据代码</p> 
+<pre><code class="hljs">GET author-nested/_search
+{
+  "query": {
+    "match_all": {}
+  },
+  "size": 0,
+  "aggs": {
+    "nest_agg": {
+      "nested": {
+        "path": "books"
+      },
+      "aggs": {
+        "items": {
+          "terms": {
+            "field": "books.book_name"
+          },
+          "aggs": {
+            "reverse": {
+              "reverse_nested": {},
+              "aggs": {
+                "parent": {
+                  "terms": {
+                    "field": "author_name"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}</code></pre> 
+<p>        可以看到，反转嵌套聚集reverse要放在嵌套聚集的内部，然后在反转嵌套聚集中再添加对父文档的聚集。果然在以下结果中，你能看到每个书籍的作者统计数据。</p> 
+<pre><code class="hljs">  "aggregations" : {
+    "nest_agg" : {
+      "doc_count" : 8,
+      "items" : {
+        "doc_count_error_upper_bound" : 0,
+        "sum_other_doc_count" : 0,
+        "buckets" : [
+          {
+            "key" : "白楼梦",
+            "doc_count" : 2,
+            "reverse" : {
+              "doc_count" : 2,
+              "parent" : {
+                "doc_count_error_upper_bound" : 0,
+                "sum_other_doc_count" : 0,
+                "buckets" : [
+                  {
+                    "key" : "李四",
+                    "doc_count" : 1
+                  },
+                  {
+                    "key" : "王五",
+                    "doc_count" : 1
+                  }
+                ]
+              }
+            }
+          },
+          {
+            "key" : "绿楼梦",
+            "doc_count" : 2,
+            "reverse" : {
+              "doc_count" : 2,
+              "parent" : {
+                "doc_count_error_upper_bound" : 0,
+                "sum_other_doc_count" : 0,
+                "buckets" : [
+                  {
+                    "key" : "张三",
+                    "doc_count" : 1
+                  },
+                  {
+                    "key" : "王五",
+                    "doc_count" : 1
+                  }
+                ]
+              }
+            }
+          },
+          {
+            "key" : "黄楼梦",
+            "doc_count" : 2,
+            "reverse" : {
+              "doc_count" : 2,
+              "parent" : {
+                "doc_count_error_upper_bound" : 0,
+                "sum_other_doc_count" : 0,
+                "buckets" : [
+                  {
+                    "key" : "张三",
+                    "doc_count" : 1
+                  },
+                  {
+                    "key" : "王五",
+                    "doc_count" : 1
+                  }
+                ]
+              }
+            }
+          },
+          {
+            "key" : "蓝楼梦",
+            "doc_count" : 1,
+            "reverse" : {
+              "doc_count" : 1,
+              "parent" : {
+                "doc_count_error_upper_bound" : 0,
+                "sum_other_doc_count" : 0,
+                "buckets" : [
+                  {
+                    "key" : "张三",
+                    "doc_count" : 1
+                  }
+                ]
+              }
+            }
+          },
+          {
+            "key" : "黑楼梦",
+            "doc_count" : 1,
+            "reverse" : {
+              "doc_count" : 1,
+              "parent" : {
+                "doc_count_error_upper_bound" : 0,
+                "sum_other_doc_count" : 0,
+                "buckets" : [
+                  {
+                    "key" : "李四",
+                    "doc_count" : 1
+                  }
+                ]
+              }
+            }
+          }
+        ]
+      }
+    }
+  }</code></pre> 
+<p>        最后总结一下嵌套对象的一些优缺点，要使用嵌套对象就需要在索引建立的阶段获取关联的子文档，然后将其随父文档写入索引中，这意味着你在建索引时需要通过额外的操作来查询子文档。同时，对子文档进行修改、删除、添加操作时，你需要在关联的父文档中更新整个子文档列表，因为你不能单独修改其中的某一个子文档。使用嵌套对象查询父文档时，其能够自动携带关联的子文档数据，因为它们本来就嵌在同一个文档中，这使得关联查询的速度变得很快。总之，使用嵌套对象时，索引建立和维护子文档更新的开销较大，但是查询、统计的性能较好。</p> 
+<h3 id="4%E3%80%81join%E5%AD%97%E6%AE%B5">4、join字段</h3> 
+<p>        join是一种特殊的字段类型，它允许你把拥有父子关联的数据写进同一个索引，并且使用索引数据的路由规则把父文档和它关联的子文档分发到同一个分片上，本节就来谈谈如何使用join类型来完成一对多的父子关联。</p> 
+<h4 id="4.1%E3%80%81%E5%9C%A8%E7%B4%A2%E5%BC%95%E4%B8%AD%E4%BD%BF%E7%94%A8join%E5%AD%97%E6%AE%B5" style="background-color:transparent;">4.1、在索引中使用join字段</h4> 
+<p>        创建一个带有join字段的映射时，你需要在join字段中指明父关系和子关系的名称，中间用冒号隔开。下面新建一个带有join字段的作者索引author-join，结构如下。</p> 
+<pre><code class="hljs">PUT author-join
+{
+  "settings": {
+    "number_of_shards": 3,
+    "number_of_replicas": 1
+  },
+  "mappings": {
+    "properties": {
+      "author_id":{
+        "type": "integer"
+      },
+      "author_name":{
+        "type": "keyword"
+      },
+      "author_birth":{
+        "type": "date",
+        "format": ["yyyy-MM-dd HH:mm:ss"]
+      },
+      "author_desc":{
+        "type": "text",
+        "fields": {
+          "keyword":{
+            "type":"keyword",
+            "ignore_above":256
+          }
+        }
+      },
+      "book_id":{
+        "type":"integer"
+      },
+      "book_name":{
+        "type":"keyword"
+      },
+      "book_price":{
+        "type":"double"
+      },
+      "book_time":{
+        "type": "date",
+        "format": ["yyyy-MM-dd HH:mm:ss"]
+      },
+      "book_desc":{
+        "type":"text",
+        "fields": {
+        "keyword":{
+          "type":"keyword",
+          "ignore_above":256
+        }
+       }
+      },
+      "my_join_field":{
+        "type": "join",
+        "relations":{
+          "author":"books"
+        }
+      }
+    }
+  }
+}</code></pre> 
+<p>        可以看出这个映射包含作者父文档和书籍子文档的全部字段，并且在末尾添加了一个名为my_join_field的join字段。在relations属性中，定义了一对父子关系：author是父关系的名称，books是子关系的名称。由于父文档和子文档被写进了同一个索引，在添加索引数据的时候，需要指明是在为哪个关系添加文档。</p> 
+<p>       添加2个父文档，它是2条作者数据，在这条数据中把join字段的关系名称指定为author，表明它是一个父文档。</p> 
+<pre><code class="hljs">PUT author-join/_doc/1
+{
+  "author_id" : "1",
+  "author_name" : "张三",
+  "author_birth" : "2001-03-22 11:00:00",
+  "author_desc" : "张三是一个写小说的",
+  "my_join_field":"author"
+}
+PUT author-join/_doc/2
+{
+  "author_id" : "2",
+  "author_name" : "李四",
+  "author_birth" : "2001-04-22 11:00:00",
+  "author_desc" : "李四是一个写小说的",
+  "my_join_field":"author"
+}</code></pre> 
+<p>然后，分别为每个父文档数据添加两个子文档，也就是书籍数据。</p> 
+<pre><code class="hljs">PUT author-join/_doc/3?routing=1
+{
+  "book_id" : "1",
+  "book_name" : "绿楼梦",
+  "book_price" : "28.00",
+  "book_time" : "2023-01-01 12:00:00",
+  "book_desc" : "这是一本描写绿梦的小说",
+  "my_join_field":{
+    "name":"books",
+    "parent":"1"
+  }
+}
+
+PUT author-join/_doc/4?routing=1
+{
+  "book_id" : "2",
+  "book_name" : "黄楼梦",
+  "book_price" : "38.00",
+  "book_time" : "2023-02-01 12:00:00",
+  "book_desc" : "这是一本描写黄梦的小说",
+  "my_join_field":{
+    "name":"books",
+    "parent":"1"
+  }
+}
+
+PUT author-join/_doc/5?routing=2
+{
+  "book_id" : "1",
+  "book_name" : "白楼梦",
+  "book_price" : "18.00",
+  "book_time" : "2023-04-01 12:00:00",
+  "book_desc" : "这是一本描写黑梦的小说",
+  "my_join_field":{
+    "name":"books",
+    "parent":"2"
+  }
+}
+
+PUT author-join/_doc/6?routing=2
+{
+  "book_id" : "2",
+  "book_name" : "黑楼梦",
+  "book_price" : "58.00",
+  "book_time" : "2023-09-01 12:00:00",
+  "book_desc" : "这是一本描写黑梦的小说",
+  "my_join_field":{
+    "name":"books",
+    "parent":"2"
+  }
+}</code></pre> 
+<p>        在添加子文档时，有两个地方需要注意。一是必须使用父文档的主键作为路由值，由于作者数据的主键是1和2，因此这里使用1和2作为路由值，这能确保子文档被分发到父文档所在的分片上。如果路由值设置错误，搜索的时候就会出现问题。二是在join字段my_join_field中，要把name设置为books，表示它是一个子文档，parent要设置为父文档的主键，类似于一个外键。</p> 
+<p>        由于join字段中每个子文档是独立添加的，你可以对某个父文档添加、删除、修改某个子文档，嵌套对象则无法实现这一点。由于写入数据时带有路由值，如果要修改主键为5的子文档，修改时也需要携带路由值，代码如下。</p> 
+<pre><code class="hljs">POST author-join/_update/5?routing=2
+{
+  "doc": {
+    "book_price":"66.00"
+  }
+}</code></pre> 
+<h4 id="4.2%E3%80%81join%E5%AD%97%E6%AE%B5%E7%9A%84%E6%90%9C%E7%B4%A2" style="background-color:transparent;">4.2、join字段的搜索</h4> 
+<p>        由于join类型把父、子文档都写入了同一个索引，因此如果你需要单独检索父文档或者子文档，只需要用简单的term查询就可以筛选出它们。</p> 
+<pre><code class="hljs">GET author-join/_search
+{
+  "query": {
+    "term": {
+      "my_join_field": {
+        "value": "books"
+      }
+    }
+  }
+}</code></pre> 
+<p>        可见，整个搜索过程与普通的索引过程没有什么区别。但是包含join字段的索引支持一些用于检索父子关联的特殊搜索方式。例如，以父搜子允许你使用父文档的搜索条件查出子文档，以子搜父允许你使用子文档的搜索条件查出父文档，父文档主键搜索允许使用父文档的主键值查出与其存在关联的所有子文档。接下来逐个说明。</p> 
+<h5 id="4.2.1%E3%80%81%E4%BB%A5%E7%88%B6%E6%90%9C%E5%AD%90">4.2.1、以父搜子</h5> 
+<p>        以父搜子指的是使用父文档的条件搜索子文档，例如，你可以用作者名称数据作为条件搜索相关的书籍数据。</p> 
+<pre><code class="hljs">GET author-join/_search
+{
+  "query": {
+    "has_parent": {
+      "parent_type": "author",
+      "query": {
+        "term": {
+          "author_name": {
+            "value": "李四"
+          }
+        }
+      }
+    }
+  }
+}</code></pre> 
+<p>        在这个请求体中，把搜索类型设置为has_parent，表示这是一个以父搜子的请求，参数parent_type用于设置父关系的名称，在查询条件中使用term query检索了作者李四的书籍，但是返回的结果是李四的与作者关联的书籍列表，如下所示。</p> 
+<pre><code class="hljs">    "hits" : [
+      {
+        "_index" : "author-join",
+        "_type" : "_doc",
+        "_id" : "6",
+        "_score" : 1.0,
+        "_routing" : "2",
+        "_source" : {
+          "book_id" : "2",
+          "book_name" : "黑楼梦",
+          "book_price" : "58.00",
+          "book_time" : "2023-09-01 12:00:00",
+          "book_desc" : "这是一本描写黑梦的小说",
+          "my_join_field" : {
+            "name" : "books",
+            "parent" : "2"
+          }
+        }
+      },
+      {
+        "_index" : "author-join",
+        "_type" : "_doc",
+        "_id" : "5",
+        "_score" : 1.0,
+        "_routing" : "2",
+        "_source" : {
+          "book_id" : "1",
+          "book_name" : "白楼梦",
+          "book_price" : "66.00",
+          "book_time" : "2023-04-01 12:00:00",
+          "book_desc" : "这是一本描写黑梦的小说",
+          "my_join_field" : {
+            "name" : "books",
+            "parent" : "2"
+          }
+        }
+      }
+    ]</code></pre> 
+<p>        需要记住，以父搜子的时候提供的查询条件用于筛选父文档，返回的结果是对应的子文档。如果需要在搜索结果中把父文档也一起返回，则需要加上inner_hits参数。</p> 
+<pre><code class="hljs">GET author-join/_search
+{
+  "query": {
+    "has_parent": {
+      "parent_type": "author",
+      "query": {
+        "term": {
+          "author_name": {
+            "value": "李四"
+          }
+        }
+      },
+      "inner_hits":{}
+    }
+  }
+}</code></pre> 
+<p>        在以下结果中，每个子文档后面会“携带”对应的父文档。</p> 
+<pre><code class="hljs">    "hits" : [
+      {
+        "_index" : "author-join",
+        "_type" : "_doc",
+        "_id" : "6",
+        "_score" : 1.0,
+        "_routing" : "2",
+        "_source" : {
+          "book_id" : "2",
+          "book_name" : "黑楼梦",
+          "book_price" : "58.00",
+          "book_time" : "2023-09-01 12:00:00",
+          "book_desc" : "这是一本描写黑梦的小说",
+          "my_join_field" : {
+            "name" : "books",
+            "parent" : "2"
+          }
+        },
+        "inner_hits" : {
+          "author" : {
+            "hits" : {
+              "total" : {
+                "value" : 1,
+                "relation" : "eq"
+              },
+              "max_score" : 0.2876821,
+              "hits" : [
+                {
+                  "_index" : "author-join",
+                  "_type" : "_doc",
+                  "_id" : "2",
+                  "_score" : 0.2876821,
+                  "_source" : {
+                    "author_id" : "2",
+                    "author_name" : "李四",
+                    "author_birth" : "2001-04-22 11:00:00",
+                    "author_desc" : "李四是一个写小说的",
+                    "my_join_field" : "author"
+                  }
+                }
+              ]
+            }
+          }
+        }
+      },
+      {
+        "_index" : "author-join",
+        "_type" : "_doc",
+        "_id" : "5",
+        "_score" : 1.0,
+        "_routing" : "2",
+        "_source" : {
+          "book_id" : "1",
+          "book_name" : "白楼梦",
+          "book_price" : "66.00",
+          "book_time" : "2023-04-01 12:00:00",
+          "book_desc" : "这是一本描写黑梦的小说",
+          "my_join_field" : {
+            "name" : "books",
+            "parent" : "2"
+          }
+        },
+        "inner_hits" : {
+          "author" : {
+            "hits" : {
+              "total" : {
+                "value" : 1,
+                "relation" : "eq"
+              },
+              "max_score" : 0.2876821,
+              "hits" : [
+                {
+                  "_index" : "author-join",
+                  "_type" : "_doc",
+                  "_id" : "2",
+                  "_score" : 0.2876821,
+                  "_source" : {
+                    "author_id" : "2",
+                    "author_name" : "李四",
+                    "author_birth" : "2001-04-22 11:00:00",
+                    "author_desc" : "李四是一个写小说的",
+                    "my_join_field" : "author"
+                  }
+                }
+              ]
+            }
+          }
+        }
+      }
+    ]</code></pre> 
+<h5 id="4.2.2%E3%80%81%E4%BB%A5%E5%AD%90%E6%90%9C%E7%88%B6">4.2.2、以子搜父</h5> 
+<p>        以子搜父跟以父搜子相反，提供子文档的查询条件会返回父文档的数据。例如：</p> 
+<pre><code class="hljs">GET author-join/_search
+{
+  "query": {
+    "has_child": {
+      "type": "books",
+      "query": {
+        "term": {
+          "book_name": {
+            "value": "黄楼梦"
+          }
+        }
+      }
+    }
+  }
+}</code></pre> 
+<p>        上面的请求把搜索类型设置为has_child，在参数type中指明子关系的名称，它会返回所有子文档对应的父文档。但是如果一个父文档没有子文档，则其不会出现在搜索结果中。相关代码如下。</p> 
+<pre><code class="hljs">    "hits" : [
+      {
+        "_index" : "author-join",
+        "_type" : "_doc",
+        "_id" : "1",
+        "_score" : 1.0,
+        "_source" : {
+          "author_id" : "1",
+          "author_name" : "张三",
+          "author_birth" : "2001-03-22 11:00:00",
+          "author_desc" : "张三是一个写小说的",
+          "my_join_field" : "author"
+        }
+      }
+    ]</code></pre> 
+<p>        你还可以根据子文档匹配搜索结果的数目来限制返回结果，例如：</p> 
+<pre><code class="hljs">GET author-join/_search
+{
+  "query": {
+    "has_child": {
+      "type": "books",
+      "query": {
+        "match_all": {}
+      },
+        "max_children": 1
+    }
+  }
+}</code></pre> 
+<p>        上述代码表示，如果子文档在query参数中指定的搜索结果数量大于1，就不返回它对应的父文档。你还可以使用min_children参数限制子文档匹配数目的下限。</p> 
+<p>        如果需要一起返回每个父文档关联的子文档，则需要使用inner_hits参数。</p> 
+<pre><code class="hljs">GET author-join/_search
+{
+  "query": {
+    "has_child": {
+      "type": "books",
+      "query": {
+        "match_all": {}
+      },
+      "inner_hits": {}
+    }
+  }
+}</code></pre> 
+<h5 id="4.2.3%E3%80%81%E7%88%B6%E6%96%87%E6%A1%A3%E4%B8%BB%E9%94%AE%E6%90%9C%E7%B4%A2">4.2.3、父文档主键搜索</h5> 
+<p>        父文档主键搜索只需要提供父文档的主键就能返回该父文档所有的子文档。例如，你可以提供作者的主键返回该作者所有的子文档。</p> 
+<pre><code class="hljs">GET author-join/_search
+{
+  "query": {
+    "parent_id":{
+      "type":"books",
+      "id":"1"
+    }
+  }
+}</code></pre> 
+<p>        其中，type用于指定子文档的关系名称，id表示父文档的主键，该查询请求会搜出作者id为1的所有书籍的数据，如下所示。</p> 
+<pre><code class="hljs">    "hits" : [
+      {
+        "_index" : "author-join",
+        "_type" : "_doc",
+        "_id" : "3",
+        "_score" : 0.13353139,
+        "_routing" : "1",
+        "_source" : {
+          "book_id" : "1",
+          "book_name" : "绿楼梦",
+          "book_price" : "28.00",
+          "book_time" : "2023-01-01 12:00:00",
+          "book_desc" : "这是一本描写绿梦的小说",
+          "my_join_field" : {
+            "name" : "books",
+            "parent" : "1"
+          }
+        }
+      },
+      {
+        "_index" : "author-join",
+        "_type" : "_doc",
+        "_id" : "4",
+        "_score" : 0.13353139,
+        "_routing" : "1",
+        "_source" : {
+          "book_id" : "2",
+          "book_name" : "黄楼梦",
+          "book_price" : "38.00",
+          "book_time" : "2023-02-01 12:00:00",
+          "book_desc" : "这是一本描写黄梦的小说",
+          "my_join_field" : {
+            "name" : "books",
+            "parent" : "1"
+          }
+        }
+      }
+    ]</code></pre> 
+<h4 id="4.3%E3%80%81join%E5%AD%97%E6%AE%B5%E7%9A%84%E8%81%9A%E9%9B%86">4.3、join字段的聚集</h4> 
+<p>        join字段有两种专门的聚集方式，一种是children聚集，它可用于统计每个父文档的子文档数据；另一种是parent聚集，它可用于统计每个子文档的父文档数据。</p> 
+<h5 id="4.3.1%E3%80%81children%E8%81%9A%E9%9B%86">4.3.1、children聚集</h5> 
+<p>        你可以在一个父文档的聚集中嵌套一个children聚集，这样就可以在父文档的统计结果中加入子文档的统计结果。发起一个聚集请求，统计出每个作者的书籍名称和数量。</p> 
+<pre><code class="hljs">GET author-join/_search
+{
+  "query": {
+    "match_all": {}
+  },
+  "size": 0,
+  "aggs": {
+    "authors": {
+      "terms": {
+        "field": "author_name"
+      },
+      "aggs": {
+        "books_data": {
+          "children": {
+            "type": "books"
+          },
+          "aggs": {
+            "book_name": {
+              "terms": {
+                "field": "book_name"
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}</code></pre> 
+<p>        可以看到，这个请求首先对author_name做了词条聚集，它会得到每个作者名称的作者统计数据，为了获取每个作者名称的书籍详情，在词条聚集中嵌套了一个children聚集，在其中指定了子文档的关系名，然后继续嵌套一个词条聚集统计每个书籍的数据，得到每个作者的书籍列表。结果如下。</p> 
+<pre><code class="hljs">  "aggregations" : {
+    "authors" : {
+      "doc_count_error_upper_bound" : 0,
+      "sum_other_doc_count" : 0,
+      "buckets" : [
+        {
+          "key" : "张三",
+          "doc_count" : 1,
+          "books_data" : {
+            "doc_count" : 2,
+            "book_name" : {
+              "doc_count_error_upper_bound" : 0,
+              "sum_other_doc_count" : 0,
+              "buckets" : [
+                {
+                  "key" : "绿楼梦",
+                  "doc_count" : 1
+                },
+                {
+                  "key" : "黄楼梦",
+                  "doc_count" : 1
+                }
+              ]
+            }
+          }
+        },
+        {
+          "key" : "李四",
+          "doc_count" : 1,
+          "books_data" : {
+            "doc_count" : 2,
+            "book_name" : {
+              "doc_count_error_upper_bound" : 0,
+              "sum_other_doc_count" : 0,
+              "buckets" : [
+                {
+                  "key" : "白楼梦",
+                  "doc_count" : 1
+                },
+                {
+                  "key" : "黑楼梦",
+                  "doc_count" : 1
+                }
+              ]
+            }
+          }
+        }
+      ]
+    }
+  }</code></pre> 
+<h5 id="4.3.2%E3%80%81parent%E8%81%9A%E9%9B%86">4.3.2、parent聚集</h5> 
+<p>        parent聚集跟children聚集相反，你可以在子文档的聚集中嵌套一个parent聚集，就能得到每个子文档数据对应的父文档统计数据。例如：</p> 
+<pre><code class="hljs">GET author-join/_search
+{
+  "query": {
+    "match_all": {}
+  },
+  "size": 0,
+  "aggs": {
+    "books": {
+      "terms": {
+        "field": "book_name"
+      },
+      "aggs": {
+        "books_data": {
+          "parent": {
+            "type":"books"
+          },
+          "aggs": {
+            "authors": {
+              "terms": {
+                "field": "author_name"
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}</code></pre> 
+<p>        上面的请求首先在book_name字段上对子文档做了词条聚集，会得到每个书籍的统计数据，为了查看每个书籍的作者统计数据，在词条聚集中嵌套了一个parent聚集，需注意该聚集需要指定子关系的名称，而不是父关系的名称。最后在parent聚集中，又嵌套了一个词条聚集，以获得每种书籍的作者统计数据，结果如下。</p> 
+<pre><code class="hljs">  "aggregations" : {
+    "books" : {
+      "doc_count_error_upper_bound" : 0,
+      "sum_other_doc_count" : 0,
+      "buckets" : [
+        {
+          "key" : "白楼梦",
+          "doc_count" : 1,
+          "books_data" : {
+            "doc_count" : 1,
+            "authors" : {
+              "doc_count_error_upper_bound" : 0,
+              "sum_other_doc_count" : 0,
+              "buckets" : [
+                {
+                  "key" : "李四",
+                  "doc_count" : 1
+                }
+              ]
+            }
+          }
+        },
+        {
+          "key" : "绿楼梦",
+          "doc_count" : 1,
+          "books_data" : {
+            "doc_count" : 1,
+            "authors" : {
+              "doc_count_error_upper_bound" : 0,
+              "sum_other_doc_count" : 0,
+              "buckets" : [
+                {
+                  "key" : "张三",
+                  "doc_count" : 1
+                }
+              ]
+            }
+          }
+        },
+        {
+          "key" : "黄楼梦",
+          "doc_count" : 1,
+          "books_data" : {
+            "doc_count" : 1,
+            "authors" : {
+              "doc_count_error_upper_bound" : 0,
+              "sum_other_doc_count" : 0,
+              "buckets" : [
+                {
+                  "key" : "张三",
+                  "doc_count" : 1
+                }
+              ]
+            }
+          }
+        },
+        {
+          "key" : "黑楼梦",
+          "doc_count" : 1,
+          "books_data" : {
+            "doc_count" : 1,
+            "authors" : {
+              "doc_count_error_upper_bound" : 0,
+              "sum_other_doc_count" : 0,
+              "buckets" : [
+                {
+                  "key" : "李四",
+                  "doc_count" : 1
+                }
+              ]
+            }
+          }
+        }
+      ]
+    }
+  }</code></pre> 
+<p>        最后来总结一下join字段在解决父子关联时的优缺点。它允许单独更新或删除子文档，嵌套对象则做不到；建索引时需要先写入父文档的数据，然后携带路由值写入子文档的数据，由于父、子文档在同一个分片上，join关联查询的过程没有网络开销，可以快速地返回查询结果。但是由于join字段会带来一定的额外内存开销，建议使用它时父子关联的层级数不要大于2，它在子文档的数量远超过父文档的时比较适用。</p> 
+<h3 id="5%E3%80%81%E5%9C%A8%E5%BA%94%E7%94%A8%E5%B1%82%E5%85%B3%E8%81%94%E6%95%B0%E6%8D%AE">5、在应用层关联数据</h3> 
+<p>        所谓在应用层关联数据，实际上并不使用任何特别的字段，直接像关系数据库一样在建模时使用外键字段做父子关联，做关联查询和统计时需要多次发送请求。这里还是以作者和书籍为例，需要为它们各建立一个索引，然后在书籍索引中添加一个外键字段author_id来指向作者索引，代码如下。</p> 
+<pre><code class="hljs">PUT authors
+{
+  "mappings": {
+    "properties": {
+      "author_id":{
+        "type": "integer"
+      },
+      "author_name":{
+        "type": "keyword"
+      },
+      "author_birth":{
+        "type": "date",
+        "format": ["yyyy-MM-dd HH:mm:ss"]
+      }
+    }
+  }
+}
+
+PUT books
+{
+  "mappings": {
+    "properties": {
+      "book_id":{
+        "type":"integer"
+      },
+      "book_name":{
+        "type":"keyword"
+      },
+      "book_price":{
+        "type":"double"
+      },
+      "book_time":{
+        "type": "date",
+        "format": ["yyyy-MM-dd HH:mm:ss"]
+      },
+      "author_id":{
+        "type": "integer"
+      }
+    }
+  }
+}</code></pre> 
+<p>        然后向两个索引中添加数据。</p> 
+<pre><code class="hljs">POST authors/_bulk
+{"index":{"_id":"1"}}
+{"author_id":"1","author_name":"张三","author_birth":"2000-01-26 19:00:00"}
+{"index":{"_id":"2"}}
+{"author_id":"2","author_name":"李四","author_birth":"2000-03-26 19:00:00"}
+
+POST books/_bulk
+{"index":{"_id":"1"}}
+{"book_id":"1","book_name":"绿楼梦","book_price":"28.00","book_time":"2023-01-01 12:00:00","author_id":"1"}
+{"index":{"_id":"2"}}
+{"book_id":"2","book_name":"黄楼梦","book_price":"38.00","book_time":"2023-03-01 12:00:00","author_id":"1"}
+{"index":{"_id":"3"}}
+{"book_id":"3","book_name":"白楼梦","book_price":"18.00","book_time":"2023-05-01 12:00:00","author_id":"2"}
+{"index":{"_id":"4"}}
+{"book_id":"4","book_name":"黑楼梦","book_price":"58.00","book_time":"2023-06-01 12:00:00","author_id":"2"}</code></pre> 
+<p>        此时，如果你想获得以父搜子的效果，就得发送两次请求，例如搜索张三的信息以及他的书籍信息，先使用term查询张三的所有书籍数据。</p> 
+<pre><code class="hljs">GET authors/_search
+{
+  "query": {
+    "term": {
+      "author_name": {
+        "value": "张三"
+      }
+    }
+  }
+}</code></pre> 
+<p>        然后使用搜索结果返回的author_id去搜索书籍索引。</p> 
+<pre><code class="hljs">GET books/_search
+{
+  "query": {
+    "term": {
+      "author_id": {
+        "value": "1"
+      }
+    }
+  }
+}</code></pre> 
+<p>        可以看到，这样做也能达到目的，但是如果第一次搜索返回的author_id太多就会引起性能下降甚至出错。总之，在应用层关联数据的优点是操作比较简单，缺点是请求次数会变多，如果用于二次查询的条件过多也会引起性能下降，在实际使用时需要根据业务逻辑来进行权衡。</p> 
+<h3 id="6%E3%80%81%E5%B0%8F%E7%BB%93">6、小结</h3> 
+<p>        文章探讨了Elasticsearch如何处理带有父子关联的数据，逐一讲解了用对象数组、嵌套对象、join字段和应用层关联这4种方式解决一对多关联关系问题的方法和优缺点，主要包含以下内容。</p> 
+<ul><li>对象数组虽然可以保存一对多的关联数据，但是它无法让子文档作为独立的检索单元，常常会导致搜索出现歧义，因此一般要避免使用。</li><li>嵌套对象可以弥补对象数组的不足，它把子文档直接嵌在父文档中（当然你也可以把父文档嵌在子文档中），每个嵌套对象的文档数据可以被独立检索，但是不能单独地更新某个嵌套对象中的子文档，并且在建索引时需要把关联的数据一并写入，这会导致额外的维护开销</li><li>join字段把父、子文档都写入同一个索引，必须先写入父文档，然后用父文档的主键作为路由值写入子文档，子文档可以被独立更新。父、子文档处于同一个分片，导致搜索返回结果的速度很快，但要尽量避免使用多级join关联以避免出现性能下降。</li><li>嵌套对象和join字段都有自己特定的搜索和统计方式，使用时通过添加inner_hits参数可以将父、子文档一起返回。</li><li>在应用层关联数据不需要使用特别的字段就能实现，实现时只需要在子文档的索引中添加外键字段指向父文档，但是在做关联查询和统计时需要多次发送请求。其很适合多对多的关系映射，但是在请求的条件过多时也会导致查询效率降低。</li></ul> 
+<p></p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/8761e5518e3031410ae21cf1b7526f0a/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">Go Metrics SDK Tag 校验性能优化实践</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/52089dcf09f525b4868af30fa8fe1567/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">leetcode_811. 子域名访问计数</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

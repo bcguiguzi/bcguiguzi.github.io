@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>openmv底层算法剖析---梦飞openmv前传 - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="openmv底层算法剖析---梦飞openmv前传" />
+<meta property="og:description" content="前言
+接梦飞openmv博客，本篇重点剖析openmv的算法和功能实现。openmv是国外开源团队依托mirco-python架构开发的一套基于stm32内核优化算法的图像识别模组，其目的是让图像视觉算法应用开发更加简便，算法运行效率更高，其底层代码全部由C语言实现，上层代码用micro-python开发。经问世以来，受到广大高校学生和开发者的追捧和喜爱，常常在电赛上使用，并且也可帮助快速学习嵌入式和图像识别；笔者作为openmv源码二次开发者和3年开发经验的嵌入式工作者，在此简单分析openmv的算法实现和其优劣势；
+openmv集成了哪些功能？
+（1）sensor驱动
+作为一款机器视觉模块，支持多种摄像头是必须的，openmv开发了一套完整且有效的coms–sensor驱动框架，其核心数据结构是sensor功能结构体，包括sensor ID，分辨率，图像格式，sensor功能配置函数等，用结构体的方式定义了整个sensor的全部功能，在实现上只需要实现每个sensor对应得功能函数即可，方便接入各种不同的图像传感器；当然openmv也集成了很多其他硬件模块，如wifi模块，LCD，servo驱动，测距模块等，不过其硬件价格稍贵；
+（2）图像处理算法
+openmv上基本实现了大部分传统图像处理算法和机器视觉算法，具体包括图像滤波如均值滤波，中值滤波，盒子滤波，高斯滤波，拉普拉斯滤波等等，另外集成了整套RGB/YUV/以及灰度图像的颜色空间转换处理算法，其中包括LAB颜色空间变换，YUV颜色空间变换等；并且openmv上实现了基于sensor自带的3A算法和图像控制处理算法，如图像任意方向旋转，畸变矫正，透视变换，3D旋转等；
+（3）传统图像识别算法
+在色块识别上，openmv最常用的功能是色块识别算法，其实现方式是联通域标记，其算法优势是遍历一遍即可标记所有的联通区域，方便快速实现色块定位，支持灰度和LAB颜色标记；
+在形状识别上，openmv基于霍夫变换算法实现了直线，圆，矩形识别等算法；
+在常见标签和条码识别上，openmv集成了开源的zbar，quirc等用于二维码解码和条形码识别，支持datamatrix识别，另外还支持了apriltag标签识别，可用于目标3D标记和跟踪定位；
+在目标跟踪上，集成了目标关键特征点keypoints标记orb算法，以及帧差分算法可用于移动侦测；
+在特征算法上，集成了光流特征，HOG特征计算，边缘特征CANNY算法等
+在模式识别上，集成NCC模板匹配算法，可进行任意模板匹配；
+在传统机器学习算法上，openmv集成了haarcascade小波特征检测算法，可基于opencv训练的各种haar特征，将其转换成openmv支持的haar文件，支持任意目标的检测；
+（4）深度学习算法
+openmv集成了各种框架的深度学习算法，其中包括基于ST cube-AI的深度学习框架，以及CNN，tensorflow-lite micro等，由于CNN占用资源太大且不能使用CMSIS-nn推理加速，最新的openmv源码中深度学习推理框架只保留了tensor-flow lite micro；
+openmv算法为什么能在单片机上运行这么快？
+首先，openmv的算法是不同于opencv的，openmv的算法底层优化策略是基于ARM-cortex-M指令集优化的，其类似于采用ARM的NEON指令集作一些算法优化，由于单片机并不具备强大的DSP，GPU,NPU这些专用数字处理模块，stm32也仅集成了具备较弱DSP功能的FPU，支持单/双精度浮点运算；因此，想要让算法跑的更快，只能在单片机内核上和算法实现策略上下功夫。
+（1）指令集优化
+值得称赞的是openmv算法团队将传统的图像处理算法（如滤波算法），图像分割（联通域算法）等重新优化并实现了一遍。举一个简单的例子来说，openmv上实现卷积的方式是采用32位乘加指令smlad，利用内联汇编实现的优化计算，另外对于传统数学计算，也采用了内联汇编的优化方式，这是其算法运行效率得到大幅度提升的关键因素；
+（2）定点计算优化
+openmv做了很多定点化计算，也是就我们常用的查表法，进一步加快算法运算速度，将一些确定的计算和数据提前算好并保存在一个数组中，直接查表计算；
+（3）数据处理优化
+openmv在图像像素处理上做了很多优化，如取像素，存像素，数据转换等，最大程度上适应32位处理器架构；
+（4）ROI感兴趣区域
+openmv在算法运行上，支持roi区域计算，只取部分区域图像进行运算，方便多种算法配合执行，这也算一个优化项；
+（5）图像前处理优化
+由于openmv是顺序执行，先解析python代码，再调用C函数，由于sensor图像采集一般为RGB565的图像或者YUV的图像，要处理成算法直接能运行的图像，需要作一些图像格式转换，这部分图像采集和转换处理做了单缓存，双缓存，和三缓存优化，使得图像采集速度更快，并在DCMI中断中做图像格式变换，以及图像拷贝操作，最大程度提升图像前处理的效率，使得采集出来的图像直接进入算法处理环节；
+（6）资源分配优化
+由于stm32的分散内存特性，openmv将文件系统缓存分配给CCM快速内存，可以方便micro-python代码的快速读取和解析，这算一个隐藏的优化项，另外支持从底层图像缓存中分配内存用于算法计算，提高了内存的利用率，不管是flash还是内存，openmv在芯片的资源利用率基本上能达到90%以上；
+（7）ARM-CMSIS加速
+ARM公司提供了整套基于ARM-cortex系列的内核加速计算库，包括很多指令计算库，汇编计算，还有CMSIS-NN神经网络推理加速库，openmv使用的stm32单片机引用了ARM官方计算库，因此在一些复杂的计算上，能节省很大一部分时间，这也是openmv能运行一些AI算法的基本条件；
+总的来说，openmv采用的算法优化策略主要包括，ARM-cortex-M指令集优化（thumb指令集），内联汇编优化，定点化计算优化等策略，另外还在内存，flash，图像采集方法上做了很多优化；
+梦飞在openmv上做了哪些事？
+前面的博客文章有介绍梦飞自己设计的openmv的硬件并自己开发了底层的固件，这里重点讲解梦飞在开发openmv底层代码上做的几件事：
+（1）梦飞在openmv4上做了一些算法集成和硬件集成，其中算法主要为了保证openmv支持更多的机器学习和深度学习，在底层代码上，支持ST cube-AI运行的mnist手写数字识别（但是不能支持自己训练，自己训练之后要转换到底层才能使用，如果有需要我们会提供整套代码和模型转换方法），支持lenet，CNN训练的模型算法，支持最新的mobilenet训练的模型；另外，收集了很多haarcascade训练的模型文件，通过openmv提供的工具转换成cascade模型，可在openmv上运行，支持行人检测，口罩检测，车辆识别，车牌检测，笑脸检测，动物，水果检测等等；
+（2）梦飞在stm32F407上实现了整套openmv代码的集成，基于openmv源码和自主移植支持了大部分openmv3支持的算法，进一步降低了openmv硬件的成本，并在其基础上开发了一些识别例程，其中包括颜色识别，二维码识别，巡线识别，基于模板匹配的数字识别，手势识别，标记识别，人脸识别等；还有基于haarcascade的行人，车辆，口罩检测等，除了不支持深度学习，其他很多基本的算法都能使用，能在一些对硬件成本较敏感的实际应用上使用，另外梦飞支持的摄像头和LCD价格也更低；
+openmv的优劣势
+在传统算法性能上，openmv运行的传统图像处理和图像识别算法确实具备很大的优势，前面也分析了其算法优化的策略和实现；特别表现在色块识别，条码识别等传统算法上，这可能是openmv能转换到实际应用上的一个优势；
+但是其在深度学习上没有优势，一般带AI核的芯片都能运行一些大型的深度学习框架和网络模型，但是openmv一般只能运行轻量化的神经网络模型，就算使用带SDRAM的openmv4plus也只是在内存上占优势，依然不能运行像yolov3这样的网络模型，可想而知，硬件算力限制了其作为机器视觉模块的前景；
+未来趋势，尽管openmv依托stm32芯片表现出其劣势的一面，但是不影响其未来发展，目前ARM已经设计了cortex-M55的架构，也就是说未来单片机是支持AI算力的，并且最新的openmv源码中已经开始集成cortex-M55的底层库，未来前景依然是客观的；
+总结启示
+openmv虽然是一个MIT开源且不受限制的项目，但是有人将其硬件注册商标并指定其为官方的做法限制了很多人的学习道路，至少对于那些资金有限而勤奋好学的学生是不公平的，在此，梦飞智能自主开发的硬件将持续发光发热，通过学习和开发openmv，对于个人能力和认知的提升和进步是非常有益的，在其C语言部分个人学到了非常多有用的知识，虽然短期内还未将其完全学懂学透，从长远来看学习它是一个不错的选择。" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/557b56af325844eb71065355107b4f21/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-08-03T20:55:04+08:00" />
+<meta property="article:modified_time" content="2023-08-03T20:55:04+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">openmv底层算法剖析---梦飞openmv前传</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p><strong>前言</strong><br> 接梦飞openmv博客，本篇重点剖析openmv的算法和功能实现。openmv是国外开源团队依托mirco-python架构开发的一套基于stm32内核优化算法的图像识别模组，其目的是让图像视觉算法应用开发更加简便，算法运行效率更高，其底层代码全部由C语言实现，上层代码用micro-python开发。经问世以来，受到广大高校学生和开发者的追捧和喜爱，常常在电赛上使用，并且也可帮助快速学习嵌入式和图像识别；笔者作为openmv源码二次开发者和3年开发经验的嵌入式工作者，在此简单分析openmv的算法实现和其优劣势；</p> 
+<p><strong>openmv集成了哪些功能？</strong><br> <strong>（1）sensor驱动</strong><br> 作为一款机器视觉模块，支持多种摄像头是必须的，openmv开发了一套完整且有效的coms–sensor驱动框架，其核心数据结构是sensor功能结构体，包括sensor ID，分辨率，图像格式，sensor功能配置函数等，用结构体的方式定义了整个sensor的全部功能，在实现上只需要实现每个sensor对应得功能函数即可，方便接入各种不同的图像传感器；当然openmv也集成了很多其他硬件模块，如wifi模块，LCD，servo驱动，测距模块等，不过其硬件价格稍贵；<br> <strong>（2）图像处理算法</strong><br> openmv上基本实现了大部分传统图像处理算法和机器视觉算法，具体包括图像滤波如均值滤波，中值滤波，盒子滤波，高斯滤波，拉普拉斯滤波等等，另外集成了整套RGB/YUV/以及灰度图像的颜色空间转换处理算法，其中包括LAB颜色空间变换，YUV颜色空间变换等；并且openmv上实现了基于sensor自带的3A算法和图像控制处理算法，如图像任意方向旋转，畸变矫正，透视变换，3D旋转等；<br> <strong>（3）传统图像识别算法</strong><br> 在色块识别上，openmv最常用的功能是色块识别算法，其实现方式是联通域标记，其算法优势是遍历一遍即可标记所有的联通区域，方便快速实现色块定位，支持灰度和LAB颜色标记；<br> 在形状识别上，openmv基于霍夫变换算法实现了直线，圆，矩形识别等算法；<br> 在常见标签和条码识别上，openmv集成了开源的zbar，quirc等用于二维码解码和条形码识别，支持datamatrix识别，另外还支持了apriltag标签识别，可用于目标3D标记和跟踪定位；<br> 在目标跟踪上，集成了目标关键特征点keypoints标记orb算法，以及帧差分算法可用于移动侦测；<br> 在特征算法上，集成了光流特征，HOG特征计算，边缘特征CANNY算法等<br> 在模式识别上，集成NCC模板匹配算法，可进行任意模板匹配；<br> 在传统机器学习算法上，openmv集成了haarcascade小波特征检测算法，可基于opencv训练的各种haar特征，将其转换成openmv支持的haar文件，支持任意目标的检测；<br> <strong>（4）深度学习算法</strong><br> openmv集成了各种框架的深度学习算法，其中包括基于ST cube-AI的深度学习框架，以及CNN，tensorflow-lite micro等，由于CNN占用资源太大且不能使用CMSIS-nn推理加速，最新的openmv源码中深度学习推理框架只保留了tensor-flow lite micro；</p> 
+<p><strong>openmv算法为什么能在单片机上运行这么快？</strong><br> 首先，openmv的算法是不同于opencv的，openmv的算法底层优化策略是基于ARM-cortex-M指令集优化的，其类似于采用ARM的NEON指令集作一些算法优化，由于单片机并不具备强大的DSP，GPU,NPU这些专用数字处理模块，stm32也仅集成了具备较弱DSP功能的FPU，支持单/双精度浮点运算；因此，想要让算法跑的更快，只能在单片机内核上和算法实现策略上下功夫。<br> <strong>（1）指令集优化</strong><br> 值得称赞的是openmv算法团队将传统的图像处理算法（如滤波算法），图像分割（联通域算法）等重新优化并实现了一遍。举一个简单的例子来说，openmv上实现卷积的方式是采用32位乘加指令smlad，利用内联汇编实现的优化计算，另外对于传统数学计算，也采用了内联汇编的优化方式，这是其算法运行效率得到大幅度提升的关键因素；<br> <strong>（2）定点计算优化</strong><br> openmv做了很多定点化计算，也是就我们常用的查表法，进一步加快算法运算速度，将一些确定的计算和数据提前算好并保存在一个数组中，直接查表计算；<br> <strong>（3）数据处理优化</strong><br> openmv在图像像素处理上做了很多优化，如取像素，存像素，数据转换等，最大程度上适应32位处理器架构；<br> <strong>（4）ROI感兴趣区域</strong><br> openmv在算法运行上，支持roi区域计算，只取部分区域图像进行运算，方便多种算法配合执行，这也算一个优化项；<br> <strong>（5）图像前处理优化</strong><br> 由于openmv是顺序执行，先解析python代码，再调用C函数，由于sensor图像采集一般为RGB565的图像或者YUV的图像，要处理成算法直接能运行的图像，需要作一些图像格式转换，这部分图像采集和转换处理做了单缓存，双缓存，和三缓存优化，使得图像采集速度更快，并在DCMI中断中做图像格式变换，以及图像拷贝操作，最大程度提升图像前处理的效率，使得采集出来的图像直接进入算法处理环节；<br> <strong>（6）资源分配优化</strong><br> 由于stm32的分散内存特性，openmv将文件系统缓存分配给CCM快速内存，可以方便micro-python代码的快速读取和解析，这算一个隐藏的优化项，另外支持从底层图像缓存中分配内存用于算法计算，提高了内存的利用率，不管是flash还是内存，openmv在芯片的资源利用率基本上能达到90%以上；<br> <strong>（7）ARM-CMSIS加速</strong><br> ARM公司提供了整套基于ARM-cortex系列的内核加速计算库，包括很多指令计算库，汇编计算，还有CMSIS-NN神经网络推理加速库，openmv使用的stm32单片机引用了ARM官方计算库，因此在一些复杂的计算上，能节省很大一部分时间，这也是openmv能运行一些AI算法的基本条件；<br> 总的来说，openmv采用的算法优化策略主要包括，ARM-cortex-M指令集优化（thumb指令集），内联汇编优化，定点化计算优化等策略，另外还在内存，flash，图像采集方法上做了很多优化；</p> 
+<p><strong>梦飞在openmv上做了哪些事？</strong><br> 前面的博客文章有介绍梦飞自己设计的openmv的硬件并自己开发了底层的固件，这里重点讲解梦飞在开发openmv底层代码上做的几件事：<br> （1）梦飞在openmv4上做了一些算法集成和硬件集成，其中算法主要为了保证openmv支持更多的机器学习和深度学习，在底层代码上，支持ST cube-AI运行的mnist手写数字识别（但是不能支持自己训练，自己训练之后要转换到底层才能使用，如果有需要我们会提供整套代码和模型转换方法），支持lenet，CNN训练的模型算法，支持最新的mobilenet训练的模型；另外，收集了很多haarcascade训练的模型文件，通过openmv提供的工具转换成cascade模型，可在openmv上运行，支持行人检测，口罩检测，车辆识别，车牌检测，笑脸检测，动物，水果检测等等；<br> （2）梦飞在stm32F407上实现了整套openmv代码的集成，基于openmv源码和自主移植支持了大部分openmv3支持的算法，进一步降低了openmv硬件的成本，并在其基础上开发了一些识别例程，其中包括颜色识别，二维码识别，巡线识别，基于模板匹配的数字识别，手势识别，标记识别，人脸识别等；还有基于haarcascade的行人，车辆，口罩检测等，除了不支持深度学习，其他很多基本的算法都能使用，能在一些对硬件成本较敏感的实际应用上使用，另外梦飞支持的摄像头和LCD价格也更低；</p> 
+<p><strong>openmv的优劣势</strong><br> 在传统算法性能上，openmv运行的传统图像处理和图像识别算法确实具备很大的优势，前面也分析了其算法优化的策略和实现；特别表现在色块识别，条码识别等传统算法上，这可能是openmv能转换到实际应用上的一个优势；<br> 但是其在深度学习上没有优势，一般带AI核的芯片都能运行一些大型的深度学习框架和网络模型，但是openmv一般只能运行轻量化的神经网络模型，就算使用带SDRAM的openmv4plus也只是在内存上占优势，依然不能运行像yolov3这样的网络模型，可想而知，硬件算力限制了其作为机器视觉模块的前景；<br> 未来趋势，尽管openmv依托stm32芯片表现出其劣势的一面，但是不影响其未来发展，目前ARM已经设计了cortex-M55的架构，也就是说未来单片机是支持AI算力的，并且最新的openmv源码中已经开始集成cortex-M55的底层库，未来前景依然是客观的；<br> <strong>总结启示</strong><br> openmv虽然是一个MIT开源且不受限制的项目，但是有人将其硬件注册商标并指定其为官方的做法限制了很多人的学习道路，至少对于那些资金有限而勤奋好学的学生是不公平的，在此，梦飞智能自主开发的硬件将持续发光发热，通过学习和开发openmv，对于个人能力和认知的提升和进步是非常有益的，在其C语言部分个人学到了非常多有用的知识，虽然短期内还未将其完全学懂学透，从长远来看学习它是一个不错的选择。</p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/0ef42113c827e674a9b628f3f8aef113/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">梦飞openmv--stm32单片机跑AI</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/1c62e957e0489d54ff4bb3845d86c35a/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">MP4视频剪切合并软件绿色免费 电脑端使用 速度快 体积小 免安装</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

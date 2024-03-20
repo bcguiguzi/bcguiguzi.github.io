@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>I2C 时序详解，精确到每一个时钟 - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="I2C 时序详解，精确到每一个时钟" />
+<meta property="og:description" content="1 输入输出模式设置 官方文档中有这样的介绍：
+SDA和SCL都是双向线路，都通过一个电流源或上拉电阻连接到正的电源电压，当总线空闲时，这两条线路都是高电平，连接到总线的器件输出级必须是漏极开路或集电极开路才能执行线与的功能；2C 总线上数据的传输速率在标准模式下可达100kbit/s，在快速模式下可达400kbit/s，在高速模式下可达 3.4Mbit/s ；连接到总线的接口数量只由“总线电容是 400pF”的限制决定
+这里就涉及到「漏极/集电极开路」、「上拉电阻」和「线与」两个概念，而这绝对可以算得上是实现 I2C 总线协议的关键所在。
+1.1 漏极/集电极开路 1.1.1 漏极/集电极开路结构 集电极开路输出的结构下图1所示，右边的那个三极管集电极什么都不接，所以叫做集电极开路（左边的三极管为反相之用，使输入为“0”时，输出也为“0”）。
+对图1
+当左端的输入为“0”时，前面的三极管截止（即集电极C跟发射极E之间相当于断开），所以5V电源通过1K电阻加到右边的三极管上，右边的三极管导通（即相当于一个开关闭合）；
+当左端的输入为“1”时，前面的三极管导通，而后面的三极管截止（相当于开关断开）。
+将图1简化成图2的样子。图2中的开关受软件控制，“1”时断开，“0”时闭合。
+输入“0”时，开关闭合，输出直接接地，所以输出电平为0。
+输入“1”时，开关断开，输出端悬空，即高阻态。这时电平状态未知；如果后面一个电阻负载（即使很轻的负载）到地，那么输出端的电平就被这个负载拉到低电平了，所以这个电路是不能输出高电平的。
+再看图3。
+图三中那个1K的电阻即是上拉电阻。
+输入“0”时，开关闭合，有电流从1K电阻及开关上流过然后直接接地，所以输出电平依然为0，即低电平。
+输入“1”时，开关断开，输出端悬空，此时输出端通过一个1K电阻上拉，电路输出高电平；
+对于漏极开路（OD）输出，跟集电极开路输出是十分类似的。将上面的三极管换成场效应管即可。这样集电极就变成了漏极，OC就变成了OD，原理分析是一样的；
+1.1.2 单片机GPIO口开漏模式 单片机GPIO口设置为开漏模式时，即可读外部状态也可以对外输出（高电平或低电平），但是需要外接上拉电阻；
+GPIO对外输出：
+1 低电平（逻辑0，IO被接在GND上，只能是低电平）
+2 高阻态（逻辑1，IO可以被拉高或者拉低）两种状态，而所谓的“高电平”其实是在输出逻辑1、IO为高阻态时，IO被外部或者内部上拉电阻拉高的。
+GPIO读外部状态：
+1 SDA=0时，SDA脚在IC内部被直接接在GND上，它只能是低电平，外部器件也无法把SDA脚拉高，这叫拉低。
+2 SDA=1时，SDA脚为高阻态，（相当于在万用板上焊了一根IO，这个IO谁都不接，这就是高阻了），这时SDA可以被别的器件拉低或者拉高，即，这时SDA脚的控制权是“释放状态”，如果谁都不去管这个高阻态的脚，这个脚会被上拉电阻拉高以保证不会被空气里的电磁波干扰而高低乱跳。
+备注！！！这也是为什么每次主机发送一个字节等待从设备ACK应答信号时，主机要设置SDA=1的原因；释放总线，让从设备控制SDA为低，以做应答信号；
+1.1.3 漏极/集电极开路特点 漏极/集电极开路的重要特点：
+可以将多个开漏输出的Pin，连接到一条线上。形成 “与逻辑” 关系（线与）。
+如下图，当PIN_A、PIN_B、PIN_C任意一个变低后，开漏线上的逻辑就为0了。这也是I2C，SMBus等总线判断总线占用状态的原理。如果作为输出必须接上拉电阻。
+接容性负载时，下降延是芯片内的晶体管，是有源驱动，速度较快；上升延是无源的外接电阻，速度慢。如果要求速度高电阻选择要小，功耗会大。所以负载电阻的选择要兼顾功耗和速度。
+开漏模式与准双向模式相似，但是没有内部上拉电阻。开漏模式的优点是电气兼容性好，外部上拉电阻接3V电源，就能和3V逻辑器件接口，如果上拉电阻接5V电源，又可以与5V逻辑器件接口。此外，开漏模式还可以方便地实现“线与”逻辑功能；
+1.2 小结 GPIO模拟I2C总线应设置为开漏（OD）模式；需要注意的是：如果多主的话，这二者必须是OD的，如果只有一个主，时钟不需要OD。
+但是实际来说，一主多从模式下，
+以STM32为例，SCL设置为推挽输出，SDA作为输出时，设置为推挽输出（推挽电路速度快，输出能力强），作为输入时，浮空输入，需外接上拉电阻；个人感觉类似于开漏模式；
+C51，都配置为准双向/弱上拉模式即可，
+按理说SCL设置为推挽输出，SDA作为输出时，设置为推挽输出，作为输入时，开漏模式，需外接上拉电阻；也可以，没有实验过；
+2 关于上升沿和下降沿分析 详细可以参考：分析一下到底是上升沿还是下降沿读写数据
+http://blog.csdn.net/dagefeijiqumeiguo/article/details/73824462
+所谓读即是指MCU从器件的数据总线上根据一定的时序来读取器件的数据。一般而言，MCU提供一个边沿信号(上升沿或者下降沿均可)告诉器件可以发数据了，器件检测到边沿信号以后，立即在数据总线上更新数据，待数据稳定以后，MCU即可读取数据。所以一般所说的上升沿(下降沿)开始读数据是不准确地说法，上升沿(下降沿)这是数据总线上的数据发生改变，MCU并没有在此时刻读取数据，而是等待数据稳定之后才开始读取数据。
+所谓写即是指MCU向器件写入数据，其操作是：先将数据放置在数据总线上，等待其稳定之后，MCU产生一个边沿信号，将数据写入器件
+总结一下就是，可以简单理解为“写稳读变”。
+写：MCU在数据总线上的数据稳定之后，检测边沿信号写数据到器件；
+读：MCU发出边沿信号告诉器件发送数据，检测到边沿信号之后，器件改变（更新）数据，等待稳定之后MCU读取数据
+那么I2C总线读写数据怎么样的呢；
+个人理解是这样：
+写：MCU在数据总线上的数据稳定之后，检测边沿信号（上升沿）写数据到器件；" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/77c376c581e2723a330c1841083fe74c/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2017-06-28T21:47:28+08:00" />
+<meta property="article:modified_time" content="2017-06-28T21:47:28+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">I2C 时序详解，精确到每一个时钟</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p> </p> 
+<p> </p> 
+<h2>1      输入输出模式设置</h2> 
+<p>官方文档中有这样的介绍：</p> 
+<p>         SDA和SCL都是双向线路，都通过一个电流源或上拉电阻连接到正的电源电压，当总线空闲时，这两条线路都是高电平，<span style="color:red">连接到总线的器件输出级必须是</span><span style="color:#00B050">漏极开路或集电极开路</span><span style="color:red">才能执行线与的功能；</span>2C 总线上数据的传输速率在标准模式下可达100kbit/s，在快速模式下可达400kbit/s，在高速模式下可达 3.4Mbit/s ；连接到总线的接口数量只由“总线电容是 400pF”的限制决定</p> 
+<p> </p> 
+<p>         这里就涉及到「漏极/集电极开路」、「<span style="color:#00B050">上拉电阻</span>」和「线与」两个概念，而这绝对可以算得上是实现 I2C 总线协议的关键所在。</p> 
+<h3>1.1            漏极/集电极开路</h3> 
+<h4>1.1.1     漏极/集电极开路结构</h4> 
+<div> 
+ <img src="https://images2.imgbox.com/b4/0a/KFRo7OO1_o.jpg" alt=""> 
+ <br> 
+</div> 
+<p>集电极开路输出的结构下图1所示，右边的那个三极管集电极什么都不接，所以叫做集电极开路（左边的三极管为反相之用，使输入为“0”时，输出也为“0”）。</p> 
+<p>对图1</p> 
+<p>当左端的输入为“0”时，前面的三极管截止（即集电极C跟发射极E之间相当于断开），所以5V电源通过1K电阻加到右边的三极管上，右边的三极管导通（即相当于一个开关闭合）；</p> 
+<p>当左端的输入为“1”时，前面的三极管导通，而后面的三极管截止（相当于开关断开）。<img src="" alt=""></p> 
+<p></p> 
+<p>将图1简化成图2的样子。图2中的开关受软件控制，“1”时断开，“0”时闭合。</p> 
+<p>输入“0”时，开关闭合，输出直接接地，所以输出电平为0。</p> 
+<p>输入“1”时，开关断开，输出端悬空，即高阻态。这时电平状态未知；如果后面一个电阻负载（即使很轻的负载）到地，那么输出端的电平就被这个负载拉到低电平了，所以这个电路是不能输出高电平的。</p> 
+<p>再看图3。</p> 
+<p>图三中那个1K的电阻即是<span style="color:#00B050">上拉电阻</span>。</p> 
+<p>输入“0”时，开关闭合，有电流从1K电阻及开关上流过然后直接接地，所以输出电平依然为0，即低电平。</p> 
+<p>输入“1”时，开关断开，输出端悬空，此时输出端通过一个1K电阻上拉，电路输出高电平；</p> 
+<p> </p> 
+<p>对于漏极开路（OD）输出，跟集电极开路输出是十分类似的。将上面的三极管换成场效应管即可。这样集电极就变成了漏极，OC就变成了OD，原理分析是一样的；</p> 
+<h4>1.1.2     单片机GPIO口开漏模式</h4> 
+<p>         <span style="color:red">单片机</span><span style="color:red">GPIO</span><span style="color:red">口设置为开漏模式时，即可读外部状态也可以对外输出（高电平或低电平），但是需要外接上拉电阻</span>；</p> 
+<p>         <span style="color:red">GPIO</span><span style="color:red">对外输出</span>：</p> 
+<p>1  低电平（逻辑0，IO被接在GND上，只能是低电平）</p> 
+<p>2  高阻态（逻辑1，IO可以被拉高或者拉低）两种状态，而所谓的“高电平”其实是在输出逻辑1、IO为高阻态时，IO被外部或者内部上拉电阻拉高的。</p> 
+<p>         </p> 
+<p>         <span style="color:red">GPIO</span><span style="color:red">读外部状态：</span></p> 
+<p>1  SDA=0时，SDA脚在IC内部被直接接在GND上，它只能是低电平，外部器件也无法把SDA脚拉高，这叫拉低。</p> 
+<p>2  SDA=1时，SDA脚为高阻态，（相当于在万用板上焊了一根IO，这个IO谁都不接，这就是高阻了），这时SDA可以被别的器件拉低或者拉高，即，这时SDA脚的控制权是“释放状态”，如果谁都不去管这个高阻态的脚，这个脚会被上拉电阻拉高以保证不会被空气里的电磁波干扰而高低乱跳。</p> 
+<p>备注！！！<span style="color:#00B050">这也是为什么每次主机发送一个字节等待从设备</span><span style="color:#00B050">ACK</span><span style="color:#00B050">应答信号时，主机要设置</span><span style="color:#00B050">SDA=1</span><span style="color:#00B050">的原因；释放总线，让从设备控制</span><span style="color:#00B050">SDA</span><span style="color:#00B050">为低，以做应答信号；</span></p> 
+<h4>1.1.3     漏极/集电极开路特点</h4> 
+<p>漏极/集电极开路的重要特点：</p> 
+<p>可以将多个开漏输出的Pin，连接到一条线上。形成 “与逻辑” 关系（<span style="color:#00B050">线与</span>）。</p> 
+<p>如下图，当PIN_A、PIN_B、PIN_C任意一个变低后，开漏线上的逻辑就为0了。这也是I2C，SMBus等总线判断总线占用状态的原理。如果作为输出必须接上拉电阻。</p> 
+<p><img src="" alt=""></p> 
+<p><img src="https://images2.imgbox.com/16/a0/t8QfGATi_o.jpg" alt=""><br> </p> 
+<p>接容性负载时，下降延是芯片内的晶体管，是有源驱动，速度较快；上升延是无源的外接电阻，速度慢。如果要求速度高电阻选择要小，功耗会大。所以负载电阻的选择要兼顾功耗和速度。</p> 
+<p>开漏模式与准双向模式相似，但是没有内部上拉电阻。开漏模式的优点是电气兼容性好，外部上拉电阻接3V电源，就能和3V逻辑器件接口，如果上拉电阻接5V电源，又可以与5V逻辑器件接口。此外，开漏模式还可以方便地实现“线与”逻辑功能；</p> 
+<h3>1.2            小结</h3> 
+<p>GPIO模拟I2C总线应设置为开漏（OD）模式；<span style="color:red">需要注意的是：如果多主的话，这二者必须是</span><span style="color:red">OD</span><span style="color:red">的，如果只有一个主，时钟不需要</span><span style="color:red">OD</span><span style="color:red">。</span></p> 
+<p>但是实际来说，一主多从模式下，</p> 
+<p> </p> 
+<p>以STM32为例，SCL设置为推挽输出，SDA作为输出时，设置为推挽输出（推挽电路速度快，输出能力强），作为输入时，浮空输入，需外接上拉电阻；个人感觉类似于开漏模式；</p> 
+<p> </p> 
+<p>C51，都配置为准双向/弱上拉模式即可，</p> 
+<p>按理说SCL设置为推挽输出，SDA作为输出时，设置为推挽输出，作为输入时，开漏模式，需外接上拉电阻；也可以，没有实验过；</p> 
+<p> </p> 
+<p> </p> 
+<p> </p> 
+<p> </p> 
+<p> </p> 
+<h2>2      关于上升沿和下降沿分析</h2> 
+<p>详细可以参考：分析一下到底是上升沿还是下降沿读写数据</p> 
+<p><a target="_blank" href="http://blog.csdn.net/dagefeijiqumeiguo/article/details/73824462" rel="noopener noreferrer">http://blog.csdn.net/dagefeijiqumeiguo/article/details/73824462</a></p> 
+<p> </p> 
+<p>所谓读即是指<span style="color:#00B050">MCU</span>从<span style="color:#00B050">器件的数据总线</span>上根据一定的时序来读取器件的数据。一般而言，MCU提供一个边沿信号(上升沿或者下降沿均可)告诉器件可以发数据了，器件检测到边沿信号以后，立即在数据总线上更新数据，待数据稳定以后，MCU即可读取数据。所以一般所说的上升沿(下降沿)开始读数据是<span style="color:red">不准确</span>地说法，上升沿(下降沿)这是数据总线上的数据发生改变，MCU并没有在此时刻读取数据，而是等待数据稳定之后才开始读取数据。</p> 
+<p>所谓写即是指MCU向器件写入数据，其操作是：先将数据放置在数据总线上，等待其稳定之后，MCU产生一个边沿信号，将数据写入器件</p> 
+<p>总结一下就是，可以简单理解为“写稳读变”。</p> 
+<p><span style="color:red">写：</span>MCU在数据总线上的数据稳定之后，检测边沿信号写数据到器件；</p> 
+<p><span style="color:red">读：</span>MCU发出边沿信号告诉器件发送数据，检测到边沿信号之后，器件改变（更新）数据，等待稳定之后MCU读取数据</p> 
+<p> </p> 
+<p>那么I2C总线读写数据怎么样的呢；</p> 
+<p>个人理解是这样：</p> 
+<p><span style="color:red">写：</span>MCU在数据总线上的数据稳定之后，检测边沿信号<span style="color:red">（上升沿）</span>写数据到器件；</p> 
+<p><span style="color:red">读：</span>MCU发出边沿信号<span style="color:red">（下降沿）</span>告诉器件发送数据，检测到边沿信号之后，器件改变（更新）数据，等待稳定之后MCU读取数据</p> 
+<h2>3      I2C时序</h2> 
+<h3>3.1            字节格式</h3> 
+<p>发送到SDA 线上的每个字节必须为8 位，每次传输可以发送的字节数量不受限制。每个字节后必须跟一个响应位。首先传输的是数据的最高位（MSB），如果从机要完成一些其他功能后（例如一个内部中断服务程序）才能接收或发送下一个完整的数据字节，可以使时钟线SCL 保持低电平，迫使主机进入等待状态，当从机准备好接收下一个数据字节并释放时钟线SCL后数据传输继续</p> 
+<h3>3.2            数据的有效性</h3> 
+<p>数据的有效性：</p> 
+<p>SDA线上的数据必须在SCL的高电平周期保持稳定。</p> 
+<p>SDA线的高或低电平状态只有在SCL 线的时钟信号是低电平时才能改变；</p> 
+<p></p> 
+<img src="" alt=""> 
+<br> 
+<p align="left"> </p> 
+<h3>3.3            起始和停止条件</h3> 
+<p>起始条件：SCL线是高电平时 SDA线从高电平向低电平切换；</p> 
+<p>停止条件：SCL线是高电平时 SDA线由低电平向高电平切换</p> 
+<p><br> </p> 
+<p><img src="" alt=""><br> </p> 
+<p><br> </p> 
+<p></p> 
+<h4>3.3.1     起始条件</h4> 
+<p>函数实现：</p> 
+<p>static void i2c_start_signal(void)</p> 
+<p>{<!-- --></p> 
+<p>    /*配置SDA为输出(推挽输出或准双向口) */</p> 
+<p>    i2c_cfg_sda_dir(SDA_DIR_OUTPUT);</p> 
+<p>    /*等待配置输出完成,可以不需要 */</p> 
+<p>    i2c_delay_us(1);</p> 
+<p>    </p> 
+<p>    i2c_delay_us(5);</p> 
+<p>    /*SCL,SDA都设置为高电平 */</p> 
+<p>    i2c_set_line(DRI_I2C_SDA|DRI_I2C_SCL);</p> 
+<p>    i2c_delay_us(5);                                            </p> 
+<p>    </p> 
+<p>    /*SDA由高电平到低电平,产生开始信号 */ </p> 
+<p>    i2c_clear_line(DRI_I2C_SDA);                                </p> 
+<p>    i2c_delay_us(5);                                            </p> 
+<p>    </p> 
+<p>    /*钳住总线,此时总线为忙,禁止其他设备占用 */</p> 
+<p>    i2c_clear_line(DRI_I2C_SCL);  </p> 
+<p>    i2c_delay_us(5);        </p> 
+<p>}</p> 
+<br> 
+<p align="left"> </p> 
+<h4>3.3.2     停止条件</h4> 
+<p>函数实现：</p> 
+<p>static void i2c_stop_signal(void)</p> 
+<p>{<!-- --></p> 
+<p>    /*配置SDA为输出(推挽输出或准双向口) */</p> 
+<p>    i2c_cfg_sda_dir(SDA_DIR_OUTPUT);</p> 
+<p>    /*等待配置输出完成,可以不需要 */</p> 
+<p>    i2c_delay_us(1);</p> 
+<p>    </p> 
+<p>    /*SDA设置为低电平 */</p> 
+<p>    i2c_clear_line(DRI_I2C_SDA);</p> 
+<p>    i2c_delay_us(5);</p> 
+<p>    </p> 
+<p>    /*SCL为高电平时 */</p> 
+<p>    i2c_set_line(DRI_I2C_SCL);</p> 
+<p>    i2c_delay_us(5);</p> 
+<p>    </p> 
+<p>    /*SDA由低电平到高电平,停止 */ </p> 
+<p>    i2c_set_line(DRI_I2C_SDA);</p> 
+<p>    i2c_delay_us(5);</p> 
+<p>}</p> 
+<h3>3.4            接受应答信号</h3> 
+<p>_____</p> 
+<p>一个完整的时钟脉冲理解为先低电平后高电平；_____|</p> 
+<p>数据传输必须带响应，相关的响应<span style="color:red">时钟脉冲</span>由主机产生。<span style="color:red">在响应的时钟脉冲期间发送器释放SDA</span>线（高）。</p> 
+<p>对于反馈有效应答位ACK的要求是，接收器在第9个时钟脉冲之前的低电平期间将SDA线拉低，并且确保在该时钟的高电平期间为稳定的低电平函数实现</p> 
+<p> </p> 
+<p><strong><span style="font-size:48px; color:#ff6600"> 3.5 最重要的部分在以下两张图中</span></strong></p> 
+<p>数据的写操作：图中演示了I2C连续写数据,两个字节的连续写入,更多字节同样</p> 
+<p><img src="" alt=""><br> </p> 
+<p><img src="https://images2.imgbox.com/e8/3c/HUQyU3nB_o.png" alt=""><br> </p> 
+<p></p> 
+<p>数据的读操作：在上图中，可以认为写入了设备地址及寄存器地址，再次重启总线后，发送读命令，连续读取两个字节，发送NACK,发送停止信号；</p> 
+<p></p> 
+<p> <img src="https://images2.imgbox.com/6a/66/dQzyWH1W_o.png" alt=""><img src="" alt=""></p> 
+<p> </p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/3aec633124ab2e633c91f978fe05974a/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">激活函数之logistic sigmoid函数介绍及C&#43;&#43;实现</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/67384c463e600a77c6b3c6abdd62ec51/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">基于FPGA的VGA显示，简单的历程和注释（DE2-115）</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

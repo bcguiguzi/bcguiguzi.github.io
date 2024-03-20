@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Redis分布式锁的坑 - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="Redis分布式锁的坑" />
+<meta property="og:description" content="1. 非原子操作（setnx &#43; expire） 一说到实现Redis的分布式锁，很多小伙伴马上就会想到setnx&#43; expire命令。也就是说，先用setnx来抢锁，如果抢到之后，再用expire给锁设置一个过期时间。
+伪代码如下：
+if（jedis.setnx(lock_key,lock_value) == 1）{ //加锁 jedis.expire(lock_key，timeout）; //设置过期时间 doBusiness //业务逻辑处理 } 这块代码是有坑的，因为setnx和expire两个命令是分开写的，并不是原子操作！如果刚要执行完setnx加锁，正要执行expire设置过期时间时，进程crash或者要重启维护了，那么这个锁就“长生不老”了，别的线程永远获取不到锁啦。
+2.被别的客户端请求覆盖（ setnx &#43; value为过期时间） 为了解决：发生异常时，锁得不到释放的问题。有小伙伴提出，可以把过期时间放到setnx的value里面。如果加锁失败，再拿出value值和当前系统时间校验一下是否过期即可。伪代码实现如下：
+long expireTime = System.currentTimeMillis() &#43; timeout; //系统时间&#43;设置的超时时间 String expireTimeStr = String.valueOf(expireTime); //转化为String字符串 // 如果当前锁不存在，返回加锁成功 if (jedis.setnx(lock_key, expireTimeStr) == 1) { return true; } // 如果锁已经存在，获取锁的过期时间 String oldExpireTimreStr = jedis.get(lock_key); // 如果获取到的老的预期过期时间，小于系统当前时间，表示已经过期了 if (oldExpireTimreStr != null &amp;&amp; Long.parseLong(oldExpireTimreStr) &lt; System.currentTimeMillis()) { //锁已过期，获取上一个锁的过期时间，并设置现在锁的过期时间（不了解redis的getSet命令的小伙伴，可以去官网看下哈） String oldValueStr = jedis.getSet(lock_key, expireTimeStr); if (oldValueStr !" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/4f84d9990690556d089d9f6429ae2991/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-03-15T18:28:14+08:00" />
+<meta property="article:modified_time" content="2023-03-15T18:28:14+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Redis分布式锁的坑</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-light">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p><img src="https://images2.imgbox.com/08/07/88uzEj2o_o.png" alt="img"></p> 
+<h3><a id="1_setnx__expire_4"></a><strong>1. 非原子操作（setnx + expire）</strong></h3> 
+<p>一说到实现<code>Redis</code>的分布式锁，很多小伙伴马上就会想到<code>setnx+ expire</code>命令。也就是说，先用<code>setnx</code>来抢锁，如果抢到之后，再用<code>expire</code>给锁设置一个<strong>过期</strong>时间。</p> 
+<p>伪代码如下：</p> 
+<pre><code class="prism language-javascript"><span class="token keyword">if</span>（jedis<span class="token punctuation">.</span><span class="token function">setnx</span><span class="token punctuation">(</span>lock_key<span class="token punctuation">,</span>lock_value<span class="token punctuation">)</span> <span class="token operator">==</span> <span class="token number">1</span>）<span class="token punctuation">{<!-- --></span> <span class="token comment">//加锁</span>
+    jedis<span class="token punctuation">.</span><span class="token function">expire</span><span class="token punctuation">(</span>lock_key，timeout）<span class="token punctuation">;</span> <span class="token comment">//设置过期时间</span>
+    doBusiness <span class="token comment">//业务逻辑处理</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>这块代码是<strong>有坑</strong>的，因为<code>setnx</code>和<code>expire</code>两个命令是分开写的，并不是原子操作！如果刚要执行完<code>setnx</code>加锁，正要执行<code>expire</code>设置过期时间时，进程<code>crash</code>或者要重启维护了，那么这个锁就“<strong>长生不老</strong>”了，别的线程永远获取不到锁啦。</p> 
+<h3><a id="2_setnx__value_19"></a><strong>2.被别的客户端请求覆盖（ setnx + value为过期时间）</strong></h3> 
+<p>为了解决：<strong>发生异常时，锁得不到释放的问题</strong>。有小伙伴提出，可以把<strong>过期时间</strong>放到<code>setnx</code>的<code>value</code>里面。如果加锁失败，再拿出<code>value</code>值和当前系统时间校验一下是否过期即可。伪代码实现如下：</p> 
+<pre><code class="prism language-javascript">long expireTime <span class="token operator">=</span> System<span class="token punctuation">.</span><span class="token function">currentTimeMillis</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">+</span> timeout<span class="token punctuation">;</span> <span class="token comment">//系统时间+设置的超时时间</span>
+String expireTimeStr <span class="token operator">=</span> String<span class="token punctuation">.</span><span class="token function">valueOf</span><span class="token punctuation">(</span>expireTime<span class="token punctuation">)</span><span class="token punctuation">;</span> <span class="token comment">//转化为String字符串</span>
+
+<span class="token comment">// 如果当前锁不存在，返回加锁成功</span>
+<span class="token keyword">if</span> <span class="token punctuation">(</span>jedis<span class="token punctuation">.</span><span class="token function">setnx</span><span class="token punctuation">(</span>lock_key<span class="token punctuation">,</span> expireTimeStr<span class="token punctuation">)</span> <span class="token operator">==</span> <span class="token number">1</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">return</span> <span class="token boolean">true</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span> 
+
+<span class="token comment">// 如果锁已经存在，获取锁的过期时间</span>
+String oldExpireTimreStr <span class="token operator">=</span> jedis<span class="token punctuation">.</span><span class="token function">get</span><span class="token punctuation">(</span>lock_key<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+<span class="token comment">// 如果获取到的老的预期过期时间，小于系统当前时间，表示已经过期了</span>
+<span class="token keyword">if</span> <span class="token punctuation">(</span>oldExpireTimreStr <span class="token operator">!=</span> <span class="token keyword">null</span> <span class="token operator">&amp;&amp;</span> Long<span class="token punctuation">.</span><span class="token function">parseLong</span><span class="token punctuation">(</span>oldExpireTimreStr<span class="token punctuation">)</span> <span class="token operator">&lt;</span> System<span class="token punctuation">.</span><span class="token function">currentTimeMillis</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+
+     <span class="token comment">//锁已过期，获取上一个锁的过期时间，并设置现在锁的过期时间（不了解redis的getSet命令的小伙伴，可以去官网看下哈）</span>
+    String oldValueStr <span class="token operator">=</span> jedis<span class="token punctuation">.</span><span class="token function">getSet</span><span class="token punctuation">(</span>lock_key<span class="token punctuation">,</span> expireTimeStr<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>oldValueStr <span class="token operator">!=</span> <span class="token keyword">null</span> <span class="token operator">&amp;&amp;</span> oldValueStr<span class="token punctuation">.</span><span class="token function">equals</span><span class="token punctuation">(</span>oldExpireTimreStr<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+      <span class="token comment">//考虑多线程并发的情况，只有一个线程的设置值和当前值相同，它才可以加锁</span>
+      <span class="token keyword">return</span> <span class="token boolean">true</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+        
+<span class="token comment">//其他情况，均返回加锁失败</span>
+<span class="token keyword">return</span> <span class="token boolean">false</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>这种实现的方案，也是有坑的：如果锁过期的时候，并发多个客户端同时请求过来，都执行<code>jedis.getSet()</code>，最终只能有一个客户端加锁成功，但是该客户端锁的过期时间，<strong>可能被别的客户端覆盖</strong>。</p> 
+<h3><a id="3__54"></a><strong>3. 忘记设置过期时间</strong></h3> 
+<p>之前<code>review</code>代码的时候，看到这样实现的分布式锁，<strong>伪代码</strong>：</p> 
+<pre><code class="prism language-javascript"><span class="token keyword">try</span><span class="token punctuation">{<!-- --></span>
+  <span class="token keyword">if</span><span class="token punctuation">(</span>jedis<span class="token punctuation">.</span><span class="token function">setnx</span><span class="token punctuation">(</span>lock_key<span class="token punctuation">,</span>lock_value<span class="token punctuation">)</span> <span class="token operator">==</span> <span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">{<!-- --></span><span class="token comment">//加锁</span>
+     doBusiness <span class="token comment">//业务逻辑处理</span>
+     <span class="token keyword">return</span> <span class="token boolean">true</span><span class="token punctuation">;</span> <span class="token comment">//加锁成功，处理完业务逻辑返回</span>
+  <span class="token punctuation">}</span>
+  <span class="token keyword">return</span> <span class="token boolean">false</span><span class="token punctuation">;</span> <span class="token comment">//加锁失败</span>
+<span class="token punctuation">}</span> <span class="token keyword">finally</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token function">unlock</span><span class="token punctuation">(</span>lockKey<span class="token punctuation">)</span><span class="token punctuation">;</span><span class="token operator">-</span> <span class="token comment">//释放锁</span>
+<span class="token punctuation">}</span> 
+</code></pre> 
+<p>这块有什么问题呢？是的，<strong>忘记设置过期时间了</strong>。如果程序在运行期间，机器突然挂了，代码层面没有走到<code>finally</code>代码块，即在宕机前，锁并没有被删除掉，这样的话，就没办法保证解锁，所以这里需要给<code>lockKey</code>加一个过期时间。注意哈，使用分布式锁，<strong>一定要设置过期时间哈</strong>。</p> 
+<h3><a id="4__72"></a><strong>4. 业务处理完，忘记释放锁</strong></h3> 
+<p>很多小伙伴，会使用<code>Redis</code>的<code>set</code>指令扩展参数来实现分布式锁。</p> 
+<pre><code class="prism language-javascript"><span class="token keyword">set</span>指令扩展参数：<span class="token constant">SET</span> key value<span class="token punctuation">[</span><span class="token constant">EX</span> seconds<span class="token punctuation">]</span><span class="token punctuation">[</span><span class="token constant">PX</span> milliseconds<span class="token punctuation">]</span><span class="token punctuation">[</span><span class="token constant">NX</span><span class="token operator">|</span><span class="token constant">XX</span><span class="token punctuation">]</span>
+
+<span class="token operator">-</span> <span class="token constant">NX</span> <span class="token operator">:</span>表示key不存在的时候，才能<span class="token keyword">set</span>成功，也即保证只有第一个客户端请求才能获得锁，
+  而其他客户端请求只能等其释放锁，才能获取。
+<span class="token operator">-</span> <span class="token constant">EX</span> <span class="token literal-property property">seconds</span> <span class="token operator">:</span>设定key的过期时间，时间单位是秒。
+<span class="token operator">-</span> <span class="token constant">PX</span> <span class="token literal-property property">milliseconds</span><span class="token operator">:</span> 设定key的过期时间，单位为毫秒
+<span class="token operator">-</span> <span class="token constant">XX</span><span class="token operator">:</span> 仅当key存在时设置值
+</code></pre> 
+<p>小伙伴会写出如下伪代码：</p> 
+<pre><code class="prism language-javascript"><span class="token keyword">if</span><span class="token punctuation">(</span>jedis<span class="token punctuation">.</span><span class="token function">set</span><span class="token punctuation">(</span>lockKey<span class="token punctuation">,</span> requestId<span class="token punctuation">,</span> <span class="token string">"NX"</span><span class="token punctuation">,</span> <span class="token string">"PX"</span><span class="token punctuation">,</span> expireTime<span class="token punctuation">)</span><span class="token operator">==</span><span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">{<!-- --></span> <span class="token comment">//加锁</span>
+   doBusiness <span class="token comment">//业务逻辑处理</span>
+   <span class="token keyword">return</span> <span class="token boolean">true</span><span class="token punctuation">;</span> <span class="token comment">//加锁成功，处理完业务逻辑返回</span>
+<span class="token punctuation">}</span>
+<span class="token keyword">return</span> <span class="token boolean">false</span><span class="token punctuation">;</span> <span class="token comment">//加锁失败</span>
+</code></pre> 
+<p>这块伪代码，初看觉得没啥问题，但是细想，不太对呀。因为<strong>忘记释放锁</strong>了！如果每次加锁成功，都要<strong>等到超时时间才释放锁</strong>，是会有问题的。这样程序不高效，应当每次处理完业务逻辑，<strong>都要释放锁</strong>。</p> 
+<p>正例如下：</p> 
+<pre><code class="prism language-javascript"><span class="token keyword">try</span><span class="token punctuation">{<!-- --></span>
+  <span class="token keyword">if</span><span class="token punctuation">(</span>jedis<span class="token punctuation">.</span><span class="token function">set</span><span class="token punctuation">(</span>lockKey<span class="token punctuation">,</span> requestId<span class="token punctuation">,</span> <span class="token string">"NX"</span><span class="token punctuation">,</span> <span class="token string">"PX"</span><span class="token punctuation">,</span> expireTime<span class="token punctuation">)</span><span class="token operator">==</span><span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">{<!-- --></span><span class="token comment">//加锁</span>
+     doBusiness <span class="token comment">//业务逻辑处理</span>
+     <span class="token keyword">return</span> <span class="token boolean">true</span><span class="token punctuation">;</span> <span class="token comment">//加锁成功，处理完业务逻辑返回</span>
+  <span class="token punctuation">}</span>
+  <span class="token keyword">return</span> <span class="token boolean">false</span><span class="token punctuation">;</span> <span class="token comment">//加锁失败</span>
+<span class="token punctuation">}</span> <span class="token keyword">finally</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token function">unlock</span><span class="token punctuation">(</span>lockKey<span class="token punctuation">)</span><span class="token punctuation">;</span><span class="token operator">-</span> <span class="token comment">//释放锁</span>
+<span class="token punctuation">}</span>  
+</code></pre> 
+<h3><a id="5_BA_112"></a><strong>5. B的锁被A给释放了</strong></h3> 
+<p>我们来看下这块伪代码：</p> 
+<pre><code class="prism language-javascript"><span class="token keyword">try</span><span class="token punctuation">{<!-- --></span>
+  <span class="token keyword">if</span><span class="token punctuation">(</span>jedis<span class="token punctuation">.</span><span class="token function">set</span><span class="token punctuation">(</span>lockKey<span class="token punctuation">,</span> requestId<span class="token punctuation">,</span> <span class="token string">"NX"</span><span class="token punctuation">,</span> <span class="token string">"PX"</span><span class="token punctuation">,</span>expireTime<span class="token punctuation">)</span><span class="token operator">==</span><span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">{<!-- --></span><span class="token comment">//加锁</span>
+     doBusiness <span class="token comment">//业务逻辑处理</span>
+     <span class="token keyword">return</span> <span class="token boolean">true</span><span class="token punctuation">;</span> <span class="token comment">//加锁成功，处理完业务逻辑返回</span>
+  <span class="token punctuation">}</span>
+  <span class="token keyword">return</span> <span class="token boolean">false</span><span class="token punctuation">;</span> <span class="token comment">//加锁失败</span>
+<span class="token punctuation">}</span> <span class="token keyword">finally</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token function">unlock</span><span class="token punctuation">(</span>lockKey<span class="token punctuation">)</span><span class="token punctuation">;</span> <span class="token comment">//释放锁</span>
+<span class="token punctuation">}</span>  
+</code></pre> 
+<p>大家觉得会<strong>有哪些坑</strong>呢？</p> 
+<blockquote> 
+ <p>假设在这样的并发场景下：<code>A、B</code>两个线程来尝试给Redis的key<code>lockKey</code>加锁，<code>A</code>线程先拿到锁（假如锁超时时间是<code>3</code>秒后过期）。如果线程<code>A</code>执行的业务逻辑很耗时，超过了<code>3</code>秒还是没有执行完。这时候，<code>Redis</code>会自动释放<code>lockKey</code>锁。刚好这时，线程<code>B</code>过来了，它就能抢到锁了，开始执行它的业务逻辑，恰好这时，线程<code>A</code>执行完逻辑，去释放锁的时候，它就把<code>B</code>的锁给释放掉了。</p> 
+</blockquote> 
+<p>正确的方式应该是，在用<code>set</code>扩展参数加锁时，放多一个这个线程请求的<strong>唯一标记</strong>，比如<code>requestId</code>，然后释放锁的时候，<strong>判断一下是不是刚刚的请求</strong>。</p> 
+<pre><code class="prism language-javascript"><span class="token keyword">try</span><span class="token punctuation">{<!-- --></span>
+  <span class="token keyword">if</span><span class="token punctuation">(</span>jedis<span class="token punctuation">.</span><span class="token function">set</span><span class="token punctuation">(</span>lockKey<span class="token punctuation">,</span> requestId<span class="token punctuation">,</span> <span class="token string">"NX"</span><span class="token punctuation">,</span> <span class="token string">"PX"</span><span class="token punctuation">,</span>expireTime<span class="token punctuation">)</span><span class="token operator">==</span><span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">{<!-- --></span><span class="token comment">//加锁</span>
+     doBusiness <span class="token comment">//业务逻辑处理</span>
+     <span class="token keyword">return</span> <span class="token boolean">true</span><span class="token punctuation">;</span> <span class="token comment">//加锁成功，处理完业务逻辑返回</span>
+  <span class="token punctuation">}</span>
+  <span class="token keyword">return</span> <span class="token boolean">false</span><span class="token punctuation">;</span> <span class="token comment">//加锁失败</span>
+<span class="token punctuation">}</span> <span class="token keyword">finally</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>requestId<span class="token punctuation">.</span><span class="token function">equals</span><span class="token punctuation">(</span>jedis<span class="token punctuation">.</span><span class="token function">get</span><span class="token punctuation">(</span>lockKey<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span> <span class="token comment">//判断一下是不是自己的requestId</span>
+      <span class="token function">unlock</span><span class="token punctuation">(</span>lockKey<span class="token punctuation">)</span><span class="token punctuation">;</span><span class="token comment">//释放锁</span>
+    <span class="token punctuation">}</span>   
+<span class="token punctuation">}</span>  
+</code></pre> 
+<h3><a id="6__148"></a><strong>6. 释放锁时，不是原子性</strong></h3> 
+<p>以上的这块代码，还是有坑：</p> 
+<pre><code class="prism language-javascript">   <span class="token keyword">if</span> <span class="token punctuation">(</span>requestId<span class="token punctuation">.</span><span class="token function">equals</span><span class="token punctuation">(</span>jedis<span class="token punctuation">.</span><span class="token function">get</span><span class="token punctuation">(</span>lockKey<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span> <span class="token comment">//判断一下是不是自己的requestId</span>
+      <span class="token function">unlock</span><span class="token punctuation">(</span>lockKey<span class="token punctuation">)</span><span class="token punctuation">;</span><span class="token comment">//释放锁</span>
+    <span class="token punctuation">}</span>   
+</code></pre> 
+<p>因为判断是不是当前线程加的锁和释放锁<strong>不是一个原子操作</strong>。如果调用<code>unlock(lockKey)</code>释放锁的时候，锁已经过期，所以这把锁已经可能已经不属于当前客户端，会<strong>解除他人加的锁</strong>。</p> 
+<p>因此，这个坑就是：<code>判断和删除</code>是两个操作，不是原子的，有一致性问题。<code>释放锁必须保证原子性</code>，可以使用<code>Redis+Lua</code>脚本来完成，类似<code>Lua</code>脚本如下：</p> 
+<pre><code class="prism language-javascript"><span class="token keyword">if</span> <span class="token function">redis</span><span class="token punctuation">.</span><span class="token function">call</span><span class="token punctuation">(</span><span class="token string">'get'</span><span class="token punctuation">,</span><span class="token constant">KEYS</span><span class="token punctuation">[</span><span class="token number">1</span><span class="token punctuation">]</span><span class="token punctuation">)</span> <span class="token operator">==</span> <span class="token constant">ARGV</span><span class="token punctuation">[</span><span class="token number">1</span><span class="token punctuation">]</span> then 
+   <span class="token keyword">return</span> <span class="token function">redis</span><span class="token punctuation">.</span><span class="token function">call</span><span class="token punctuation">(</span><span class="token string">'del'</span><span class="token punctuation">,</span><span class="token constant">KEYS</span><span class="token punctuation">[</span><span class="token number">1</span><span class="token punctuation">]</span><span class="token punctuation">)</span> 
+<span class="token keyword">else</span>
+   <span class="token keyword">return</span> <span class="token number">0</span>
+end<span class="token punctuation">;</span>  
+</code></pre> 
+<h3><a id="7__170"></a><strong>7. 锁过期释放，业务没执行完</strong></h3> 
+<p>加锁后，如果超时了，<code>Redis</code>会自动释放清除锁，<strong>这样有可能业务还没处理完，锁就提前释放了</strong>。怎么办呢？</p> 
+<p>有些小伙伴认为，稍微把锁过期时间设置长一些就可以啦。其实我们<strong>设想一下</strong>，是否可以给获得锁的线程，<strong>开启一个定时守护线程，每隔一段时间检查锁是否还存在，存在则对锁的过期时间延长，防止锁过期提前释放。</strong></p> 
+<p>当前开源框架Redisson解决了这个问题。我们一起来看下<code>Redisson</code>底层原理图吧：</p> 
+<p><img src="https://images2.imgbox.com/c9/4e/2w750lGN_o.png" alt="2"></p> 
+<p>只要线程<code>一</code>加锁成功，就会启动一个<code>watch dog</code>看门狗，它是一个<strong>后台线程</strong>，会每隔<code>10</code>秒检查一下，如果线程一还持有锁，那么就会不断的延长锁<code>key</code>的生存时间。因此，<code>Redisson</code>就是使用<code>Redisson</code>解决了<strong>锁过期释放，业务没执行完问题</strong>。</p> 
+<h3><a id="8_Redistransactional_182"></a><strong>8. Redis分布式锁和@transactional一起使用失效</strong></h3> 
+<p>大家看下这块伪代码:</p> 
+<pre><code class="prism language-javascript">@Transactional
+<span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token function">updateDB</span><span class="token punctuation">(</span><span class="token parameter">int lockKey</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+  boolean lockFlag <span class="token operator">=</span> redisLock<span class="token punctuation">.</span><span class="token function">lock</span><span class="token punctuation">(</span>lockKey<span class="token punctuation">)</span><span class="token punctuation">;</span>
+  <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span>lockFlag<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">throw</span> <span class="token keyword">new</span> <span class="token class-name">RuntimeException</span><span class="token punctuation">(</span>“请稍后再试”<span class="token punctuation">)</span><span class="token punctuation">;</span>
+  <span class="token punctuation">}</span>
+   doBusiness <span class="token comment">//业务逻辑处理</span>
+   redisLock<span class="token punctuation">.</span><span class="token function">unlock</span><span class="token punctuation">(</span>lockKey<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>在事务中,使用了<code>Redis</code>分布式锁.这个方法一旦执行,事务生效，接着就<code>Redis</code>分布式锁生效，代码执行完后,先释放<code>Redis</code>分布式锁,然后再提交事务数据，最后事务结束。在这个过程中,事务没有提交之前,分布式锁已经被释放，<strong>导致分布式锁失效</strong></p> 
+<p>这是因为:</p> 
+<blockquote> 
+ <p><code>spring</code>的<code>Aop</code>，会在<code>updateDB</code>方法之前开启事务，之后再加锁，当锁住的代码执行完成后，再提交事务，因此锁住的代码块执行是在事务之内执行的，可以推断在代码块执行完时，事务还未提交，锁已经被释放，此时其他线程拿到锁之后进行锁住的代码块，读取的库存数据不是最新的。</p> 
+</blockquote> 
+<p>正确的实现方法,可以在<code>updateDB</code>方法之前就<strong>上锁</strong>，即还没有开事务之前就加锁，那么就可以保证线程的安全性.</p> 
+<h3><a id="9_206"></a><strong>9.锁可重入</strong></h3> 
+<p>前面讨论的<code>Redis</code>分布式锁，都是<strong>不可重入的</strong>。</p> 
+<blockquote> 
+ <p>所谓的<strong>不可重入</strong>，就是当前线程执行某个方法已经获取了该锁，那么在方法中尝试再次获取锁时，会阻塞，不可以再次获得锁。同一个人拿一个锁 ，只能拿一次不能同时拿<code>2</code>次。</p> 
+</blockquote> 
+<p>不可重入的分布式锁的话，是可以满足<strong>绝大多数的业务场景</strong>。但是有时候一些业务场景，我们还是需要<strong>可重入的分布式锁</strong>，大家实现分布式锁的过程中，<strong>需要注意一下</strong>，你当前的业务场景是否需要可重入的分布式锁。</p> 
+<p><code>Redis</code>只要解决这两个问题，就能<strong>实现重入锁</strong>了：</p> 
+<ul><li>怎么保存当前持有的线程</li><li>怎么维护加锁次数（即重入了多少次）</li></ul> 
+<p>实现一个可重入的分布式锁，我们可以参考<code>JDK</code>的<code>ReentrantLock</code>的设计思想。实际上，可以直接使用<code>Redisson</code>框架，它是支持可重入锁的。</p> 
+<h3><a id="10Redis_221"></a><strong>10.Redis主从复制导致的坑</strong></h3> 
+<p>实现<code>Redis</code>分布式锁的话，要注意<code>Redis</code><strong>主从复制的坑</strong>。因为<code>Redis</code>一般都是集群部署的：</p> 
+<p><img src="https://images2.imgbox.com/7e/a4/bPV04Xc2_o.png" alt="img"></p> 
+<p>如果线程一在<code>Redis</code>的<code>master</code>节点上拿到了锁，但是加锁的<code>key</code>还没同步到<code>slave</code>节点。恰好这时，<code>master</code>节点发生故障，一个<code>slave</code>节点就会升级为<code>master</code>节点。线程二就可以获取同个<code>key</code>的锁啦，但线程一也已经拿到锁了，锁的安全性就没了。</p> 
+<p>为了解决这个问题，Redis作者 antirez提出一种高级的分布式锁算法：<code>Redlock</code>。<code>Redlock</code>核心思想是这样的：</p> 
+<blockquote> 
+ <p>搞多个Redis master部署，以保证它们不会同时宕掉。并且这些master节点是完全相互独立的，相互之间不存在数据同步。同时，需要确保在这多个master实例上，是与在Redis单实例，使用相同方法来获取和释放锁。</p> 
+</blockquote> 
+<p>我们假设当前有<code>5</code>个<code>Redis master</code>节点，在<code>5</code>台服务器上面运行这些<code>Redis</code>实例。</p> 
+<p><img src="https://images2.imgbox.com/38/b0/u8hk4XfD_o.png" alt="img"></p> 
+<p>RedLock的实现步骤如下:</p> 
+<ol><li>获取当前时间，以毫秒为单位。</li><li>按顺序向<code>5</code>个<code>master</code>节点请求加锁。客户端设置网络连接和响应超时时间，并且超时时间要小于锁的失效时间。（假设锁自动失效时间为<code>10</code>秒，则超时时间一般在<code>5-50</code>毫秒之间,我们就假设超时时间是<code>50ms</code>吧）。如果超时，跳过该<code>master</code>节点，尽快去尝试下一个<code>master</code>节点。</li><li>客户端使用当前时间减去开始获取锁时间（即步骤<code>1</code>记录的时间），得到获取锁使用的时间。当且仅当超过一半（<code>N/2+1</code>，这里是<code>5/2+1=3</code>个节点）的<code>Redis master</code>节点都获得锁，并且使用的时间小于锁失效时间时，锁才算获取成功。（如上图，<code>10s&gt; 30ms+40ms+50ms+4m0s+50ms</code>）</li><li>如果取到了锁，<code>key</code>的真正有效时间就变啦，需要减去获取锁所使用的时间。</li><li>如果获取锁失败（没有在至少<code>N/2+1个master</code>实例取到锁，有或者获取锁时间已经超过了有效时间），客户端要在所有的<code>master</code>节点上解锁（即便有些<code>master</code>节点根本就没有加锁成功，也需要解锁，以防止有些漏网之鱼）。</li></ol> 
+<p>简化下步骤就是：</p> 
+<ul><li>按顺序向5个master节点请求加锁</li><li>根据设置的超时时间来判断，是不是要跳过该master节点。</li><li>如果大于等于3个节点加锁成功，并且使用的时间小于锁的有效期，即可认定加锁成功啦。</li><li>如果获取锁失败，解锁！</li></ul>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/b1e96216fd213e606e9446298a984f68/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">npm 安装依赖报错npm ERR ERESOLVE unable to resolve dependency tree</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/58349fe3b9ea6466bfec9b4d75591056/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">MySQL经典面试题</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

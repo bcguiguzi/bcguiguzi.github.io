@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>QNX启动流程 - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="QNX启动流程" />
+<meta property="og:description" content="IFS(startup header &#43; image) 操作系统映像(OS Image) 是包含操作系统、您的可执行文件以及可能与您的程序相关的任何数据文件的文件。操作系统映像包括操作系统(procnto)、启动代码、启动和运行操作系统所需的库(libc.so)，以及访问基本硬件所需的任何驱动程序或其他代码和文件。
+通常，小型嵌入式系统只有一个（可引导的）操作系统映像。在QNX系统中，这包括以下组件：
+启动代码：startup-*操作系统内核和进程管理器：procnto驱动程序和管理器（例如，io-pkt、devnp-ncm.so、devc-ser8250、devb-eide、esh（嵌入式shell）、ksh）应用程序数据文件 启动后，QNX操作系统映像的内容作为文件系统显示在：/proc/boot。事实上，理解操作系统映像的一个好方法是将其视为一个小型文件系统。
+在QNX语言中，操作系统映像通常简称为IFS，即图像文件系统。这个IFS有一个小的目录结构和一些文件。该目录告诉操作系统内核和进程管理器procnto操作系统映像中文件的名称和位置。当QNX嵌入式系统运行时，即使操作系统映像位于/proc/boot，也可以像访问任何其他只读文件系统一样访问它。
+启动过程 1. BootRom做最少的硬件初始化，跳至IPL其余的由IPL完成，有些芯片无bootrom。 a. BootRom &#43; IPL/uboot，热启动（BootRom已经初始化过了hw/cpu一些配置）b. Ubootc. IPL，冷启动（hw/cpu一些配置全由初始化） 2. IPL启动【ipl比uboot更快，IPL的主要职责就是进行最小的硬件配置以启动Startup程序】 IPL源码分析link文件，启动头分析（启动头一个结构体在startup.h）
+手册翻译
+- src\hardware\ipl\boards\xzynq-frgen21\xzynq-frgen21.lnk的链接来看第一个执行
+-src\hardware\ipl\boards\xzynq-frgen21\_start.S
+a. 初始化内核可运行的基本硬件 配置芯片选择和PCI控制器、时钟和内存控制器通过I2C设置电源管理IC（PMIC（Power Management IC）电压轨）设置一些GPIO管脚来控制复位管脚配置一个定时器来精确测量延迟 实际上，就配置了cache，然后就jump2c
+b. 运行start.s程序 为C语言环境设置堆栈。堆栈允许运行main.c程序。
+-src\hardware\ipl\boards\xzynq-frgen21\main.c
+a. IPL 的第一部分中未完成初始化的硬件（内核可运行的基本硬件） b. 将操作系统映像加载到RAM中 ifs（image filesystem）组成：IFS(startup header &#43; qnx image)应该是包括startup&#43;os&#43;buildfile&#43;驱动，app，二进制执行文件。Image storage镜像存储介质及存储方式（是否压缩）对IPL设计影响 线性ROM（例如，NOR FLASH），可直接寻址（线性映射设备可以直接映射到处理器的地址空间） 压缩，将整个IFS（包括启动代码）cp到临时RAM中非压缩，XIP（就地执行启动代码）或者只需要将startup程序拷贝到RAM(sdmmc_load_file())或者将整个IFS cp到最终RAM 非线性ROM（例如 eMMC、SD 卡或 SPI NOR 设备），不能直接寻址 压缩，将整个IFS cp到临时RAM中非压缩，将整个IFS cp到最终RAM c.当操作系统映像位于可以执行的位置（RAM或XIP的线性映射存储）时， 扫描内存查找并验证IFS并返回addr【addr=image_scan_2()】 d. 调用image_setup()来检查启动标头结构，然后使用IFS已复制到RAM中的地址修补其startup_vaddr成员。当image_setup()返回时，启动代码应位于RAM（可以执行的位置）中，并且操作系统映像的地址应位于startup_header结构的startup_vaddr成员中。（image_setup_2(addr)） IPL使用启动头文件(startup.h)将信息传递给启动程序
+e. 跳转到加载好的IFS执行startup代码将控制权交给启动代码（image_start_2(addr)） 注意：IPL的两个部分都存储在引导设备上的相同位置。第一部分，由BootRom激活，是用汇编语言编写的，通常是常规的_start[ab]。第二部分是用C写的，完成第一部分未完成的初始化任务[abc]。" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/8065bac38ad94d95077de6dcf30d16c7/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-09-23T20:55:03+08:00" />
+<meta property="article:modified_time" content="2023-09-23T20:55:03+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">QNX启动流程</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <h2><a id="IFSstartup_header__image_0"></a>IFS(startup header + image)</h2> 
+<p><strong>操作系统映像(OS Image)</strong> 是包含操作系统、您的可执行文件以及可能与您的程序相关的任何数据文件的文件。操作系统映像包括操作系统(procnto)、启动代码、启动和运行操作系统所需的库(libc.so)，以及访问基本硬件所需的任何驱动程序或其他代码和文件。<br> 通常，小型嵌入式系统只有一个（可引导的）操作系统映像。在QNX系统中，这包括以下组件：</p> 
+<ul><li>启动代码：startup-*</li><li>操作系统内核和进程管理器：procnto</li><li>驱动程序和管理器（例如，io-pkt、devnp-ncm.so、devc-ser8250、devb-eide、esh（嵌入式shell）、ksh）</li><li>应用程序</li><li>数据文件</li></ul> 
+<p>启动后，QNX操作系统映像的内容作为文件系统显示在：/proc/boot。事实上，理解操作系统映像的一个好方法是将其视为一个小型文件系统。</p> 
+<p>在QNX语言中，操作系统映像通常简称为IFS，即图像文件系统。这个IFS有一个小的目录结构和一些文件。该目录告诉操作系统内核和进程管理器procnto操作系统映像中文件的名称和位置。当QNX嵌入式系统运行时，即使操作系统映像位于/proc/boot，也可以像访问任何其他只读文件系统一样访问它。</p> 
+<h2><a id="_14"></a>启动过程</h2> 
+<p><img src="https://images2.imgbox.com/40/de/ipRSbEZk_o.png" alt="在这里插入图片描述"></p> 
+<h4><a id="1_BootRomIPLIPLbootrom_17"></a>1. BootRom做最少的硬件初始化，跳至IPL其余的由IPL完成，有些芯片无bootrom。</h4> 
+<ul><li>a. BootRom + IPL/uboot，热启动（BootRom已经初始化过了hw/cpu一些配置）</li><li>b. Uboot</li><li>c. IPL，冷启动（hw/cpu一些配置全由初始化）</li></ul> 
+<h4><a id="2_IPLiplubootIPLStartup_24"></a>2. IPL启动【ipl比uboot更快，IPL的主要职责就是进行最小的硬件配置以启动Startup程序】</h4> 
+<p><a href="https://blog.csdn.net/weixin_38981503/article/details/121085995">IPL源码分析link文件，启动头分析（启动头一个结构体在startup.h）</a><br> <a href="http://www.taodudu.cc/news/show-4485613.html?action=onClick" rel="nofollow">手册翻译</a></p> 
+<blockquote> 
+ <p>-<code> src\hardware\ipl\boards\xzynq-frgen21\xzynq-frgen21.lnk</code>的链接来看第一个执行<br> -<code>src\hardware\ipl\boards\xzynq-frgen21\_start.S</code></p> 
+</blockquote> 
+<h5><a id="a__31"></a>a. 初始化内核可运行的基本硬件</h5> 
+<ul><li>配置芯片选择和PCI控制器、时钟和内存控制器</li><li>通过I2C设置电源管理IC（PMIC（Power Management IC）电压轨）</li><li>设置一些GPIO管脚来控制复位管脚</li><li>配置一个定时器来精确测量延迟</li></ul> 
+<blockquote> 
+ <p>实际上，就配置了cache，然后就jump2c</p> 
+</blockquote> 
+<h5><a id="b_starts_39"></a>b. 运行start.s程序</h5> 
+<p>为C语言环境设置堆栈。堆栈允许运行main.c程序。</p> 
+<blockquote> 
+ <p>-<code>src\hardware\ipl\boards\xzynq-frgen21\main.c</code></p> 
+</blockquote> 
+<h5><a id="a_IPL__45"></a>a. IPL 的第一部分中未完成初始化的硬件（内核可运行的基本硬件）</h5> 
+<h5><a id="b_RAM_47"></a>b. 将操作系统映像加载到RAM中</h5> 
+<ul><li>ifs（image filesystem）组成：IFS(startup header + qnx image)应该是包括startup+os+buildfile+驱动，app，二进制执行文件。</li><li>Image storage镜像存储介质及存储方式（是否压缩）对IPL设计影响</li></ul> 
+<blockquote> 
+ <ul><li>线性ROM（例如，NOR FLASH），可直接寻址（线性映射设备可以直接映射到处理器的地址空间） 
+   <ul><li>压缩，将整个IFS（包括启动代码）cp到临时RAM中</li><li>非压缩，XIP（就地执行启动代码）或者只需要将startup程序拷贝到RAM(sdmmc_load_file())或者将整个IFS cp到最终RAM</li></ul> </li><li>非线性ROM（例如 eMMC、SD 卡或 SPI NOR 设备），不能直接寻址 
+   <ul><li>压缩，将整个IFS cp到临时RAM中</li><li>非压缩，将整个IFS cp到最终RAM</li></ul> </li></ul> 
+</blockquote> 
+<h5><a id="cRAMXIP_IFSaddraddrimage_scan_2_59"></a>c.当操作系统映像位于可以执行的位置（RAM或XIP的线性映射存储）时， 扫描内存查找并验证IFS并返回addr【addr=image_scan_2()】</h5> 
+<h5><a id="d_image_setupIFSRAMstartup_vaddrimage_setupRAMstartup_headerstartup_vaddrimage_setup_2addr_60"></a>d. 调用image_setup()来检查启动标头结构，然后使用IFS已复制到RAM中的地址修补其startup_vaddr成员。当image_setup()返回时，启动代码应位于RAM（可以执行的位置）中，并且操作系统映像的地址应位于startup_header结构的startup_vaddr成员中。<strong>（image_setup_2(addr)）</strong></h5> 
+<p><strong>IPL使用启动头文件(startup.h)将信息传递给启动程序</strong></p> 
+<h5><a id="e_IFSstartupimage_start_2addr_64"></a>e. 跳转到加载好的IFS执行startup代码将控制权交给启动代码（image_start_2(addr)）</h5> 
+<p>注意：IPL的两个部分都存储在引导设备上的相同位置。第一部分，由BootRom激活，是用汇编语言编写的，通常是常规的_start[ab]。第二部分是用C写的，完成第一部分未完成的初始化任务[abc]。</p> 
+<h4><a id="3_IFS_68"></a>3. 操作系统镜像IFS部分</h4> 
+<h5><a id="a__70"></a>a. 启动代码</h5> 
+<ul><li> <p>配置硬件，包括定时器、中断控制器和高速缓存控制器等OS可以运行的最小HW环境（可引导操作系统映像中的第一个程序，指的是操作系统代码，指main.c，启动代码执行的初始化量取决于在IPL中完成的操作）</p> </li><li> <p>拷贝(IFS)OS到RAM的把权限给OS。<a href="https://www.qnx.com/developers/docs/7.0.0/#com.qnx.doc.neutrino.building/topic/startup/startup_tasks.html" rel="nofollow">如果在启动代码开始执行时IFS不在其在RAM中的最终位置，则启动代码会将其复制到那里。</a>addr，image重用大小都是启动头startup.h定义。</p> <pre><code>  	src\hardware\startup\lib\aarch64\_start.S
+  	---&gt;hardware/startup/lib/arm/cstart.S（设置sp跳转到_main）
+  	---&gt;\src\hardware\startup\lib\_main.c（调用startup.h,和main.c）
+    ---&gt;src\hardware\startup\boards\xzynq\frgen21\main.c
+</code></pre> </li></ul> 
+<p>启动代码包含在IFS文件中，但在OS开始执行后不再需要。启动代码的最终任务是加载OS内核和进程管理器(procnto)，进程管理器在启动一个个进程。</p> 
+<h5><a id="b__82"></a>b. 操作系统内核</h5> 
+<h5><a id="c_buildfile_84"></a>c. buildfile，指定要启动的驱动程序和应用程序，以及启动顺序。</h5> 
+<h5><a id="d__86"></a>d. 驱动及应用程秩序，二进制文件。</h5>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/b785c37956c146093830c0c34fa70e36/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">cmd基础命令</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/d479778b811b156bd160c19d6e16c2ad/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">mysql explain学习记录</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

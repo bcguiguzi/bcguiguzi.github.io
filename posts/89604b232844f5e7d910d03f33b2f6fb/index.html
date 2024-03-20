@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Redis持久化原理及最佳实践 - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="Redis持久化原理及最佳实践" />
+<meta property="og:description" content="Redis是内存型数据库，但是为了数据安全，就需要有“数据持久化”（就是将数据存储在磁盘上）的机制，在备份方面提供了两种工具，分别为RDB(快照)和AOF(写日志)。
+持久化方法 RDB: 将当前内存中的数据集快照写入磁盘，也就是 Snapshot 快照（数据库中所有键值对数据）。恢复时只需要把dump.rdb这个文件放到redis的dir目录下，启动服务，将快照文件直接读到内存里。注意文件的优先级
+AOF：记录服务器执行的所有写操作命令，并在服务器启动时，通过重新执行这些命令来还原数据集。 AOF 文件中的命令全部以 Redis 协议的格式来保存，新命令会被追加到文件的末尾。 Redis 还可以在后台对 AOF 文件进行重写（rewrite），使得 AOF 文件的体积不会超出保存数据集状态所需的实际大小。
+如果把redis当作缓存使用的话，你甚至可以关闭持久化功能，让数据只在服务器运行时存在。(redis4.0混合持久化)
+RDB 触发条件 redis&gt; save #同步，容易阻塞。文件策略:先生成一个新的文件，待同步完成，再替换老的文件
+redis&gt; bgsave #异步，不会阻塞redis，但是会fork新进程。文件策略：先生成一个新的文件，待同步完成，再替换老的文件
+save 900 1 触发条件 (建议禁用),触发bgsave
+save 300 10 触发条件 (建议禁用),触发bgsave
+save 60 10000 触发条件 (建议禁用),触发bgsave
+全量复制，debug reload,shutdown时也是触发生成rdb文件 #触发bgsave
+运作过程 当 Redis 需要保存 dump.rdb 文件时， 服务器执行以下操作：
+Redis 调用 fork() ，同时拥有父进程和子进程。
+子进程将数据集写入到一个临时 RDB 文件中。
+当子进程完成对新 RDB 文件的写入时，Redis 用新 RDB 文件替换原来的 RDB 文件，并删除旧的 RDB 文件。
+RDB优缺点 优点：备份文件非常紧凑，体积小，在恢复大数据集时的速度比AOF快。" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/89604b232844f5e7d910d03f33b2f6fb/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2020-11-06T10:18:35+08:00" />
+<meta property="article:modified_time" content="2020-11-06T10:18:35+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Redis持久化原理及最佳实践</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p>Redis是内存型数据库，但是为了数据安全，就需要有“数据持久化”（就是将数据存储在磁盘上）的机制，在备份方面提供了两种工具，分别为RDB(快照)和AOF(写日志)。</p> 
+<h2>持久化方法</h2> 
+<p style="text-indent:33px;">RDB: 将当前内存中的数据集快照写入磁盘，也就是 Snapshot 快照（数据库中所有键值对数据）。恢复时只需要把dump.rdb这个文件放到redis的dir目录下，启动服务，将快照文件直接读到内存里。注意文件的优先级</p> 
+<p style="text-indent:33px;">AOF：记录服务器执行的所有写操作命令，并在服务器启动时，通过重新执行这些命令来还原数据集。 AOF 文件中的命令全部以 Redis 协议的格式来保存，新命令会被追加到文件的末尾。 Redis 还可以在后台对 AOF 文件进行重写（rewrite），使得 AOF 文件的体积不会超出保存数据集状态所需的实际大小。</p> 
+<p style="text-indent:33px;">如果把redis当作缓存使用的话，你甚至可以关闭持久化功能，让数据只在服务器运行时存在。(redis4.0混合持久化)</p> 
+<h2>RDB</h2> 
+<h3>触发条件</h3> 
+<p style="text-indent:33px;">redis&gt; save   #同步，容易阻塞。文件策略:先生成一个新的文件，待同步完成，再替换老的文件</p> 
+<p style="text-indent:33px;">redis&gt; bgsave #异步，不会阻塞redis，但是会fork新进程。文件策略：先生成一个新的文件，待同步完成，再替换老的文件</p> 
+<p style="text-indent:33px;">save 900 1 触发条件 (建议禁用),触发bgsave</p> 
+<p style="text-indent:33px;">save 300 10 触发条件 (建议禁用),触发bgsave</p> 
+<p style="text-indent:33px;">save 60 10000 触发条件 (建议禁用),触发bgsave</p> 
+<p style="text-indent:33px;">全量复制，debug reload,shutdown时也是触发生成rdb文件    #触发bgsave</p> 
+<h3>运作过程</h3> 
+<p style="text-indent:33px;">当 Redis 需要保存 dump.rdb 文件时， 服务器执行以下操作：</p> 
+<p style="text-indent:33px;">Redis 调用 fork() ，同时拥有父进程和子进程。</p> 
+<p style="text-indent:33px;">子进程将数据集写入到一个临时 RDB 文件中。</p> 
+<p style="text-indent:33px;">当子进程完成对新 RDB 文件的写入时，Redis 用新 RDB 文件替换原来的 RDB 文件，并删除旧的 RDB 文件。</p> 
+<p style="text-indent:33px;"> </p> 
+<p><img alt="" height="318" src="https://images2.imgbox.com/b7/a3/olpuxLzh_o.png" width="575"><img alt="" height="320" src="https://images2.imgbox.com/b0/aa/iGMpZf7K_o.png" width="583"></p> 
+<p><img alt="" height="213" src="https://images2.imgbox.com/75/05/E828gFCg_o.png" width="472"></p> 
+<p style="text-indent:0;"> </p> 
+<h3>RDB优缺点</h3> 
+<p style="text-indent:33px;">优点：备份文件非常紧凑，体积小，在恢复大数据集时的速度比AOF快。</p> 
+<p style="text-indent:33px;">缺点：不同的备份策略，可能会丢失数据，数据集比较庞大时， fork() 可能会非常耗时，造成服务器在某某毫秒内停止处理客户端； 如果数据集非常巨大，并且 CPU 时间非常紧张的话，那么这种停止时间甚至可能会更长。</p> 
+<p> </p> 
+<h2>AOF</h2> 
+<h3>AOF开启设置</h3> 
+<p style="text-indent:33px;"><span style="color:#f33b45;">redis&gt; bgrewriteaof   #手动命令触发</span></p> 
+<p style="text-indent:33px;">appendonly yes ##开启AOF功能</p> 
+<p style="text-indent:33px;">appendfilename "appendonly_port.aof" ##aof文件名</p> 
+<p style="text-indent:33px;">appendfsync everysec   <span style="color:#f33b45;">#always :每次更新都刷盘; everysec :每秒刷一次盘(默认);no :操作系统控制刷盘</span></p> 
+<p style="text-indent:33px;">no-appendsync-on-rewrite yes ##在进行重写时是否进行append操作。重写本身很消耗性能（IO），出于性能的考虑，建议设置成yes，设置成yes可以会丢失日志</p> 
+<p style="text-indent:33px;">aof-load-truncated yes ##在重启加载aof文件时，如果有错误，是否要忽略错误，建议设置成yes。</p> 
+<p> </p> 
+<p> </p> 
+<p> </p> 
+<h2>运作过程</h2> 
+<p style="text-indent:33px;">所有的写入命令追加到aof缓冲区；</p> 
+<p style="text-indent:33px;">AOF缓冲区根据对应appendfsync配置向硬盘做同步操作;</p> 
+<p style="text-indent:33px;">定期对AOF文件进行重写;</p> 
+<p style="text-indent:33px;">Redis重启时，可以加载AOF文件进行数据恢复</p> 
+<p style="text-indent:33px;"> </p> 
+<p style="text-indent:33px;"><img alt="" height="464" src="https://images2.imgbox.com/75/1d/JXnqHhtr_o.png" width="302"></p> 
+<h3>AOF重写(减少硬盘占用量，加速恢复速度)</h3> 
+<p style="text-indent:33px;">因为 AOF 的运作方式是不断地将命令追加到文件的末尾， 所以随着写入命令的不断增加， AOF 文件的体积也会变得越来越大。</p> 
+<p style="text-indent:33px;">举个例子， 计数器调用了 100 次 INCR， AOF 文件就需要使用 100 条记录（entry）。实际上， 只使用一条 SET 命令足以保存计数器的当前值， 其余 99 条记录都是多余的。</p> 
+<p style="text-indent:33px;">为了处理这种情况， Redis 支持一种有趣的特性： 可以在不打断服务客户端的情况下， 对 AOF 文件进行重建（rebuild）。</p> 
+<p style="text-indent:33px;">执行 BGREWRITEAOF 命令， Redis 将生成一个新的 AOF 文件， 这个文件包含重建当前数据集所需的最少命令。</p> 
+<p style="text-indent:33px;">Redis 2.2 需要自己手动执行 BGREWRITEAOF 命令； Redis 2.4 则可以自动触发 AOF 重写， 具体信息请查看 2.4 的示例配置文件。</p> 
+<p style="text-indent:33px;">实现出aof重写的方式：</p> 
+<p style="text-indent:33px;">redis&gt; bgrewriteaof</p> 
+<p style="text-indent:33px;">auto-aof-rewrite-min-size ##设置aof文件重写需要的尺寸</p> 
+<p style="text-indent:33px;">auto-aof-rewrite-percentage ##设置aof文件增长率</p> 
+<p style="text-indent:33px;">aof_current_size ##查询aof当前尺寸(单位：字节)</p> 
+<p style="text-indent:33px;">aof_base_size ##aof上次启动和重要的尺寸(单位：字节)</p> 
+<p style="text-indent:33px;"> </p> 
+<p><img alt="" height="374" src="https://images2.imgbox.com/e2/ba/clROZvHX_o.png" width="583"></p> 
+<p> </p> 
+<p> </p> 
+<h3>AOF优缺点</h3> 
+<p style="text-indent:33px;">优点：使用 AOF 持久化会让 Redis 变得非常耐久（much more durable）：你可以设置不同的 fsync 策略，比如无 fsync ，每秒钟一次 fsync ，或者每次执行写入命令时 fsync 。 AOF 的默认策略为每秒钟 fsync 一次，在这种配置下，Redis 仍然可以保持良好的性能，并且就算发生故障停机，也最多只会丢失一秒钟的数据（ fsync 会在后台线程执行，所以主线程可以继续努力地处理命令请求）。</p> 
+<p style="text-indent:33px;">缺点：对于相同的数据集来说，AOF 文件的体积通常要大于 RDB 文件的体积。根据所使用的 fsync 策略，AOF 的速度可能会慢于 RDB 。 在一般情况下， 每秒 fsync 的性能依然非常高， 而关闭 fsync 可以让 AOF 的速度和 RDB 一样快， 即使在高负荷之下也是如此。 不过在处理巨大的写入载入时，RDB 可以提供更有保证的最大延迟时间（latency）。</p> 
+<p> </p> 
+<p> </p> 
+<h2>Redis启动数据加载流程</h2> 
+<p style="text-indent:33px;">AOF持久化开启且存在AOF文件时，优先加载AOF文件。</p> 
+<p style="text-indent:33px;">AOF关闭或者AOF文件不存在时，加载RDB文件。</p> 
+<p style="text-indent:33px;">加载AOF/RDB文件成功后，Redis启动成功。</p> 
+<p style="text-indent:33px;">AOF/RDB文件存在错误时，Redis启动失败并打印错误信息。</p> 
+<p> </p> 
+<p style="text-indent:33px;"><span style="color:#f33b45;">如果 AOF 文件出错了，怎么办？</span></p> 
+<p style="text-indent:33px;">使用 Redis 附带的 redis-check-aof 程序，对原来的 AOF 文件进行修复。</p> 
+<p style="text-indent:33px;">$ redis-check-aof --fix</p> 
+<p style="text-indent:33px;">（可选）使用 diff -u 对比修复后的 AOF 文件和原始 AOF 文件的备份，查看两个文件之间的不同之处。</p> 
+<p style="text-indent:33px;">重启 Redis 服务器，等待服务器载入修复后的 AOF 文件，并进行数据恢复。</p> 
+<p> </p> 
+<h2>混合持久化</h2> 
+<p> </p> 
+<p style="text-indent:33px;">Redis 4.0 新增了 RDB-AOF 混合持久化格式， 这是一个可选的功能， 在开启了这个功能之后， AOF 重写产生的文件将同时包含 RDB 格式的内容和 AOF 格式的内容， 其中 RDB 格式的内容用于记录已有的数据， 而 AOF 格式的内存则用于记录最近发生了变化的数据， 这样 Redis 就可以同时兼有 RDB 持久化和 AOF 持久化的优点 —— 既能够快速地生成重写文件， 也能够在出现问题时， 快速地载入数据。</p> 
+<p style="text-indent:33px;"> </p> 
+<p style="text-indent:33px;">Redis 4.0 开始支持 rdb 和 aof 的混合持久化(默认关闭)。这个功能可以通过 aof-use-rdb-preamble 选项进行开启。如果把混合持久化打开，aof rewrite 的时候就直接把 rdb 的内容写到 aof 文件开头。aof 文件内容会变成如下:</p> 
+<table border="1" cellpadding="1" cellspacing="1" style="width:209px;"><tbody><tr><td style="width:206px;">RDB FORMAT</td></tr><tr><td style="width:206px;">AOF FORMAT</td></tr></tbody></table> 
+<p style="text-indent:33px;">这样做的好处是可以结合 rdb 和 aof 的优点, 快速加载同时避免丢失过多的数据。当然缺点也是有的， aof 里面的 rdb 部分就是压缩格式不再是 aof 格式，可读性差。</p> 
+<p style="text-indent:33px;"> </p> 
+<p> </p> 
+<p><span style="color:#f33b45;">开启混合存储模式后 aof 文件加载的流程如下:</span></p> 
+<p style="text-indent:33px;">1.aof 文件开头是 rdb 的格式, 先加载 rdb 内容再加载剩余的 aof</p> 
+<p style="text-indent:33px;">2.aof 文件开头不是 rdb 的格式，直接以 aof 格式加载整个文件</p> 
+<p style="text-indent:33px;"> </p> 
+<p style="text-indent:33px;">判断 aof 文件的前面部分是否为 rdb 格式，只需要判断前 5 个字符是否是 REDIS。这个是因为 rdb 持久化开头就是 REDIS, 同时 aof 命令开头一定不会是 REDIS（命令开头都是 *）</p> 
+<p> </p> 
+<h2>持久化中常见的问题</h2> 
+<p>1.fork操作很久，导致阻塞：</p> 
+<p style="text-indent:33px;">1.控制redis最大内存大小(maxmemory)，内存越在，耗时越长。</p> 
+<p style="text-indent:33px;">2.使用性能更好的服务器资源</p> 
+<p style="text-indent:33px;">3.降低fork频率：例如放宽aof重写自动触发时机，不要全量复制</p> 
+<p style="text-indent:33px;">4.监控fork时长：info:latest_fork_usec 上一次执行fock时消耗的微秒数。</p> 
+<p style="text-indent:33px;">5.合理配置linux内存分配策略：vm.overcommit_memory=1</p> 
+<p style="text-indent:33px;"> </p> 
+<p>2.aof追加阻塞：(<span style="color:#f33b45;">redis是内存数据库，在大并发时，写日志也可能需要很长的时间</span>)</p> 
+<p style="text-indent:33px;">如果AOF文件fsync同步时间大于2s，Redis主进程就会阻塞,redis主进程是用来执行redis命令的，是不能阻塞的。</p> 
+<p style="text-indent:33px;">1.打开no-appendfsync-on-rewrite参数</p> 
+<p style="text-indent:33px;">2.关闭AOF</p> 
+<p style="text-indent:33px;">3.换更好的硬盘</p> 
+<p style="text-indent:33px;">4.监控：info  aof_delayed_fsync     aof阻塞次数</p> 
+<p></p> 
+<p> </p> 
+<h2>总结</h2> 
+<p style="text-indent:33px;">1.Redis 默认开启RDB持久化方式，在指定的时间间隔内，执行指定次数的写操作，则将内存中的数据写入到磁盘中。</p> 
+<p style="text-indent:33px;">2.RDB 持久化适合大规模的数据恢复但它的数据一致性和完整性较差。</p> 
+<p style="text-indent:33px;">3.Redis 需要手动开启AOF持久化方式，默认是每秒将写操作日志追加到AOF文件中。</p> 
+<p style="text-indent:33px;">4.AOF 的数据完整性比RDB高，但记录内容多了，会影响数据恢复的效率。</p> 
+<p style="text-indent:33px;">5.若只打算用Redis 做缓存，可以关闭持久化。</p> 
+<p style="text-indent:33px;">6.有主从的情况下，建议主库不做持久化，从库开启持久化。</p> 
+<p style="text-indent:33px;">7.建议使用redis4.0以上版本，使用混合持久化。</p> 
+<p style="text-indent:33px;">8.建议控制单个实例大小，体量越大，rdb生成时间越长，开销越大。同时，在从库初始化时，所需要的时间更长，网络开销更多。</p> 
+<p style="text-indent:33px;"> </p> 
+<p> </p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/c116df4210de1ddb654d6ea73ed176e3/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">Command vue init requires a global addon to be installed.   Please run yarn global add @vue/cli-in报错</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/f3db6f70561db75ef6f53d280c2c6ecc/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">【图形学】实验一 OpenGL基本绘制</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

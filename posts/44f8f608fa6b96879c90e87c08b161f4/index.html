@@ -1,0 +1,903 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Android权限系统（二）：开机授予运行时权限 - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="Android权限系统（二）：开机授予运行时权限" />
+<meta property="og:description" content="DefaultPermissionGrantPolicy简介 Android开机后，除了根据上次开机的记录（runtime-permissions.xml）授予运行时权限外，一些系统重要的组件也需要提前授予运行时权限，最常见的时为系统重要功能的默认组件提前授予运行时权限，例如系统会为默认的浏览器提前授予位置相关的运行时权限。而这些授权操作，是在DefaultPermissionGrantPolicy类里面进行的。DefaultPermissionGrantPolicy在PermissionManagerService的构造函数中被创建。
+默认应用的设置可以在设置-应用和通知-默认应用中找到。
+frameworks/base/services/core/java/com/android/server/pm/permission/PermissionManagerService.java
+PermissionManagerService(Context context, @NonNull Object externalLock) { ... mDefaultPermissionGrantPolicy = new DefaultPermissionGrantPolicy( context, mHandlerThread.getLooper(), this); 在PMS的systemReady阶段中，会调用DefaultPermissionGrantPolicy#grantDefaultPermissions为每一个修改过运行时权限的userid提前授予运行时权限（创建新用户也会触发授权，此处略过）：
+frameworks/base/services/core/java/com/android/server/pm/PackageManagerService.java
+@Override public void systemReady() { ... // If we upgraded grant all default permissions before kicking off. for (int userId : grantPermissionsUserIds) { mDefaultPermissionPolicy.grantDefaultPermissions(userId); } 提前授权的步骤分三步：1.系统特权组件授权；2.系统默认组件授权；3.特定文件指定授权。
+frameworks/base/services/core/java/com/android/server/pm/permission/DefaultPermissionGrantPolicy.java
+public void grantDefaultPermissions(int userId) { grantPermissionsToSysComponentsAndPrivApps(userId); grantDefaultSystemHandlerPermissions(userId); grantDefaultPermissionExceptions(userId); synchronized (mLock) { mDefaultPermissionsGrantedUsers.put(userId, userId); } } grantPermissionsToSysComponentsAndPrivApps系统特定组件授权 首先列出主用户下所有已安装的包，过滤掉以下包：1.不支持运行时权限的（targetsdk小于M）；2.没有声明申请权限的；3.不属于特权apk的；4.如果是属于更新过后的系统应用，原来的系统应用不是persistent的；5.如果不属于更新过后的系统应用，此应用不是persistent的；
+6.没有系统（platform）签名的。其他包和UID小于10000（应用程序的首个UID）的包会被授予运行时权限。
+frameworks/base/services/core/java/com/android/server/pm/permission/DefaultPermissionGrantPolicy.java
+private void grantPermissionsToSysComponentsAndPrivApps(int userId) { Log." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/44f8f608fa6b96879c90e87c08b161f4/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2020-06-16T02:25:34+08:00" />
+<meta property="article:modified_time" content="2020-06-16T02:25:34+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Android权限系统（二）：开机授予运行时权限</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <h3><a id="DefaultPermissionGrantPolicy_0"></a>DefaultPermissionGrantPolicy简介</h3> 
+<p>  Android开机后，除了根据上次开机的记录（runtime-permissions.xml）授予运行时权限外，一些系统重要的组件也需要提前授予运行时权限，最常见的时为系统重要功能的默认组件提前授予运行时权限，例如系统会为默认的浏览器提前授予位置相关的运行时权限。而这些授权操作，是在DefaultPermissionGrantPolicy类里面进行的。DefaultPermissionGrantPolicy在PermissionManagerService的构造函数中被创建。<br>   默认应用的设置可以在设置-应用和通知-默认应用中找到。</p> 
+<p><em><strong>frameworks/base/services/core/java/com/android/server/pm/permission/PermissionManagerService.java</strong></em></p> 
+<pre><code>    PermissionManagerService(Context context,
+            @NonNull Object externalLock) {
+        ...
+
+        mDefaultPermissionGrantPolicy = new DefaultPermissionGrantPolicy(
+                context, mHandlerThread.getLooper(), this);
+
+</code></pre> 
+<p>  在PMS的systemReady阶段中，会调用DefaultPermissionGrantPolicy#grantDefaultPermissions为每一个修改过运行时权限的userid提前授予运行时权限（创建新用户也会触发授权，此处略过）：</p> 
+<p><em><strong>frameworks/base/services/core/java/com/android/server/pm/PackageManagerService.java</strong></em></p> 
+<pre><code>    @Override
+    public void systemReady() {
+        ...
+        // If we upgraded grant all default permissions before kicking off.
+        for (int userId : grantPermissionsUserIds) {
+            mDefaultPermissionPolicy.grantDefaultPermissions(userId);
+        }
+
+</code></pre> 
+<p>  提前授权的步骤分三步：1.系统特权组件授权；2.系统默认组件授权；3.特定文件指定授权。</p> 
+<p><em><strong>frameworks/base/services/core/java/com/android/server/pm/permission/DefaultPermissionGrantPolicy.java</strong></em></p> 
+<pre><code>    public void grantDefaultPermissions(int userId) {
+        grantPermissionsToSysComponentsAndPrivApps(userId);
+        grantDefaultSystemHandlerPermissions(userId);
+        grantDefaultPermissionExceptions(userId);
+        synchronized (mLock) {
+            mDefaultPermissionsGrantedUsers.put(userId, userId);
+        }
+    }
+</code></pre> 
+<h3><a id="grantPermissionsToSysComponentsAndPrivApps_40"></a>grantPermissionsToSysComponentsAndPrivApps系统特定组件授权</h3> 
+<p>  首先列出主用户下所有已安装的包，过滤掉以下包：1.不支持运行时权限的（targetsdk小于M）；2.没有声明申请权限的；3.不属于特权apk的；4.如果是属于更新过后的系统应用，原来的系统应用不是persistent的；5.如果不属于更新过后的系统应用，此应用不是persistent的；<br> 6.没有系统（platform）签名的。其他包和UID小于10000（应用程序的首个UID）的包会被授予运行时权限。</p> 
+<p><em><strong>frameworks/base/services/core/java/com/android/server/pm/permission/DefaultPermissionGrantPolicy.java</strong></em></p> 
+<pre><code>    private void grantPermissionsToSysComponentsAndPrivApps(int userId) {
+        Log.i(TAG, "Granting permissions to platform components for user " + userId);
+        List&lt;PackageInfo&gt; packages = mContext.getPackageManager().getInstalledPackagesAsUser(
+                DEFAULT_PACKAGE_INFO_QUERY_FLAGS, UserHandle.USER_SYSTEM);
+        for (PackageInfo pkg : packages) {
+            if (pkg == null) {
+                continue;
+            }
+            if (!isSysComponentOrPersistentPlatformSignedPrivApp(pkg)
+                    || !doesPackageSupportRuntimePermissions(pkg)
+                    || ArrayUtils.isEmpty(pkg.requestedPermissions)) {
+                continue;
+            }
+            grantRuntimePermissionsForSystemPackage(userId, pkg);
+        }
+    }
+</code></pre> 
+<p><em><strong>frameworks/base/services/core/java/com/android/server/pm/permission/DefaultPermissionGrantPolicy.java</strong></em></p> 
+<pre><code>    private boolean isSysComponentOrPersistentPlatformSignedPrivApp(PackageInfo pkg) {
+        if (UserHandle.getAppId(pkg.applicationInfo.uid) &lt; FIRST_APPLICATION_UID) {
+            return true;
+        }
+        if (!pkg.applicationInfo.isPrivilegedApp()) {
+            return false;
+        }
+        final PackageInfo disabledPkg = getSystemPackageInfo(
+                mServiceInternal.getDisabledSystemPackageName(pkg.applicationInfo.packageName));
+        if (disabledPkg != null) {
+            ApplicationInfo disabledPackageAppInfo = disabledPkg.applicationInfo;
+            if (disabledPackageAppInfo != null
+                    &amp;&amp; (disabledPackageAppInfo.flags &amp; ApplicationInfo.FLAG_PERSISTENT) == 0) {
+                return false;
+            }
+        } else if ((pkg.applicationInfo.flags &amp; ApplicationInfo.FLAG_PERSISTENT) == 0) {
+            return false;
+        }
+        return mServiceInternal.isPlatformSigned(pkg.packageName);
+    }
+</code></pre> 
+<p>  对于这部分符合要求的系统组件，系统的策略是尽可能授予组件需要的任何运行时权限。</p> 
+<p><em><strong>frameworks/base/services/core/java/com/android/server/pm/permission/DefaultPermissionGrantPolicy.java</strong></em></p> 
+<pre><code>    private void grantRuntimePermissionsForSystemPackage(int userId, PackageInfo pkg) {
+        Set&lt;String&gt; permissions = new ArraySet&lt;&gt;();
+        for (String permission : pkg.requestedPermissions) {
+            final BasePermission bp = mPermissionManager.getPermission(permission);
+            if (bp == null) {
+                continue;
+            }
+            if (bp.isRuntime()) {
+                permissions.add(permission);
+            }
+        }
+        if (!permissions.isEmpty()) {
+            grantRuntimePermissions(pkg, permissions, true /*systemFixed*/, userId);
+        }
+    }
+</code></pre> 
+<h3><a id="grantDefaultSystemHandlerPermissions_108"></a>grantDefaultSystemHandlerPermissions系统默认组件授权</h3> 
+<p>  系统需要相应一部分重要的intent的默认包被授予特定的运行时权限，所以就通过grantDefaultSystemHandlerPermissions为这些包授予特定的运行时权限。</p> 
+<p><em><strong>frameworks/base/services/core/java/com/android/server/pm/permission/DefaultPermissionGrantPolicy.java</strong></em></p> 
+<pre><code>    private void grantDefaultSystemHandlerPermissions(int userId) {
+        Log.i(TAG, "Granting permissions to default platform handlers for user " + userId);
+
+        final PackagesProvider locationPackagesProvider;
+        final PackagesProvider locationExtraPackagesProvider;
+        final PackagesProvider voiceInteractionPackagesProvider;
+        final PackagesProvider smsAppPackagesProvider;
+        final PackagesProvider dialerAppPackagesProvider;
+        final PackagesProvider simCallManagerPackagesProvider;
+        final PackagesProvider useOpenWifiAppPackagesProvider;
+        final SyncAdapterPackagesProvider syncAdapterPackagesProvider;
+
+        synchronized (mLock) {
+            locationPackagesProvider = mLocationPackagesProvider;
+            locationExtraPackagesProvider = mLocationExtraPackagesProvider;
+            voiceInteractionPackagesProvider = mVoiceInteractionPackagesProvider;
+            smsAppPackagesProvider = mSmsAppPackagesProvider;
+            dialerAppPackagesProvider = mDialerAppPackagesProvider;
+            simCallManagerPackagesProvider = mSimCallManagerPackagesProvider;
+            useOpenWifiAppPackagesProvider = mUseOpenWifiAppPackagesProvider;
+            syncAdapterPackagesProvider = mSyncAdapterPackagesProvider;
+        }
+
+        String[] voiceInteractPackageNames = (voiceInteractionPackagesProvider != null)
+                ? voiceInteractionPackagesProvider.getPackages(userId) : null;
+        String[] locationPackageNames = (locationPackagesProvider != null)
+                ? locationPackagesProvider.getPackages(userId) : null;
+        String[] locationExtraPackageNames = (locationExtraPackagesProvider != null)
+                ? locationExtraPackagesProvider.getPackages(userId) : null;
+        String[] smsAppPackageNames = (smsAppPackagesProvider != null)
+                ? smsAppPackagesProvider.getPackages(userId) : null;
+        String[] dialerAppPackageNames = (dialerAppPackagesProvider != null)
+                ? dialerAppPackagesProvider.getPackages(userId) : null;
+        String[] simCallManagerPackageNames = (simCallManagerPackagesProvider != null)
+                ? simCallManagerPackagesProvider.getPackages(userId) : null;
+        String[] useOpenWifiAppPackageNames = (useOpenWifiAppPackagesProvider != null)
+                ? useOpenWifiAppPackagesProvider.getPackages(userId) : null;
+        String[] contactsSyncAdapterPackages = (syncAdapterPackagesProvider != null) ?
+                syncAdapterPackagesProvider.getPackages(ContactsContract.AUTHORITY, userId) : null;
+        String[] calendarSyncAdapterPackages = (syncAdapterPackagesProvider != null) ?
+                syncAdapterPackagesProvider.getPackages(CalendarContract.AUTHORITY, userId) : null;
+
+        // Installer
+        grantSystemFixedPermissionsToSystemPackage(
+                ArrayUtils.firstOrNull(getKnownPackages(
+                        PackageManagerInternal.PACKAGE_INSTALLER, userId)),
+                userId, STORAGE_PERMISSIONS);
+
+        // Verifier
+        final String verifier = ArrayUtils.firstOrNull(getKnownPackages(
+                PackageManagerInternal.PACKAGE_VERIFIER, userId));
+        grantSystemFixedPermissionsToSystemPackage(verifier, userId, STORAGE_PERMISSIONS);
+        grantPermissionsToSystemPackage(verifier, userId, PHONE_PERMISSIONS, SMS_PERMISSIONS);
+
+        // SetupWizard
+        grantPermissionsToSystemPackage(
+                ArrayUtils.firstOrNull(getKnownPackages(
+                        PackageManagerInternal.PACKAGE_SETUP_WIZARD, userId)), userId,
+                PHONE_PERMISSIONS, CONTACTS_PERMISSIONS, ALWAYS_LOCATION_PERMISSIONS,
+                CAMERA_PERMISSIONS);
+
+        // Camera
+        grantPermissionsToSystemPackage(
+                getDefaultSystemHandlerActivityPackage(MediaStore.ACTION_IMAGE_CAPTURE, userId),
+                userId, CAMERA_PERMISSIONS, MICROPHONE_PERMISSIONS, STORAGE_PERMISSIONS);
+
+        // Sound recorder
+        grantPermissionsToSystemPackage(
+                getDefaultSystemHandlerActivityPackage(
+                        MediaStore.Audio.Media.RECORD_SOUND_ACTION, userId),
+                userId, MICROPHONE_PERMISSIONS);
+
+        // Media provider
+        grantSystemFixedPermissionsToSystemPackage(
+                getDefaultProviderAuthorityPackage(MediaStore.AUTHORITY, userId), userId,
+                STORAGE_PERMISSIONS, PHONE_PERMISSIONS);
+
+        // Downloads provider
+        grantSystemFixedPermissionsToSystemPackage(
+                getDefaultProviderAuthorityPackage("downloads", userId), userId,
+                STORAGE_PERMISSIONS);
+
+        // Downloads UI
+        grantSystemFixedPermissionsToSystemPackage(
+                getDefaultSystemHandlerActivityPackage(
+                        DownloadManager.ACTION_VIEW_DOWNLOADS, userId),
+                userId, STORAGE_PERMISSIONS);
+
+        // Storage provider
+        grantSystemFixedPermissionsToSystemPackage(
+                getDefaultProviderAuthorityPackage("com.android.externalstorage.documents", userId),
+                userId, STORAGE_PERMISSIONS);
+
+        // CertInstaller
+        grantSystemFixedPermissionsToSystemPackage(
+                getDefaultSystemHandlerActivityPackage(Credentials.INSTALL_ACTION, userId), userId,
+                STORAGE_PERMISSIONS);
+
+        // Dialer
+        if (dialerAppPackageNames == null) {
+            String dialerPackage =
+                    getDefaultSystemHandlerActivityPackage(Intent.ACTION_DIAL, userId);
+            grantDefaultPermissionsToDefaultSystemDialerApp(dialerPackage, userId);
+        } else {
+            for (String dialerAppPackageName : dialerAppPackageNames) {
+                grantDefaultPermissionsToDefaultSystemDialerApp(dialerAppPackageName, userId);
+            }
+        }
+
+        // Sim call manager
+        if (simCallManagerPackageNames != null) {
+            for (String simCallManagerPackageName : simCallManagerPackageNames) {
+                grantDefaultPermissionsToDefaultSystemSimCallManager(
+                        simCallManagerPackageName, userId);
+            }
+        }
+
+        // Use Open Wifi
+        if (useOpenWifiAppPackageNames != null) {
+            for (String useOpenWifiPackageName : useOpenWifiAppPackageNames) {
+                grantDefaultPermissionsToDefaultSystemUseOpenWifiApp(
+                        useOpenWifiPackageName, userId);
+            }
+        }
+
+        // SMS
+        if (smsAppPackageNames == null) {
+            String smsPackage = getDefaultSystemHandlerActivityPackageForCategory(
+                    Intent.CATEGORY_APP_MESSAGING, userId);
+            grantDefaultPermissionsToDefaultSystemSmsApp(smsPackage, userId);
+        } else {
+            for (String smsPackage : smsAppPackageNames) {
+                grantDefaultPermissionsToDefaultSystemSmsApp(smsPackage, userId);
+            }
+        }
+
+        // Cell Broadcast Receiver
+        grantSystemFixedPermissionsToSystemPackage(
+                getDefaultSystemHandlerActivityPackage(Intents.SMS_CB_RECEIVED_ACTION, userId),
+                userId, SMS_PERMISSIONS);
+
+        // Carrier Provisioning Service
+        grantPermissionsToSystemPackage(
+                getDefaultSystemHandlerServicePackage(Intents.SMS_CARRIER_PROVISION_ACTION, userId),
+                userId, SMS_PERMISSIONS);
+
+        // Calendar
+        grantPermissionsToSystemPackage(
+                getDefaultSystemHandlerActivityPackageForCategory(
+                        Intent.CATEGORY_APP_CALENDAR, userId),
+                userId, CALENDAR_PERMISSIONS, CONTACTS_PERMISSIONS);
+
+        // Calendar provider
+        String calendarProvider =
+                getDefaultProviderAuthorityPackage(CalendarContract.AUTHORITY, userId);
+        grantPermissionsToSystemPackage(calendarProvider, userId,
+                CONTACTS_PERMISSIONS, STORAGE_PERMISSIONS);
+        grantSystemFixedPermissionsToSystemPackage(calendarProvider, userId, CALENDAR_PERMISSIONS);
+
+        // Calendar provider sync adapters
+        grantPermissionToEachSystemPackage(
+                getHeadlessSyncAdapterPackages(calendarSyncAdapterPackages, userId),
+                userId, CALENDAR_PERMISSIONS);
+
+        // Contacts
+        grantPermissionsToSystemPackage(
+                getDefaultSystemHandlerActivityPackageForCategory(
+                        Intent.CATEGORY_APP_CONTACTS, userId),
+                userId, CONTACTS_PERMISSIONS, PHONE_PERMISSIONS);
+
+        // Contacts provider sync adapters
+        grantPermissionToEachSystemPackage(
+                getHeadlessSyncAdapterPackages(contactsSyncAdapterPackages, userId),
+                userId, CONTACTS_PERMISSIONS);
+
+        // Contacts provider
+        String contactsProviderPackage =
+                getDefaultProviderAuthorityPackage(ContactsContract.AUTHORITY, userId);
+        grantSystemFixedPermissionsToSystemPackage(contactsProviderPackage, userId,
+                CONTACTS_PERMISSIONS, PHONE_PERMISSIONS);
+        grantPermissionsToSystemPackage(contactsProviderPackage, userId, STORAGE_PERMISSIONS);
+
+        // Device provisioning
+        grantPermissionsToSystemPackage(
+                getDefaultSystemHandlerActivityPackage(
+                        DevicePolicyManager.ACTION_PROVISION_MANAGED_DEVICE, userId),
+                userId, CONTACTS_PERMISSIONS);
+
+        // Maps
+        grantPermissionsToSystemPackage(
+                getDefaultSystemHandlerActivityPackageForCategory(Intent.CATEGORY_APP_MAPS, userId),
+                userId, ALWAYS_LOCATION_PERMISSIONS);
+
+        // Gallery
+        grantPermissionsToSystemPackage(
+                getDefaultSystemHandlerActivityPackageForCategory(
+                        Intent.CATEGORY_APP_GALLERY, userId),
+                userId, STORAGE_PERMISSIONS);
+
+        // Email
+        grantPermissionsToSystemPackage(
+                getDefaultSystemHandlerActivityPackageForCategory(
+                        Intent.CATEGORY_APP_EMAIL, userId),
+                userId, CONTACTS_PERMISSIONS, CALENDAR_PERMISSIONS);
+
+        // Browser
+        String browserPackage = ArrayUtils.firstOrNull(getKnownPackages(
+                PackageManagerInternal.PACKAGE_BROWSER, userId));
+        if (browserPackage == null) {
+            browserPackage = getDefaultSystemHandlerActivityPackageForCategory(
+                    Intent.CATEGORY_APP_BROWSER, userId);
+            if (!isSystemPackage(browserPackage)) {
+                browserPackage = null;
+            }
+        }
+        grantPermissionsToPackage(browserPackage, userId, false /* ignoreSystemPackage */,
+                true /*whitelistRestrictedPermissions*/, ALWAYS_LOCATION_PERMISSIONS);
+
+        // Voice interaction
+        if (voiceInteractPackageNames != null) {
+            for (String voiceInteractPackageName : voiceInteractPackageNames) {
+                grantPermissionsToSystemPackage(voiceInteractPackageName, userId,
+                        CONTACTS_PERMISSIONS, CALENDAR_PERMISSIONS, MICROPHONE_PERMISSIONS,
+                        PHONE_PERMISSIONS, SMS_PERMISSIONS, ALWAYS_LOCATION_PERMISSIONS);
+            }
+        }
+
+        if (ActivityManager.isLowRamDeviceStatic()) {
+            // Allow voice search on low-ram devices
+            grantPermissionsToSystemPackage(
+                    getDefaultSystemHandlerActivityPackage(
+                            SearchManager.INTENT_ACTION_GLOBAL_SEARCH, userId),
+                    userId, MICROPHONE_PERMISSIONS, ALWAYS_LOCATION_PERMISSIONS);
+        }
+
+        // Voice recognition
+        Intent voiceRecoIntent = new Intent(RecognitionService.SERVICE_INTERFACE)
+                .addCategory(Intent.CATEGORY_DEFAULT);
+        grantPermissionsToSystemPackage(
+                getDefaultSystemHandlerServicePackage(voiceRecoIntent, userId), userId,
+                MICROPHONE_PERMISSIONS);
+
+        // Location
+        if (locationPackageNames != null) {
+            for (String packageName : locationPackageNames) {
+                grantPermissionsToSystemPackage(packageName, userId,
+                        CONTACTS_PERMISSIONS, CALENDAR_PERMISSIONS, MICROPHONE_PERMISSIONS,
+                        PHONE_PERMISSIONS, SMS_PERMISSIONS, CAMERA_PERMISSIONS,
+                        SENSORS_PERMISSIONS, STORAGE_PERMISSIONS);
+                grantSystemFixedPermissionsToSystemPackage(packageName, userId,
+                        ALWAYS_LOCATION_PERMISSIONS, ACTIVITY_RECOGNITION_PERMISSIONS);
+            }
+        }
+        if (locationExtraPackageNames != null) {
+            // Also grant location permission to location extra packages.
+            for (String packageName : locationExtraPackageNames) {
+                grantPermissionsToSystemPackage(packageName, userId, ALWAYS_LOCATION_PERMISSIONS);
+            }
+        }
+
+        // Music
+        Intent musicIntent = new Intent(Intent.ACTION_VIEW)
+                .addCategory(Intent.CATEGORY_DEFAULT)
+                .setDataAndType(Uri.fromFile(new File("foo.mp3")), AUDIO_MIME_TYPE);
+        grantPermissionsToSystemPackage(
+                getDefaultSystemHandlerActivityPackage(musicIntent, userId), userId,
+                STORAGE_PERMISSIONS);
+
+        // Home
+        Intent homeIntent = new Intent(Intent.ACTION_MAIN)
+                .addCategory(Intent.CATEGORY_HOME)
+                .addCategory(Intent.CATEGORY_LAUNCHER_APP);
+        grantPermissionsToSystemPackage(
+                getDefaultSystemHandlerActivityPackage(homeIntent, userId), userId,
+                ALWAYS_LOCATION_PERMISSIONS);
+
+        // Watches
+        if (mContext.getPackageManager().hasSystemFeature(PackageManager.FEATURE_WATCH, 0)) {
+            // Home application on watches
+
+            String wearPackage = getDefaultSystemHandlerActivityPackageForCategory(
+                    Intent.CATEGORY_HOME_MAIN, userId);
+            grantPermissionsToSystemPackage(wearPackage, userId,
+                    CONTACTS_PERMISSIONS, MICROPHONE_PERMISSIONS, ALWAYS_LOCATION_PERMISSIONS);
+            grantSystemFixedPermissionsToSystemPackage(wearPackage, userId, PHONE_PERMISSIONS);
+
+            // Fitness tracking on watches
+            grantPermissionsToSystemPackage(
+                    getDefaultSystemHandlerActivityPackage(ACTION_TRACK, userId), userId,
+                    SENSORS_PERMISSIONS, ALWAYS_LOCATION_PERMISSIONS);
+        }
+
+        // Print Spooler
+        grantSystemFixedPermissionsToSystemPackage(PrintManager.PRINT_SPOOLER_PACKAGE_NAME, userId,
+                ALWAYS_LOCATION_PERMISSIONS);
+
+        // EmergencyInfo
+        grantSystemFixedPermissionsToSystemPackage(
+                getDefaultSystemHandlerActivityPackage(
+                        TelephonyManager.ACTION_EMERGENCY_ASSISTANCE, userId),
+                userId, CONTACTS_PERMISSIONS, PHONE_PERMISSIONS);
+
+        // NFC Tag viewer
+        Intent nfcTagIntent = new Intent(Intent.ACTION_VIEW)
+                .setType("vnd.android.cursor.item/ndef_msg");
+        grantPermissionsToSystemPackage(
+                getDefaultSystemHandlerActivityPackage(nfcTagIntent, userId), userId,
+                CONTACTS_PERMISSIONS, PHONE_PERMISSIONS);
+
+        // Storage Manager
+        grantSystemFixedPermissionsToSystemPackage(
+                getDefaultSystemHandlerActivityPackage(
+                        StorageManager.ACTION_MANAGE_STORAGE, userId),
+                userId, STORAGE_PERMISSIONS);
+
+        // Companion devices
+        grantSystemFixedPermissionsToSystemPackage(
+                CompanionDeviceManager.COMPANION_DEVICE_DISCOVERY_PACKAGE_NAME, userId,
+                ALWAYS_LOCATION_PERMISSIONS);
+
+        // Ringtone Picker
+        grantSystemFixedPermissionsToSystemPackage(
+                getDefaultSystemHandlerActivityPackage(
+                        RingtoneManager.ACTION_RINGTONE_PICKER, userId),
+                userId, STORAGE_PERMISSIONS);
+
+        // TextClassifier Service
+        String textClassifierPackageName =
+                mContext.getPackageManager().getSystemTextClassifierPackageName();
+        if (!TextUtils.isEmpty(textClassifierPackageName)) {
+            grantPermissionsToSystemPackage(textClassifierPackageName, userId,
+                    PHONE_PERMISSIONS, SMS_PERMISSIONS, CALENDAR_PERMISSIONS,
+                    ALWAYS_LOCATION_PERMISSIONS, CONTACTS_PERMISSIONS);
+        }
+
+        // Atthention Service
+        String attentionServicePackageName =
+                mContext.getPackageManager().getAttentionServicePackageName();
+        if (!TextUtils.isEmpty(attentionServicePackageName)) {
+            grantPermissionsToSystemPackage(attentionServicePackageName, userId,
+                    CAMERA_PERMISSIONS);
+        }
+
+        // There is no real "marker" interface to identify the shared storage backup, it is
+        // hardcoded in BackupManagerService.SHARED_BACKUP_AGENT_PACKAGE.
+        grantSystemFixedPermissionsToSystemPackage("com.android.sharedstoragebackup", userId,
+                STORAGE_PERMISSIONS);
+
+        // System Captions Service
+        String systemCaptionsServicePackageName =
+                mContext.getPackageManager().getSystemCaptionsServicePackageName();
+        if (!TextUtils.isEmpty(systemCaptionsServicePackageName)) {
+            grantPermissionsToSystemPackage(systemCaptionsServicePackageName, userId,
+                    MICROPHONE_PERMISSIONS);
+        }
+</code></pre> 
+<h3><a id="grantDefaultPermissionExceptions_469"></a>grantDefaultPermissionExceptions特定文件指定授权</h3> 
+<p>  系统中{partition}/etc/default-permissions目录下的xml文件可以为特定包提前授予运行时权限。</p> 
+<p><em><strong>frameworks/base/services/core/java/com/android/server/pm/permission/DefaultPermissionGrantPolicy.java</strong></em></p> 
+<pre><code>    private void grantDefaultPermissionExceptions(int userId) {
+        mHandler.removeMessages(MSG_READ_DEFAULT_PERMISSION_EXCEPTIONS);
+
+        synchronized (mLock) {
+            // mGrantExceptions is null only before the first read and then
+            // it serves as a cache of the default grants that should be
+            // performed for every user. If there is an entry then the app
+            // is on the system image and supports runtime permissions.
+            if (mGrantExceptions == null) {
+                mGrantExceptions = readDefaultPermissionExceptionsLocked();
+            }
+        }
+
+        Set&lt;String&gt; permissions = null;
+        final int exceptionCount = mGrantExceptions.size();
+        for (int i = 0; i &lt; exceptionCount; i++) {
+            String packageName = mGrantExceptions.keyAt(i);
+            PackageInfo pkg = getSystemPackageInfo(packageName);
+            List&lt;DefaultPermissionGrant&gt; permissionGrants = mGrantExceptions.valueAt(i);
+            final int permissionGrantCount = permissionGrants.size();
+            for (int j = 0; j &lt; permissionGrantCount; j++) {
+                DefaultPermissionGrant permissionGrant = permissionGrants.get(j);
+                if (!isPermissionDangerous(permissionGrant.name)) {
+                    Log.w(TAG, "Ignoring permission " + permissionGrant.name
+                            + " which isn't dangerous");
+                    continue;
+                }
+                if (permissions == null) {
+                    permissions = new ArraySet&lt;&gt;();
+                } else {
+                    permissions.clear();
+                }
+                permissions.add(permissionGrant.name);
+
+
+                grantRuntimePermissions(pkg, permissions, permissionGrant.fixed,
+                        permissionGrant.whitelisted, true /*whitelistRestrictedPermissions*/,
+                        userId);
+            }
+        }
+    }
+</code></pre> 
+<p>  `以下是其中一个xml default-permissions-google.xml的内容。package表示要额外处理的包名，sha256-cert-digest目前还没用上，permission 的name是要提前授予的权限名称，permission的fixed表示授权后是否可以被非系统组件修改权限，permission还有个whitelisted，表示是否可以为限制权限添加限制免除标志位。</p> 
+<pre><code>&lt;exceptions&gt;
+  &lt;exception
+    package="com.google.android.apps.restore"
+    sha256-cert-digest="56:BE:13:2B:78:06:56:FE:24:44:CD:34:32:6E:B5:D7:AA:C9:1D:20:96:AB:F0:FE:67:3A:99:27:06:22:EC:87"&gt;
+    &lt;!-- External storage --&gt;
+    &lt;permission name="android.permission.READ_EXTERNAL_STORAGE" fixed="false"/&gt;
+    &lt;permission name="android.permission.WRITE_EXTERNAL_STORAGE" fixed="false"/&gt;
+    &lt;!-- Contacts --&gt;
+    &lt;permission name="android.permission.READ_CONTACTS" fixed="false"/&gt;
+    &lt;permission name="android.permission.WRITE_CONTACTS" fixed="false"/&gt;
+  &lt;/exception&gt;
+
+  &lt;exception
+    package="com.google.android.apps.assistant"
+    sha256-cert-digest="43:0B:20:EB:61:96:7E:9C:5B:BE:02:59:9B:07:35:16:80:7D:AE:72:D7:86:FE:92:7F:48:96:B7:C7:F2:96:1F"&gt;
+    &lt;!-- Record audio --&gt;
+    &lt;permission name="android.permission.RECORD_AUDIO" fixed="false"/&gt;
+  &lt;/exception&gt;
+
+  &lt;exception
+    package="com.google.android.projection.gearhead"
+    sha256-cert-digest="FD:B0:0C:43:DB:DE:8B:51:CB:31:2A:A8:1D:3B:5F:A1:77:13:AD:B9:4B:28:F5:98:D7:7F:8E:B8:9D:AC:EE:DF"&gt;
+    &lt;permission name="android.permission.ACCESS_FINE_LOCATION" fixed="false"/&gt;
+    &lt;permission name="android.permission.CALL_PHONE" fixed="false"/&gt;
+    &lt;permission name="android.permission.READ_CALL_LOG" fixed="false"/&gt;
+    &lt;permission name="android.permission.READ_CONTACTS" fixed="false"/&gt;
+    &lt;permission name="android.permission.READ_PHONE_STATE" fixed="false"/&gt;
+    &lt;permission name="android.permission.RECEIVE_SMS" fixed="false"/&gt;
+    &lt;permission name="android.permission.RECORD_AUDIO" fixed="false"/&gt;
+    &lt;permission name="android.permission.SEND_SMS" fixed="false"/&gt;
+    &lt;permission name="android.permission.PROCESS_OUTGOING_CALLS" fixed="false"/&gt;
+    &lt;permission name="android.permission.READ_SMS" fixed="false"/&gt;
+    &lt;permission name="android.permission.RECEIVE_MMS" fixed="false"/&gt;
+    &lt;permission name="android.permission.WRITE_CALL_LOG" fixed="false"/&gt;
+    &lt;permission name="android.permission.ACCESS_COARSE_LOCATION" fixed="false"/&gt;
+  &lt;/exception&gt;
+&lt;/exceptions&gt;
+</code></pre> 
+<h3><a id="grantRuntimePermissions_559"></a>统一授权入口grantRuntimePermissions</h3> 
+<p>  无论是grantPermissionsToSystemPackage还是grantSystemFixedPermissionsToSystemPackage，还是grantPermissionsToSystemPackage。它们最终都会调用到grantRuntimePermissions，只是入参的值不一样而已。<br>   第一个参数pkg是包的信息封装PackageInfo对象，第二个参数permissionsWithoutSplits是未被分割（split permission）的要被授予的运行时权限，第三个参数systemFixed表示本次授予的权限是否带上系统固定（FLAG_PERMISSION_SYSTEM_FIXED）标志位，以免被非系统组件修改，第四个参数ignoreSystemPackage表示授权时是否考虑放置在system分区下的原应用，第五个参数whitelistRestrictedPermissions表示是否为限制权限添加限制免除（FLAG_PERMISSION_RESTRICTION_SYSTEM_EXEMPT）标志位，第六个参数是要授予的运行时权限对应的userid。</p> 
+<p><em><strong>frameworks/base/services/core/java/com/android/server/pm/permission/DefaultPermissionGrantPolicy.java</strong></em></p> 
+<pre><code>    private void grantRuntimePermissions(PackageInfo pkg, Set&lt;String&gt; permissionsWithoutSplits,
+            boolean systemFixed, boolean ignoreSystemPackage,
+            boolean whitelistRestrictedPermissions, int userId) {
+        UserHandle user = UserHandle.of(userId);
+        if (pkg == null) {
+            return;
+        }
+
+        String[] requestedPermissions = pkg.requestedPermissions;
+        if (ArrayUtils.isEmpty(requestedPermissions)) {
+            return;
+        }
+
+        // Intersect the requestedPermissions for a factory image with that of its current update
+        // in case the latter one removed a &lt;uses-permission&gt;
+        String[] requestedByNonSystemPackage = getPackageInfo(pkg.packageName).requestedPermissions;
+        int size = requestedPermissions.length;
+        for (int i = 0; i &lt; size; i++) {
+            if (!ArrayUtils.contains(requestedByNonSystemPackage, requestedPermissions[i])) {
+                requestedPermissions[i] = null;
+            }
+        }
+        requestedPermissions = ArrayUtils.filterNotNull(requestedPermissions, String[]::new);
+
+        PackageManager pm;
+        try {
+            pm = mContext.createPackageContextAsUser(mContext.getPackageName(), 0,
+                    user).getPackageManager();
+        } catch (NameNotFoundException doesNotHappen) {
+            throw new IllegalStateException(doesNotHappen);
+        }
+
+        final ArraySet&lt;String&gt; permissions = new ArraySet&lt;&gt;(permissionsWithoutSplits);
+        ApplicationInfo applicationInfo = pkg.applicationInfo;
+       //添加默认授权（FLAG_PERMISSION_GRANTED_BY_DEFAULT）标志位
+        int newFlags = PackageManager.FLAG_PERMISSION_GRANTED_BY_DEFAULT;
+        if (systemFixed) {
+            //添加系统固定（FLAG_PERMISSION_SYSTEM_FIXED）标志位
+            newFlags |= PackageManager.FLAG_PERMISSION_SYSTEM_FIXED;
+        }
+
+        // Automatically attempt to grant split permissions to older APKs
+        //如果要授予的权限含有split permission，把对应的new permission也加入到授权集合中
+        final List&lt;PermissionManager.SplitPermissionInfo&gt; splitPermissions =
+                mContext.getSystemService(PermissionManager.class).getSplitPermissions();
+        final int numSplitPerms = splitPermissions.size();
+        for (int splitPermNum = 0; splitPermNum &lt; numSplitPerms; splitPermNum++) {
+            final PermissionManager.SplitPermissionInfo splitPerm =
+                    splitPermissions.get(splitPermNum);
+
+            if (applicationInfo != null
+                    &amp;&amp; applicationInfo.targetSdkVersion &lt; splitPerm.getTargetSdk()
+                    &amp;&amp; permissionsWithoutSplits.contains(splitPerm.getSplitPermission())) {
+                permissions.addAll(splitPerm.getNewPermissions());
+            }
+        }
+
+        Set&lt;String&gt; grantablePermissions = null;
+
+        // In some cases, like for the Phone or SMS app, we grant permissions regardless
+        // of if the version on the system image declares the permission as used since
+        // selecting the app as the default for that function the user makes a deliberate
+        // choice to grant this app the permissions needed to function. For all other
+        // apps, (default grants on first boot and user creation) we don't grant default
+        // permissions if the version on the system image does not declare them.
+        //入参ignoreSystemPackage为false且目标包是更新过的system app的时候，则按system下面的包声明申请的权限为标准进行筛选
+        if (!ignoreSystemPackage
+                &amp;&amp; applicationInfo != null
+                &amp;&amp; applicationInfo.isUpdatedSystemApp()) {
+            final PackageInfo disabledPkg = getSystemPackageInfo(
+                    mServiceInternal.getDisabledSystemPackageName(pkg.packageName));
+            if (disabledPkg != null) {
+                if (ArrayUtils.isEmpty(disabledPkg.requestedPermissions)) {
+                    return;
+                }
+                if (!Arrays.equals(requestedPermissions, disabledPkg.requestedPermissions)) {
+                    grantablePermissions = new ArraySet&lt;&gt;(Arrays.asList(requestedPermissions));
+                    requestedPermissions = disabledPkg.requestedPermissions;
+                }
+            }
+        }
+
+        final int numRequestedPermissions = requestedPermissions.length;
+
+        // Sort requested permissions so that all permissions that are a foreground permission (i.e.
+        // permissions that have a background permission) are before their background permissions.
+        final String[] sortedRequestedPermissions = new String[numRequestedPermissions];
+        int numForeground = 0;
+        int numOther = 0;
+        for (int i = 0; i &lt; numRequestedPermissions; i++) {
+            String permission = requestedPermissions[i];
+            if (getBackgroundPermission(permission) != null) {
+                sortedRequestedPermissions[numForeground] = permission;
+                numForeground++;
+            } else {
+                sortedRequestedPermissions[numRequestedPermissions - 1 - numOther] =
+                        permission;
+                numOther++;
+            }
+        }
+
+        for (int requestedPermissionNum = 0; requestedPermissionNum &lt; numRequestedPermissions;
+                requestedPermissionNum++) {
+            //如果是入参pkg是更新过的包且入参ignoreSystemPackage为false，这里遍历的是对应的system分区的声明申请权限；否则遍历的是目标包的声明申请权限
+            String permission = requestedPermissions[requestedPermissionNum];
+
+            // If there is a disabled system app it may request a permission the updated
+            // version ot the data partition doesn't, In this case skip the permission.
+            //如果存在更新包对应在system分区的包，system分区的包声明了某个权限，但是更新的data分区的包没有声明这个权限，则忽略这个权限
+            if (grantablePermissions != null &amp;&amp; !grantablePermissions.contains(permission)) {
+                continue;
+            }
+
+            if (permissions.contains(permission)) {//如果包声明申请的权限在本次调用所要申请的权限集合中
+                final int flags = mContext.getPackageManager().getPermissionFlags(
+                        permission, pkg.packageName, user);
+
+                // If we are trying to grant as system fixed and already system fixed
+                // then the system can change the system fixed grant state.
+                final boolean changingGrantForSystemFixed = systemFixed
+                        &amp;&amp; (flags &amp; PackageManager.FLAG_PERMISSION_SYSTEM_FIXED) != 0;
+
+                // Certain flags imply that the permission's current state by the system or
+                // device/profile owner or the user. In these cases we do not want to clobber the
+                // current state.
+                //
+                // Unless the caller wants to override user choices. The override is
+                // to make sure we can grant the needed permission to the default
+                // sms and phone apps after the user chooses this in the UI.
+                //如果1.权限不是用户设置或者固定的 2.入参ignoreSystemPackage 为false 3,尝试改变带有系统固定（FLAG_PERMISSION_SYSTEM_FIXED）标志位的权限状态 三个条件满足之一
+                if (!isFixedOrUserSet(flags) || ignoreSystemPackage
+                        || changingGrantForSystemFixed) {
+                    // Never clobber policy fixed permissions.
+                    // We must allow the grant of a system-fixed permission because
+                    // system-fixed is sticky, but the permission itself may be revoked.
+                    //如果权限带有devicepolicy固定（FLAG_PERMISSION_POLICY_FIXED）标志位，跳过该权限
+                    if ((flags &amp; PackageManager.FLAG_PERMISSION_POLICY_FIXED) != 0) {
+                        continue;
+                    }
+
+                    // Preserve whitelisting flags.
+                    //保留所有的限制免除标志位
+                    newFlags |= (flags &amp; PackageManager.FLAGS_PERMISSION_RESTRICTION_ANY_EXEMPT);
+
+                    // If we are whitelisting the permission, update the exempt flag before grant.
+                    //如果入参whitelistRestrictedPermissions为true，目标权限是限制权限，为该权限添加系统限制免除（FLAG_PERMISSION_RESTRICTION_SYSTEM_EXEMPT）标志位
+                    if (whitelistRestrictedPermissions &amp;&amp; isPermissionRestricted(permission)) {
+                        mContext.getPackageManager().updatePermissionFlags(permission,
+                                pkg.packageName,
+                                PackageManager.FLAG_PERMISSION_RESTRICTION_SYSTEM_EXEMPT,
+                                PackageManager.FLAG_PERMISSION_RESTRICTION_SYSTEM_EXEMPT, user);
+                    }
+
+                    // If the system tries to change a system fixed permission from one fixed
+                    // state to another we need to drop the fixed flag to allow the grant.
+                    //如果尝试为一个带系统固定（FLAG_PERMISSION_SYSTEM_FIXED）标志位的权限添加系统固定（FLAG_PERMISSION_SYSTEM_FIXED）标志位，先把原来的系统固定（FLAG_PERMISSION_SYSTEM_FIXED）标志位移除掉
+                    if (changingGrantForSystemFixed) {
+                        mContext.getPackageManager().updatePermissionFlags(permission,
+                                pkg.packageName, flags,
+                                flags &amp; ~PackageManager.FLAG_PERMISSION_SYSTEM_FIXED, user);
+                    }
+
+                    if (pm.checkPermission(permission, pkg.packageName)
+                            != PackageManager.PERMISSION_GRANTED) {//授予权限
+                        mContext.getPackageManager()
+                                .grantRuntimePermission(pkg.packageName, permission, user);
+                    }
+                    //更新权限标志位
+                    mContext.getPackageManager().updatePermissionFlags(permission, pkg.packageName,
+                            newFlags, newFlags, user);
+
+                    int uid = UserHandle.getUid(userId,
+                            UserHandle.getAppId(pkg.applicationInfo.uid));
+                    //如果目标权限是一个后台权限，遍历其对应的所有前台权限，如果对于目标包某个前台权限是授权了的，那么目标包的uid进行前台权限操作将通过appops设置成允许
+                    List&lt;String&gt; fgPerms = mPermissionManager.getBackgroundPermissions()
+                            .get(permission);
+                    if (fgPerms != null) {
+                        int numFgPerms = fgPerms.size();
+                        for (int fgPermNum = 0; fgPermNum &lt; numFgPerms; fgPermNum++) {
+                            String fgPerm = fgPerms.get(fgPermNum);
+
+                            if (pm.checkPermission(fgPerm, pkg.packageName)
+                                    == PackageManager.PERMISSION_GRANTED) {
+                                // Upgrade the app-op state of the fg permission to allow bg access
+                                // TODO: Dont' call app ops from package manager code.
+                                mContext.getSystemService(AppOpsManager.class).setUidMode(
+                                        AppOpsManager.permissionToOp(fgPerm), uid,
+                                        AppOpsManager.MODE_ALLOWED);
+
+                                break;
+                            }
+                        }
+                    }
+                                  
+                    String bgPerm = getBackgroundPermission(permission);
+                    String op = AppOpsManager.permissionToOp(permission);
+                    if (bgPerm == null) {//如果目标权限没有对应的后台权限，直接将权限操作通过appops设置为允许
+                        if (op != null) {
+                            // TODO: Dont' call app ops from package manager code.
+                            mContext.getSystemService(AppOpsManager.class).setUidMode(op, uid,
+                                    AppOpsManager.MODE_ALLOWED);
+                        }
+                    } else {//如果目标权限有对应的后台权限，检查对应的后台权限是否授予给目标包了，有的话将权限操作通过appops设置为允许，没有的话将权限操作通过appops设置为前台允许
+                        int mode;
+                        if (pm.checkPermission(bgPerm, pkg.packageName)
+                                == PackageManager.PERMISSION_GRANTED) {
+                            mode = AppOpsManager.MODE_ALLOWED;
+                        } else {
+                            mode = AppOpsManager.MODE_FOREGROUND;
+                        }
+
+                        mContext.getSystemService(AppOpsManager.class).setUidMode(op, uid, mode);
+                    }
+
+                    if (DEBUG) {
+                        Log.i(TAG, "Granted " + (systemFixed ? "fixed " : "not fixed ")
+                                + permission + " to default handler " + pkg);
+
+                        int appOp = AppOpsManager.permissionToOpCode(permission);
+                        if (appOp != AppOpsManager.OP_NONE
+                                &amp;&amp; AppOpsManager.opToDefaultMode(appOp)
+                                        != AppOpsManager.MODE_ALLOWED) {
+                            // Permission has a corresponding appop which is not allowed by default
+                            // We must allow it as well, as it's usually checked alongside the
+                            // permission
+                            if (DEBUG) {
+                                Log.i(TAG, "Granting OP_" + AppOpsManager.opToName(appOp)
+                                        + " to " + pkg.packageName);
+                            }
+                            mContext.getSystemService(AppOpsManager.class).setUidMode(
+                                    appOp, pkg.applicationInfo.uid, AppOpsManager.MODE_ALLOWED);
+                        }
+                    }
+                }
+
+                // If a component gets a permission for being the default handler A
+                // and also default handler B, we grant the weaker grant form.
+                if ((flags &amp; PackageManager.FLAG_PERMISSION_GRANTED_BY_DEFAULT) != 0
+                        &amp;&amp; (flags &amp; PackageManager.FLAG_PERMISSION_SYSTEM_FIXED) != 0
+                        &amp;&amp; !systemFixed) {
+                    if (DEBUG) {
+                        Log.i(TAG, "Granted not fixed " + permission + " to default handler "
+                                + pkg);
+                    }
+                    mContext.getPackageManager().updatePermissionFlags(permission, pkg.packageName,
+                            PackageManager.FLAG_PERMISSION_SYSTEM_FIXED, 0, user);
+                }
+            }
+        }
+    }
+</code></pre>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/0d252056db6c2cd9c95f33ca22eb057c/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">CodeBlocks17.12下载完美汉化版，直接使用冲冲冲！</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/afa590b4c7451184b7b5ce58109f683c/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">YOJ208 严神的机器人 III</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

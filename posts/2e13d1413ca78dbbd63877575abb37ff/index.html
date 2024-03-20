@@ -1,0 +1,690 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>rollup 源码解析 - watch 监听 - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="rollup 源码解析 - watch 监听" />
+<meta property="og:description" content="文章目录 rollup watch 实现流程watchWatchEmitter 实现 watchInternalWatcher 管理整个 watch 阶段Task 运行任务FileWatcher 实现文件监听 rollup watch 实现流程 每一个配置了 watch 的配置项都会变成一个 Task 任务，每个任务通过 FileWatcher 即 chokidar 进行监听，需要监听的文件依赖有两种 一种是文件自身 import 的依赖，会被放进 dependencies 属性里一种是文件在被插件处理的过程中通过 this.addWatchFile 时，watch 的文件会放进该模块的 transformDependencies 属性里 插件里调用 this.emitFile 生成的文件会放进该模块的 transformFiles 属性里 每个 Task 通过 Watcher 进行管理 rollup 打包结果其中一个文件数据结构：
+{ &#34;assertions&#34;: {}, &#34;ast&#34;: { // 当前模块 ast }, &#34;code&#34;: &#34;import _createClass from \&#34;@babel/runtime/helpers/createClass\&#34;;\nimport _classCallCheck from \&#34;@babel/runtime/helpers/classCallCheck\&#34;;\nimport _defineProperty from \&#34;@babel/runtime/helpers/defineProperty\&#34;;\nimport \&#34;core-js/modules/es7.array.includes.js\&#34;;\nimport a from \&#34;a-test\&#34;;\nimport foo from \&#34;" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/2e13d1413ca78dbbd63877575abb37ff/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-12-29T18:17:51+08:00" />
+<meta property="article:modified_time" content="2023-12-29T18:17:51+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">rollup 源码解析 - watch 监听</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-github-gist">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p></p> 
+<div class="toc"> 
+ <h4>文章目录</h4> 
+ <ul><li><a href="#rollup_watch__2" rel="nofollow">rollup watch 实现流程</a></li><li><a href="#watch_147" rel="nofollow">watch</a></li><li><ul><li><a href="#WatchEmitter__166" rel="nofollow">WatchEmitter 实现</a></li></ul> 
+  </li><li><a href="#watchInternal_244" rel="nofollow">watchInternal</a></li><li><ul><li><a href="#Watcher__watch__263" rel="nofollow">Watcher 管理整个 watch 阶段</a></li><li><a href="#Task__374" rel="nofollow">Task 运行任务</a></li><li><a href="#FileWatcher__532" rel="nofollow">FileWatcher 实现文件监听</a></li></ul> 
+ </li></ul> 
+</div> 
+<p></p> 
+<h2><a id="rollup_watch__2"></a>rollup watch 实现流程</h2> 
+<ul><li>每一个配置了 watch 的配置项都会变成一个 Task 任务，每个任务通过 FileWatcher 即 chokidar 进行监听，需要监听的文件依赖有两种 
+  <ul><li>一种是文件自身 import 的依赖，会被放进 dependencies 属性里</li><li>一种是文件在被插件处理的过程中通过 this.addWatchFile 时，watch 的文件会放进该模块的 transformDependencies 属性里 
+    <ul><li>插件里调用 this.emitFile 生成的文件会放进该模块的 transformFiles 属性里</li></ul> </li></ul> </li><li>每个 Task 通过 Watcher 进行管理</li></ul> 
+<p>rollup 打包结果其中一个文件数据结构：</p> 
+<pre><code class="prism language-javascript"><span class="token punctuation">{<!-- --></span>
+  <span class="token string-property property">"assertions"</span><span class="token operator">:</span> <span class="token punctuation">{<!-- --></span><span class="token punctuation">}</span><span class="token punctuation">,</span>
+  <span class="token string-property property">"ast"</span><span class="token operator">:</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token comment">// 当前模块 ast </span>
+  <span class="token punctuation">}</span><span class="token punctuation">,</span>
+  <span class="token string-property property">"code"</span><span class="token operator">:</span> <span class="token string">"import _createClass from \"@babel/runtime/helpers/createClass\";\nimport _classCallCheck from \"@babel/runtime/helpers/classCallCheck\";\nimport _defineProperty from \"@babel/runtime/helpers/defineProperty\";\nimport \"core-js/modules/es7.array.includes.js\";\nimport a from \"a-test\";\nimport foo from \"./foo.js\";\nimport packageJosn from \"./package.json\";\nvar b = require(\"path\");\nvar fn = function fn() {\n  console.log(\"index fn243\", a);\n  console.log(packageJosn.version);\n  console.log(b);\n};\nfn();\nvar A = /*#__PURE__*/_createClass(function A() {\n  _classCallCheck(this, A);\n  _defineProperty(this, \"a\", void 0);\n  this.a = \"ww2\";\n});\nvar aa = new A();\nvar res = [];\nconsole.log(res.includes(\"ff\"));\nconsole.log(foo);\nexport default fn;"</span><span class="token punctuation">,</span>
+  <span class="token string-property property">"customTransformCache"</span><span class="token operator">:</span> <span class="token boolean">false</span><span class="token punctuation">,</span>
+  <span class="token string-property property">"dependencies"</span><span class="token operator">:</span> <span class="token punctuation">[</span>
+      <span class="token string">"/Users/xxx/Desktop/demo/node_modules/@babel/runtime/helpers/esm/createClass.js"</span><span class="token punctuation">,</span>
+      <span class="token string">"/Users/xxx/Desktop/demo/node_modules/@babel/runtime/helpers/esm/classCallCheck.js"</span><span class="token punctuation">,</span>
+      <span class="token string">"/Users/xxx/Desktop/demo/node_modules/@babel/runtime/helpers/esm/defineProperty.js"</span><span class="token punctuation">,</span>
+      <span class="token string">"core-js/modules/es7.array.includes.js"</span><span class="token punctuation">,</span>
+      <span class="token string">"a-test"</span><span class="token punctuation">,</span>
+      <span class="token string">"/Users/xxx/Desktop/demo/foo.js"</span><span class="token punctuation">,</span>
+      <span class="token string">"/Users/xxx/Desktop/demo/package.json"</span>
+  <span class="token punctuation">]</span><span class="token punctuation">,</span>
+  <span class="token string-property property">"id"</span><span class="token operator">:</span> <span class="token string">"/Users/xxx/Desktop/demo/index.js"</span><span class="token punctuation">,</span>
+  <span class="token string-property property">"meta"</span><span class="token operator">:</span> <span class="token punctuation">{<!-- --></span>
+      <span class="token string-property property">"commonjs"</span><span class="token operator">:</span> <span class="token punctuation">{<!-- --></span>
+          <span class="token string-property property">"hasDefaultExport"</span><span class="token operator">:</span> <span class="token boolean">true</span><span class="token punctuation">,</span>
+          <span class="token string-property property">"isCommonJS"</span><span class="token operator">:</span> <span class="token boolean">false</span>
+      <span class="token punctuation">}</span>
+  <span class="token punctuation">}</span><span class="token punctuation">,</span>
+  <span class="token string-property property">"moduleSideEffects"</span><span class="token operator">:</span> <span class="token boolean">true</span><span class="token punctuation">,</span>
+  <span class="token string-property property">"originalCode"</span><span class="token operator">:</span> <span class="token string">"import a from \"a-test\";\nimport foo from \"./foo.js\";\nimport packageJosn from \"./package.json\";\nconst b = require(\"path\");\n\nconst fn = () =&gt; {\n  console.log(\"index fn243\", a);\n  console.log(packageJosn.version);\n  console.log(b);\n};\nfn();\n\nclass A {\n  a;\n  constructor() {\n    this.a = \"ww2\";\n  }\n}\n\nconst aa = new A();\n\nlet res = [];\nconsole.log(res.includes(\"ff\"));\n\nconsole.log(foo);\n\nexport default fn;\n"</span><span class="token punctuation">,</span>
+  <span class="token string-property property">"originalSourcemap"</span><span class="token operator">:</span> <span class="token keyword">null</span><span class="token punctuation">,</span>
+  <span class="token string-property property">"resolvedIds"</span><span class="token operator">:</span> <span class="token punctuation">{<!-- --></span>
+      <span class="token string-property property">"./package.json"</span><span class="token operator">:</span> <span class="token punctuation">{<!-- --></span>
+          <span class="token string-property property">"assertions"</span><span class="token operator">:</span> <span class="token punctuation">{<!-- --></span><span class="token punctuation">}</span><span class="token punctuation">,</span>
+          <span class="token string-property property">"external"</span><span class="token operator">:</span> <span class="token boolean">false</span><span class="token punctuation">,</span>
+          <span class="token string-property property">"id"</span><span class="token operator">:</span> <span class="token string">"/Users/xxx/Desktop/demo/package.json"</span><span class="token punctuation">,</span>
+          <span class="token string-property property">"meta"</span><span class="token operator">:</span> <span class="token punctuation">{<!-- --></span><span class="token punctuation">}</span><span class="token punctuation">,</span>
+          <span class="token string-property property">"moduleSideEffects"</span><span class="token operator">:</span> <span class="token boolean">true</span><span class="token punctuation">,</span>
+          <span class="token string-property property">"resolvedBy"</span><span class="token operator">:</span> <span class="token string">"node-resolve"</span><span class="token punctuation">,</span>
+          <span class="token string-property property">"syntheticNamedExports"</span><span class="token operator">:</span> <span class="token boolean">false</span>
+      <span class="token punctuation">}</span><span class="token punctuation">,</span>
+      <span class="token string-property property">"core-js/modules/es7.array.includes.js"</span><span class="token operator">:</span> <span class="token punctuation">{<!-- --></span>
+          <span class="token string-property property">"assertions"</span><span class="token operator">:</span> <span class="token punctuation">{<!-- --></span><span class="token punctuation">}</span><span class="token punctuation">,</span>
+          <span class="token string-property property">"external"</span><span class="token operator">:</span> <span class="token boolean">true</span><span class="token punctuation">,</span>
+          <span class="token string-property property">"id"</span><span class="token operator">:</span> <span class="token string">"core-js/modules/es7.array.includes.js"</span><span class="token punctuation">,</span>
+          <span class="token string-property property">"meta"</span><span class="token operator">:</span> <span class="token punctuation">{<!-- --></span><span class="token punctuation">}</span><span class="token punctuation">,</span>
+          <span class="token string-property property">"moduleSideEffects"</span><span class="token operator">:</span> <span class="token boolean">true</span><span class="token punctuation">,</span>
+          <span class="token string-property property">"resolvedBy"</span><span class="token operator">:</span> <span class="token string">"rollup"</span><span class="token punctuation">,</span>
+          <span class="token string-property property">"syntheticNamedExports"</span><span class="token operator">:</span> <span class="token boolean">false</span>
+      <span class="token punctuation">}</span><span class="token punctuation">,</span>
+      <span class="token string-property property">"./foo.js"</span><span class="token operator">:</span> <span class="token punctuation">{<!-- --></span>
+          <span class="token string-property property">"assertions"</span><span class="token operator">:</span> <span class="token punctuation">{<!-- --></span><span class="token punctuation">}</span><span class="token punctuation">,</span>
+          <span class="token string-property property">"external"</span><span class="token operator">:</span> <span class="token boolean">false</span><span class="token punctuation">,</span>
+          <span class="token string-property property">"id"</span><span class="token operator">:</span> <span class="token string">"/Users/xxx/Desktop/demo/foo.js"</span><span class="token punctuation">,</span>
+          <span class="token string-property property">"meta"</span><span class="token operator">:</span> <span class="token punctuation">{<!-- --></span><span class="token punctuation">}</span><span class="token punctuation">,</span>
+          <span class="token string-property property">"moduleSideEffects"</span><span class="token operator">:</span> <span class="token boolean">true</span><span class="token punctuation">,</span>
+          <span class="token string-property property">"resolvedBy"</span><span class="token operator">:</span> <span class="token string">"node-resolve"</span><span class="token punctuation">,</span>
+          <span class="token string-property property">"syntheticNamedExports"</span><span class="token operator">:</span> <span class="token boolean">false</span>
+      <span class="token punctuation">}</span><span class="token punctuation">,</span>
+      <span class="token string-property property">"a-test"</span><span class="token operator">:</span> <span class="token punctuation">{<!-- --></span>
+          <span class="token string-property property">"assertions"</span><span class="token operator">:</span> <span class="token punctuation">{<!-- --></span><span class="token punctuation">}</span><span class="token punctuation">,</span>
+          <span class="token string-property property">"external"</span><span class="token operator">:</span> <span class="token boolean">true</span><span class="token punctuation">,</span>
+          <span class="token string-property property">"id"</span><span class="token operator">:</span> <span class="token string">"a-test"</span><span class="token punctuation">,</span>
+          <span class="token string-property property">"meta"</span><span class="token operator">:</span> <span class="token punctuation">{<!-- --></span><span class="token punctuation">}</span><span class="token punctuation">,</span>
+          <span class="token string-property property">"moduleSideEffects"</span><span class="token operator">:</span> <span class="token boolean">true</span><span class="token punctuation">,</span>
+          <span class="token string-property property">"resolvedBy"</span><span class="token operator">:</span> <span class="token string">"rollup"</span><span class="token punctuation">,</span>
+          <span class="token string-property property">"syntheticNamedExports"</span><span class="token operator">:</span> <span class="token boolean">false</span>
+      <span class="token punctuation">}</span><span class="token punctuation">,</span>
+      <span class="token string-property property">"@babel/runtime/helpers/defineProperty"</span><span class="token operator">:</span> <span class="token punctuation">{<!-- --></span>
+          <span class="token string-property property">"assertions"</span><span class="token operator">:</span> <span class="token punctuation">{<!-- --></span><span class="token punctuation">}</span><span class="token punctuation">,</span>
+          <span class="token string-property property">"external"</span><span class="token operator">:</span> <span class="token boolean">false</span><span class="token punctuation">,</span>
+          <span class="token string-property property">"id"</span><span class="token operator">:</span> <span class="token string">"/Users/xxx/Desktop/demo/node_modules/@babel/runtime/helpers/esm/defineProperty.js"</span><span class="token punctuation">,</span>
+          <span class="token string-property property">"meta"</span><span class="token operator">:</span> <span class="token punctuation">{<!-- --></span><span class="token punctuation">}</span><span class="token punctuation">,</span>
+          <span class="token string-property property">"moduleSideEffects"</span><span class="token operator">:</span> <span class="token boolean">true</span><span class="token punctuation">,</span>
+          <span class="token string-property property">"resolvedBy"</span><span class="token operator">:</span> <span class="token string">"node-resolve"</span><span class="token punctuation">,</span>
+          <span class="token string-property property">"syntheticNamedExports"</span><span class="token operator">:</span> <span class="token boolean">false</span>
+      <span class="token punctuation">}</span><span class="token punctuation">,</span>
+      <span class="token string-property property">"@babel/runtime/helpers/createClass"</span><span class="token operator">:</span> <span class="token punctuation">{<!-- --></span>
+          <span class="token string-property property">"assertions"</span><span class="token operator">:</span> <span class="token punctuation">{<!-- --></span><span class="token punctuation">}</span><span class="token punctuation">,</span>
+          <span class="token string-property property">"external"</span><span class="token operator">:</span> <span class="token boolean">false</span><span class="token punctuation">,</span>
+          <span class="token string-property property">"id"</span><span class="token operator">:</span> <span class="token string">"/Users/xxx/Desktop/demo/node_modules/@babel/runtime/helpers/esm/createClass.js"</span><span class="token punctuation">,</span>
+          <span class="token string-property property">"meta"</span><span class="token operator">:</span> <span class="token punctuation">{<!-- --></span><span class="token punctuation">}</span><span class="token punctuation">,</span>
+          <span class="token string-property property">"moduleSideEffects"</span><span class="token operator">:</span> <span class="token boolean">true</span><span class="token punctuation">,</span>
+          <span class="token string-property property">"resolvedBy"</span><span class="token operator">:</span> <span class="token string">"node-resolve"</span><span class="token punctuation">,</span>
+          <span class="token string-property property">"syntheticNamedExports"</span><span class="token operator">:</span> <span class="token boolean">false</span>
+      <span class="token punctuation">}</span><span class="token punctuation">,</span>
+      <span class="token string-property property">"@babel/runtime/helpers/classCallCheck"</span><span class="token operator">:</span> <span class="token punctuation">{<!-- --></span>
+          <span class="token string-property property">"assertions"</span><span class="token operator">:</span> <span class="token punctuation">{<!-- --></span><span class="token punctuation">}</span><span class="token punctuation">,</span>
+          <span class="token string-property property">"external"</span><span class="token operator">:</span> <span class="token boolean">false</span><span class="token punctuation">,</span>
+          <span class="token string-property property">"id"</span><span class="token operator">:</span> <span class="token string">"/Users/xxx/Desktop/demo/node_modules/@babel/runtime/helpers/esm/classCallCheck.js"</span><span class="token punctuation">,</span>
+          <span class="token string-property property">"meta"</span><span class="token operator">:</span> <span class="token punctuation">{<!-- --></span><span class="token punctuation">}</span><span class="token punctuation">,</span>
+          <span class="token string-property property">"moduleSideEffects"</span><span class="token operator">:</span> <span class="token boolean">true</span><span class="token punctuation">,</span>
+          <span class="token string-property property">"resolvedBy"</span><span class="token operator">:</span> <span class="token string">"node-resolve"</span><span class="token punctuation">,</span>
+          <span class="token string-property property">"syntheticNamedExports"</span><span class="token operator">:</span> <span class="token boolean">false</span>
+      <span class="token punctuation">}</span>
+  <span class="token punctuation">}</span><span class="token punctuation">,</span>
+  <span class="token string-property property">"sourcemapChain"</span><span class="token operator">:</span> <span class="token punctuation">[</span>
+      <span class="token punctuation">{<!-- --></span>
+          <span class="token string-property property">"version"</span><span class="token operator">:</span> <span class="token number">3</span><span class="token punctuation">,</span>
+          <span class="token string-property property">"names"</span><span class="token operator">:</span> <span class="token punctuation">[</span>
+              <span class="token string">"a"</span><span class="token punctuation">,</span>
+              <span class="token string">"foo"</span><span class="token punctuation">,</span>
+              <span class="token string">"packageJosn"</span><span class="token punctuation">,</span>
+              <span class="token string">"b"</span><span class="token punctuation">,</span>
+              <span class="token string">"require"</span><span class="token punctuation">,</span>
+              <span class="token string">"fn"</span><span class="token punctuation">,</span>
+              <span class="token string">"console"</span><span class="token punctuation">,</span>
+              <span class="token string">"log"</span><span class="token punctuation">,</span>
+              <span class="token string">"version"</span><span class="token punctuation">,</span>
+              <span class="token string">"A"</span><span class="token punctuation">,</span>
+              <span class="token string">"_createClass"</span><span class="token punctuation">,</span>
+              <span class="token string">"_classCallCheck"</span><span class="token punctuation">,</span>
+              <span class="token string">"_defineProperty"</span><span class="token punctuation">,</span>
+              <span class="token string">"aa"</span><span class="token punctuation">,</span>
+              <span class="token string">"res"</span><span class="token punctuation">,</span>
+              <span class="token string">"includes"</span>
+          <span class="token punctuation">]</span><span class="token punctuation">,</span>
+          <span class="token string-property property">"sources"</span><span class="token operator">:</span> <span class="token punctuation">[</span>
+              <span class="token string">"index.js"</span>
+          <span class="token punctuation">]</span><span class="token punctuation">,</span>
+          <span class="token string-property property">"sourcesContent"</span><span class="token operator">:</span> <span class="token punctuation">[</span>
+              <span class="token string">"import a from \"a-test\";\nimport foo from \"./foo.js\";\nimport packageJosn from \"./package.json\";\nconst b = require(\"path\");\n\nconst fn = () =&gt; {\n  console.log(\"index fn243\", a);\n  console.log(packageJosn.version);\n  console.log(b);\n};\nfn();\n\nclass A {\n  a;\n  constructor() {\n    this.a = \"ww2\";\n  }\n}\n\nconst aa = new A();\n\nlet res = [];\nconsole.log(res.includes(\"ff\"));\n\nconsole.log(foo);\n\nexport default fn;\n"</span>
+          <span class="token punctuation">]</span><span class="token punctuation">,</span>
+          <span class="token string-property property">"mappings"</span><span class="token operator">:</span> <span class="token punctuation">[</span>
+            <span class="token comment">// ...</span>
+          <span class="token punctuation">]</span><span class="token punctuation">,</span>
+   
+  <span class="token string-property property">"syntheticNamedExports"</span><span class="token operator">:</span> <span class="token boolean">false</span><span class="token punctuation">,</span>
+  <span class="token string-property property">"transformDependencies"</span><span class="token operator">:</span> <span class="token punctuation">[</span>
+      <span class="token string">"./index2.ts"</span>
+  <span class="token punctuation">]</span><span class="token punctuation">,</span>
+  <span class="token string-property property">"transformFiles"</span><span class="token operator">:</span> <span class="token punctuation">[</span>
+      <span class="token punctuation">{<!-- --></span>
+          <span class="token string-property property">"type"</span><span class="token operator">:</span> <span class="token string">"asset"</span><span class="token punctuation">,</span>
+          <span class="token string-property property">"source"</span><span class="token operator">:</span> <span class="token string">"export default what"</span>
+      <span class="token punctuation">}</span>
+  <span class="token punctuation">]</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<h2><a id="watch_147"></a>watch</h2> 
+<ul><li>当 rollup 配置了 watch 监听文件更改后打包时，会调用下面的函数</li><li>WatchEmitter 和 node emiter 实现类似，都是发布订阅 
+  <ul><li>WatchEmitter 是暴露给开发者可以在 rollup watch 各个阶段订阅</li><li>watchInternal 是 rollup 真正内部进行监听的方法，会在各个阶段调用 WatchEmitter 发布</li></ul> </li></ul> 
+<pre><code class="prism language-javascript"><span class="token keyword">export</span> <span class="token keyword">default</span> <span class="token keyword">function</span> <span class="token function">watch</span><span class="token punctuation">(</span><span class="token parameter"><span class="token literal-property property">configs</span><span class="token operator">:</span> RollupOptions<span class="token punctuation">[</span><span class="token punctuation">]</span> <span class="token operator">|</span> RollupOptions</span><span class="token punctuation">)</span><span class="token operator">:</span> RollupWatcher <span class="token punctuation">{<!-- --></span>
+	<span class="token keyword">const</span> emitter <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">WatchEmitter</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token keyword">as</span> RollupWatcher<span class="token punctuation">;</span> <span class="token comment">// 对外暴露给用户注册 watch 过程相关的事件订阅器</span>
+	
+	<span class="token comment">// 真正内部实现监听的方法</span>
+	<span class="token function">watchInternal</span><span class="token punctuation">(</span>configs<span class="token punctuation">,</span> emitter<span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">catch</span><span class="token punctuation">(</span><span class="token parameter">error</span> <span class="token operator">=&gt;</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token function">handleError</span><span class="token punctuation">(</span>error<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+	<span class="token keyword">return</span> emitter<span class="token punctuation">;</span> <span class="token comment">// 对外暴露给用户注册的和 watch 相关的 emitter 事件 ，注册的事件会在 watchInternal 中运行各个阶段触发</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<h3><a id="WatchEmitter__166"></a>WatchEmitter 实现</h3> 
+<pre><code class="prism language-javascript"><span class="token keyword">import</span> type <span class="token punctuation">{<!-- --></span> AwaitedEventListener<span class="token punctuation">,</span> AwaitingEventEmitter <span class="token punctuation">}</span> <span class="token keyword">from</span> <span class="token string">'../rollup/types'</span><span class="token punctuation">;</span>
+
+<span class="token keyword">export</span> <span class="token keyword">class</span> <span class="token class-name">WatchEmitter</span><span class="token operator">&lt;</span><span class="token constant">T</span> <span class="token keyword">extends</span> <span class="token punctuation">{<!-- --></span> <span class="token punctuation">[</span>event<span class="token operator">:</span> string<span class="token punctuation">]</span><span class="token operator">:</span> <span class="token punctuation">(</span><span class="token parameter"><span class="token operator">...</span>parameters<span class="token operator">:</span> any</span><span class="token punctuation">)</span> <span class="token operator">=&gt;</span> any <span class="token punctuation">}</span><span class="token operator">&gt;</span>
+	<span class="token keyword">implements</span> <span class="token class-name">AwaitingEventEmitter</span><span class="token operator">&lt;</span><span class="token constant">T</span><span class="token operator">&gt;</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token keyword">private</span> <span class="token literal-property property">currentHandlers</span><span class="token operator">:</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token punctuation">[</span><span class="token constant">K</span> <span class="token keyword">in</span> keyof <span class="token constant">T</span><span class="token punctuation">]</span><span class="token operator">?</span><span class="token operator">:</span> AwaitedEventListener<span class="token operator">&lt;</span><span class="token constant">T</span><span class="token punctuation">,</span> <span class="token constant">K</span><span class="token operator">&gt;</span><span class="token punctuation">[</span><span class="token punctuation">]</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span> <span class="token operator">=</span> Object<span class="token punctuation">.</span><span class="token function">create</span><span class="token punctuation">(</span><span class="token keyword">null</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token keyword">private</span> <span class="token literal-property property">persistentHandlers</span><span class="token operator">:</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token punctuation">[</span><span class="token constant">K</span> <span class="token keyword">in</span> keyof <span class="token constant">T</span><span class="token punctuation">]</span><span class="token operator">?</span><span class="token operator">:</span> AwaitedEventListener<span class="token operator">&lt;</span><span class="token constant">T</span><span class="token punctuation">,</span> <span class="token constant">K</span><span class="token operator">&gt;</span><span class="token punctuation">[</span><span class="token punctuation">]</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span> <span class="token operator">=</span> Object<span class="token punctuation">.</span><span class="token function">create</span><span class="token punctuation">(</span><span class="token keyword">null</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+	<span class="token comment">// Will be overwritten by Rollup</span>
+	<span class="token keyword">async</span> <span class="token function">close</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token operator">:</span> Promise<span class="token operator">&lt;</span><span class="token keyword">void</span><span class="token operator">&gt;</span> <span class="token punctuation">{<!-- --></span><span class="token punctuation">}</span>
+
+	emit<span class="token operator">&lt;</span><span class="token constant">K</span> <span class="token keyword">extends</span> <span class="token class-name">keyof</span> <span class="token constant">T</span><span class="token operator">&gt;</span><span class="token punctuation">(</span>event<span class="token operator">:</span> <span class="token constant">K</span><span class="token punctuation">,</span> <span class="token operator">...</span>parameters<span class="token operator">:</span> Parameters<span class="token operator">&lt;</span><span class="token constant">T</span><span class="token punctuation">[</span><span class="token constant">K</span><span class="token punctuation">]</span><span class="token operator">&gt;</span><span class="token punctuation">)</span><span class="token operator">:</span> Promise<span class="token operator">&lt;</span>unknown<span class="token operator">&gt;</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token keyword">return</span> Promise<span class="token punctuation">.</span><span class="token function">all</span><span class="token punctuation">(</span>
+			<span class="token punctuation">[</span><span class="token operator">...</span><span class="token keyword">this</span><span class="token punctuation">.</span><span class="token function">getCurrentHandlers</span><span class="token punctuation">(</span>event<span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token operator">...</span><span class="token keyword">this</span><span class="token punctuation">.</span><span class="token function">getPersistentHandlers</span><span class="token punctuation">(</span>event<span class="token punctuation">)</span><span class="token punctuation">]</span><span class="token punctuation">.</span><span class="token function">map</span><span class="token punctuation">(</span><span class="token parameter">handler</span> <span class="token operator">=&gt;</span>
+				<span class="token function">handler</span><span class="token punctuation">(</span><span class="token operator">...</span>parameters<span class="token punctuation">)</span>
+			<span class="token punctuation">)</span>
+		<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+
+	off<span class="token operator">&lt;</span><span class="token constant">K</span> <span class="token keyword">extends</span> <span class="token class-name">keyof</span> <span class="token constant">T</span><span class="token operator">&gt;</span><span class="token punctuation">(</span>event<span class="token operator">:</span> <span class="token constant">K</span><span class="token punctuation">,</span> <span class="token literal-property property">listener</span><span class="token operator">:</span> AwaitedEventListener<span class="token operator">&lt;</span><span class="token constant">T</span><span class="token punctuation">,</span> <span class="token constant">K</span><span class="token operator">&gt;</span><span class="token punctuation">)</span><span class="token operator">:</span> <span class="token keyword">this</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token keyword">const</span> listeners <span class="token operator">=</span> <span class="token keyword">this</span><span class="token punctuation">.</span>persistentHandlers<span class="token punctuation">[</span>event<span class="token punctuation">]</span><span class="token punctuation">;</span>
+		<span class="token keyword">if</span> <span class="token punctuation">(</span>listeners<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+			<span class="token comment">// A hack stolen from "mitt": "&gt;&gt;&gt; 0" does not change numbers &gt;= 0, but -1</span>
+			<span class="token comment">// (which would remove the last array element if used unchanged) is turned</span>
+			<span class="token comment">// into max_int, which is outside the array and does not change anything.</span>
+			listeners<span class="token punctuation">.</span><span class="token function">splice</span><span class="token punctuation">(</span>listeners<span class="token punctuation">.</span><span class="token function">indexOf</span><span class="token punctuation">(</span>listener<span class="token punctuation">)</span> <span class="token operator">&gt;&gt;&gt;</span> <span class="token number">0</span><span class="token punctuation">,</span> <span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token punctuation">}</span>
+		<span class="token keyword">return</span> <span class="token keyword">this</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+
+	on<span class="token operator">&lt;</span><span class="token constant">K</span> <span class="token keyword">extends</span> <span class="token class-name">keyof</span> <span class="token constant">T</span><span class="token operator">&gt;</span><span class="token punctuation">(</span>event<span class="token operator">:</span> <span class="token constant">K</span><span class="token punctuation">,</span> <span class="token literal-property property">listener</span><span class="token operator">:</span> AwaitedEventListener<span class="token operator">&lt;</span><span class="token constant">T</span><span class="token punctuation">,</span> <span class="token constant">K</span><span class="token operator">&gt;</span><span class="token punctuation">)</span><span class="token operator">:</span> <span class="token keyword">this</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token keyword">this</span><span class="token punctuation">.</span><span class="token function">getPersistentHandlers</span><span class="token punctuation">(</span>event<span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">push</span><span class="token punctuation">(</span>listener<span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token keyword">return</span> <span class="token keyword">this</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+
+	onCurrentRun<span class="token operator">&lt;</span><span class="token constant">K</span> <span class="token keyword">extends</span> <span class="token class-name">keyof</span> <span class="token constant">T</span><span class="token operator">&gt;</span><span class="token punctuation">(</span>event<span class="token operator">:</span> <span class="token constant">K</span><span class="token punctuation">,</span> <span class="token literal-property property">listener</span><span class="token operator">:</span> AwaitedEventListener<span class="token operator">&lt;</span><span class="token constant">T</span><span class="token punctuation">,</span> <span class="token constant">K</span><span class="token operator">&gt;</span><span class="token punctuation">)</span><span class="token operator">:</span> <span class="token keyword">this</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token keyword">this</span><span class="token punctuation">.</span><span class="token function">getCurrentHandlers</span><span class="token punctuation">(</span>event<span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">push</span><span class="token punctuation">(</span>listener<span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token keyword">return</span> <span class="token keyword">this</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+
+	once<span class="token operator">&lt;</span><span class="token constant">K</span> <span class="token keyword">extends</span> <span class="token class-name">keyof</span> <span class="token constant">T</span><span class="token operator">&gt;</span><span class="token punctuation">(</span>event<span class="token operator">:</span> <span class="token constant">K</span><span class="token punctuation">,</span> <span class="token literal-property property">listener</span><span class="token operator">:</span> AwaitedEventListener<span class="token operator">&lt;</span><span class="token constant">T</span><span class="token punctuation">,</span> <span class="token constant">K</span><span class="token operator">&gt;</span><span class="token punctuation">)</span><span class="token operator">:</span> <span class="token keyword">this</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token keyword">const</span> <span class="token literal-property property">selfRemovingListener</span><span class="token operator">:</span> AwaitedEventListener<span class="token operator">&lt;</span><span class="token constant">T</span><span class="token punctuation">,</span> <span class="token constant">K</span><span class="token operator">&gt;</span> <span class="token operator">=</span> <span class="token punctuation">(</span><span class="token parameter"><span class="token operator">...</span>parameters</span><span class="token punctuation">)</span> <span class="token operator">=&gt;</span> <span class="token punctuation">{<!-- --></span>
+			<span class="token keyword">this</span><span class="token punctuation">.</span><span class="token function">off</span><span class="token punctuation">(</span>event<span class="token punctuation">,</span> selfRemovingListener<span class="token punctuation">)</span><span class="token punctuation">;</span>
+			<span class="token keyword">return</span> <span class="token function">listener</span><span class="token punctuation">(</span><span class="token operator">...</span>parameters<span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token punctuation">}</span><span class="token punctuation">;</span>
+		<span class="token keyword">this</span><span class="token punctuation">.</span><span class="token function">on</span><span class="token punctuation">(</span>event<span class="token punctuation">,</span> selfRemovingListener<span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token keyword">return</span> <span class="token keyword">this</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+
+	<span class="token function">removeAllListeners</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token operator">:</span> <span class="token keyword">this</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token keyword">this</span><span class="token punctuation">.</span><span class="token function">removeListenersForCurrentRun</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token keyword">this</span><span class="token punctuation">.</span>persistentHandlers <span class="token operator">=</span> Object<span class="token punctuation">.</span><span class="token function">create</span><span class="token punctuation">(</span><span class="token keyword">null</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token keyword">return</span> <span class="token keyword">this</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+
+	<span class="token function">removeListenersForCurrentRun</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token operator">:</span> <span class="token keyword">this</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token keyword">this</span><span class="token punctuation">.</span>currentHandlers <span class="token operator">=</span> Object<span class="token punctuation">.</span><span class="token function">create</span><span class="token punctuation">(</span><span class="token keyword">null</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token keyword">return</span> <span class="token keyword">this</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+
+	<span class="token keyword">private</span> getCurrentHandlers<span class="token operator">&lt;</span><span class="token constant">K</span> <span class="token keyword">extends</span> <span class="token class-name">keyof</span> <span class="token constant">T</span><span class="token operator">&gt;</span><span class="token punctuation">(</span>event<span class="token operator">:</span> <span class="token constant">K</span><span class="token punctuation">)</span><span class="token operator">:</span> AwaitedEventListener<span class="token operator">&lt;</span><span class="token constant">T</span><span class="token punctuation">,</span> <span class="token constant">K</span><span class="token operator">&gt;</span><span class="token punctuation">[</span><span class="token punctuation">]</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token keyword">return</span> <span class="token keyword">this</span><span class="token punctuation">.</span>currentHandlers<span class="token punctuation">[</span>event<span class="token punctuation">]</span> <span class="token operator">||</span> <span class="token punctuation">(</span><span class="token keyword">this</span><span class="token punctuation">.</span>currentHandlers<span class="token punctuation">[</span>event<span class="token punctuation">]</span> <span class="token operator">=</span> <span class="token punctuation">[</span><span class="token punctuation">]</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+
+	<span class="token keyword">private</span> getPersistentHandlers<span class="token operator">&lt;</span><span class="token constant">K</span> <span class="token keyword">extends</span> <span class="token class-name">keyof</span> <span class="token constant">T</span><span class="token operator">&gt;</span><span class="token punctuation">(</span>event<span class="token operator">:</span> <span class="token constant">K</span><span class="token punctuation">)</span><span class="token operator">:</span> AwaitedEventListener<span class="token operator">&lt;</span><span class="token constant">T</span><span class="token punctuation">,</span> <span class="token constant">K</span><span class="token operator">&gt;</span><span class="token punctuation">[</span><span class="token punctuation">]</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token keyword">return</span> <span class="token keyword">this</span><span class="token punctuation">.</span>persistentHandlers<span class="token punctuation">[</span>event<span class="token punctuation">]</span> <span class="token operator">||</span> <span class="token punctuation">(</span><span class="token keyword">this</span><span class="token punctuation">.</span>persistentHandlers<span class="token punctuation">[</span>event<span class="token punctuation">]</span> <span class="token operator">=</span> <span class="token punctuation">[</span><span class="token punctuation">]</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+
+</code></pre> 
+<h2><a id="watchInternal_244"></a>watchInternal</h2> 
+<pre><code class="prism language-javascript"><span class="token keyword">const</span> optionsList <span class="token operator">=</span> <span class="token keyword">await</span> Promise<span class="token punctuation">.</span><span class="token function">all</span><span class="token punctuation">(</span><span class="token function">ensureArray</span><span class="token punctuation">(</span>configs<span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">map</span><span class="token punctuation">(</span><span class="token parameter">config</span> <span class="token operator">=&gt;</span> <span class="token function">mergeOptions</span><span class="token punctuation">(</span>config<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span> <span class="token comment">// 和内置 options 合并</span>
+<span class="token keyword">const</span> watchOptionsList <span class="token operator">=</span> optionsList<span class="token punctuation">.</span><span class="token function">filter</span><span class="token punctuation">(</span><span class="token parameter">config</span> <span class="token operator">=&gt;</span> config<span class="token punctuation">.</span>watch <span class="token operator">!==</span> <span class="token boolean">false</span><span class="token punctuation">)</span><span class="token punctuation">;</span> <span class="token comment">// 只拿到配置了 watch 的 options 配置</span>
+<span class="token keyword">if</span> <span class="token punctuation">(</span>watchOptionsList<span class="token punctuation">.</span>length <span class="token operator">===</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+	<span class="token keyword">return</span> <span class="token function">error</span><span class="token punctuation">(</span>
+		<span class="token function">errorInvalidOption</span><span class="token punctuation">(</span>
+			<span class="token string">'watch'</span><span class="token punctuation">,</span>
+			<span class="token constant">URL_WATCH</span><span class="token punctuation">,</span>
+			<span class="token string">'there must be at least one config where "watch" is not set to "false"'</span>
+		<span class="token punctuation">)</span>
+	<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+<span class="token keyword">await</span> <span class="token function">loadFsEvents</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span> <span class="token comment">// 加载 mac 下的监听文件变化的第三方库：fsevents</span>
+<span class="token keyword">const</span> <span class="token punctuation">{<!-- --></span> Watcher <span class="token punctuation">}</span> <span class="token operator">=</span> <span class="token keyword">await</span> <span class="token keyword">import</span><span class="token punctuation">(</span><span class="token string">'./watch'</span><span class="token punctuation">)</span><span class="token punctuation">;</span> <span class="token comment">// 真正内部实现监听的 watcher</span>
+<span class="token keyword">new</span> <span class="token class-name">Watcher</span><span class="token punctuation">(</span>watchOptionsList<span class="token punctuation">,</span> emitter<span class="token punctuation">)</span><span class="token punctuation">;</span>
+</code></pre> 
+<h3><a id="Watcher__watch__263"></a>Watcher 管理整个 watch 阶段</h3> 
+<ul><li>每个 rollup 的打包配置项对应一个 Task 任务，Watcher 类的作用就是管理每一个 Task 的运行</li></ul> 
+<pre><code class="prism language-javascript"><span class="token keyword">export</span> <span class="token keyword">class</span> <span class="token class-name">Watcher</span> <span class="token punctuation">{<!-- --></span>
+	readonly emitter<span class="token operator">:</span> RollupWatcher<span class="token punctuation">;</span>
+
+	<span class="token keyword">private</span> buildDelay <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+	<span class="token keyword">private</span> <span class="token literal-property property">buildTimeout</span><span class="token operator">:</span> NodeJS<span class="token punctuation">.</span>Timer <span class="token operator">|</span> <span class="token keyword">null</span> <span class="token operator">=</span> <span class="token keyword">null</span><span class="token punctuation">;</span>
+	<span class="token keyword">private</span> closed <span class="token operator">=</span> <span class="token boolean">false</span><span class="token punctuation">;</span>
+	<span class="token keyword">private</span> readonly invalidatedIds <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">Map</span><span class="token operator">&lt;</span>string<span class="token punctuation">,</span> ChangeEvent<span class="token operator">&gt;</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span> <span class="token comment">// 收集 watch 过程每一次变化的文件 id 及其对应的事件</span>
+	<span class="token keyword">private</span> rerun <span class="token operator">=</span> <span class="token boolean">false</span><span class="token punctuation">;</span>
+	<span class="token keyword">private</span> running <span class="token operator">=</span> <span class="token boolean">true</span><span class="token punctuation">;</span>
+	<span class="token keyword">private</span> readonly tasks<span class="token operator">:</span> Task<span class="token punctuation">[</span><span class="token punctuation">]</span><span class="token punctuation">;</span>
+	<span class="token comment">// optionsList 所有配置了 watch 的 option; emitter 暴露给用户注册 watch 过程相关事件的订阅器</span>
+	<span class="token function">constructor</span><span class="token punctuation">(</span><span class="token parameter"><span class="token literal-property property">optionsList</span><span class="token operator">:</span> readonly MergedRollupOptions<span class="token punctuation">[</span><span class="token punctuation">]</span><span class="token punctuation">,</span> <span class="token literal-property property">emitter</span><span class="token operator">:</span> RollupWatcher</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token keyword">this</span><span class="token punctuation">.</span>emitter <span class="token operator">=</span> emitter<span class="token punctuation">;</span>
+		emitter<span class="token punctuation">.</span>close <span class="token operator">=</span> <span class="token keyword">this</span><span class="token punctuation">.</span><span class="token function">close</span><span class="token punctuation">.</span><span class="token function">bind</span><span class="token punctuation">(</span><span class="token keyword">this</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token keyword">this</span><span class="token punctuation">.</span>tasks <span class="token operator">=</span> optionsList<span class="token punctuation">.</span><span class="token function">map</span><span class="token punctuation">(</span><span class="token parameter">options</span> <span class="token operator">=&gt;</span> <span class="token keyword">new</span> <span class="token class-name">Task</span><span class="token punctuation">(</span><span class="token keyword">this</span><span class="token punctuation">,</span> options<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span> <span class="token comment">// 每一个配置了 watch 的 option 都对应一个 Task，Task 内通过 FileWatcher 实现了通过 chokidar 进行监听</span>
+		<span class="token keyword">for</span> <span class="token punctuation">(</span><span class="token keyword">const</span> <span class="token punctuation">{<!-- --></span> watch <span class="token punctuation">}</span> <span class="token keyword">of</span> optionsList<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+			<span class="token comment">// 每次重新运行的防抖时间</span>
+			<span class="token keyword">if</span> <span class="token punctuation">(</span>watch <span class="token operator">&amp;&amp;</span> <span class="token keyword">typeof</span> watch<span class="token punctuation">.</span>buildDelay <span class="token operator">===</span> <span class="token string">'number'</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+				<span class="token keyword">this</span><span class="token punctuation">.</span>buildDelay <span class="token operator">=</span> Math<span class="token punctuation">.</span><span class="token function">max</span><span class="token punctuation">(</span><span class="token keyword">this</span><span class="token punctuation">.</span>buildDelay<span class="token punctuation">,</span> watch<span class="token punctuation">.</span>buildDelay<span class="token operator">!</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+			<span class="token punctuation">}</span>
+		<span class="token punctuation">}</span>
+		<span class="token comment">// 初始执行</span>
+		process<span class="token punctuation">.</span><span class="token function">nextTick</span><span class="token punctuation">(</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">=&gt;</span> <span class="token keyword">this</span><span class="token punctuation">.</span><span class="token function">run</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+
+	<span class="token keyword">async</span> <span class="token function">close</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token operator">:</span> Promise<span class="token operator">&lt;</span><span class="token keyword">void</span><span class="token operator">&gt;</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token keyword">this</span><span class="token punctuation">.</span>closed<span class="token punctuation">)</span> <span class="token keyword">return</span><span class="token punctuation">;</span>
+		<span class="token keyword">this</span><span class="token punctuation">.</span>closed <span class="token operator">=</span> <span class="token boolean">true</span><span class="token punctuation">;</span>
+		<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token keyword">this</span><span class="token punctuation">.</span>buildTimeout<span class="token punctuation">)</span> <span class="token function">clearTimeout</span><span class="token punctuation">(</span><span class="token keyword">this</span><span class="token punctuation">.</span>buildTimeout<span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token keyword">for</span> <span class="token punctuation">(</span><span class="token keyword">const</span> task <span class="token keyword">of</span> <span class="token keyword">this</span><span class="token punctuation">.</span>tasks<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+			task<span class="token punctuation">.</span><span class="token function">close</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token punctuation">}</span>
+		<span class="token keyword">await</span> <span class="token keyword">this</span><span class="token punctuation">.</span>emitter<span class="token punctuation">.</span><span class="token function">emit</span><span class="token punctuation">(</span><span class="token string">'close'</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token keyword">this</span><span class="token punctuation">.</span>emitter<span class="token punctuation">.</span><span class="token function">removeAllListeners</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+	
+	<span class="token comment">// 文件变化后调用此函数重新打包</span>
+	<span class="token function">invalidate</span><span class="token punctuation">(</span>file<span class="token operator">?</span><span class="token operator">:</span> <span class="token punctuation">{<!-- --></span> <span class="token literal-property property">event</span><span class="token operator">:</span> ChangeEvent<span class="token punctuation">;</span> id<span class="token operator">:</span> string <span class="token punctuation">}</span><span class="token punctuation">)</span><span class="token operator">:</span> <span class="token keyword">void</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token keyword">if</span> <span class="token punctuation">(</span>file<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+			<span class="token keyword">const</span> previousEvent <span class="token operator">=</span> <span class="token keyword">this</span><span class="token punctuation">.</span>invalidatedIds<span class="token punctuation">.</span><span class="token function">get</span><span class="token punctuation">(</span>file<span class="token punctuation">.</span>id<span class="token punctuation">)</span><span class="token punctuation">;</span>
+			<span class="token keyword">const</span> event <span class="token operator">=</span> previousEvent <span class="token operator">?</span> eventsRewrites<span class="token punctuation">[</span>previousEvent<span class="token punctuation">]</span><span class="token punctuation">[</span>file<span class="token punctuation">.</span>event<span class="token punctuation">]</span> <span class="token operator">:</span> file<span class="token punctuation">.</span>event<span class="token punctuation">;</span>
+			<span class="token comment">// 为每一个变换了的文件 id 设置对应的事件 "delete" | "add" ...</span>
+			<span class="token keyword">if</span> <span class="token punctuation">(</span>event <span class="token operator">===</span> <span class="token string">'buggy'</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+				<span class="token comment">//TODO: throws or warn? Currently just ignore, uses new event</span>
+				<span class="token keyword">this</span><span class="token punctuation">.</span>invalidatedIds<span class="token punctuation">.</span><span class="token function">set</span><span class="token punctuation">(</span>file<span class="token punctuation">.</span>id<span class="token punctuation">,</span> file<span class="token punctuation">.</span>event<span class="token punctuation">)</span><span class="token punctuation">;</span>
+			<span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token keyword">if</span> <span class="token punctuation">(</span>event <span class="token operator">===</span> <span class="token keyword">null</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+				<span class="token keyword">this</span><span class="token punctuation">.</span>invalidatedIds<span class="token punctuation">.</span><span class="token function">delete</span><span class="token punctuation">(</span>file<span class="token punctuation">.</span>id<span class="token punctuation">)</span><span class="token punctuation">;</span>
+			<span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+				<span class="token keyword">this</span><span class="token punctuation">.</span>invalidatedIds<span class="token punctuation">.</span><span class="token function">set</span><span class="token punctuation">(</span>file<span class="token punctuation">.</span>id<span class="token punctuation">,</span> event<span class="token punctuation">)</span><span class="token punctuation">;</span>
+			<span class="token punctuation">}</span>
+		<span class="token punctuation">}</span>
+		<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token keyword">this</span><span class="token punctuation">.</span>running<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+			<span class="token keyword">this</span><span class="token punctuation">.</span>rerun <span class="token operator">=</span> <span class="token boolean">true</span><span class="token punctuation">;</span>
+			<span class="token keyword">return</span><span class="token punctuation">;</span>
+		<span class="token punctuation">}</span>
+
+		<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token keyword">this</span><span class="token punctuation">.</span>buildTimeout<span class="token punctuation">)</span> <span class="token function">clearTimeout</span><span class="token punctuation">(</span><span class="token keyword">this</span><span class="token punctuation">.</span>buildTimeout<span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token comment">// 定时器防抖触发 rollup 重新 run</span>
+		<span class="token keyword">this</span><span class="token punctuation">.</span>buildTimeout <span class="token operator">=</span> <span class="token function">setTimeout</span><span class="token punctuation">(</span><span class="token keyword">async</span> <span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">=&gt;</span> <span class="token punctuation">{<!-- --></span>
+			<span class="token keyword">this</span><span class="token punctuation">.</span>buildTimeout <span class="token operator">=</span> <span class="token keyword">null</span><span class="token punctuation">;</span>
+			<span class="token keyword">try</span> <span class="token punctuation">{<!-- --></span>
+				<span class="token comment">// 文件变化后触发对应emitter</span>
+				<span class="token keyword">await</span> Promise<span class="token punctuation">.</span><span class="token function">all</span><span class="token punctuation">(</span>
+					<span class="token punctuation">[</span><span class="token operator">...</span><span class="token keyword">this</span><span class="token punctuation">.</span>invalidatedIds<span class="token punctuation">]</span><span class="token punctuation">.</span><span class="token function">map</span><span class="token punctuation">(</span><span class="token punctuation">(</span><span class="token parameter"><span class="token punctuation">[</span>id<span class="token punctuation">,</span> event<span class="token punctuation">]</span></span><span class="token punctuation">)</span> <span class="token operator">=&gt;</span> <span class="token keyword">this</span><span class="token punctuation">.</span>emitter<span class="token punctuation">.</span><span class="token function">emit</span><span class="token punctuation">(</span><span class="token string">'change'</span><span class="token punctuation">,</span> id<span class="token punctuation">,</span> <span class="token punctuation">{<!-- --></span> event <span class="token punctuation">}</span><span class="token punctuation">)</span><span class="token punctuation">)</span>
+				<span class="token punctuation">)</span><span class="token punctuation">;</span>
+				<span class="token keyword">this</span><span class="token punctuation">.</span>invalidatedIds<span class="token punctuation">.</span><span class="token function">clear</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+				<span class="token keyword">await</span> <span class="token keyword">this</span><span class="token punctuation">.</span>emitter<span class="token punctuation">.</span><span class="token function">emit</span><span class="token punctuation">(</span><span class="token string">'restart'</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+				<span class="token keyword">this</span><span class="token punctuation">.</span>emitter<span class="token punctuation">.</span><span class="token function">removeListenersForCurrentRun</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span> <span class="token comment">// 取消当前过程注册的所有事件</span>
+				<span class="token comment">// 重新打包</span>
+				<span class="token keyword">this</span><span class="token punctuation">.</span><span class="token function">run</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+			<span class="token punctuation">}</span> <span class="token keyword">catch</span> <span class="token punctuation">(</span>error<span class="token operator">:</span> any<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+				<span class="token keyword">this</span><span class="token punctuation">.</span>invalidatedIds<span class="token punctuation">.</span><span class="token function">clear</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+				<span class="token keyword">await</span> <span class="token keyword">this</span><span class="token punctuation">.</span>emitter<span class="token punctuation">.</span><span class="token function">emit</span><span class="token punctuation">(</span><span class="token string">'event'</span><span class="token punctuation">,</span> <span class="token punctuation">{<!-- --></span>
+					<span class="token literal-property property">code</span><span class="token operator">:</span> <span class="token string">'ERROR'</span><span class="token punctuation">,</span>
+					error<span class="token punctuation">,</span>
+					<span class="token literal-property property">result</span><span class="token operator">:</span> <span class="token keyword">null</span>
+				<span class="token punctuation">}</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+				<span class="token keyword">await</span> <span class="token keyword">this</span><span class="token punctuation">.</span>emitter<span class="token punctuation">.</span><span class="token function">emit</span><span class="token punctuation">(</span><span class="token string">'event'</span><span class="token punctuation">,</span> <span class="token punctuation">{<!-- --></span>
+					<span class="token literal-property property">code</span><span class="token operator">:</span> <span class="token string">'END'</span>
+				<span class="token punctuation">}</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+			<span class="token punctuation">}</span>
+		<span class="token punctuation">}</span><span class="token punctuation">,</span> <span class="token keyword">this</span><span class="token punctuation">.</span>buildDelay<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+
+	<span class="token keyword">private</span> <span class="token keyword">async</span> <span class="token function">run</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token operator">:</span> Promise<span class="token operator">&lt;</span><span class="token keyword">void</span><span class="token operator">&gt;</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token keyword">this</span><span class="token punctuation">.</span>running <span class="token operator">=</span> <span class="token boolean">true</span><span class="token punctuation">;</span>
+		<span class="token keyword">await</span> <span class="token keyword">this</span><span class="token punctuation">.</span>emitter<span class="token punctuation">.</span><span class="token function">emit</span><span class="token punctuation">(</span><span class="token string">'event'</span><span class="token punctuation">,</span> <span class="token punctuation">{<!-- --></span>
+			<span class="token literal-property property">code</span><span class="token operator">:</span> <span class="token string">'START'</span>
+		<span class="token punctuation">}</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token comment">// 根据配置项重新运行 rollup</span>
+		<span class="token keyword">for</span> <span class="token punctuation">(</span><span class="token keyword">const</span> task <span class="token keyword">of</span> <span class="token keyword">this</span><span class="token punctuation">.</span>tasks<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+			<span class="token keyword">await</span> task<span class="token punctuation">.</span><span class="token function">run</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token punctuation">}</span>
+
+		<span class="token keyword">this</span><span class="token punctuation">.</span>running <span class="token operator">=</span> <span class="token boolean">false</span><span class="token punctuation">;</span>
+		<span class="token keyword">await</span> <span class="token keyword">this</span><span class="token punctuation">.</span>emitter<span class="token punctuation">.</span><span class="token function">emit</span><span class="token punctuation">(</span><span class="token string">'event'</span><span class="token punctuation">,</span> <span class="token punctuation">{<!-- --></span>
+			<span class="token literal-property property">code</span><span class="token operator">:</span> <span class="token string">'END'</span>
+		<span class="token punctuation">}</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token keyword">this</span><span class="token punctuation">.</span>rerun<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+			<span class="token keyword">this</span><span class="token punctuation">.</span>rerun <span class="token operator">=</span> <span class="token boolean">false</span><span class="token punctuation">;</span>
+			<span class="token keyword">this</span><span class="token punctuation">.</span><span class="token function">invalidate</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token punctuation">}</span>
+	<span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<h3><a id="Task__374"></a>Task 运行任务</h3> 
+<ul><li>每一个配置了 watch 的 rollup 选项都会变成一个单独的 Task，每一个Task 都管理每一次运行任务</li></ul> 
+<pre><code class="prism language-javascript"><span class="token keyword">export</span> <span class="token keyword">class</span> <span class="token class-name">Task</span> <span class="token punctuation">{<!-- --></span>
+	<span class="token literal-property property">cache</span><span class="token operator">:</span> RollupCache <span class="token operator">=</span> <span class="token punctuation">{<!-- --></span> <span class="token literal-property property">modules</span><span class="token operator">:</span> <span class="token punctuation">[</span><span class="token punctuation">]</span> <span class="token punctuation">}</span><span class="token punctuation">;</span>
+	<span class="token literal-property property">watchFiles</span><span class="token operator">:</span> string<span class="token punctuation">[</span><span class="token punctuation">]</span> <span class="token operator">=</span> <span class="token punctuation">[</span><span class="token punctuation">]</span><span class="token punctuation">;</span>
+
+	<span class="token keyword">private</span> closed <span class="token operator">=</span> <span class="token boolean">false</span><span class="token punctuation">;</span>
+	<span class="token keyword">private</span> readonly fileWatcher<span class="token operator">:</span> FileWatcher<span class="token punctuation">;</span> <span class="token comment">// 真正去实现监听的 watcher</span>
+	<span class="token keyword">private</span> <span class="token function-variable function">filter</span><span class="token operator">:</span> <span class="token punctuation">(</span><span class="token parameter"><span class="token literal-property property">id</span><span class="token operator">:</span> string</span><span class="token punctuation">)</span> <span class="token operator">=&gt;</span> boolean<span class="token punctuation">;</span> <span class="token comment">// 过滤监听</span>
+	<span class="token keyword">private</span> invalidated <span class="token operator">=</span> <span class="token boolean">true</span><span class="token punctuation">;</span>
+	<span class="token keyword">private</span> readonly options<span class="token operator">:</span> MergedRollupOptions<span class="token punctuation">;</span>
+	<span class="token keyword">private</span> readonly outputFiles<span class="token operator">:</span> string<span class="token punctuation">[</span><span class="token punctuation">]</span><span class="token punctuation">;</span>
+	<span class="token keyword">private</span> readonly outputs<span class="token operator">:</span> OutputOptions<span class="token punctuation">[</span><span class="token punctuation">]</span><span class="token punctuation">;</span>
+	<span class="token keyword">private</span> <span class="token literal-property property">skipWrite</span><span class="token operator">:</span> boolean<span class="token punctuation">;</span>
+	<span class="token keyword">private</span> watched <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">Set</span><span class="token operator">&lt;</span>string<span class="token operator">&gt;</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span> <span class="token comment">// 收集每次监听的文件 id</span>
+	<span class="token keyword">private</span> readonly watcher<span class="token operator">:</span> Watcher<span class="token punctuation">;</span> <span class="token comment">// watcher 为管理 Task 的 Watcher</span>
+
+	<span class="token function">constructor</span><span class="token punctuation">(</span><span class="token parameter"><span class="token literal-property property">watcher</span><span class="token operator">:</span> Watcher<span class="token punctuation">,</span> <span class="token literal-property property">options</span><span class="token operator">:</span> MergedRollupOptions</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token keyword">this</span><span class="token punctuation">.</span>watcher <span class="token operator">=</span> watcher<span class="token punctuation">;</span> <span class="token comment">// watcher 为管理 Task 的Watcher</span>
+		<span class="token keyword">this</span><span class="token punctuation">.</span>options <span class="token operator">=</span> options<span class="token punctuation">;</span>
+		<span class="token comment">// 是否跳过输出文件</span>
+		<span class="token keyword">this</span><span class="token punctuation">.</span>skipWrite <span class="token operator">=</span> <span class="token function">Boolean</span><span class="token punctuation">(</span>options<span class="token punctuation">.</span>watch <span class="token operator">&amp;&amp;</span> options<span class="token punctuation">.</span>watch<span class="token punctuation">.</span>skipWrite<span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token keyword">this</span><span class="token punctuation">.</span>outputs <span class="token operator">=</span> <span class="token keyword">this</span><span class="token punctuation">.</span>options<span class="token punctuation">.</span>output<span class="token punctuation">;</span>
+		<span class="token comment">// 解析输出文件地址的路径</span>
+		<span class="token keyword">this</span><span class="token punctuation">.</span>outputFiles <span class="token operator">=</span> <span class="token keyword">this</span><span class="token punctuation">.</span>outputs<span class="token punctuation">.</span><span class="token function">map</span><span class="token punctuation">(</span><span class="token parameter">output</span> <span class="token operator">=&gt;</span> <span class="token punctuation">{<!-- --></span>
+			<span class="token keyword">if</span> <span class="token punctuation">(</span>output<span class="token punctuation">.</span>file <span class="token operator">||</span> output<span class="token punctuation">.</span>dir<span class="token punctuation">)</span> <span class="token keyword">return</span> <span class="token function">resolve</span><span class="token punctuation">(</span>output<span class="token punctuation">.</span>file <span class="token operator">||</span> output<span class="token punctuation">.</span>dir<span class="token operator">!</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+			<span class="token keyword">return</span> <span class="token keyword">undefined</span> <span class="token keyword">as</span> never<span class="token punctuation">;</span>
+		<span class="token punctuation">}</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+		<span class="token keyword">const</span> <span class="token literal-property property">watchOptions</span><span class="token operator">:</span> WatcherOptions <span class="token operator">=</span> <span class="token keyword">this</span><span class="token punctuation">.</span>options<span class="token punctuation">.</span>watch <span class="token operator">||</span> <span class="token punctuation">{<!-- --></span><span class="token punctuation">}</span><span class="token punctuation">;</span>
+		<span class="token comment">// 创建 watch 中配置了 exclude、include 相关的过滤方法</span>
+		<span class="token keyword">this</span><span class="token punctuation">.</span>filter <span class="token operator">=</span> <span class="token function">createFilter</span><span class="token punctuation">(</span>watchOptions<span class="token punctuation">.</span>include<span class="token punctuation">,</span> watchOptions<span class="token punctuation">.</span>exclude<span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token keyword">this</span><span class="token punctuation">.</span>fileWatcher <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">FileWatcher</span><span class="token punctuation">(</span><span class="token keyword">this</span><span class="token punctuation">,</span> <span class="token punctuation">{<!-- --></span>
+			<span class="token operator">...</span>watchOptions<span class="token punctuation">.</span>chokidar<span class="token punctuation">,</span>
+			<span class="token literal-property property">disableGlobbing</span><span class="token operator">:</span> <span class="token boolean">true</span><span class="token punctuation">,</span>
+			<span class="token literal-property property">ignoreInitial</span><span class="token operator">:</span> <span class="token boolean">true</span>
+		<span class="token punctuation">}</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+
+	<span class="token function">close</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token operator">:</span> <span class="token keyword">void</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token keyword">this</span><span class="token punctuation">.</span>closed <span class="token operator">=</span> <span class="token boolean">true</span><span class="token punctuation">;</span>
+		<span class="token keyword">this</span><span class="token punctuation">.</span>fileWatcher<span class="token punctuation">.</span><span class="token function">close</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+	<span class="token comment">// chokidar 监听到文件变化后触发 ，id 变化的文件 id; event 对应的文件变化类型; isTransformDependency 当前模块在插件中额外依赖的 id</span>
+	<span class="token function">invalidate</span><span class="token punctuation">(</span>id<span class="token operator">:</span> string<span class="token punctuation">,</span> <span class="token literal-property property">details</span><span class="token operator">:</span> <span class="token punctuation">{<!-- --></span> <span class="token literal-property property">event</span><span class="token operator">:</span> ChangeEvent<span class="token punctuation">;</span> isTransformDependency<span class="token operator">?</span><span class="token operator">:</span> boolean <span class="token punctuation">}</span><span class="token punctuation">)</span><span class="token operator">:</span> <span class="token keyword">void</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token keyword">this</span><span class="token punctuation">.</span>invalidated <span class="token operator">=</span> <span class="token boolean">true</span><span class="token punctuation">;</span>
+		<span class="token comment">// 当前模块在 rollup 打包时插件中添加的依赖模块</span>
+		<span class="token comment">// 当依赖模块更新后，该模块缓存失效清空</span>
+		<span class="token keyword">if</span> <span class="token punctuation">(</span>details<span class="token punctuation">.</span>isTransformDependency<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+			<span class="token keyword">for</span> <span class="token punctuation">(</span><span class="token keyword">const</span> module <span class="token keyword">of</span> <span class="token keyword">this</span><span class="token punctuation">.</span>cache<span class="token punctuation">.</span>modules<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+				<span class="token comment">// 插件里调用 this.addWatchFile 时，watch的文件会放进该模块的 transformDependencies 属性里</span>
+				<span class="token comment">// 插件里调用 this.emitFile 生成的文件会放进该模块的 transformFiles 属性里</span>
+				<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span>module<span class="token punctuation">.</span>transformDependencies<span class="token punctuation">.</span><span class="token function">includes</span><span class="token punctuation">(</span>id<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token keyword">continue</span><span class="token punctuation">;</span>
+				<span class="token comment">// effective invalidation</span>
+				module<span class="token punctuation">.</span>originalCode <span class="token operator">=</span> <span class="token keyword">null</span> <span class="token keyword">as</span> never<span class="token punctuation">;</span> <span class="token comment">// 清除缓存的内容，后续重新生成</span>
+			<span class="token punctuation">}</span>
+		<span class="token punctuation">}</span>
+		<span class="token keyword">this</span><span class="token punctuation">.</span>watcher<span class="token punctuation">.</span><span class="token function">invalidate</span><span class="token punctuation">(</span><span class="token punctuation">{<!-- --></span> <span class="token literal-property property">event</span><span class="token operator">:</span> details<span class="token punctuation">.</span>event<span class="token punctuation">,</span> id <span class="token punctuation">}</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+
+	<span class="token keyword">async</span> <span class="token function">run</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token operator">:</span> Promise<span class="token operator">&lt;</span><span class="token keyword">void</span><span class="token operator">&gt;</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span><span class="token keyword">this</span><span class="token punctuation">.</span>invalidated<span class="token punctuation">)</span> <span class="token keyword">return</span><span class="token punctuation">;</span> <span class="token comment">// 是否在运行中</span>
+		<span class="token keyword">this</span><span class="token punctuation">.</span>invalidated <span class="token operator">=</span> <span class="token boolean">false</span><span class="token punctuation">;</span>
+
+		<span class="token keyword">const</span> options <span class="token operator">=</span> <span class="token punctuation">{<!-- --></span>
+			<span class="token operator">...</span><span class="token keyword">this</span><span class="token punctuation">.</span>options<span class="token punctuation">,</span>
+			<span class="token literal-property property">cache</span><span class="token operator">:</span> <span class="token keyword">this</span><span class="token punctuation">.</span>cache
+		<span class="token punctuation">}</span><span class="token punctuation">;</span>
+
+		<span class="token keyword">const</span> start <span class="token operator">=</span> Date<span class="token punctuation">.</span><span class="token function">now</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+		<span class="token keyword">await</span> <span class="token keyword">this</span><span class="token punctuation">.</span>watcher<span class="token punctuation">.</span>emitter<span class="token punctuation">.</span><span class="token function">emit</span><span class="token punctuation">(</span><span class="token string">'event'</span><span class="token punctuation">,</span> <span class="token punctuation">{<!-- --></span>
+			<span class="token literal-property property">code</span><span class="token operator">:</span> <span class="token string">'BUNDLE_START'</span><span class="token punctuation">,</span>
+			<span class="token literal-property property">input</span><span class="token operator">:</span> <span class="token keyword">this</span><span class="token punctuation">.</span>options<span class="token punctuation">.</span>input<span class="token punctuation">,</span>
+			<span class="token literal-property property">output</span><span class="token operator">:</span> <span class="token keyword">this</span><span class="token punctuation">.</span>outputFiles
+		<span class="token punctuation">}</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token keyword">let</span> <span class="token literal-property property">result</span><span class="token operator">:</span> RollupBuild <span class="token operator">|</span> <span class="token keyword">null</span> <span class="token operator">=</span> <span class="token keyword">null</span><span class="token punctuation">;</span>
+
+		<span class="token keyword">try</span> <span class="token punctuation">{<!-- --></span>
+			result <span class="token operator">=</span> <span class="token keyword">await</span> <span class="token function">rollupInternal</span><span class="token punctuation">(</span>options<span class="token punctuation">,</span> <span class="token keyword">this</span><span class="token punctuation">.</span>watcher<span class="token punctuation">.</span>emitter<span class="token punctuation">)</span><span class="token punctuation">;</span> <span class="token comment">// 到此和非 watch 模式下一致</span>
+			<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token keyword">this</span><span class="token punctuation">.</span>closed<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+				<span class="token keyword">return</span><span class="token punctuation">;</span>
+			<span class="token punctuation">}</span>
+			<span class="token comment">// 打包完成，获取到所有需要监听变化的文件 id</span>
+			<span class="token keyword">this</span><span class="token punctuation">.</span><span class="token function">updateWatchedFiles</span><span class="token punctuation">(</span>result<span class="token punctuation">)</span><span class="token punctuation">;</span>
+			<span class="token keyword">this</span><span class="token punctuation">.</span>skipWrite <span class="token operator">||</span> <span class="token punctuation">(</span><span class="token keyword">await</span> Promise<span class="token punctuation">.</span><span class="token function">all</span><span class="token punctuation">(</span><span class="token keyword">this</span><span class="token punctuation">.</span>outputs<span class="token punctuation">.</span><span class="token function">map</span><span class="token punctuation">(</span><span class="token parameter">output</span> <span class="token operator">=&gt;</span> result<span class="token operator">!</span><span class="token punctuation">.</span><span class="token function">write</span><span class="token punctuation">(</span>output<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+			<span class="token keyword">await</span> <span class="token keyword">this</span><span class="token punctuation">.</span>watcher<span class="token punctuation">.</span>emitter<span class="token punctuation">.</span><span class="token function">emit</span><span class="token punctuation">(</span><span class="token string">'event'</span><span class="token punctuation">,</span> <span class="token punctuation">{<!-- --></span>
+				<span class="token literal-property property">code</span><span class="token operator">:</span> <span class="token string">'BUNDLE_END'</span><span class="token punctuation">,</span>
+				<span class="token literal-property property">duration</span><span class="token operator">:</span> Date<span class="token punctuation">.</span><span class="token function">now</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">-</span> start<span class="token punctuation">,</span>
+				<span class="token literal-property property">input</span><span class="token operator">:</span> <span class="token keyword">this</span><span class="token punctuation">.</span>options<span class="token punctuation">.</span>input<span class="token punctuation">,</span>
+				<span class="token literal-property property">output</span><span class="token operator">:</span> <span class="token keyword">this</span><span class="token punctuation">.</span>outputFiles<span class="token punctuation">,</span>
+				result
+			<span class="token punctuation">}</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token punctuation">}</span> <span class="token keyword">catch</span> <span class="token punctuation">(</span>error<span class="token operator">:</span> any<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+			<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span><span class="token keyword">this</span><span class="token punctuation">.</span>closed<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+				<span class="token keyword">if</span> <span class="token punctuation">(</span>Array<span class="token punctuation">.</span><span class="token function">isArray</span><span class="token punctuation">(</span>error<span class="token punctuation">.</span>watchFiles<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+					<span class="token keyword">for</span> <span class="token punctuation">(</span><span class="token keyword">const</span> id <span class="token keyword">of</span> error<span class="token punctuation">.</span>watchFiles<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+						<span class="token keyword">this</span><span class="token punctuation">.</span><span class="token function">watchFile</span><span class="token punctuation">(</span>id<span class="token punctuation">)</span><span class="token punctuation">;</span>
+					<span class="token punctuation">}</span>
+				<span class="token punctuation">}</span>
+				<span class="token keyword">if</span> <span class="token punctuation">(</span>error<span class="token punctuation">.</span>id<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+					<span class="token keyword">this</span><span class="token punctuation">.</span>cache<span class="token punctuation">.</span>modules <span class="token operator">=</span> <span class="token keyword">this</span><span class="token punctuation">.</span>cache<span class="token punctuation">.</span>modules<span class="token punctuation">.</span><span class="token function">filter</span><span class="token punctuation">(</span><span class="token parameter">module</span> <span class="token operator">=&gt;</span> module<span class="token punctuation">.</span>id <span class="token operator">!==</span> error<span class="token punctuation">.</span>id<span class="token punctuation">)</span><span class="token punctuation">;</span>
+				<span class="token punctuation">}</span>
+			<span class="token punctuation">}</span>
+			<span class="token keyword">await</span> <span class="token keyword">this</span><span class="token punctuation">.</span>watcher<span class="token punctuation">.</span>emitter<span class="token punctuation">.</span><span class="token function">emit</span><span class="token punctuation">(</span><span class="token string">'event'</span><span class="token punctuation">,</span> <span class="token punctuation">{<!-- --></span>
+				<span class="token literal-property property">code</span><span class="token operator">:</span> <span class="token string">'ERROR'</span><span class="token punctuation">,</span>
+				error<span class="token punctuation">,</span>
+				result
+			<span class="token punctuation">}</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token punctuation">}</span>
+	<span class="token punctuation">}</span>
+	
+	<span class="token comment">// 添加打包过程需要的所有监听文件、清除不需要的监听文件</span>
+	<span class="token keyword">private</span> <span class="token function">updateWatchedFiles</span><span class="token punctuation">(</span><span class="token parameter"><span class="token literal-property property">result</span><span class="token operator">:</span> RollupBuild</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token keyword">const</span> previouslyWatched <span class="token operator">=</span> <span class="token keyword">this</span><span class="token punctuation">.</span>watched<span class="token punctuation">;</span>
+		<span class="token keyword">this</span><span class="token punctuation">.</span>watched <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">Set</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token comment">// 返回本次打包运行监听的文件 id</span>
+		<span class="token keyword">this</span><span class="token punctuation">.</span>watchFiles <span class="token operator">=</span> result<span class="token punctuation">.</span>watchFiles<span class="token punctuation">;</span>
+		<span class="token comment">// 缓存打包结果</span>
+		<span class="token keyword">this</span><span class="token punctuation">.</span>cache <span class="token operator">=</span> result<span class="token punctuation">.</span>cache<span class="token operator">!</span><span class="token punctuation">;</span>
+
+		<span class="token keyword">for</span> <span class="token punctuation">(</span><span class="token keyword">const</span> id <span class="token keyword">of</span> <span class="token keyword">this</span><span class="token punctuation">.</span>watchFiles<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+			<span class="token keyword">this</span><span class="token punctuation">.</span><span class="token function">watchFile</span><span class="token punctuation">(</span>id<span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token punctuation">}</span>
+
+		<span class="token comment">// 获取缓存文件的 id</span>
+		<span class="token keyword">for</span> <span class="token punctuation">(</span><span class="token keyword">const</span> module <span class="token keyword">of</span> <span class="token keyword">this</span><span class="token punctuation">.</span>cache<span class="token punctuation">.</span>modules<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+			<span class="token comment">// 在插件中添加的需要观测的依赖</span>
+			<span class="token keyword">for</span> <span class="token punctuation">(</span><span class="token keyword">const</span> depId <span class="token keyword">of</span> module<span class="token punctuation">.</span>transformDependencies<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+				<span class="token keyword">this</span><span class="token punctuation">.</span><span class="token function">watchFile</span><span class="token punctuation">(</span>depId<span class="token punctuation">,</span> <span class="token boolean">true</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+			<span class="token punctuation">}</span>
+		<span class="token punctuation">}</span>
+		<span class="token comment">// 取消监听上一轮不需要监听的文件 id</span>
+		<span class="token keyword">for</span> <span class="token punctuation">(</span><span class="token keyword">const</span> id <span class="token keyword">of</span> previouslyWatched<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+			<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span><span class="token keyword">this</span><span class="token punctuation">.</span>watched<span class="token punctuation">.</span><span class="token function">has</span><span class="token punctuation">(</span>id<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+				<span class="token keyword">this</span><span class="token punctuation">.</span>fileWatcher<span class="token punctuation">.</span><span class="token function">unwatch</span><span class="token punctuation">(</span>id<span class="token punctuation">)</span><span class="token punctuation">;</span>
+			<span class="token punctuation">}</span>
+		<span class="token punctuation">}</span>
+	<span class="token punctuation">}</span>
+
+	<span class="token keyword">private</span> <span class="token function">watchFile</span><span class="token punctuation">(</span><span class="token parameter"><span class="token literal-property property">id</span><span class="token operator">:</span> string<span class="token punctuation">,</span> isTransformDependency <span class="token operator">=</span> <span class="token boolean">false</span></span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span><span class="token keyword">this</span><span class="token punctuation">.</span><span class="token function">filter</span><span class="token punctuation">(</span>id<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token keyword">return</span><span class="token punctuation">;</span>
+		<span class="token keyword">this</span><span class="token punctuation">.</span>watched<span class="token punctuation">.</span><span class="token function">add</span><span class="token punctuation">(</span>id<span class="token punctuation">)</span><span class="token punctuation">;</span> <span class="token comment">// 收集每次监听的文件 id</span>
+
+		<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token keyword">this</span><span class="token punctuation">.</span>outputFiles<span class="token punctuation">.</span><span class="token function">includes</span><span class="token punctuation">(</span>id<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+			<span class="token keyword">throw</span> <span class="token keyword">new</span> <span class="token class-name">Error</span><span class="token punctuation">(</span><span class="token string">'Cannot import the generated bundle'</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token punctuation">}</span>
+
+		<span class="token comment">// this is necessary to ensure that any 'renamed' files</span>
+		<span class="token comment">// continue to be watched following an error</span>
+		<span class="token keyword">this</span><span class="token punctuation">.</span>fileWatcher<span class="token punctuation">.</span><span class="token function">watch</span><span class="token punctuation">(</span>id<span class="token punctuation">,</span> isTransformDependency<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<h3><a id="FileWatcher__532"></a>FileWatcher 实现文件监听</h3> 
+<pre><code class="prism language-javascript"><span class="token keyword">import</span> <span class="token punctuation">{<!-- --></span> platform <span class="token punctuation">}</span> <span class="token keyword">from</span> <span class="token string">'node:os'</span><span class="token punctuation">;</span>
+<span class="token keyword">import</span> chokidar<span class="token punctuation">,</span> <span class="token punctuation">{<!-- --></span> type FSWatcher <span class="token punctuation">}</span> <span class="token keyword">from</span> <span class="token string">'chokidar'</span><span class="token punctuation">;</span>
+<span class="token keyword">import</span> type <span class="token punctuation">{<!-- --></span> ChangeEvent<span class="token punctuation">,</span> ChokidarOptions <span class="token punctuation">}</span> <span class="token keyword">from</span> <span class="token string">'../rollup/types'</span><span class="token punctuation">;</span>
+<span class="token keyword">import</span> type <span class="token punctuation">{<!-- --></span> Task <span class="token punctuation">}</span> <span class="token keyword">from</span> <span class="token string">'./watch'</span><span class="token punctuation">;</span>
+
+<span class="token keyword">export</span> <span class="token keyword">class</span> <span class="token class-name">FileWatcher</span> <span class="token punctuation">{<!-- --></span>
+	<span class="token keyword">private</span> readonly chokidarOptions<span class="token operator">:</span> ChokidarOptions<span class="token punctuation">;</span>
+	<span class="token keyword">private</span> readonly task<span class="token operator">:</span> Task<span class="token punctuation">;</span>
+	<span class="token keyword">private</span> readonly transformWatchers <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">Map</span><span class="token operator">&lt;</span>string<span class="token punctuation">,</span> FSWatcher<span class="token operator">&gt;</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span> <span class="token comment">// 收集所有监听插件中添加的依赖文件的 chokdir watcher</span>
+	<span class="token keyword">private</span> readonly watcher<span class="token operator">:</span> FSWatcher<span class="token punctuation">;</span> <span class="token comment">// 正常的 Task 对应的 chokidar watcher</span>
+
+	<span class="token function">constructor</span><span class="token punctuation">(</span><span class="token parameter"><span class="token literal-property property">task</span><span class="token operator">:</span> Task<span class="token punctuation">,</span> <span class="token literal-property property">chokidarOptions</span><span class="token operator">:</span> ChokidarOptions</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token keyword">this</span><span class="token punctuation">.</span>chokidarOptions <span class="token operator">=</span> chokidarOptions<span class="token punctuation">;</span> <span class="token comment">// 用户传递的 chokidar 配置</span>
+		<span class="token keyword">this</span><span class="token punctuation">.</span>task <span class="token operator">=</span> task<span class="token punctuation">;</span> <span class="token comment">// 每一个带有 watch 的 option 对应的 Task</span>
+		<span class="token keyword">this</span><span class="token punctuation">.</span>watcher <span class="token operator">=</span> <span class="token keyword">this</span><span class="token punctuation">.</span><span class="token function">createWatcher</span><span class="token punctuation">(</span><span class="token keyword">null</span><span class="token punctuation">)</span><span class="token punctuation">;</span> <span class="token comment">// 通过 chokidar 监听的实例</span>
+	<span class="token punctuation">}</span>
+
+	<span class="token function">close</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token operator">:</span> <span class="token keyword">void</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token keyword">this</span><span class="token punctuation">.</span>watcher<span class="token punctuation">.</span><span class="token function">close</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token keyword">for</span> <span class="token punctuation">(</span><span class="token keyword">const</span> watcher <span class="token keyword">of</span> <span class="token keyword">this</span><span class="token punctuation">.</span>transformWatchers<span class="token punctuation">.</span><span class="token function">values</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+			watcher<span class="token punctuation">.</span><span class="token function">close</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token punctuation">}</span>
+	<span class="token punctuation">}</span>
+
+	<span class="token function">unwatch</span><span class="token punctuation">(</span>id<span class="token operator">:</span> string<span class="token punctuation">)</span><span class="token operator">:</span> <span class="token keyword">void</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token keyword">this</span><span class="token punctuation">.</span>watcher<span class="token punctuation">.</span><span class="token function">unwatch</span><span class="token punctuation">(</span>id<span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token keyword">const</span> transformWatcher <span class="token operator">=</span> <span class="token keyword">this</span><span class="token punctuation">.</span>transformWatchers<span class="token punctuation">.</span><span class="token function">get</span><span class="token punctuation">(</span>id<span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token keyword">if</span> <span class="token punctuation">(</span>transformWatcher<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+			<span class="token keyword">this</span><span class="token punctuation">.</span>transformWatchers<span class="token punctuation">.</span><span class="token function">delete</span><span class="token punctuation">(</span>id<span class="token punctuation">)</span><span class="token punctuation">;</span>
+			transformWatcher<span class="token punctuation">.</span><span class="token function">close</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token punctuation">}</span>
+	<span class="token punctuation">}</span>
+
+	<span class="token function">watch</span><span class="token punctuation">(</span>id<span class="token operator">:</span> string<span class="token punctuation">,</span> <span class="token literal-property property">isTransformDependency</span><span class="token operator">:</span> boolean<span class="token punctuation">)</span><span class="token operator">:</span> <span class="token keyword">void</span> <span class="token punctuation">{<!-- --></span>
+	     <span class="token comment">// 如果是插件中添加的依赖文件，单独生成一个 chokidar watcher</span>
+		<span class="token keyword">if</span> <span class="token punctuation">(</span>isTransformDependency<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+			<span class="token keyword">const</span> watcher <span class="token operator">=</span> <span class="token keyword">this</span><span class="token punctuation">.</span>transformWatchers<span class="token punctuation">.</span><span class="token function">get</span><span class="token punctuation">(</span>id<span class="token punctuation">)</span> <span class="token operator">??</span> <span class="token keyword">this</span><span class="token punctuation">.</span><span class="token function">createWatcher</span><span class="token punctuation">(</span>id<span class="token punctuation">)</span><span class="token punctuation">;</span>
+			watcher<span class="token punctuation">.</span><span class="token function">add</span><span class="token punctuation">(</span>id<span class="token punctuation">)</span><span class="token punctuation">;</span>
+			<span class="token keyword">this</span><span class="token punctuation">.</span>transformWatchers<span class="token punctuation">.</span><span class="token function">set</span><span class="token punctuation">(</span>id<span class="token punctuation">,</span> watcher<span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+			<span class="token keyword">this</span><span class="token punctuation">.</span>watcher<span class="token punctuation">.</span><span class="token function">add</span><span class="token punctuation">(</span>id<span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token punctuation">}</span>
+	<span class="token punctuation">}</span>
+	<span class="token comment">// transformWatcherId 区分是否是插件中添加的依赖发生了变化</span>
+	<span class="token keyword">private</span> <span class="token function">createWatcher</span><span class="token punctuation">(</span>transformWatcherId<span class="token operator">:</span> string <span class="token operator">|</span> <span class="token keyword">null</span><span class="token punctuation">)</span><span class="token operator">:</span> FSWatcher <span class="token punctuation">{<!-- --></span>
+		<span class="token keyword">const</span> task <span class="token operator">=</span> <span class="token keyword">this</span><span class="token punctuation">.</span>task<span class="token punctuation">;</span>
+		<span class="token keyword">const</span> isLinux <span class="token operator">=</span> <span class="token function">platform</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">===</span> <span class="token string">'linux'</span><span class="token punctuation">;</span>
+		<span class="token keyword">const</span> isTransformDependency <span class="token operator">=</span> transformWatcherId <span class="token operator">!==</span> <span class="token keyword">null</span><span class="token punctuation">;</span>
+		<span class="token comment">// chokidar 监听到文件变化时触发的回调</span>
+		<span class="token keyword">const</span> <span class="token function-variable function">handleChange</span> <span class="token operator">=</span> <span class="token punctuation">(</span><span class="token parameter"><span class="token literal-property property">id</span><span class="token operator">:</span> string<span class="token punctuation">,</span> <span class="token literal-property property">event</span><span class="token operator">:</span> ChangeEvent</span><span class="token punctuation">)</span> <span class="token operator">=&gt;</span> <span class="token punctuation">{<!-- --></span>
+			<span class="token keyword">const</span> changedId <span class="token operator">=</span> transformWatcherId <span class="token operator">||</span> id<span class="token punctuation">;</span>
+			<span class="token keyword">if</span> <span class="token punctuation">(</span>isLinux<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+				<span class="token comment">// unwatching and watching fixes an issue with chokidar where on certain systems,</span>
+				<span class="token comment">// a file that was unlinked and immediately recreated would create a change event</span>
+				<span class="token comment">// but then no longer any further events</span>
+				watcher<span class="token punctuation">.</span><span class="token function">unwatch</span><span class="token punctuation">(</span>changedId<span class="token punctuation">)</span><span class="token punctuation">;</span>
+				watcher<span class="token punctuation">.</span><span class="token function">add</span><span class="token punctuation">(</span>changedId<span class="token punctuation">)</span><span class="token punctuation">;</span>
+			<span class="token punctuation">}</span>
+			<span class="token comment">// 重新运行打包</span>
+			task<span class="token punctuation">.</span><span class="token function">invalidate</span><span class="token punctuation">(</span>changedId<span class="token punctuation">,</span> <span class="token punctuation">{<!-- --></span> event<span class="token punctuation">,</span> isTransformDependency <span class="token punctuation">}</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token punctuation">}</span><span class="token punctuation">;</span>
+		<span class="token comment">// 通过 chokidar 进行监听</span>
+		<span class="token keyword">const</span> watcher <span class="token operator">=</span> chokidar
+			<span class="token punctuation">.</span><span class="token function">watch</span><span class="token punctuation">(</span><span class="token punctuation">[</span><span class="token punctuation">]</span><span class="token punctuation">,</span> <span class="token keyword">this</span><span class="token punctuation">.</span>chokidarOptions<span class="token punctuation">)</span>
+			<span class="token punctuation">.</span><span class="token function">on</span><span class="token punctuation">(</span><span class="token string">'add'</span><span class="token punctuation">,</span> <span class="token parameter">id</span> <span class="token operator">=&gt;</span> <span class="token function">handleChange</span><span class="token punctuation">(</span>id<span class="token punctuation">,</span> <span class="token string">'create'</span><span class="token punctuation">)</span><span class="token punctuation">)</span>
+			<span class="token punctuation">.</span><span class="token function">on</span><span class="token punctuation">(</span><span class="token string">'change'</span><span class="token punctuation">,</span> <span class="token parameter">id</span> <span class="token operator">=&gt;</span> <span class="token function">handleChange</span><span class="token punctuation">(</span>id<span class="token punctuation">,</span> <span class="token string">'update'</span><span class="token punctuation">)</span><span class="token punctuation">)</span>
+			<span class="token punctuation">.</span><span class="token function">on</span><span class="token punctuation">(</span><span class="token string">'unlink'</span><span class="token punctuation">,</span> <span class="token parameter">id</span> <span class="token operator">=&gt;</span> <span class="token function">handleChange</span><span class="token punctuation">(</span>id<span class="token punctuation">,</span> <span class="token string">'delete'</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token keyword">return</span> watcher<span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+
+</code></pre>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/ebf8059714d31e1c84e955db6ed4188f/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">最新微信投票平台系统源码 一键创建各种投票活动 盈利模式强大</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/72fed80fa9b539b06fa92fcabb2697cb/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">如何使WPF在处理图像时表现得像Windows（解决DPI问题）</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

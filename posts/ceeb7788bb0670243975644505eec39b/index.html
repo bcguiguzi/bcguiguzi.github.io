@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>使用qemu的gdbstub调试 - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="使用qemu的gdbstub调试" />
+<meta property="og:description" content="使用qemu的gdbstub调试 在之前我的一篇博客——《kgdb调试linux内核以及驱动模块》中简要描述如何配置kgdb进行内核以及驱动模块调试，这种方法既适用于qemu仿真环境也适用于真实的物理开发板，但对于做早期cpu core bridge up时未必能在物理设备上搭建好稳定可靠的kgdb环境。一般来讲使用qemu仿真来发现一些早期软件问题是有一定的帮助的，因此本文将描述，借助qemu的gdbsever模式，在仿真环境上更早的介入gdb工具进行非常底层的debug。本文实验环境依然为qemu搭建的riscv64模拟器环境，笔者之前有系列博客详细描述了环境搭建，可供参考——《基于qemu-riscv从0开始构建嵌入式linux系统》。
+修改内核配置 与kgdb类似，使用为方便gdb加载内核符号，我们依然要在编译kernel是配置如下相关选项，本文不再赘述原因，详情查看之前的文章。
+CONFIG_GDB_SCRIPTS setCONFIG_DEBUG_INFO setCONFIG_DEBUG_INFO_DWARF4 setCONFIG_STRICT_KERNEL_RWX/CONFIG_STRICT_MODULE_RWX not set 启动qemu 正常启动qemu时，目标板将立即启动，如要开启gdbsever并等待gdb连接，则仅需添加&#34;-s -S&#34;参数即可。
+SHELL_FOLDER=$(cd &#34;$(dirname &#34;$0&#34;)&#34;;pwd) GRAPHIC_PARAM=&#34;-nographic --serial telnet::3441,server,nowait --serial telnet::3442,server,nowait --serial telnet::3443,server,nowait --monitor stdio --parallel none&#34; $SHELL_FOLDER/output/qemu/bin/qemu-system-riscv64 \ -M quard-star \ -m 1G \ -smp 8 \ -drive if=pflash,bus=0,unit=0,format=raw,file=$SHELL_FOLDER/output/fw/fw.bin \ -drive file=$SHELL_FOLDER/output/rootfs/rootfs.img,format=raw,id=drive0 \ -fsdev local,security_model=mapped-xattr,id=fsdev0,path=$SHELL_FOLDER \ -netdev user,id=net0,net=192.168.31.0/24,dhcpstart=192.168.31.100,hostfwd=tcp::3522-:22,hostfwd=tcp::3580-:80 \ -global virtio-mmio.force-legacy=false \ -device virtio-blk-device,id=hd0,drive=drive0 \ -device virtio-gpu-device,id=video0,xres=1280,yres=720\ -device virtio-mouse-device,id=input0 \ -device virtio-keyboard-device,id=input1 \ -device virtio-9p-device,id=fs0,fsdev=fsdev0,mount_tag=hostshare \ -device virtio-net-device,netdev=net0 \ -fw_cfg name=&#34;" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/ceeb7788bb0670243975644505eec39b/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2022-07-13T17:06:12+08:00" />
+<meta property="article:modified_time" content="2022-07-13T17:06:12+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">使用qemu的gdbstub调试</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-tomorrow-night">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <h2><a id="qemugdbstub_0"></a>使用qemu的gdbstub调试</h2> 
+<p>在之前我的一篇博客——《<a href="https://blog.csdn.net/weixin_39871788/article/details/120313821">kgdb调试linux内核以及驱动模块</a>》中简要描述如何配置kgdb进行内核以及驱动模块调试，这种方法既适用于qemu仿真环境也适用于真实的物理开发板，但对于做早期cpu core bridge up时未必能在物理设备上搭建好稳定可靠的kgdb环境。一般来讲使用qemu仿真来发现一些早期软件问题是有一定的帮助的，因此本文将描述，借助qemu的gdbsever模式，在仿真环境上更早的介入gdb工具进行非常底层的debug。本文实验环境依然为qemu搭建的riscv64模拟器环境，笔者之前有系列博客详细描述了环境搭建，可供参考——《<a href="https://blog.csdn.net/weixin_39871788/article/details/118469061">基于qemu-riscv从0开始构建嵌入式linux系统</a>》。</p> 
+<h3><a id="_4"></a>修改内核配置</h3> 
+<p>与kgdb类似，使用为方便gdb加载内核符号，我们依然要在编译kernel是配置如下相关选项，本文不再赘述原因，详情查看之前的<a href="https://blog.csdn.net/weixin_39871788/article/details/120313821">文章</a>。</p> 
+<ul><li>CONFIG_GDB_SCRIPTS set</li><li>CONFIG_DEBUG_INFO set</li><li>CONFIG_DEBUG_INFO_DWARF4 set</li><li>CONFIG_STRICT_KERNEL_RWX/CONFIG_STRICT_MODULE_RWX not set</li></ul> 
+<h4><a id="qemu_13"></a>启动qemu</h4> 
+<p>正常启动qemu时，目标板将立即启动，如要开启gdbsever并等待gdb连接，则仅需添加"-s -S"参数即可。</p> 
+<pre><code class="prism language-shell"><span class="token assign-left variable">SHELL_FOLDER</span><span class="token operator">=</span><span class="token variable"><span class="token variable">$(</span><span class="token builtin class-name">cd</span> <span class="token string">"<span class="token variable"><span class="token variable">$(</span><span class="token function">dirname</span> <span class="token string">"<span class="token variable">$0</span>"</span><span class="token variable">)</span></span>"</span><span class="token punctuation">;</span><span class="token builtin class-name">pwd</span><span class="token variable">)</span></span>
+
+<span class="token assign-left variable">GRAPHIC_PARAM</span><span class="token operator">=</span><span class="token string">"-nographic --serial telnet::3441,server,nowait --serial telnet::3442,server,nowait --serial telnet::3443,server,nowait --monitor stdio --parallel none"</span>
+
+<span class="token variable">$SHELL_FOLDER</span>/output/qemu/bin/qemu-system-riscv64 <span class="token punctuation">\</span>
+-M quard-star <span class="token punctuation">\</span>
+-m 1G <span class="token punctuation">\</span>
+-smp <span class="token number">8</span> <span class="token punctuation">\</span>
+-drive <span class="token assign-left variable">if</span><span class="token operator">=</span>pflash,bus<span class="token operator">=</span><span class="token number">0</span>,unit<span class="token operator">=</span><span class="token number">0</span>,format<span class="token operator">=</span>raw,file<span class="token operator">=</span><span class="token variable">$SHELL_FOLDER</span>/output/fw/fw.bin <span class="token punctuation">\</span>
+-drive <span class="token assign-left variable">file</span><span class="token operator">=</span><span class="token variable">$SHELL_FOLDER</span>/output/rootfs/rootfs.img,format<span class="token operator">=</span>raw,id<span class="token operator">=</span>drive0 <span class="token punctuation">\</span>
+-fsdev local,security_model<span class="token operator">=</span>mapped-xattr,id<span class="token operator">=</span>fsdev0,path<span class="token operator">=</span><span class="token variable">$SHELL_FOLDER</span> <span class="token punctuation">\</span>
+-netdev user,id<span class="token operator">=</span>net0,net<span class="token operator">=</span><span class="token number">192.168</span>.31.0/24,dhcpstart<span class="token operator">=</span><span class="token number">192.168</span>.31.100,hostfwd<span class="token operator">=</span>tcp::3522-:22,hostfwd<span class="token operator">=</span>tcp::3580-:80 <span class="token punctuation">\</span>
+-global virtio-mmio.force-legacy<span class="token operator">=</span>false <span class="token punctuation">\</span>
+-device virtio-blk-device,id<span class="token operator">=</span>hd0,drive<span class="token operator">=</span>drive0 <span class="token punctuation">\</span>
+-device virtio-gpu-device,id<span class="token operator">=</span>video0,xres<span class="token operator">=</span><span class="token number">1280</span>,yres<span class="token operator">=</span><span class="token number">720</span><span class="token punctuation">\</span>
+-device virtio-mouse-device,id<span class="token operator">=</span>input0 <span class="token punctuation">\</span>
+-device virtio-keyboard-device,id<span class="token operator">=</span>input1 <span class="token punctuation">\</span>
+-device virtio-9p-device,id<span class="token operator">=</span>fs0,fsdev<span class="token operator">=</span>fsdev0,mount_tag<span class="token operator">=</span>hostshare <span class="token punctuation">\</span>
+-device virtio-net-device,netdev<span class="token operator">=</span>net0 <span class="token punctuation">\</span>
+-fw_cfg <span class="token assign-left variable">name</span><span class="token operator">=</span><span class="token string">"opt/qemu_cmdline"</span>,string<span class="token operator">=</span><span class="token string">"qemu_vc=:vn:24x80:"</span> <span class="token punctuation">\</span>
+<span class="token variable">$GRAPHIC_PARAM</span> -s -S
+</code></pre> 
+<p>此时不会有任何输出，我们另开一个新终端，准备gdb连接。</p> 
+<h4><a id="gdb_43"></a>启动gdb</h4> 
+<p>首先编写一个gdb.script脚本。</p> 
+<pre><code>add-auto-load-safe-path ./linux-5.10.42/
+file ./linux-5.10.42/vmlinux 
+source ./linux-5.10.42/vmlinux-gdb.py
+target remote :1234
+</code></pre> 
+<p>以上gdb命令分别用于</p> 
+<ul><li>指定./linux-5.10.42/路径为可信的路径，便于gdb执行启动的python脚本；</li><li>指定符号文件./linux-5.10.42/vmlinux</li><li>执行./linux-5.10.42/vmlinux-gdb.py添加环境用于kgdb的命令扩展</li><li>连接到本地:1234端口接受gdb数据包</li></ul> 
+<p>启动GDB</p> 
+<pre><code class="prism language-shell">riscv64-unknown-linux-gnu-gdb -x ./gdb.script
+</code></pre> 
+<h4><a id="_67"></a>设置断点</h4> 
+<p>gdb启动后，没有使用c执行前，目标仍是hart状态的，此时我们可以先添加断点，以便跟踪一些早期代码，这里输入</p> 
+<pre><code class="prism language-shell">hbreak start_kernel
+</code></pre> 
+<p>该命令设置硬件断点到linux-5.10.42/init/main.c:start_kernel函数，这里必须使用硬件断点而不是break软件断点，因为软件断点通过修改内存对应的指令实现，这在现阶段cpu完全没有boot的情况下可能无法实现断点功能。这里还存在一个问题，如果你使用该命令后报如下错误：</p> 
+<pre><code class="prism language-shell"><span class="token punctuation">(</span>gdb<span class="token punctuation">)</span> hbreak start_kernel
+Cannot access memory at address 0xffffffff809f619c
+</code></pre> 
+<p>那么需要先执行以下命令允许qemu以物理内存方式设置硬件断点，再重新执行hbreak start_kernel即可。</p> 
+<pre><code class="prism language-shell">maintenance packet Qqemu.PhyMemMode:1
+</code></pre> 
+<p>接下来输入c命令，等待bootloader和uboot阶段结束后，将在断点出停下，之后就可以进行内核的跟踪了。</p> 
+<h3><a id="_90"></a>总结</h3> 
+<p>OK，到这里之后很多调试方法和模块的调试方法与kgdb基本相同，qemu+gdb作为一种调试手段的补充，也许在一些特殊情况下能解决一些问题，尤其是嵌入式开发中。本文涉及到的代码均已开源，可以在 https://github.com/QQxiaoming/quard_star_tutorial找到。</p> 
+<h4><a id="_94"></a>参考资料</h4> 
+<ul><li>https://futurewei-cloud.github.io/ARM-Datacenter/qemu/aarch64-debug-kernel/</li><li>https://qemu-project.gitlab.io/qemu/system/gdb.html</li></ul>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/69c04ebda08cfe5ed36d782559886018/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">python word文档转html</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/68fec36616ec191b31be7ebc0e24347d/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">【Ubuntu安装选项】</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

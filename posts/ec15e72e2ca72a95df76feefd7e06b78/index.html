@@ -1,0 +1,586 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Android系统启动流程 - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="Android系统启动流程" />
+<meta property="og:description" content="文章目录 总结1.rc脚本语法规则2.init进程启动init_first_stageinit_second_stage 3.ServiceManager启动4.Zygote进程启动5.Launcher启动 总结 android系统是基于linux的，启动大致分为如下几个阶段
+BootRom
+启动电源以及系统启动。当电源按下时，引导芯片代码从预定义的地方（固化在ROM中）开始执行。加载引导程序BootLoader到RAM，然后执行。引导程序Bootloader
+引导程序BootLoader是在android操作系统开始运行前的一个小程序，他的主要作用是把系统OS拉起来并运行。Linux kernel启动
+当内核启动时，设置缓存、被保护存储器、计划列表、加载驱动。当内核完成系统设置时，它首先在系统文件中寻找init.rc文件，并启动init进程。init进程启动
+初始化和启动属性服务，并且启动Zygote进程。Zygote进程启动
+创建Java虚拟机并为Java虚拟机注册JNI方法，创建服务器端Socket，启动SystemServer进程。systemserver进程启动
+启动Binder线程池和SystemServiceManager，并且启动各种系统服务。Launcher进程启动
+被SystemServer进程启动的AMS会启动Launcher，Launcher启动后会将已安装应用的快捷图标显示到界面上 下面基于aosp11-13进行分析，因为多次阅读和使用的源码不一样，可能出现的代码并不是同一个Android版本代码
+‍
+1.rc脚本语法规则 源码中提供了一个官方文档（aosp\system\core\init\README.md）来说明rc脚本使用规则。rc脚本由Actions、Commands、Services、Options、Improts组成。
+这部分内容可以参考《深入理解Android内核设计思想（第2版）》—第七章 Android启动过程
+Actions：当达到某个触发条件时，执行命令，即响应某事件的过程
+Actions take the form of: on &lt;trigger&gt; [&amp;&amp; &lt;trigger&gt;]* // 触发条件 &lt;command&gt; // 执行命令 &lt;command&gt; &lt;command&gt; Commands：命令将在所属事件发生时被一个个地执行，rc脚本中定义了许多命令，如
+boot：init程序启动后触发的第一个事件 class_start &lt;serviceclass&gt;：启动服务 class_stop &lt;serviceclass&gt;：停止服务 ...... Services：可执行程序
+Services take the form of: service &lt;name&gt; &lt;pathname&gt; [ &lt;argument&gt; ]* &lt;option&gt; &lt;option&gt; ... // name：服务名称 // pathname：服务路径 // argument：启动服务传递的参数 // option：对服务的约束项 Options：服务修饰符，影响init进程运行服务的方式和时间。即上面的
+critical：表明这是对设备至关重要的一个服务。如果它在指定的时间内退出超过四次，则设备将重启进入恢复模式 onrestart：重启服务 Imports：引入其他rc配置文件，语法格式为import &lt;path&gt;​" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/ec15e72e2ca72a95df76feefd7e06b78/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-03-19T19:10:00+08:00" />
+<meta property="article:modified_time" content="2023-03-19T19:10:00+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Android系统启动流程</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p></p> 
+<div class="toc"> 
+ <h4>文章目录</h4> 
+ <ul><li><ul><li><a href="#_2" rel="nofollow">总结</a></li><li><a href="#1rc_26" rel="nofollow">1.rc脚本语法规则</a></li><li><a href="#2init_79" rel="nofollow">2.init进程启动</a></li><li><ul><li><a href="#init_first_stage_184" rel="nofollow">init_first_stage</a></li><li><a href="#init_second_stage_241" rel="nofollow">init_second_stage</a></li></ul> 
+   </li><li><a href="#3ServiceManager_256" rel="nofollow">3.ServiceManager启动</a></li><li><a href="#4Zygote_290" rel="nofollow">4.Zygote进程启动</a></li><li><a href="#5Launcher_580" rel="nofollow">5.Launcher启动</a></li></ul> 
+ </li></ul> 
+</div> 
+<p></p> 
+<h3><a id="_2"></a>总结</h3> 
+<p>android系统是基于linux的，启动大致分为如下几个阶段<br> <img src="https://images2.imgbox.com/d2/cf/SgBV0zzl_o.png" alt="在这里插入图片描述"></p> 
+<ul><li>BootRom<br> 启动电源以及系统启动。当电源按下时，引导芯片代码从预定义的地方（固化在ROM中）开始执行。加载引导程序BootLoader到RAM，然后执行。</li><li>引导程序Bootloader<br> 引导程序BootLoader是在android操作系统开始运行前的一个小程序，他的主要作用是把系统OS拉起来并运行。</li><li>Linux kernel启动<br> 当内核启动时，设置缓存、被保护存储器、计划列表、加载驱动。当内核完成系统设置时，它首先在系统文件中寻找init.rc文件，并启动init进程。</li><li>init进程启动<br> 初始化和启动属性服务，并且启动Zygote进程。</li><li>Zygote进程启动<br> 创建Java虚拟机并为Java虚拟机注册JNI方法，创建服务器端Socket，启动SystemServer进程。</li><li>systemserver进程启动<br> 启动Binder线程池和SystemServiceManager，并且启动各种系统服务。</li><li>Launcher进程启动<br> 被SystemServer进程启动的AMS会启动Launcher，Launcher启动后会将已安装应用的快捷图标显示到界面上</li></ul> 
+<p>下面基于aosp11-13进行分析，因为多次阅读和使用的源码不一样，可能出现的代码并不是同一个Android版本代码</p> 
+<p>‍</p> 
+<h3><a id="1rc_26"></a>1.rc脚本语法规则</h3> 
+<p>源码中提供了一个官方文档（aosp\system\core\init\README.md）来说明rc脚本使用规则。rc脚本由Actions、Commands、Services、Options、Improts组成。</p> 
+<p>这部分内容可以参考《深入理解Android内核设计思想（第2版）》—第七章 Android启动过程</p> 
+<ul><li> <p>Actions：当达到某个触发条件时，执行命令，即响应某事件的过程</p> <pre><code class="prism language-plaintext">Actions take the form of:
+
+    on &lt;trigger&gt; [&amp;&amp; &lt;trigger&gt;]*  // 触发条件
+       &lt;command&gt;  // 执行命令
+       &lt;command&gt;
+       &lt;command&gt;
+</code></pre> </li><li> <p>Commands：命令将在所属事件发生时被一个个地执行，rc脚本中定义了许多命令，如</p> <pre><code class="prism language-plaintext">boot：init程序启动后触发的第一个事件
+class_start &lt;serviceclass&gt;：启动服务
+class_stop &lt;serviceclass&gt;：停止服务
+......
+</code></pre> </li><li> <p>Services：可执行程序</p> <pre><code class="prism language-plaintext">Services take the form of:
+
+    service &lt;name&gt; &lt;pathname&gt; [ &lt;argument&gt; ]*
+       &lt;option&gt;
+       &lt;option&gt;
+       ...
+
+// name：服务名称
+// pathname：服务路径
+// argument：启动服务传递的参数
+// option：对服务的约束项
+</code></pre> </li><li> <p>Options：服务修饰符，影响init进程运行服务的方式和时间。即上面的</p> <pre><code class="prism language-plaintext">critical：表明这是对设备至关重要的一个服务。如果它在指定的时间内退出超过四次，则设备将重启进入恢复模式
+onrestart：重启服务
+
+</code></pre> </li><li> <p>Imports：引入其他rc配置文件，语法格式为<code>import &lt;path&gt;</code>​</p> </li></ul> 
+<p>‍</p> 
+<h3><a id="2init_79"></a>2.init进程启动</h3> 
+<p>init是一个Linux程序，位于设备中/system/bin/init。</p> 
+<p>通过解析init.rc脚本（system\core\rootdir\init.rc）来构建出系统的初始运行形态，其他Android系统服务 程序大多是在这个rc脚本中描述并被相继启动的。</p> 
+<p>init源码位于system/core/init，从编译脚本中可以看出，init程序分为两个阶段：init_first_stage和init_second_stage</p> 
+<pre><code class="prism language-makefile">// /system/core/init/Android.bp
+phony {
+    name: "init",
+    required: [
+        "init_second_stage",
+    ],
+}
+
+cc_binary {
+    name: "init_second_stage",
+    ...
+}
+
+// /system/core/init/Android.mk
+LOCAL_MODULE := init_first_stage
+LOCAL_MODULE_STEM := init
+LOCAL_FORCE_STATIC_EXECUTABLE := true
+include $(BUILD_EXECUTABLE)
+
+
+LOCAL_MODULE := init_system
+LOCAL_REQUIRED_MODULES := \
+   init_second_stage \
+
+include $(BUILD_PHONY_PACKAGE)
+
+LOCAL_MODULE := init_vendor
+ifneq ($(BOARD_BUILD_SYSTEM_ROOT_IMAGE),true)
+LOCAL_REQUIRED_MODULES := \
+   init_first_stage \
+
+endif
+include $(BUILD_PHONY_PACKAGE)
+</code></pre> 
+<p>在系统启动时过滤init进程相关日志，发现init开始是0号进程，后面变为1号进程，整个过程为：</p> 
+<blockquote> 
+ <p>由0号进程创建1号进程（内核态），1号负责执行内核的初始化工作及进行系统配置，并创建若干个用于高速缓存和虚拟主存管理的内核线程。随后，1号进程调用execve()运行可执行程序init，并演变成用户态1号进程，即init进程。</p> 
+ <p>Linux系统中的init进程(pid=1)是除了idle进程(pid=0，也就是init_task)之外另一个比较特殊的进程，它是Linux内核开始建立起进程概念时第一个通过kernel_thread产生的进程，其开始在内核态执行，然后通过一个系统调用，开始执行用户空间的/sbin/init程序，期间Linux内核也经历了从内核态到用户态的特权级转变。</p> 
+</blockquote> 
+<pre><code class="prism language-verilog">2023-03-13 00:37:52.600     0-0     init                           kernel                               I  init first stage started!
+2023-03-13 00:37:57.209     0-0     init                           kernel                               I  init second stage started!
+2023-03-13 00:37:59.823     0-0     &lt;no-tag&gt;                       kernel                               W  init (pid 1) is setting deprecated v1 encryption policy; recommend upgrading to v2.
+2023-03-13 00:38:05.672     1-1     /system/bin/init               pid-1                                W  type=1107 audit(0.0:6): uid=0 auid=4294967295 ses=4294967295 subj=u:r:init:s0 msg='avc: denied { set } for property=vendor.wlan.firmware.version pid=296 uid=1010 gid=1010 scontext=u:r:hal_wifi_default:s0 tcontext=u:object_r:vendor_default_prop:s0 tclass=property_service permissive=0' b/131598173
+</code></pre> 
+<p>可以通过ps命令查看init进程号为1，父进程号为0。</p> 
+<pre><code class="prism language-shell">generic_x86:/ <span class="token comment"># ps -ef -Z | grep init                                                                                                                    </span>
+u:r:init:s0                    root              <span class="token number">1</span>      <span class="token number">0</span> <span class="token number">0</span> <span class="token number">16</span>:14:24 ?     00:00:03 init second_stage
+u:r:vendor_init:s0             root            <span class="token number">120</span>      <span class="token number">1</span> <span class="token number">0</span> <span class="token number">16</span>:14:30 ?     00:00:00 init subcontext u:r:vendor_init:s0 <span class="token number">15</span>
+</code></pre> 
+<p>我们看init程序的main方法，当没有传参时会执行first_init阶段，当参数为second_stage，会执行second_stage阶段。这个两个阶段源码比较清晰，就不贴出来了。</p> 
+<pre><code class="prism language-cpp"><span class="token comment">// system/core/init/main.cpp</span>
+<span class="token keyword">int</span> <span class="token function">main</span><span class="token punctuation">(</span><span class="token keyword">int</span> argc<span class="token punctuation">,</span> <span class="token keyword">char</span><span class="token operator">*</span><span class="token operator">*</span> argv<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">if</span> <span class="token expression"><span class="token function">__has_feature</span><span class="token punctuation">(</span>address_sanitizer<span class="token punctuation">)</span></span></span>
+    <span class="token function">__asan_set_error_report_callback</span><span class="token punctuation">(</span>AsanReportCallback<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span><span class="token function">strcmp</span><span class="token punctuation">(</span><span class="token function">basename</span><span class="token punctuation">(</span>argv<span class="token punctuation">[</span><span class="token number">0</span><span class="token punctuation">]</span><span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token string">"ueventd"</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">return</span> <span class="token function">ueventd_main</span><span class="token punctuation">(</span>argc<span class="token punctuation">,</span> argv<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>argc <span class="token operator">&gt;</span> <span class="token number">1</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span><span class="token function">strcmp</span><span class="token punctuation">(</span>argv<span class="token punctuation">[</span><span class="token number">1</span><span class="token punctuation">]</span><span class="token punctuation">,</span> <span class="token string">"subcontext"</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            android<span class="token double-colon punctuation">::</span>base<span class="token double-colon punctuation">::</span><span class="token function">InitLogging</span><span class="token punctuation">(</span>argv<span class="token punctuation">,</span> <span class="token operator">&amp;</span>android<span class="token double-colon punctuation">::</span>base<span class="token double-colon punctuation">::</span>KernelLogger<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token keyword">const</span> BuiltinFunctionMap<span class="token operator">&amp;</span> function_map <span class="token operator">=</span> <span class="token function">GetBuiltinFunctionMap</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+            <span class="token keyword">return</span> <span class="token function">SubcontextMain</span><span class="token punctuation">(</span>argc<span class="token punctuation">,</span> argv<span class="token punctuation">,</span> <span class="token operator">&amp;</span>function_map<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+
+        <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span><span class="token function">strcmp</span><span class="token punctuation">(</span>argv<span class="token punctuation">[</span><span class="token number">1</span><span class="token punctuation">]</span><span class="token punctuation">,</span> <span class="token string">"selinux_setup"</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">return</span> <span class="token function">SetupSelinux</span><span class="token punctuation">(</span>argv<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+
+        <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span><span class="token function">strcmp</span><span class="token punctuation">(</span>argv<span class="token punctuation">[</span><span class="token number">1</span><span class="token punctuation">]</span><span class="token punctuation">,</span> <span class="token string">"second_stage"</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">return</span> <span class="token function">SecondStageMain</span><span class="token punctuation">(</span>argc<span class="token punctuation">,</span> argv<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token keyword">return</span> <span class="token function">FirstStageMain</span><span class="token punctuation">(</span>argc<span class="token punctuation">,</span> argv<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>首先会执行FirstStageMain，最终运行形态在第二阶段：</p> 
+<pre><code class="prism language-shell">generic_x86:/ <span class="token comment"># cat proc/1/cmdline                                                                                                                                                                                                       </span>
+/system/bin/initsecond_stage
+</code></pre> 
+<h4><a id="init_first_stage_184"></a>init_first_stage</h4> 
+<p>主要执行了system/core/init/first_stage_init.cpp：<code>FirstStageMain()</code>​，主要做了下面几种事情：</p> 
+<ul><li> <p>挂载必要的文件系统</p> </li><li> <p>初始化kmsg</p> </li><li> <p>加载内核模块、驱动</p> </li><li> <p>创建设备节点</p> </li><li> <p>再次运行init程序，参数为“selinux_setup”，设置SELinux环境</p> <pre><code class="prism language-cpp"><span class="token comment">// system/core/init/first_stage_init.cpp</span>
+<span class="token keyword">int</span> <span class="token function">FirstStageMain</span><span class="token punctuation">(</span><span class="token keyword">int</span> argc<span class="token punctuation">,</span> <span class="token keyword">char</span><span class="token operator">*</span><span class="token operator">*</span> argv<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token comment">// ......</span>
+    <span class="token keyword">const</span> <span class="token keyword">char</span><span class="token operator">*</span> path <span class="token operator">=</span> <span class="token string">"/system/bin/init"</span><span class="token punctuation">;</span>
+    <span class="token keyword">const</span> <span class="token keyword">char</span><span class="token operator">*</span> args<span class="token punctuation">[</span><span class="token punctuation">]</span> <span class="token operator">=</span> <span class="token punctuation">{<!-- --></span>path<span class="token punctuation">,</span> <span class="token string">"selinux_setup"</span><span class="token punctuation">,</span> <span class="token keyword">nullptr</span><span class="token punctuation">}</span><span class="token punctuation">;</span>
+    <span class="token keyword">auto</span> fd <span class="token operator">=</span> <span class="token function">open</span><span class="token punctuation">(</span><span class="token string">"/dev/kmsg"</span><span class="token punctuation">,</span> O_WRONLY <span class="token operator">|</span> O_CLOEXEC<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token function">dup2</span><span class="token punctuation">(</span>fd<span class="token punctuation">,</span> STDOUT_FILENO<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token function">dup2</span><span class="token punctuation">(</span>fd<span class="token punctuation">,</span> STDERR_FILENO<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token function">close</span><span class="token punctuation">(</span>fd<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token function">execv</span><span class="token punctuation">(</span>path<span class="token punctuation">,</span> <span class="token generic-function"><span class="token function">const_cast</span><span class="token generic class-name"><span class="token operator">&lt;</span><span class="token keyword">char</span><span class="token operator">*</span><span class="token operator">*</span><span class="token operator">&gt;</span></span></span><span class="token punctuation">(</span>args<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token function">PLOG</span><span class="token punctuation">(</span>FATAL<span class="token punctuation">)</span> <span class="token operator">&lt;&lt;</span> <span class="token string">"execv(\""</span> <span class="token operator">&lt;&lt;</span> path <span class="token operator">&lt;&lt;</span> <span class="token string">"\") failed"</span><span class="token punctuation">;</span>
+    <span class="token keyword">return</span> <span class="token number">1</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> </li><li> <p>设置SELinux环境完成后，执行"second_stage"</p> <pre><code class="prism language-cpp"><span class="token keyword">int</span> <span class="token function">SetupSelinux</span><span class="token punctuation">(</span><span class="token keyword">char</span><span class="token operator">*</span><span class="token operator">*</span> argv<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token function">SetStdioToDevNull</span><span class="token punctuation">(</span>argv<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token function">InitKernelLogging</span><span class="token punctuation">(</span>argv<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>REBOOT_BOOTLOADER_ON_PANIC<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token function">InstallRebootSignalHandlers</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    boot_clock<span class="token double-colon punctuation">::</span>time_point start_time <span class="token operator">=</span> boot_clock<span class="token double-colon punctuation">::</span><span class="token function">now</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token function">MountMissingSystemPartitions</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token comment">// Set up SELinux, loading the SELinux policy.</span>
+    <span class="token function">SelinuxSetupKernelLogging</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token function">SelinuxInitialize</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token function">setenv</span><span class="token punctuation">(</span>kEnvSelinuxStartedAt<span class="token punctuation">,</span> std<span class="token double-colon punctuation">::</span><span class="token function">to_string</span><span class="token punctuation">(</span>start_time<span class="token punctuation">.</span><span class="token function">time_since_epoch</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">count</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">c_str</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token keyword">const</span> <span class="token keyword">char</span><span class="token operator">*</span> path <span class="token operator">=</span> <span class="token string">"/system/bin/init"</span><span class="token punctuation">;</span>
+    <span class="token keyword">const</span> <span class="token keyword">char</span><span class="token operator">*</span> args<span class="token punctuation">[</span><span class="token punctuation">]</span> <span class="token operator">=</span> <span class="token punctuation">{<!-- --></span>path<span class="token punctuation">,</span> <span class="token string">"second_stage"</span><span class="token punctuation">,</span> <span class="token keyword">nullptr</span><span class="token punctuation">}</span><span class="token punctuation">;</span>
+    <span class="token function">execv</span><span class="token punctuation">(</span>path<span class="token punctuation">,</span> <span class="token generic-function"><span class="token function">const_cast</span><span class="token generic class-name"><span class="token operator">&lt;</span><span class="token keyword">char</span><span class="token operator">*</span><span class="token operator">*</span><span class="token operator">&gt;</span></span></span><span class="token punctuation">(</span>args<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token function">PLOG</span><span class="token punctuation">(</span>FATAL<span class="token punctuation">)</span> <span class="token operator">&lt;&lt;</span> <span class="token string">"execv(\""</span> <span class="token operator">&lt;&lt;</span> path <span class="token operator">&lt;&lt;</span> <span class="token string">"\") failed"</span><span class="token punctuation">;</span>
+
+    <span class="token keyword">return</span> <span class="token number">1</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> </li></ul> 
+<h4><a id="init_second_stage_241"></a>init_second_stage</h4> 
+<p>​<code>int SecondStageMain(int argc, char** argv)</code>​是在system/core/init/init.cpp中，主要做的的事情如下：</p> 
+<ul><li>设置<code>/proc/1/oom_score_adj</code>​，值为-1000</li><li>启动<code>Property</code>​服务</li><li>挂载<code>一些tmpfs</code>​中文件目录</li><li>启动selinux环境</li><li>启动<code>PropertyService</code>​</li><li>启动Treble框架</li><li>fork subContext</li><li>启动系统服务</li></ul> 
+<p>因此，整个流程图如下：</p> 
+<h3><a id="3ServiceManager_256"></a>3.ServiceManager启动</h3> 
+<p>ServiceManager是在rc脚本中启动的：</p> 
+<pre><code class="prism language-plaintext"> // system\core\rootdir\init.rc
+on init
+   # Start essential services.
+   start servicemanager
+</code></pre> 
+<p>servicemanager服务定义在frameworks\native\cmds\servicemanager\servicemanager.rc。可以看到，servicemanger是一个Linux程序，它在设备中的存储路径是/system/bin/servicemanager，源码路径则是/frameworks/native/cmds/servicemanager。</p> 
+<p>从rc脚本中可以知道，servicemanager作为系统核心服务，遇到异常重启时会同时启动audioserver等其他核心服务。</p> 
+<pre><code class="prism language-makefile">// frameworks\native\cmds\servicemanager\servicemanager.rc
+service servicemanager /system/bin/servicemanager
+    class core animation
+    user system
+    group system readproc
+    critical
+    onrestart restart apexd
+    onrestart restart audioserver
+    onrestart restart gatekeeperd
+    onrestart class_restart --only-enabled main
+    onrestart class_restart --only-enabled hal
+    onrestart class_restart --only-enabled early_hal
+    task_profiles ServiceCapacityLow
+    shutdown critical
+</code></pre> 
+<p>servicemanager启动后做了什么事情，详情见ServiceManager（Native）启动分析</p> 
+<h3><a id="4Zygote_290"></a>4.Zygote进程启动</h3> 
+<p>zygote进程也是由init进程解析rc脚本启动：</p> 
+<pre><code class="prism language-java"> <span class="token comment">// system\core\rootdir\init.rc</span>
+on late<span class="token operator">-</span>init
+# <span class="token class-name">Now</span> we can start zygote <span class="token keyword">for</span> devices <span class="token keyword">with</span> <span class="token namespace">file</span> based encryption
+trigger zygote<span class="token operator">-</span>start
+</code></pre> 
+<p>根据不同的硬件类型分了几种（可以通过ro.hardware系统属性查看），下面以init.zygote64.rc为例进行说明<br> <img src="https://images2.imgbox.com/17/70/LoOfsm2W_o.png" alt="在这里插入图片描述"></p> 
+<pre><code class="prism language-plaintext">// system\core\rootdir\init.zygote64.rc
+service zygote /system/bin/app_process64 -Xzygote /system/bin --zygote --start-system-server
+    class main
+    priority -20
+    user root
+    group root readproc reserved_disk
+    socket zygote stream 660 root system
+    socket usap_pool_primary stream 660 root system
+    onrestart exec_background - system system -- /system/bin/vdc volume abort_fuse
+    onrestart write /sys/power/state on
+    onrestart restart audioserver
+    onrestart restart cameraserver
+    onrestart restart media
+    onrestart restart media.tuner
+    onrestart restart netd
+    onrestart restart wificond
+    task_profiles ProcessCapacityHigh
+    critical window=${zygote.critical_window.minute:-off} target=zygote-fatal
+
+</code></pre> 
+<p>从zygote的path路径可以看出，它所在的程序名叫 “app_process64”，而不像ServiceManager一样在一个独立的程序 中。通过指定–zygote参数，app_process可以识别出用户是否需要启动zygote。app_process源码位于aosp\frameworks\base\cmds\app_process，从Android.bp文件中可以看出，针对不同的平台生成相应的目标</p> 
+<pre><code class="prism language-makefile">// frameworks\base\cmds\app_process\Android.bp
+cc_binary {
+    name: "app_process",
+
+    srcs: ["app_main.cpp"],
+
+    multilib: {
+        lib32: {
+            suffix: "32",
+        },
+        lib64: {
+            suffix: "64",
+        },
+    },
+    ....
+}
+</code></pre> 
+<p>接着我们看app_main.cpp的main()，整个过程大致分为下面几个阶段：</p> 
+<ul><li>创建AndroidRuntime</li><li>通过不同的传参执行不同的逻辑，如参数为–zygote时，则启动Zygote进程</li><li>启动了ZygoteInit</li><li>forkSystemServer</li><li>开启uds</li></ul> 
+<pre><code class="prism language-cpp"><span class="token comment">// frameworks/base/cmds/app_process/app_main.cpp</span>
+<span class="token keyword">int</span> <span class="token function">main</span><span class="token punctuation">(</span><span class="token keyword">int</span> argc<span class="token punctuation">,</span> <span class="token keyword">char</span><span class="token operator">*</span> <span class="token keyword">const</span> argv<span class="token punctuation">[</span><span class="token punctuation">]</span><span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+    AppRuntime <span class="token function">runtime</span><span class="token punctuation">(</span>argv<span class="token punctuation">[</span><span class="token number">0</span><span class="token punctuation">]</span><span class="token punctuation">,</span> <span class="token function">computeArgBlockSize</span><span class="token punctuation">(</span>argc<span class="token punctuation">,</span> argv<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token comment">// Process command line arguments</span>
+    <span class="token comment">// ignore argv[0]</span>
+    argc<span class="token operator">--</span><span class="token punctuation">;</span>
+    argv<span class="token operator">++</span><span class="token punctuation">;</span>
+
+    <span class="token comment">// Everything up to '--' or first non '-' arg goes to the vm.</span>
+    <span class="token comment">//</span>
+    <span class="token comment">// The first argument after the VM args is the "parent dir", which</span>
+    <span class="token comment">// is currently unused.</span>
+    <span class="token comment">//</span>
+    <span class="token comment">// After the parent dir, we expect one or more the following internal</span>
+    <span class="token comment">// arguments :</span>
+    <span class="token comment">//</span>
+    <span class="token comment">// --zygote : Start in zygote mode</span>
+    <span class="token comment">// --start-system-server : Start the system server.</span>
+    <span class="token comment">// --application : Start in application (stand alone, non zygote) mode.</span>
+    <span class="token comment">// --nice-name : The nice name for this process.</span>
+    <span class="token comment">//</span>
+    <span class="token comment">// For non zygote starts, these arguments will be followed by</span>
+    <span class="token comment">// the main class name. All remaining arguments are passed to</span>
+    <span class="token comment">// the main method of this class.</span>
+    <span class="token comment">//</span>
+    <span class="token comment">// For zygote starts, all remaining arguments are passed to the zygote.</span>
+    <span class="token comment">// main function.</span>
+    <span class="token comment">//</span>
+    <span class="token comment">// Note that we must copy argument string values since we will rewrite the</span>
+    <span class="token comment">// entire argument block when we apply the nice name to argv0.</span>
+    <span class="token comment">//</span>
+    <span class="token comment">// As an exception to the above rule, anything in "spaced commands"</span>
+    <span class="token comment">// goes to the vm even though it has a space in it.</span>
+    <span class="token keyword">const</span> <span class="token keyword">char</span><span class="token operator">*</span> spaced_commands<span class="token punctuation">[</span><span class="token punctuation">]</span> <span class="token operator">=</span> <span class="token punctuation">{<!-- --></span> <span class="token string">"-cp"</span><span class="token punctuation">,</span> <span class="token string">"-classpath"</span> <span class="token punctuation">}</span><span class="token punctuation">;</span>
+
+   <span class="token comment">// .......</span>
+
+    <span class="token keyword">bool</span> zygote <span class="token operator">=</span> <span class="token boolean">false</span><span class="token punctuation">;</span>
+    <span class="token keyword">bool</span> startSystemServer <span class="token operator">=</span> <span class="token boolean">false</span><span class="token punctuation">;</span>
+    <span class="token keyword">bool</span> application <span class="token operator">=</span> <span class="token boolean">false</span><span class="token punctuation">;</span>
+    String8 niceName<span class="token punctuation">;</span>
+    String8 className<span class="token punctuation">;</span>
+    <span class="token operator">++</span>i<span class="token punctuation">;</span>  <span class="token comment">// Skip unused "parent dir" argument.</span>
+    <span class="token keyword">while</span> <span class="token punctuation">(</span>i <span class="token operator">&lt;</span> argc<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">const</span> <span class="token keyword">char</span><span class="token operator">*</span> arg <span class="token operator">=</span> argv<span class="token punctuation">[</span>i<span class="token operator">++</span><span class="token punctuation">]</span><span class="token punctuation">;</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">strcmp</span><span class="token punctuation">(</span>arg<span class="token punctuation">,</span> <span class="token string">"--zygote"</span><span class="token punctuation">)</span> <span class="token operator">==</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            zygote <span class="token operator">=</span> <span class="token boolean">true</span><span class="token punctuation">;</span>
+            niceName <span class="token operator">=</span> ZYGOTE_NICE_NAME<span class="token punctuation">;</span>
+        <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">strcmp</span><span class="token punctuation">(</span>arg<span class="token punctuation">,</span> <span class="token string">"--start-system-server"</span><span class="token punctuation">)</span> <span class="token operator">==</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            startSystemServer <span class="token operator">=</span> <span class="token boolean">true</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">strcmp</span><span class="token punctuation">(</span>arg<span class="token punctuation">,</span> <span class="token string">"--application"</span><span class="token punctuation">)</span> <span class="token operator">==</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            application <span class="token operator">=</span> <span class="token boolean">true</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">strncmp</span><span class="token punctuation">(</span>arg<span class="token punctuation">,</span> <span class="token string">"--nice-name="</span><span class="token punctuation">,</span> <span class="token number">12</span><span class="token punctuation">)</span> <span class="token operator">==</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            niceName<span class="token punctuation">.</span><span class="token function">setTo</span><span class="token punctuation">(</span>arg <span class="token operator">+</span> <span class="token number">12</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">strncmp</span><span class="token punctuation">(</span>arg<span class="token punctuation">,</span> <span class="token string">"--"</span><span class="token punctuation">,</span> <span class="token number">2</span><span class="token punctuation">)</span> <span class="token operator">!=</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            className<span class="token punctuation">.</span><span class="token function">setTo</span><span class="token punctuation">(</span>arg<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token keyword">break</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token operator">--</span>i<span class="token punctuation">;</span>
+            <span class="token keyword">break</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+   <span class="token comment">// .......</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span>niceName<span class="token punctuation">.</span><span class="token function">isEmpty</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        runtime<span class="token punctuation">.</span><span class="token function">setArgv0</span><span class="token punctuation">(</span>niceName<span class="token punctuation">.</span><span class="token function">string</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token boolean">true</span> <span class="token comment">/* setProcName */</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>zygote<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        runtime<span class="token punctuation">.</span><span class="token function">start</span><span class="token punctuation">(</span><span class="token string">"com.android.internal.os.ZygoteInit"</span><span class="token punctuation">,</span> args<span class="token punctuation">,</span> zygote<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span>className<span class="token punctuation">.</span><span class="token function">isEmpty</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        runtime<span class="token punctuation">.</span><span class="token function">start</span><span class="token punctuation">(</span><span class="token string">"com.android.internal.os.RuntimeInit"</span><span class="token punctuation">,</span> args<span class="token punctuation">,</span> zygote<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token function">fprintf</span><span class="token punctuation">(</span><span class="token constant">stderr</span><span class="token punctuation">,</span> <span class="token string">"Error: no class name or --zygote supplied.\n"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token function">app_usage</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token function">LOG_ALWAYS_FATAL</span><span class="token punctuation">(</span><span class="token string">"app_process: no class name or --zygote supplied."</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>我们看<code>runtime.start</code>​逻辑：</p> 
+<ul><li>启动VM：<code>startVm()</code>​</li><li>注册Android相关的vm方法：<code>startReg()</code>​</li><li>通过jni创建java层​对象​</li></ul> 
+<pre><code class="prism language-cpp"><span class="token comment">// frameworks/base/core/jni/AndroidRuntime.cpp</span>
+
+<span class="token comment">/*
+ * Start the Android runtime.  This involves starting the virtual machine
+ * and calling the "static void main(String[] args)" method in the class
+ * named by "className".
+ *
+ * Passes the main function two arguments, the class name and the specified
+ * options string.
+ */</span>
+<span class="token keyword">void</span> <span class="token class-name">AndroidRuntime</span><span class="token double-colon punctuation">::</span><span class="token function">start</span><span class="token punctuation">(</span><span class="token keyword">const</span> <span class="token keyword">char</span><span class="token operator">*</span> className<span class="token punctuation">,</span> <span class="token keyword">const</span> Vector<span class="token operator">&lt;</span>String8<span class="token operator">&gt;</span><span class="token operator">&amp;</span> options<span class="token punctuation">,</span> <span class="token keyword">bool</span> zygote<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">static</span> <span class="token keyword">const</span> String8 <span class="token function">startSystemServer</span><span class="token punctuation">(</span><span class="token string">"start-system-server"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token comment">// Whether this is the primary zygote, meaning the zygote which will fork system server.</span>
+    <span class="token keyword">bool</span> primary_zygote <span class="token operator">=</span> <span class="token boolean">false</span><span class="token punctuation">;</span>
+
+    <span class="token comment">/*
+     * 'startSystemServer == true' means runtime is obsolete and not run from
+     * init.rc anymore, so we print out the boot start event here.
+     */</span>
+    <span class="token keyword">for</span> <span class="token punctuation">(</span>size_t i <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span> i <span class="token operator">&lt;</span> options<span class="token punctuation">.</span><span class="token function">size</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span> <span class="token operator">++</span>i<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>options<span class="token punctuation">[</span>i<span class="token punctuation">]</span> <span class="token operator">==</span> startSystemServer<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            primary_zygote <span class="token operator">=</span> <span class="token boolean">true</span><span class="token punctuation">;</span>
+           <span class="token comment">/* track our progress through the boot sequence */</span>
+           <span class="token keyword">const</span> <span class="token keyword">int</span> LOG_BOOT_PROGRESS_START <span class="token operator">=</span> <span class="token number">3000</span><span class="token punctuation">;</span>
+           <span class="token function">LOG_EVENT_LONG</span><span class="token punctuation">(</span>LOG_BOOT_PROGRESS_START<span class="token punctuation">,</span>  <span class="token function">ns2ms</span><span class="token punctuation">(</span><span class="token function">systemTime</span><span class="token punctuation">(</span>SYSTEM_TIME_MONOTONIC<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+    <span class="token comment">/* start the virtual machine */</span>
+    JniInvocation jni_invocation<span class="token punctuation">;</span>
+    jni_invocation<span class="token punctuation">.</span><span class="token function">Init</span><span class="token punctuation">(</span><span class="token constant">NULL</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    JNIEnv<span class="token operator">*</span> env<span class="token punctuation">;</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">startVm</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>mJavaVM<span class="token punctuation">,</span> <span class="token operator">&amp;</span>env<span class="token punctuation">,</span> zygote<span class="token punctuation">,</span> primary_zygote<span class="token punctuation">)</span> <span class="token operator">!=</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">return</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+    <span class="token function">onVmCreated</span><span class="token punctuation">(</span>env<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token comment">/*
+     * Register android functions.
+     */</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">startReg</span><span class="token punctuation">(</span>env<span class="token punctuation">)</span> <span class="token operator">&lt;</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token function">ALOGE</span><span class="token punctuation">(</span><span class="token string">"Unable to register all android natives\n"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">return</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token comment">/*
+     * We want to call main() with a String array with arguments in it.
+     * At present we have two arguments, the class name and an option string.
+     * Create an array to hold them.
+     */</span>
+    jclass stringClass<span class="token punctuation">;</span>
+    jobjectArray strArray<span class="token punctuation">;</span>
+    jstring classNameStr<span class="token punctuation">;</span>
+
+    stringClass <span class="token operator">=</span> env<span class="token operator">-&gt;</span><span class="token function">FindClass</span><span class="token punctuation">(</span><span class="token string">"java/lang/String"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token function">assert</span><span class="token punctuation">(</span>stringClass <span class="token operator">!=</span> <span class="token constant">NULL</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    strArray <span class="token operator">=</span> env<span class="token operator">-&gt;</span><span class="token function">NewObjectArray</span><span class="token punctuation">(</span>options<span class="token punctuation">.</span><span class="token function">size</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">+</span> <span class="token number">1</span><span class="token punctuation">,</span> stringClass<span class="token punctuation">,</span> <span class="token constant">NULL</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token function">assert</span><span class="token punctuation">(</span>strArray <span class="token operator">!=</span> <span class="token constant">NULL</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    classNameStr <span class="token operator">=</span> env<span class="token operator">-&gt;</span><span class="token function">NewStringUTF</span><span class="token punctuation">(</span>className<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token function">assert</span><span class="token punctuation">(</span>classNameStr <span class="token operator">!=</span> <span class="token constant">NULL</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    env<span class="token operator">-&gt;</span><span class="token function">SetObjectArrayElement</span><span class="token punctuation">(</span>strArray<span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">,</span> classNameStr<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token keyword">for</span> <span class="token punctuation">(</span>size_t i <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span> i <span class="token operator">&lt;</span> options<span class="token punctuation">.</span><span class="token function">size</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span> <span class="token operator">++</span>i<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        jstring optionsStr <span class="token operator">=</span> env<span class="token operator">-&gt;</span><span class="token function">NewStringUTF</span><span class="token punctuation">(</span>options<span class="token punctuation">.</span><span class="token function">itemAt</span><span class="token punctuation">(</span>i<span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">string</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token function">assert</span><span class="token punctuation">(</span>optionsStr <span class="token operator">!=</span> <span class="token constant">NULL</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        env<span class="token operator">-&gt;</span><span class="token function">SetObjectArrayElement</span><span class="token punctuation">(</span>strArray<span class="token punctuation">,</span> i <span class="token operator">+</span> <span class="token number">1</span><span class="token punctuation">,</span> optionsStr<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token comment">/*
+     * Start VM.  This thread becomes the main thread of the VM, and will
+     * not return until the VM exits.
+     */</span>
+    <span class="token keyword">char</span><span class="token operator">*</span> slashClassName <span class="token operator">=</span> <span class="token function">toSlashClassName</span><span class="token punctuation">(</span>className <span class="token operator">!=</span> <span class="token constant">NULL</span> <span class="token operator">?</span> className <span class="token operator">:</span> <span class="token string">""</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    jclass startClass <span class="token operator">=</span> env<span class="token operator">-&gt;</span><span class="token function">FindClass</span><span class="token punctuation">(</span>slashClassName<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>startClass <span class="token operator">==</span> <span class="token constant">NULL</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token function">ALOGE</span><span class="token punctuation">(</span><span class="token string">"JavaVM unable to locate class '%s'\n"</span><span class="token punctuation">,</span> slashClassName<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token comment">/* keep going */</span>
+    <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+        jmethodID startMeth <span class="token operator">=</span> env<span class="token operator">-&gt;</span><span class="token function">GetStaticMethodID</span><span class="token punctuation">(</span>startClass<span class="token punctuation">,</span> <span class="token string">"main"</span><span class="token punctuation">,</span>
+            <span class="token string">"([Ljava/lang/String;)V"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>startMeth <span class="token operator">==</span> <span class="token constant">NULL</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token function">ALOGE</span><span class="token punctuation">(</span><span class="token string">"JavaVM unable to find main() in '%s'\n"</span><span class="token punctuation">,</span> className<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token comment">/* keep going */</span>
+        <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+            env<span class="token operator">-&gt;</span><span class="token function">CallStaticVoidMethod</span><span class="token punctuation">(</span>startClass<span class="token punctuation">,</span> startMeth<span class="token punctuation">,</span> strArray<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">if</span> <span class="token expression"><span class="token number">0</span></span></span>
+            <span class="token keyword">if</span> <span class="token punctuation">(</span>env<span class="token operator">-&gt;</span><span class="token function">ExceptionCheck</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span>
+                <span class="token function">threadExitUncaughtException</span><span class="token punctuation">(</span>env<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+    <span class="token function">free</span><span class="token punctuation">(</span>slashClassName<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token function">ALOGD</span><span class="token punctuation">(</span><span class="token string">"Shutting down VM\n"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>mJavaVM<span class="token operator">-&gt;</span><span class="token function">DetachCurrentThread</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">!=</span> JNI_OK<span class="token punctuation">)</span>
+        <span class="token function">ALOGW</span><span class="token punctuation">(</span><span class="token string">"Warning: unable to detach main thread\n"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>mJavaVM<span class="token operator">-&gt;</span><span class="token function">DestroyJavaVM</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">!=</span> <span class="token number">0</span><span class="token punctuation">)</span>
+        <span class="token function">ALOGW</span><span class="token punctuation">(</span><span class="token string">"Warning: VM did not shut down cleanly\n"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>通过上面分析，可以知道会分别创建Java层RuntimeInit和ZygoteInit对象。</p> 
+<p>当ZygoteInit创建时，会开启UDS，等在app执行fork操作，并且会创建SystemServer。ZygoteInit日志如下：</p> 
+<pre><code class="prism language-prolog">03-19 17:09:33.767   263   263 D Zygote  : begin preload
+03-19 17:09:33.767   263   263 I Zygote  : Calling ZygoteHooks.beginPreload()
+03-19 17:09:35.065   263   263 I zygote  : VMRuntime.preloadDexCaches finished
+03-19 17:09:35.142   263   263 D Zygote  : end preload
+03-19 17:09:35.270   263   263 D Zygote  : Forked child process 475
+03-19 17:09:35.270   263   263 I Zygote  : System server process 475 has been created
+03-19 17:09:35.271   263   263 I Zygote  : Accepting command socket connections
+03-19 17:09:35.861   475   475 I SystemServerTiming: InitBeforeStartServices
+03-19 17:09:35.862   475   475 I SystemServer: Entered the Android system server!
+03-19 17:09:36.155   475   475 I SystemServerTiming: StartServices
+03-19 17:09:42.807   475   475 I SystemServer: Making services ready
+
+
+03-19 17:09:36.425   475   475 I SystemServerTiming: StartActivityManager
+03-19 17:09:36.425   475   475 I SystemServiceManager: Starting com.android.server.wm.ActivityTaskManagerService$Lifecycle
+03-19 17:09:36.445   475   475 I SystemServiceManager: Starting com.android.server.am.ActivityManagerService$Lifecycle
+03-19 17:09:36.675   475   475 D SystemServerTiming: StartActivityManager took to complete: 251ms
+
+03-19 17:09:43.016   475   475 I SystemServerTiming: StartSystemUI
+03-19 17:09:43.019   475   475 D SystemServerTiming: StartSystemUI took to complete: 3ms
+
+03-19 17:09:43.305   475   475 I SystemServerTiming: startPersistentApps
+
+03-19 17:09:43.314   475   475 D SystemServerTiming: startHomeOnAllDisplays took to complete: 7ms
+03-19 17:09:43.306   475   475 I ActivityTaskManager: START u0 {act=android.intent.action.MAIN cat=[android.intent.category.HOME] flg=0x10000100 cmp=com.android.settings/.FallbackHome} from uid 0
+03-19 17:09:43.306   475   475 I SystemServerTiming: startHomeOnAllDisplays
+03-19 17:09:50.945   475   489 I ActivityTaskManager: START u0 {act=android.intent.action.MAIN cat=[android.intent.category.HOME] flg=0x10000100 cmp=com.android.launcher3/.uioverrides.QuickstepLauncher} from uid 0
+
+</code></pre> 
+<h3><a id="5Launcher_580"></a>5.Launcher启动</h3> 
+<p>‍</p> 
+<hr> 
+<p>参考文档：</p> 
+<ul><li> <p>《深入理解Android内核设计思想（第2版）》</p> </li><li> <p>https://blog.csdn.net/L12ThMicrowave/article/details/126303805</p> </li><li> <p>https://zhuanlan.zhihu.com/p/585387856</p> </li></ul> 
+<p>‍</p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/a2eeefa0885c01e7f98815b1bd31ebb2/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">利用sqlmap进行post注入学习笔记</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/f2fbe83687ad550bb6b604b756319e07/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">VLAN与二层交换机</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

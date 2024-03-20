@@ -1,0 +1,1064 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>c&#43;&#43;分布式网络通信框架【万字拆解】 - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="c&#43;&#43;分布式网络通信框架【万字拆解】" />
+<meta property="og:description" content="文章目录 前言介绍使用到的技术栈 一、集群与分布式二、RPC通讯原理三、protobuf的编写1、protobuf简介2、protobuf格式介绍3、protobuf的序列化与反序列化例子4、头格式protobuf的编写 四、RPC通信框架设计1、配置文件读取类 五、分布式协调1、zookeeper简介2、zookeeper工具类定义3、zookeeper工具类的实现4、服务发布5、服务发现 六、异步日志系统1、为什么需要异步记录日志2、保证线程安全的日志队列类3、日志类4、定义宏记录日志 七、服务提供者1、服务提供者整体框架2、服务注册3、使用muduo库提供网络通讯支持a、连接以及读写事件回调函数b、网络服务启动 4、编写服务方法和启动服务 八、服务调用者1、caller整体流程2、通信渠道类的定义3、CallMethod方法的重写 前言 介绍 基于c&#43;&#43;的分布式网络框架，项目基于muduo高性能网络库&#43;Protobuf开发，实现的主要功能了是通过zookeeper实现服务注册以及发现，muduo网络库以及Protobuf实现远程RPC调用，异步日志。
+分布式网络通信整个流程框架如下：
+使用到的技术栈 集群和分布式概念以及原理
+RPC远程过程调用原理以及实现
+Protobuf数据序列化和反序列化协议
+ZooKeeper分布式一致性协调服务应用以及编程
+muduo网络库编程
+conf配置文件读取
+异步日志
+CMake构建项目集成编译环境
+一、集群与分布式 集群：每一台服务器独立运行一个工程的所有模块。缺点是：虽然用户的并发量得到了增加但是，有一个api，函数的修改整个项目代码都需要进行重新的编译并且需要进行多次部署。
+分布式：一个工程拆分了很多模块，每一个模块独立部署运行在一个服务器主机上，所有服务器协同工作共同提供服务，每一台服务器称作分布式的一个节点，根据节点的并发要求，对一个节点可以再做节点模块集群部署。比如说一些模块使用量少，并发量少，只需要部署到一台服务器就行了。
+二、RPC通讯原理 RPC是Remote Procedure Call(远程过程调用)的缩写，该技术可以让一台服务器上的服务通过网络调用另一台服务器上的服务，简单来说就是让不同网络节点上的服务相互调用。.因此 RPC框架会封装网络调用的细节，让调用远程服务看起来像调用本地服务一样简单。由于微服务架构的兴起，RPC的概念得到广泛应用，在消息队列、分布式缓存、分布式数据库等多个领域都有用到。可以将RPC理解为连接两个城市的高速公路，让车辆能够在城市之间自由通行。由于 RPC屏蔽了远程调用和本地调用的区别，因此程序开发者无须过多关注网络通信，可以把更多精力放到业务逻辑的开发上。
+rpc工作原理如下：
+1、客户端调用本地代理：客户端通过调用本地代理来访问服务器上的方法。这个代理通常是在客户端和服务器之间建立起来的一个桥梁，可以将远程方法调用转化成本地方法调用。
+2、代理封装请求：本地代理把对远程对象的调用封装成一种标准格式的消息，然后将消息发送给服务端。
+3、消息传输到服务端：消息通过网络传输到服务端。
+4、服务端解析请求：服务端接收到消息后，需要进行解析，找到对应的远程方法，并处理请求得到结果。
+5、服务端封装响应：服务端将处理的结果打包成一个返回消息，同样按照标准格式发送到客户端。
+6、消息传回客户端：消息通过网络返回给本地代理。
+7、代理解析响应：本地代理接收响应消息后解析，返回给调用者。
+总结：rpc的工作逻辑就是客户端调用代理时，代理封装请求并发送给服务端，服务端处理完成后将结果发送给代理，代理解析响应后返回给调用者，让调用者看上去好像是直接调用了本地方法一样
+rpc 协议栈
+rpc 协议需要使用以下协议层：
+应用层：由 rpc 库或框架提供，支持编程语言各自的数据类型和序列化、反序列化实现
+传输层：通常基于 tcp 或 udp 实现，以提供可靠的数据传输
+网络层：负责在不同的网络之间传输数据，通常使用 ip 协议
+数据链路层和物理层：实现寻址、帧传输和物理接口等功能
+工作原理图：
+黄色部分：设计rpc方法参数的打包和解析，也就是数据的序列化和反序列化，使用Protobuf。
+绿色部分：网络部分，包括寻找rpc服务主机，发起rpc调用请求和响应rpc调用结果。
+rpc的主要优势：它可以让不同编程语言的应用程序之间进行通信，只需要客户端和服务器都支持相同的协议即可。另外，无论使用哪种语言，开发人员都可以将远程方法调用看
+三、protobuf的编写 1、protobuf简介 protobuf（protocol buffer）是google 的一种数据交换的格式，它独立于平台语言。
+google 提供了protobuf多种语言的实现：java、c#、c&#43;&#43;、go 和 python，每一种实现都包含了相应语" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/5390d454d8a1b45a5e2c9a3361732cf2/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-06-30T14:36:58+08:00" />
+<meta property="article:modified_time" content="2023-06-30T14:36:58+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">c&#43;&#43;分布式网络通信框架【万字拆解】</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p></p> 
+<div class="toc"> 
+ <h4>文章目录</h4> 
+ <ul><li><a href="#_6" rel="nofollow">前言</a></li><li><ul><li><a href="#_8" rel="nofollow">介绍</a></li><li><a href="#_13" rel="nofollow">使用到的技术栈</a></li></ul> 
+  </li><li><a href="#_24" rel="nofollow">一、集群与分布式</a></li><li><a href="#RPC_32" rel="nofollow">二、RPC通讯原理</a></li><li><a href="#protobuf_56" rel="nofollow">三、protobuf的编写</a></li><li><ul><li><a href="#1protobuf_57" rel="nofollow">1、protobuf简介</a></li><li><a href="#2protobuf_64" rel="nofollow">2、protobuf格式介绍</a></li><li><a href="#3protobuf_136" rel="nofollow">3、protobuf的序列化与反序列化例子</a></li><li><a href="#4protobuf_183" rel="nofollow">4、头格式protobuf的编写</a></li></ul> 
+  </li><li><a href="#RPC_194" rel="nofollow">四、RPC通信框架设计</a></li><li><ul><li><a href="#1_241" rel="nofollow">1、配置文件读取类</a></li></ul> 
+  </li><li><a href="#_313" rel="nofollow">五、分布式协调</a></li><li><ul><li><a href="#1zookeeper_314" rel="nofollow">1、zookeeper简介</a></li><li><a href="#2zookeeper_321" rel="nofollow">2、zookeeper工具类定义</a></li><li><a href="#3zookeeper_340" rel="nofollow">3、zookeeper工具类的实现</a></li><li><a href="#4_454" rel="nofollow">4、服务发布</a></li><li><a href="#5_479" rel="nofollow">5、服务发现</a></li></ul> 
+  </li><li><a href="#_504" rel="nofollow">六、异步日志系统</a></li><li><ul><li><a href="#1_505" rel="nofollow">1、为什么需要异步记录日志</a></li><li><a href="#2_507" rel="nofollow">2、保证线程安全的日志队列类</a></li><li><a href="#3_542" rel="nofollow">3、日志类</a></li><li><a href="#4_607" rel="nofollow">4、定义宏记录日志</a></li></ul> 
+  </li><li><a href="#_644" rel="nofollow">七、服务提供者</a></li><li><ul><li><a href="#1_645" rel="nofollow">1、服务提供者整体框架</a></li><li><a href="#2_689" rel="nofollow">2、服务注册</a></li><li><a href="#3muduo_723" rel="nofollow">3、使用muduo库提供网络通讯支持</a></li><li><ul><li><a href="#a_724" rel="nofollow">a、连接以及读写事件回调函数</a></li><li><a href="#b_822" rel="nofollow">b、网络服务启动</a></li></ul> 
+   </li><li><a href="#4_875" rel="nofollow">4、编写服务方法和启动服务</a></li></ul> 
+  </li><li><a href="#_927" rel="nofollow">八、服务调用者</a></li><li><ul><li><a href="#1caller_928" rel="nofollow">1、caller整体流程</a></li><li><a href="#2_971" rel="nofollow">2、通信渠道类的定义</a></li><li><a href="#3CallMethod_988" rel="nofollow">3、CallMethod方法的重写</a></li></ul> 
+ </li></ul> 
+</div> 
+<p></p> 
+<hr> 
+<h2><a id="_6"></a>前言</h2> 
+<h3><a id="_8"></a>介绍</h3> 
+<p>基于c++的分布式网络框架，项目基于muduo高性能网络库+Protobuf开发，实现的主要功能了是通过zookeeper实现服务注册以及发现，muduo网络库以及Protobuf实现远程RPC调用，异步日志。<br> 分布式网络通信整个流程框架如下：<br> <img src="https://images2.imgbox.com/cc/99/iVualIqB_o.png" alt="在这里插入图片描述"></p> 
+<h3><a id="_13"></a>使用到的技术栈</h3> 
+<p>集群和分布式概念以及原理<br> RPC远程过程调用原理以及实现<br> Protobuf数据序列化和反序列化协议<br> ZooKeeper分布式一致性协调服务应用以及编程<br> muduo网络库编程<br> conf配置文件读取<br> 异步日志<br> CMake构建项目集成编译环境</p> 
+<h2><a id="_24"></a>一、集群与分布式</h2> 
+<p><strong>集群</strong>：每一台服务器独立运行一个工程的所有模块。<strong>缺点是</strong>：虽然用户的并发量得到了增加但是，有一个api，函数的修改整个项目代码都需要进行重新的编译并且需要进行多次部署。<br> <img src="https://images2.imgbox.com/88/3a/alNExcZw_o.png" alt="在这里插入图片描述"></p> 
+<p><strong>分布式</strong>：一个工程拆分了很多模块，每一个模块独立部署运行在一个服务器主机上，所有服务器协同工作共同提供服务，每一台服务器称作分布式的一个节点，根据节点的并发要求，对一个节点可以再做节点模块集群部署。比如说一些模块使用量少，并发量少，只需要部署到一台服务器就行了。<img src="https://images2.imgbox.com/3e/6b/0aQm3lGM_o.png" alt=""></p> 
+<h2><a id="RPC_32"></a>二、RPC通讯原理</h2> 
+<p><strong>RPC</strong>是Remote Procedure Call(远程过程调用)的缩写，该技术可以让一台服务器上的服务通过网络调用另一台服务器上的服务，简单来说就是让不同网络节点上的服务相互调用。.因此 RPC框架会封装网络调用的细节，让调用远程服务看起来像调用本地服务一样简单。由于微服务架构的兴起，RPC的概念得到广泛应用，在消息队列、分布式缓存、分布式数据库等多个领域都有用到。可以将RPC理解为连接两个城市的高速公路，让车辆能够在城市之间自由通行。由于 RPC屏蔽了远程调用和本地调用的区别，因此程序开发者无须过多关注网络通信，可以把更多精力放到业务逻辑的开发上。<br> <strong>rpc工作原理如下：</strong><br> 1、客户端调用本地代理：客户端通过调用本地代理来访问服务器上的方法。这个代理通常是在客户端和服务器之间建立起来的一个桥梁，可以将远程方法调用转化成本地方法调用。<br> 2、代理封装请求：本地代理把对远程对象的调用封装成一种标准格式的消息，然后将消息发送给服务端。<br> 3、消息传输到服务端：消息通过网络传输到服务端。<br> 4、服务端解析请求：服务端接收到消息后，需要进行解析，找到对应的远程方法，并处理请求得到结果。<br> 5、服务端封装响应：服务端将处理的结果打包成一个返回消息，同样按照标准格式发送到客户端。<br> 6、消息传回客户端：消息通过网络返回给本地代理。<br> 7、代理解析响应：本地代理接收响应消息后解析，返回给调用者。<br> <strong>总结</strong>：rpc的工作逻辑就是客户端调用代理时，代理封装请求并发送给服务端，服务端处理完成后将结果发送给代理，代理解析响应后返回给调用者，让调用者看上去好像是直接调用了本地方法一样<br> <strong>rpc 协议栈</strong><br> rpc 协议需要使用以下协议层：<br> 应用层：由 rpc 库或框架提供，支持编程语言各自的数据类型和序列化、反序列化实现<br> 传输层：通常基于 tcp 或 udp 实现，以提供可靠的数据传输<br> 网络层：负责在不同的网络之间传输数据，通常使用 ip 协议<br> 数据链路层和物理层：实现寻址、帧传输和物理接口等功能</p> 
+<p><strong>工作原理图：</strong><br> <img src="https://images2.imgbox.com/c9/05/rCHCj3n9_o.png" alt="在这里插入图片描述"><br> 黄色部分：设计rpc方法参数的打包和解析，也就是数据的序列化和反序列化，使用Protobuf。<br> 绿色部分：网络部分，包括寻找rpc服务主机，发起rpc调用请求和响应rpc调用结果。</p> 
+<p><strong>rpc的主要优势</strong>：它可以让不同编程语言的应用程序之间进行通信，只需要客户端和服务器都支持相同的协议即可。另外，无论使用哪种语言，开发人员都可以将远程方法调用看</p> 
+<h2><a id="protobuf_56"></a>三、protobuf的编写</h2> 
+<h3><a id="1protobuf_57"></a>1、protobuf简介</h3> 
+<p>protobuf（protocol buffer）是google 的一种数据交换的格式，它独立于平台语言。<br> google 提供了protobuf多种语言的实现：java、c#、c++、go 和 python，每一种实现都包含了相应语<br> 言的编译器以及库文件。<br> 由于它是一种二进制的格式，比使用 xml（20倍） 、json（10倍）进行数据交换快许多。可以把它用<br> 于分布式应用之间的数据通信或者异构环境下的数据交换。作为一种效率和兼容性都很优秀的二进制数<br> 据传输格式，可以用于诸如网络传输、配置文件、数据存储等诸多领域。</p> 
+<h3><a id="2protobuf_64"></a>2、protobuf格式介绍</h3> 
+<p>首先是声明protobuf的版本，以及代码所在的包（对于C++来说是namespace），如果需要生成服务类以及rpc方法描述就需要配置cc_generic_services。</p> 
+<pre><code class="prism language-cpp">syntax <span class="token operator">=</span> <span class="token string">"proto3"</span><span class="token punctuation">;</span> <span class="token comment">// 声明了protobuf的版本</span>
+
+package fixbug<span class="token punctuation">;</span> <span class="token comment">// 声明了代码所在的包（对于C++来说是namespace）</span>
+
+<span class="token comment">// 定义下面的选项，表示生成service服务类和rpc方法描述，</span>
+option cc_generic_services <span class="token operator">=</span> <span class="token boolean">true</span><span class="token punctuation">;</span>
+
+</code></pre> 
+<p>定义数据，可以定义嵌套类型，枚举以及数组等等类型</p> 
+<pre><code class="prism language-cpp">message ResultCode
+<span class="token punctuation">{<!-- --></span>
+    int32 errcode <span class="token operator">=</span> <span class="token number">1</span><span class="token punctuation">;</span>
+    bytes errmsg <span class="token operator">=</span> <span class="token number">2</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+<span class="token comment">// 数据   列表   映射表</span>
+<span class="token comment">// 定义登录请求消息类型  name   pwd</span>
+message LoginRequest
+<span class="token punctuation">{<!-- --></span>
+    bytes name <span class="token operator">=</span> <span class="token number">1</span><span class="token punctuation">;</span>
+    bytes pwd <span class="token operator">=</span> <span class="token number">2</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+<span class="token comment">// 定义登录响应消息类型</span>
+message LoginResponse
+<span class="token punctuation">{<!-- --></span>
+    ResultCode result <span class="token operator">=</span> <span class="token number">1</span><span class="token punctuation">;</span>
+    <span class="token keyword">bool</span> success <span class="token operator">=</span> <span class="token number">2</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+message GetFriendListsRequest
+<span class="token punctuation">{<!-- --></span>
+    uint32 userid <span class="token operator">=</span> <span class="token number">1</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+message User
+<span class="token punctuation">{<!-- --></span>
+    bytes name <span class="token operator">=</span> <span class="token number">1</span><span class="token punctuation">;</span>
+    uint32 age <span class="token operator">=</span> <span class="token number">2</span><span class="token punctuation">;</span>
+    <span class="token comment">// 枚举</span>
+    <span class="token keyword">enum</span> <span class="token class-name">Sex</span>
+    <span class="token punctuation">{<!-- --></span>
+        MAN <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+        WOMAN <span class="token operator">=</span> <span class="token number">1</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+    Sex sex <span class="token operator">=</span> <span class="token number">3</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+message GetFriendListsResponse
+<span class="token punctuation">{<!-- --></span>
+    ResultCode result <span class="token operator">=</span> <span class="token number">1</span><span class="token punctuation">;</span>
+    repeated User friend_list <span class="token operator">=</span> <span class="token number">2</span><span class="token punctuation">;</span>  <span class="token comment">// 定义了一个列表类型</span>
+<span class="token punctuation">}</span>
+
+</code></pre> 
+<p>定义描述rpc方法的类型 ：</p> 
+<pre><code class="prism language-cpp">service UserServiceRpc
+<span class="token punctuation">{<!-- --></span>
+    rpc <span class="token function">Login</span><span class="token punctuation">(</span>LoginRequest<span class="token punctuation">)</span> <span class="token function">returns</span><span class="token punctuation">(</span>LoginResponse<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    rpc <span class="token function">GetFriendLists</span><span class="token punctuation">(</span>GetFriendListsRequest<span class="token punctuation">)</span> <span class="token function">returns</span><span class="token punctuation">(</span>GetFriendListsResponse<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>生成对应的c++文件命令</p> 
+<pre><code class="prism language-bash">protoc test.proto --cpp_out<span class="token operator">=</span>.
+</code></pre> 
+<h3><a id="3protobuf_136"></a>3、protobuf的序列化与反序列化例子</h3> 
+<p>首先要导入生成的头文件以及使用他的作用域</p> 
+<pre><code class="prism language-cpp"><span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">"test.pb.h"</span></span>
+<span class="token keyword">using</span> <span class="token keyword">namespace</span> fixbug<span class="token punctuation">;</span>
+
+</code></pre> 
+<p>序列化的时候对于嵌套类型 应该先要获取其对象的常量引用 ：</p> 
+<pre><code class="prism language-cpp">  GetFriendListsResponse rsp<span class="token punctuation">;</span>
+   ResultCode<span class="token operator">*</span> rc <span class="token operator">=</span> rsp<span class="token punctuation">.</span><span class="token function">mutable_result</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+   rc<span class="token operator">-&gt;</span><span class="token function">set_errcode</span><span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+   rc<span class="token operator">-&gt;</span><span class="token function">set_errmsg</span><span class="token punctuation">(</span><span class="token string">"asdasdasd"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+   User<span class="token operator">*</span> user1 <span class="token operator">=</span> rsp<span class="token punctuation">.</span><span class="token function">add_friend_list</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+   user1<span class="token operator">-&gt;</span><span class="token function">set_name</span><span class="token punctuation">(</span><span class="token string">"zhang san"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+   user1<span class="token operator">-&gt;</span><span class="token function">set_age</span><span class="token punctuation">(</span><span class="token number">20</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+   user1<span class="token operator">-&gt;</span><span class="token function">set_sex</span><span class="token punctuation">(</span>User<span class="token double-colon punctuation">::</span>MAN<span class="token punctuation">)</span><span class="token punctuation">;</span>
+   User<span class="token operator">*</span> user2 <span class="token operator">=</span> rsp<span class="token punctuation">.</span><span class="token function">add_friend_list</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+   user2<span class="token operator">-&gt;</span><span class="token function">set_name</span><span class="token punctuation">(</span><span class="token string">"li si"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+   user2<span class="token operator">-&gt;</span><span class="token function">set_age</span><span class="token punctuation">(</span><span class="token number">22</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+   user2<span class="token operator">-&gt;</span><span class="token function">set_sex</span><span class="token punctuation">(</span>User<span class="token double-colon punctuation">::</span>MAN<span class="token punctuation">)</span><span class="token punctuation">;</span>
+   <span class="token comment">// 序列化</span>
+   string send_str<span class="token punctuation">;</span>
+   <span class="token keyword">if</span> <span class="token punctuation">(</span>rsp<span class="token punctuation">.</span><span class="token function">SerializeToString</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>send_str<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+      cout <span class="token operator">&lt;&lt;</span> send_str <span class="token operator">&lt;&lt;</span> endl<span class="token punctuation">;</span>
+   <span class="token punctuation">}</span>
+</code></pre> 
+<p>反序列化</p> 
+<pre><code class="prism language-cpp">   GetFriendListsResponse rsp2<span class="token punctuation">;</span>
+   <span class="token comment">// 获取反序列化的</span>
+   <span class="token keyword">if</span> <span class="token punctuation">(</span>rsp2<span class="token punctuation">.</span><span class="token function">ParseFromString</span><span class="token punctuation">(</span>send_str<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+      <span class="token keyword">const</span> ResultCode<span class="token operator">&amp;</span> result <span class="token operator">=</span> rsp2<span class="token punctuation">.</span><span class="token function">result</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>  <span class="token comment">// 获取 ResultCode 对象</span>
+      <span class="token keyword">int32_t</span> errcode <span class="token operator">=</span> result<span class="token punctuation">.</span><span class="token function">errcode</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>        <span class="token comment">// 获取 errcode 字段值</span>
+      string errmsg <span class="token operator">=</span> result<span class="token punctuation">.</span><span class="token function">errmsg</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>           <span class="token comment">// 获取 errmsg 字段值</span>
+      cout <span class="token operator">&lt;&lt;</span> errmsg <span class="token operator">&lt;&lt;</span> endl<span class="token punctuation">;</span>
+   <span class="token punctuation">}</span>
+   <span class="token keyword">for</span> <span class="token punctuation">(</span><span class="token keyword">int</span> i <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span> i <span class="token operator">&lt;</span> rsp2<span class="token punctuation">.</span><span class="token function">friend_list_size</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span> <span class="token operator">++</span>i<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+      <span class="token keyword">const</span> User<span class="token operator">&amp;</span> user <span class="token operator">=</span> rsp2<span class="token punctuation">.</span><span class="token function">friend_list</span><span class="token punctuation">(</span>i<span class="token punctuation">)</span><span class="token punctuation">;</span>
+      std<span class="token double-colon punctuation">::</span>string name <span class="token operator">=</span> user<span class="token punctuation">.</span><span class="token function">name</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+      <span class="token keyword">uint32_t</span> age <span class="token operator">=</span> user<span class="token punctuation">.</span><span class="token function">age</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+      User_Sex sex <span class="token operator">=</span> user<span class="token punctuation">.</span><span class="token function">sex</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+      cout <span class="token operator">&lt;&lt;</span> name <span class="token operator">&lt;&lt;</span> <span class="token string">":"</span> <span class="token operator">&lt;&lt;</span> age <span class="token operator">&lt;&lt;</span> endl<span class="token punctuation">;</span>
+   <span class="token punctuation">}</span>
+</code></pre> 
+<h3><a id="4protobuf_183"></a>4、头格式protobuf的编写</h3> 
+<p>因为调用者与被调用者都需要知道服务名以及方法名字。所以用一个protobuf作为字节流传输的头部信息。这其中包含了服务名字，方法名字以及参数长度，三个数据。</p> 
+<pre><code class="prism language-cpp">message RpcHeader<span class="token punctuation">{<!-- --></span>
+    bytes service_name <span class="token operator">=</span><span class="token number">1</span><span class="token punctuation">;</span>
+    bytes method_name <span class="token operator">=</span><span class="token number">2</span><span class="token punctuation">;</span>
+    uint32 args_size<span class="token operator">=</span><span class="token number">3</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<h2><a id="RPC_194"></a>四、RPC通信框架设计</h2> 
+<p>框架主要功能读取config配置文件数据。数据敦促在m_config这个类中。</p> 
+<pre><code class="prism language-cpp">
+MprpcConfig MprpcApplication<span class="token double-colon punctuation">::</span>m_config<span class="token punctuation">;</span>
+<span class="token keyword">void</span> <span class="token class-name">MprpcApplication</span><span class="token double-colon punctuation">::</span><span class="token function">init</span><span class="token punctuation">(</span><span class="token keyword">int</span> argc<span class="token punctuation">,</span> <span class="token keyword">char</span><span class="token operator">*</span><span class="token operator">*</span> argv<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+   <span class="token keyword">if</span> <span class="token punctuation">(</span>argc <span class="token operator">&lt;</span> <span class="token number">2</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+      cout <span class="token operator">&lt;&lt;</span> <span class="token string">"format command  -i &lt;configfile&gt;"</span> <span class="token operator">&lt;&lt;</span> endl<span class="token punctuation">;</span>
+      <span class="token function">exit</span><span class="token punctuation">(</span>EXIT_FAILURE<span class="token punctuation">)</span><span class="token punctuation">;</span>
+   <span class="token punctuation">}</span>
+
+   <span class="token comment">// 检查格式对不对</span>
+   <span class="token keyword">int</span> c <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+   string config_file<span class="token punctuation">;</span>
+   <span class="token keyword">while</span> <span class="token punctuation">(</span><span class="token punctuation">(</span>c <span class="token operator">=</span> <span class="token function">getopt</span><span class="token punctuation">(</span>argc<span class="token punctuation">,</span> argv<span class="token punctuation">,</span> <span class="token string">"i:"</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token operator">!=</span> <span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+      <span class="token keyword">switch</span> <span class="token punctuation">(</span>c<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+         <span class="token keyword">case</span> <span class="token char">'i'</span><span class="token operator">:</span>
+            config_file <span class="token operator">=</span> optarg<span class="token punctuation">;</span>
+            cout <span class="token operator">&lt;&lt;</span> <span class="token string">"///get config file:"</span> <span class="token operator">&lt;&lt;</span> config_file <span class="token operator">&lt;&lt;</span> endl<span class="token punctuation">;</span>
+            <span class="token keyword">break</span><span class="token punctuation">;</span>
+         <span class="token keyword">case</span> <span class="token char">'?'</span><span class="token operator">:</span>
+            cout <span class="token operator">&lt;&lt;</span> <span class="token string">"format command  -i &lt;configfile&gt;"</span> <span class="token operator">&lt;&lt;</span> endl<span class="token punctuation">;</span>
+            <span class="token function">exit</span><span class="token punctuation">(</span>EXIT_FAILURE<span class="token punctuation">)</span><span class="token punctuation">;</span>
+         <span class="token keyword">case</span> <span class="token char">':'</span><span class="token operator">:</span>
+            cout <span class="token operator">&lt;&lt;</span> <span class="token string">"format command  -i &lt;configfile&gt;"</span> <span class="token operator">&lt;&lt;</span> endl<span class="token punctuation">;</span>
+            <span class="token function">exit</span><span class="token punctuation">(</span>EXIT_FAILURE<span class="token punctuation">)</span><span class="token punctuation">;</span>
+         <span class="token keyword">default</span><span class="token operator">:</span>
+            <span class="token keyword">break</span><span class="token punctuation">;</span>
+      <span class="token punctuation">}</span>
+   <span class="token punctuation">}</span>
+   <span class="token comment">// 读取配置文件信息   ip   port    zookeeper——ip   zookeeper——port</span>
+   <span class="token comment">// 存储在这个m_config成员变量中</span>
+   m_config<span class="token punctuation">.</span><span class="token function">LoadConfigFile</span><span class="token punctuation">(</span>config_file<span class="token punctuation">.</span><span class="token function">c_str</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+MprpcApplication<span class="token operator">&amp;</span> <span class="token class-name">MprpcApplication</span><span class="token double-colon punctuation">::</span><span class="token function">GetInstance</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+   <span class="token keyword">static</span> MprpcApplication app<span class="token punctuation">;</span>
+   <span class="token keyword">return</span> app<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+MprpcConfig<span class="token operator">&amp;</span> <span class="token class-name">MprpcApplication</span><span class="token double-colon punctuation">::</span><span class="token function">GetConfig</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+   <span class="token keyword">return</span> m_config<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+</code></pre> 
+<h3><a id="1_241"></a>1、配置文件读取类</h3> 
+<p>首先检测配置文件是否存在，然后逐行读取，最后存储在一个k-v字典中。该类提供读取key以及加载配置文件的功能。Trim是一个去掉字符串前后的空格的函数。</p> 
+<pre><code class="prism language-cpp"><span class="token keyword">class</span> <span class="token class-name">MprpcConfig</span> <span class="token punctuation">{<!-- --></span>
+  <span class="token keyword">private</span><span class="token operator">:</span>
+   unordered_map<span class="token operator">&lt;</span>string<span class="token punctuation">,</span> string<span class="token operator">&gt;</span> m_configMap<span class="token punctuation">;</span>
+
+  <span class="token keyword">public</span><span class="token operator">:</span>
+   <span class="token keyword">void</span> <span class="token function">LoadConfigFile</span><span class="token punctuation">(</span><span class="token keyword">const</span> <span class="token keyword">char</span><span class="token operator">*</span> confi_file<span class="token punctuation">)</span><span class="token punctuation">;</span>
+   string <span class="token function">Load</span><span class="token punctuation">(</span><span class="token keyword">const</span> string<span class="token operator">&amp;</span> key<span class="token punctuation">)</span><span class="token punctuation">;</span>
+   <span class="token keyword">void</span> <span class="token function">Trim</span><span class="token punctuation">(</span>string<span class="token operator">&amp;</span> src_buf<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span><span class="token punctuation">;</span>
+
+</code></pre> 
+<pre><code class="prism language-cpp"><span class="token keyword">void</span> <span class="token class-name">MprpcConfig</span><span class="token double-colon punctuation">::</span><span class="token function">LoadConfigFile</span><span class="token punctuation">(</span><span class="token keyword">const</span> <span class="token keyword">char</span><span class="token operator">*</span> config_file<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+   <span class="token function">LOG_INFO</span><span class="token punctuation">(</span><span class="token string">"=====================Load Config File !!====================="</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+   FILE<span class="token operator">*</span> pf <span class="token operator">=</span> <span class="token function">fopen</span><span class="token punctuation">(</span>config_file<span class="token punctuation">,</span> <span class="token string">"r"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+   <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span>pf<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+      <span class="token function">LOG_ERR</span><span class="token punctuation">(</span><span class="token string">"%s is not exist!!"</span><span class="token punctuation">,</span> config_file<span class="token punctuation">)</span><span class="token punctuation">;</span>
+      <span class="token function">LOG_ERR</span><span class="token punctuation">(</span><span class="token string">"%s:%s:%d"</span><span class="token punctuation">,</span> <span class="token constant">__FILE__</span><span class="token punctuation">,</span> __FUNCTION__<span class="token punctuation">,</span> <span class="token constant">__LINE__</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+      cout <span class="token operator">&lt;&lt;</span> config_file <span class="token operator">&lt;&lt;</span> <span class="token string">"is not exist!!"</span> <span class="token operator">&lt;&lt;</span> endl<span class="token punctuation">;</span>
+   <span class="token punctuation">}</span>
+   <span class="token comment">// 每一行进行 读取</span>
+   <span class="token comment">// 1.注释   2.正确的配置项 =    3.去掉开头的多余的空格</span>
+   <span class="token keyword">while</span> <span class="token punctuation">(</span><span class="token operator">!</span><span class="token function">feof</span><span class="token punctuation">(</span>pf<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+      <span class="token keyword">char</span> buf<span class="token punctuation">[</span><span class="token number">512</span><span class="token punctuation">]</span> <span class="token operator">=</span> <span class="token punctuation">{<!-- --></span><span class="token number">0</span><span class="token punctuation">}</span><span class="token punctuation">;</span>
+      <span class="token function">fgets</span><span class="token punctuation">(</span>buf<span class="token punctuation">,</span> <span class="token number">512</span><span class="token punctuation">,</span> pf<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+      <span class="token comment">// 去掉字符串前面多余的空格</span>
+      std<span class="token double-colon punctuation">::</span>string <span class="token function">read_buf</span><span class="token punctuation">(</span>buf<span class="token punctuation">)</span><span class="token punctuation">;</span>
+      <span class="token function">Trim</span><span class="token punctuation">(</span>read_buf<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+      <span class="token comment">// 判断#的注释</span>
+      <span class="token keyword">if</span> <span class="token punctuation">(</span>read_buf<span class="token punctuation">[</span><span class="token number">0</span><span class="token punctuation">]</span> <span class="token operator">==</span> <span class="token char">'#'</span> <span class="token operator">||</span> read_buf<span class="token punctuation">.</span><span class="token function">empty</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+         <span class="token keyword">continue</span><span class="token punctuation">;</span>
+      <span class="token punctuation">}</span>
+
+      <span class="token comment">// 解析配置项</span>
+      <span class="token keyword">int</span> idx <span class="token operator">=</span> read_buf<span class="token punctuation">.</span><span class="token function">find</span><span class="token punctuation">(</span><span class="token char">'='</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+      <span class="token keyword">if</span> <span class="token punctuation">(</span>idx <span class="token operator">==</span> <span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+         <span class="token comment">// 配置项不合法</span>
+         <span class="token keyword">continue</span><span class="token punctuation">;</span>
+      <span class="token punctuation">}</span>
+
+      std<span class="token double-colon punctuation">::</span>string key<span class="token punctuation">;</span>
+      std<span class="token double-colon punctuation">::</span>string value<span class="token punctuation">;</span>
+      key <span class="token operator">=</span> read_buf<span class="token punctuation">.</span><span class="token function">substr</span><span class="token punctuation">(</span><span class="token number">0</span><span class="token punctuation">,</span> idx<span class="token punctuation">)</span><span class="token punctuation">;</span>
+      <span class="token function">Trim</span><span class="token punctuation">(</span>key<span class="token punctuation">)</span><span class="token punctuation">;</span>
+      <span class="token comment">// rpcserverip=127.0.0.1\n</span>
+      <span class="token keyword">int</span> endidx <span class="token operator">=</span> read_buf<span class="token punctuation">.</span><span class="token function">find</span><span class="token punctuation">(</span><span class="token char">'\n'</span><span class="token punctuation">,</span> idx<span class="token punctuation">)</span><span class="token punctuation">;</span>
+      value <span class="token operator">=</span> read_buf<span class="token punctuation">.</span><span class="token function">substr</span><span class="token punctuation">(</span>idx <span class="token operator">+</span> <span class="token number">1</span><span class="token punctuation">,</span> endidx <span class="token operator">-</span> idx <span class="token operator">-</span> <span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+      <span class="token function">Trim</span><span class="token punctuation">(</span>value<span class="token punctuation">)</span><span class="token punctuation">;</span>
+      cout <span class="token operator">&lt;&lt;</span> <span class="token string">"get kv==&gt; "</span> <span class="token operator">&lt;&lt;</span> key <span class="token operator">&lt;&lt;</span> <span class="token string">":"</span> <span class="token operator">&lt;&lt;</span> value <span class="token operator">&lt;&lt;</span> endl<span class="token punctuation">;</span>
+      <span class="token function">LOG_INFO</span><span class="token punctuation">(</span><span class="token string">"get kv==&gt; %s:%s"</span><span class="token punctuation">,</span> key<span class="token punctuation">.</span><span class="token function">c_str</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span> value<span class="token punctuation">.</span><span class="token function">c_str</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+      m_configMap<span class="token punctuation">.</span><span class="token function">insert</span><span class="token punctuation">(</span><span class="token punctuation">{<!-- --></span>key<span class="token punctuation">,</span> value<span class="token punctuation">}</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+   <span class="token punctuation">}</span>
+
+   <span class="token function">fclose</span><span class="token punctuation">(</span>pf<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+<span class="token comment">// 查询配置项信息</span>
+std<span class="token double-colon punctuation">::</span>string <span class="token class-name">MprpcConfig</span><span class="token double-colon punctuation">::</span><span class="token function">Load</span><span class="token punctuation">(</span><span class="token keyword">const</span> std<span class="token double-colon punctuation">::</span>string<span class="token operator">&amp;</span> key<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+   <span class="token keyword">auto</span> it <span class="token operator">=</span> m_configMap<span class="token punctuation">.</span><span class="token function">find</span><span class="token punctuation">(</span>key<span class="token punctuation">)</span><span class="token punctuation">;</span>
+   <span class="token keyword">if</span> <span class="token punctuation">(</span>it <span class="token operator">==</span> m_configMap<span class="token punctuation">.</span><span class="token function">end</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+      <span class="token keyword">return</span> <span class="token string">""</span><span class="token punctuation">;</span>
+   <span class="token punctuation">}</span>
+   <span class="token keyword">return</span> it<span class="token operator">-&gt;</span>second<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<h2><a id="_313"></a>五、分布式协调</h2> 
+<h3><a id="1zookeeper_314"></a>1、zookeeper简介</h3> 
+<p>zookeeper 是一个开源的分布式协调服务框架，由雅虎公司开发并贡献给 apache 基金会，它为分布式应用程序提供了高可用、高性能且一致的工作空间。<br> zookeeper 可以处理众多的分布式系统问题，例如：<br> <strong>充当命名服务</strong>：通过在zookeeper中注册一个节点并将它命名，其他进程就可以使用该名称来找到该节点。<br> <strong>分布式配置管理</strong>：应用程序可以使用 zookeeper 来管理其配置信息。因此，在更改配置时，无需重新启动整个应用程序。<br> <strong>处理分布式锁</strong>：在分布式环境中，许多进程需要对相同资源进行更新操作。使用 zookeeper，可以实现分布式锁定功能，确保这些更新互斥执行。<br> <strong>分布式队列</strong>：zookeeper 还支持分布式队列，并提供了一种轻量级的方法来实现“先进先出”和“后进先出”（lifo）队列等各种队列类型。</p> 
+<h3><a id="2zookeeper_321"></a>2、zookeeper工具类定义</h3> 
+<p>目的就是由服务名以及方法名组成的节点中存储ip以及端口，并且是临时性节点pc节点超时未发送心跳消息Zk会自动删除临时性节点，服务发布者根绝服务名以及方法名形成节点存储开启该服务的ip以及端口，服务调用者就根据这个这个节点找到对饮的ip地址以及端口调用对应的服务以及方法。所以这个类必须包含有启动函数，构造函数，以及创建节点和返回节点数据函数。</p> 
+<pre><code class="prism language-cpp"><span class="token keyword">class</span> <span class="token class-name">ZkClient</span> <span class="token punctuation">{<!-- --></span>
+  <span class="token keyword">public</span><span class="token operator">:</span>
+   <span class="token function">ZkClient</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+   <span class="token operator">~</span><span class="token function">ZkClient</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+   <span class="token keyword">void</span> <span class="token function">Start</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+   <span class="token keyword">void</span> <span class="token function">Create</span><span class="token punctuation">(</span><span class="token keyword">const</span> <span class="token keyword">char</span><span class="token operator">*</span> path<span class="token punctuation">,</span> <span class="token keyword">const</span> <span class="token keyword">char</span><span class="token operator">*</span> data<span class="token punctuation">,</span> <span class="token keyword">int</span> datalen<span class="token punctuation">,</span> <span class="token keyword">int</span> state <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+   std <span class="token double-colon punctuation">::</span>string <span class="token function">GetData</span><span class="token punctuation">(</span><span class="token keyword">const</span> <span class="token keyword">char</span><span class="token operator">*</span> path<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+  <span class="token keyword">private</span><span class="token operator">:</span>
+   <span class="token comment">// zk的客户端句柄</span>
+   zhandle_t<span class="token operator">*</span> m_zhandle<span class="token punctuation">;</span>
+<span class="token punctuation">}</span><span class="token punctuation">;</span>
+</code></pre> 
+<h3><a id="3zookeeper_340"></a>3、zookeeper工具类的实现</h3> 
+<p><strong>1、启动函数</strong><br> 首先根据应用程序的配置文件中的“zookeeperip”和“zookeeperport”加载zookeeper服务器的ip地址和端口号，然后将它们组合成zookeeper连接字符串。<br> 接下来，代码调用zookeeper_init函数来初始化zookeeper客户端。<br> 初始化一个名为sem的信号量，并通过zoo_set_context函数将它与m_zhandle关联起来。然后，代码调用sem_wait函数等待zk server的响应。在等待期间，当前线程会被挂起，当zk client连接到zk server并建立成功时，会触发global_watcher回调函数，在回调函数中会调用sem_post函数，使代码继续执行。</p> 
+<pre><code class="prism language-cpp"><span class="token keyword">void</span> <span class="token function">global_watcher</span><span class="token punctuation">(</span>zhandle_t<span class="token operator">*</span> zh<span class="token punctuation">,</span>
+                    <span class="token keyword">int</span> type<span class="token punctuation">,</span>
+                    <span class="token keyword">int</span> state<span class="token punctuation">,</span>
+                    <span class="token keyword">const</span> <span class="token keyword">char</span><span class="token operator">*</span> path<span class="token punctuation">,</span>
+                    <span class="token keyword">void</span><span class="token operator">*</span> watcherCtx<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+   <span class="token keyword">if</span> <span class="token punctuation">(</span>type <span class="token operator">==</span> ZOO_SESSION_EVENT<span class="token punctuation">)</span>  <span class="token comment">// 回调的消息类型是和会话相关的消息类型</span>
+   <span class="token punctuation">{<!-- --></span>
+      <span class="token keyword">if</span> <span class="token punctuation">(</span>state <span class="token operator">==</span> ZOO_CONNECTED_STATE<span class="token punctuation">)</span>  <span class="token comment">// zkclient和zkserver连接成功</span>
+      <span class="token punctuation">{<!-- --></span>
+         sem_t<span class="token operator">*</span> sem <span class="token operator">=</span> <span class="token punctuation">(</span>sem_t<span class="token operator">*</span><span class="token punctuation">)</span><span class="token function">zoo_get_context</span><span class="token punctuation">(</span>zh<span class="token punctuation">)</span><span class="token punctuation">;</span>
+         <span class="token function">sem_post</span><span class="token punctuation">(</span>sem<span class="token punctuation">)</span><span class="token punctuation">;</span>
+      <span class="token punctuation">}</span>
+   <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+
+<span class="token comment">// 连接zkserver</span>
+<span class="token keyword">void</span> <span class="token class-name">ZkClient</span><span class="token double-colon punctuation">::</span><span class="token function">Start</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+   std<span class="token double-colon punctuation">::</span>string host <span class="token operator">=</span>
+       <span class="token class-name">MprpcApplication</span><span class="token double-colon punctuation">::</span><span class="token function">GetInstance</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">GetConfig</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">Load</span><span class="token punctuation">(</span><span class="token string">"zookeeperip"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+   std<span class="token double-colon punctuation">::</span>string port <span class="token operator">=</span>
+       <span class="token class-name">MprpcApplication</span><span class="token double-colon punctuation">::</span><span class="token function">GetInstance</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">GetConfig</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">Load</span><span class="token punctuation">(</span><span class="token string">"zookeeperport"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+   std<span class="token double-colon punctuation">::</span>string connstr <span class="token operator">=</span> host <span class="token operator">+</span> <span class="token string">":"</span> <span class="token operator">+</span> port<span class="token punctuation">;</span>
+
+   <span class="token comment">/*
+   zookeeper_mt：多线程版本
+   zookeeper的API客户端程序提供了三个线程
+   API调用线程
+   网络I/O线程  pthread_create  poll
+   watcher回调线程 pthread_create
+   */</span>
+   m_zhandle <span class="token operator">=</span> <span class="token function">zookeeper_init</span><span class="token punctuation">(</span>connstr<span class="token punctuation">.</span><span class="token function">c_str</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span> global_watcher<span class="token punctuation">,</span> <span class="token number">30000</span><span class="token punctuation">,</span> <span class="token keyword">nullptr</span><span class="token punctuation">,</span>
+                              <span class="token keyword">nullptr</span><span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+   <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token keyword">nullptr</span> <span class="token operator">==</span> m_zhandle<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+      std<span class="token double-colon punctuation">::</span>cout <span class="token operator">&lt;&lt;</span> <span class="token string">"zookeeper_init error!"</span> <span class="token operator">&lt;&lt;</span> std<span class="token double-colon punctuation">::</span>endl<span class="token punctuation">;</span>
+      <span class="token function">LOG_ERR</span><span class="token punctuation">(</span><span class="token string">"zookeeper_init error!  "</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+      <span class="token function">exit</span><span class="token punctuation">(</span>EXIT_FAILURE<span class="token punctuation">)</span><span class="token punctuation">;</span>
+   <span class="token punctuation">}</span>
+
+   sem_t sem<span class="token punctuation">;</span>
+   <span class="token function">sem_init</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>sem<span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+   <span class="token function">zoo_set_context</span><span class="token punctuation">(</span>m_zhandle<span class="token punctuation">,</span> <span class="token operator">&amp;</span>sem<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+   <span class="token function">sem_wait</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>sem<span class="token punctuation">)</span><span class="token punctuation">;</span>
+   <span class="token comment">// 等 zk server响应的时候  结束等待</span>
+   std<span class="token double-colon punctuation">::</span>cout <span class="token operator">&lt;&lt;</span> <span class="token string">"zookeeper_init success!"</span> <span class="token operator">&lt;&lt;</span> std<span class="token double-colon punctuation">::</span>endl<span class="token punctuation">;</span>
+   <span class="token function">LOG_INFO</span><span class="token punctuation">(</span><span class="token string">"zookeeper_init success!"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+</code></pre> 
+<p>其中global_watcher函数：全局的观察器回调函数，<br> 用于处理zkserver给zkclient的通知。<br> 当收到与会话相关的消息(即ZOO_SESSION_EVENT)时，<br> 如果状态变为连接状态(ZOO_CONNECTED_STATE)，<br> 则解除对初始化信号量(semaphore)的等待，完成初始化。</p> 
+<p><strong>2、创建节点</strong><br> 创建一个指定路径的节点，如果该节点已经存在则不创建。代码首先使用zoo_exists函数判断指定路径对应的节点是否存在（如果不存在会返回znonode错误码），如果不存在则调用zoo_create函数创建一个新的节点。</p> 
+<pre><code class="prism language-cpp">
+<span class="token keyword">void</span> <span class="token class-name">ZkClient</span><span class="token double-colon punctuation">::</span><span class="token function">Create</span><span class="token punctuation">(</span><span class="token keyword">const</span> <span class="token keyword">char</span><span class="token operator">*</span> path<span class="token punctuation">,</span>
+                      <span class="token keyword">const</span> <span class="token keyword">char</span><span class="token operator">*</span> data<span class="token punctuation">,</span>
+                      <span class="token keyword">int</span> datalen<span class="token punctuation">,</span>
+                      <span class="token keyword">int</span> state<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+   <span class="token keyword">char</span> path_buffer<span class="token punctuation">[</span><span class="token number">128</span><span class="token punctuation">]</span><span class="token punctuation">;</span>
+   <span class="token keyword">int</span> bufferlen <span class="token operator">=</span> <span class="token keyword">sizeof</span><span class="token punctuation">(</span>path_buffer<span class="token punctuation">)</span><span class="token punctuation">;</span>
+   <span class="token keyword">int</span> flag<span class="token punctuation">;</span>
+   <span class="token comment">// 先判断path表示的znode节点是否存在，如果存在，就不再重复创建了</span>
+   flag <span class="token operator">=</span> <span class="token function">zoo_exists</span><span class="token punctuation">(</span>m_zhandle<span class="token punctuation">,</span> path<span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">,</span> <span class="token keyword">nullptr</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+   <span class="token keyword">if</span> <span class="token punctuation">(</span>ZNONODE <span class="token operator">==</span> flag<span class="token punctuation">)</span>  <span class="token comment">// 表示path的znode节点不存在</span>
+   <span class="token punctuation">{<!-- --></span>
+      <span class="token comment">// 创建指定path的znode节点了</span>
+      flag <span class="token operator">=</span> <span class="token function">zoo_create</span><span class="token punctuation">(</span>m_zhandle<span class="token punctuation">,</span> path<span class="token punctuation">,</span> data<span class="token punctuation">,</span> datalen<span class="token punctuation">,</span> <span class="token operator">&amp;</span>ZOO_OPEN_ACL_UNSAFE<span class="token punctuation">,</span>
+                        state<span class="token punctuation">,</span> path_buffer<span class="token punctuation">,</span> bufferlen<span class="token punctuation">)</span><span class="token punctuation">;</span>
+      <span class="token keyword">if</span> <span class="token punctuation">(</span>flag <span class="token operator">==</span> ZOK<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+         std<span class="token double-colon punctuation">::</span>cout <span class="token operator">&lt;&lt;</span> <span class="token string">"znode create success... path:"</span> <span class="token operator">&lt;&lt;</span> path <span class="token operator">&lt;&lt;</span> std<span class="token double-colon punctuation">::</span>endl<span class="token punctuation">;</span>
+         <span class="token function">LOG_INFO</span><span class="token punctuation">(</span><span class="token string">"znode create success... path:%s"</span><span class="token punctuation">,</span> path<span class="token punctuation">)</span><span class="token punctuation">;</span>
+      <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+         std<span class="token double-colon punctuation">::</span>cout <span class="token operator">&lt;&lt;</span> <span class="token string">"flag:"</span> <span class="token operator">&lt;&lt;</span> flag <span class="token operator">&lt;&lt;</span> std<span class="token double-colon punctuation">::</span>endl<span class="token punctuation">;</span>
+         std<span class="token double-colon punctuation">::</span>cout <span class="token operator">&lt;&lt;</span> <span class="token string">"znode create error... path:"</span> <span class="token operator">&lt;&lt;</span> path <span class="token operator">&lt;&lt;</span> std<span class="token double-colon punctuation">::</span>endl<span class="token punctuation">;</span>
+         <span class="token function">LOG_ERR</span><span class="token punctuation">(</span><span class="token string">"znode create error .. path:%s"</span><span class="token punctuation">,</span> path<span class="token punctuation">)</span><span class="token punctuation">;</span>
+         <span class="token function">exit</span><span class="token punctuation">(</span>EXIT_FAILURE<span class="token punctuation">)</span><span class="token punctuation">;</span>
+      <span class="token punctuation">}</span>
+   <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p><strong>3、返回数据</strong><br> 函数用于获取指定路径对应节点的值。代码通过调用zoo_get函数来实现此功能，并返回节点的值作为字符串。如果获取数据失败（例如节点不存在），则输出错误消息并返回一个空字符串。</p> 
+<pre><code class="prism language-cpp">std<span class="token double-colon punctuation">::</span>string <span class="token class-name">ZkClient</span><span class="token double-colon punctuation">::</span><span class="token function">GetData</span><span class="token punctuation">(</span><span class="token keyword">const</span> <span class="token keyword">char</span><span class="token operator">*</span> path<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+   <span class="token keyword">char</span> buffer<span class="token punctuation">[</span><span class="token number">64</span><span class="token punctuation">]</span><span class="token punctuation">;</span>
+   <span class="token keyword">int</span> bufferlen <span class="token operator">=</span> <span class="token keyword">sizeof</span><span class="token punctuation">(</span>buffer<span class="token punctuation">)</span><span class="token punctuation">;</span>
+   <span class="token keyword">int</span> flag <span class="token operator">=</span> <span class="token function">zoo_get</span><span class="token punctuation">(</span>m_zhandle<span class="token punctuation">,</span> path<span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">,</span> buffer<span class="token punctuation">,</span> <span class="token operator">&amp;</span>bufferlen<span class="token punctuation">,</span> <span class="token keyword">nullptr</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+   <span class="token keyword">if</span> <span class="token punctuation">(</span>flag <span class="token operator">!=</span> ZOK<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+      std<span class="token double-colon punctuation">::</span>cout <span class="token operator">&lt;&lt;</span> <span class="token string">"get znode error... path:"</span> <span class="token operator">&lt;&lt;</span> path <span class="token operator">&lt;&lt;</span> std<span class="token double-colon punctuation">::</span>endl<span class="token punctuation">;</span>
+      <span class="token function">LOG_ERR</span><span class="token punctuation">(</span><span class="token string">"get znode  error .. path:%s"</span><span class="token punctuation">,</span> path<span class="token punctuation">)</span><span class="token punctuation">;</span>
+      <span class="token keyword">return</span> <span class="token string">""</span><span class="token punctuation">;</span>
+   <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+      <span class="token keyword">return</span> buffer<span class="token punctuation">;</span>
+   <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<h3><a id="4_454"></a>4、服务发布</h3> 
+<p>在服务注册的时候，首先定义zookeeper工具类，启动zookeeper服务，然后循环遍历所有的服务以及服务下面的方法，将他们的名字构造层节点路劲，然后这个节点存储的是由ip以及port组成的字符串，<strong>这样调用方就可以从zookeeper中根据服务名以及节点名获取到提供该服务的ip以及端口号。</strong><br> <strong>注意：节点必须是临时性的，因为服务挂掉的时候节点会自动去掉 ，为了把当前rpc节点上要发布的服务全部注册到zk上面，并且zkclient 会保留与zkserver的api连接通过zkclient 网络I/O线程 以1/3 * timeout 时间发送心跳ping消息给zkserver以保持维护节点的存在</strong></p> 
+<pre><code class="prism language-cpp">  ZkClient zkCli<span class="token punctuation">;</span>
+   zkCli<span class="token punctuation">.</span><span class="token function">Start</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+   <span class="token comment">// service_name为永久性节点    method_name为临时性节点</span>
+   <span class="token keyword">for</span> <span class="token punctuation">(</span><span class="token keyword">auto</span><span class="token operator">&amp;</span> sp <span class="token operator">:</span> m_serviceMap<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+      <span class="token comment">// /service_name   /UserServiceRpc    只能一层一层节点创建</span>
+      std<span class="token double-colon punctuation">::</span>string service_path <span class="token operator">=</span> <span class="token string">"/"</span> <span class="token operator">+</span> sp<span class="token punctuation">.</span>first<span class="token punctuation">;</span>
+      zkCli<span class="token punctuation">.</span><span class="token function">Create</span><span class="token punctuation">(</span>service_path<span class="token punctuation">.</span><span class="token function">c_str</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token keyword">nullptr</span><span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+      <span class="token keyword">for</span> <span class="token punctuation">(</span><span class="token keyword">auto</span><span class="token operator">&amp;</span> mp <span class="token operator">:</span> sp<span class="token punctuation">.</span>second<span class="token punctuation">.</span>m_methodMap<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+         <span class="token comment">// /service_name/method_name   /UserServiceRpc/Login</span>
+         <span class="token comment">// 存储当前这个rpc服务节点主机的ip和port</span>
+         std<span class="token double-colon punctuation">::</span>string method_path <span class="token operator">=</span> service_path <span class="token operator">+</span> <span class="token string">"/"</span> <span class="token operator">+</span> mp<span class="token punctuation">.</span>first<span class="token punctuation">;</span>
+         <span class="token keyword">char</span> method_path_data<span class="token punctuation">[</span><span class="token number">128</span><span class="token punctuation">]</span> <span class="token operator">=</span> <span class="token punctuation">{<!-- --></span><span class="token number">0</span><span class="token punctuation">}</span><span class="token punctuation">;</span>
+         <span class="token function">sprintf</span><span class="token punctuation">(</span>method_path_data<span class="token punctuation">,</span> <span class="token string">"%s:%d"</span><span class="token punctuation">,</span> ip<span class="token punctuation">.</span><span class="token function">c_str</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span> port<span class="token punctuation">)</span><span class="token punctuation">;</span>
+         <span class="token comment">// ZOO_EPHEMERAL表示znode是一个临时性节点</span>
+         zkCli<span class="token punctuation">.</span><span class="token function">Create</span><span class="token punctuation">(</span>method_path<span class="token punctuation">.</span><span class="token function">c_str</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span> method_path_data<span class="token punctuation">,</span>
+                      <span class="token function">strlen</span><span class="token punctuation">(</span>method_path_data<span class="token punctuation">)</span><span class="token punctuation">,</span> ZOO_EPHEMERAL<span class="token punctuation">)</span><span class="token punctuation">;</span>
+      <span class="token punctuation">}</span>
+   <span class="token punctuation">}</span>
+</code></pre> 
+<h3><a id="5_479"></a>5、服务发现</h3> 
+<p>调用方需要寻找某项服务的ip以及端口，首先构造路劲，然后调用获取数据犯法获取该节点的ip以及端口字符串，最后解析获取该字符串。</p> 
+<pre><code class="prism language-cpp"> <span class="token comment">// 从zookeeper 获取ip</span>
+   ZkClient zkCli<span class="token punctuation">;</span>
+   zkCli<span class="token punctuation">.</span><span class="token function">Start</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+   <span class="token comment">//  /UserServiceRpc/Login</span>
+   std<span class="token double-colon punctuation">::</span>string method_path <span class="token operator">=</span> <span class="token string">"/"</span> <span class="token operator">+</span> service_name <span class="token operator">+</span> <span class="token string">"/"</span> <span class="token operator">+</span> method_name<span class="token punctuation">;</span>
+   <span class="token comment">// 127.0.0.1:8000</span>
+   std<span class="token double-colon punctuation">::</span>string host_data <span class="token operator">=</span> zkCli<span class="token punctuation">.</span><span class="token function">GetData</span><span class="token punctuation">(</span>method_path<span class="token punctuation">.</span><span class="token function">c_str</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+   <span class="token keyword">if</span> <span class="token punctuation">(</span>host_data <span class="token operator">==</span> <span class="token string">""</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+      controller<span class="token operator">-&gt;</span><span class="token function">SetFailed</span><span class="token punctuation">(</span>method_path <span class="token operator">+</span> <span class="token string">" is not exist!"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+      <span class="token keyword">return</span><span class="token punctuation">;</span>
+   <span class="token punctuation">}</span>
+   <span class="token keyword">int</span> idx <span class="token operator">=</span> host_data<span class="token punctuation">.</span><span class="token function">find</span><span class="token punctuation">(</span><span class="token string">":"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+   <span class="token keyword">if</span> <span class="token punctuation">(</span>idx <span class="token operator">==</span> <span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+      controller<span class="token operator">-&gt;</span><span class="token function">SetFailed</span><span class="token punctuation">(</span>method_path <span class="token operator">+</span> <span class="token string">" address is invalid!"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+      <span class="token keyword">return</span><span class="token punctuation">;</span>
+   <span class="token punctuation">}</span>
+   std<span class="token double-colon punctuation">::</span>string ip <span class="token operator">=</span> host_data<span class="token punctuation">.</span><span class="token function">substr</span><span class="token punctuation">(</span><span class="token number">0</span><span class="token punctuation">,</span> idx<span class="token punctuation">)</span><span class="token punctuation">;</span>
+   <span class="token keyword">uint16_t</span> port <span class="token operator">=</span>
+       <span class="token function">atoi</span><span class="token punctuation">(</span>host_data<span class="token punctuation">.</span><span class="token function">substr</span><span class="token punctuation">(</span>idx <span class="token operator">+</span> <span class="token number">1</span><span class="token punctuation">,</span> host_data<span class="token punctuation">.</span><span class="token function">size</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">-</span> idx<span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">c_str</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+</code></pre> 
+<h2><a id="_504"></a>六、异步日志系统</h2> 
+<h3><a id="1_505"></a>1、为什么需要异步记录日志</h3> 
+<p>因为基于muduo网络库进行网络通讯的，muduo通过多线程来处理并发连接，要添加日志模块那么就会有多个线程写日志信息的情况。这样的话就必须要实现一个保证线程安全的日志队列。时需要启动一个日志线程，专门对日志队列写日志。</p> 
+<h3><a id="2_507"></a>2、保证线程安全的日志队列类</h3> 
+<p>模板类 lockqueue，它用于实现异步写日志的日志队列，主要包含 push 和 pop 两个方法。其中，push 方法可以被多个 worker 线程调用以将数据添加到日志队列中，而 pop 方法则只能由一个线程读取队列并将其内容写入日志文件。<br> 具体来说，push 方法首先加锁（使用了 std::lock_guardstd::mutex），然后将数据添加到队列中，最后通过条件变量（std::condition_variable）唤醒 pop 方法所在的线程。pop 方法首先也需要加锁（使用了 std::unique_lockstd::mutex），然后进入一个 while 循环，在循环中检查队列是否为空，如果为空，则调用条件变量的 wait 方法使当前线程阻塞等待。当队列不为空时，将队头元素取出，并从队列中删除。最后释放锁并返回取出的队头元素。<br> 通过这种方式实现日志队列的异步操作，可以让写日志的线程和写文件的线程分别跑在不同的线程中，避免了日志写操作对主程序的性能影响。</p> 
+<pre><code class="prism language-cpp"><span class="token keyword">template</span> <span class="token operator">&lt;</span><span class="token keyword">typename</span> <span class="token class-name">T</span><span class="token operator">&gt;</span>
+<span class="token keyword">class</span> <span class="token class-name">LockQueue</span> <span class="token punctuation">{<!-- --></span>
+  <span class="token keyword">public</span><span class="token operator">:</span>
+   <span class="token comment">// 多个worker线程都会写日志queue</span>
+   <span class="token keyword">void</span> <span class="token function">Push</span><span class="token punctuation">(</span><span class="token keyword">const</span> T<span class="token operator">&amp;</span> data<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+      std<span class="token double-colon punctuation">::</span>lock_guard<span class="token operator">&lt;</span>std<span class="token double-colon punctuation">::</span>mutex<span class="token operator">&gt;</span> <span class="token function">lock</span><span class="token punctuation">(</span>m_mutex<span class="token punctuation">)</span><span class="token punctuation">;</span>
+      m_queue<span class="token punctuation">.</span><span class="token function">push</span><span class="token punctuation">(</span>data<span class="token punctuation">)</span><span class="token punctuation">;</span>
+      m_condvariable<span class="token punctuation">.</span><span class="token function">notify_one</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+   <span class="token punctuation">}</span>
+
+   <span class="token comment">// 一个线程读日志queue，写日志文件</span>
+   T <span class="token function">Pop</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+      std<span class="token double-colon punctuation">::</span>unique_lock<span class="token operator">&lt;</span>std<span class="token double-colon punctuation">::</span>mutex<span class="token operator">&gt;</span> <span class="token function">lock</span><span class="token punctuation">(</span>m_mutex<span class="token punctuation">)</span><span class="token punctuation">;</span>
+      <span class="token keyword">while</span> <span class="token punctuation">(</span>m_queue<span class="token punctuation">.</span><span class="token function">empty</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+         <span class="token comment">// 日志队列为空，线程进入wait状态</span>
+         m_condvariable<span class="token punctuation">.</span><span class="token function">wait</span><span class="token punctuation">(</span>lock<span class="token punctuation">)</span><span class="token punctuation">;</span>
+      <span class="token punctuation">}</span>
+
+      T data <span class="token operator">=</span> m_queue<span class="token punctuation">.</span><span class="token function">front</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+      m_queue<span class="token punctuation">.</span><span class="token function">pop</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+      <span class="token keyword">return</span> data<span class="token punctuation">;</span>
+   <span class="token punctuation">}</span>
+
+  <span class="token keyword">private</span><span class="token operator">:</span>
+   std<span class="token double-colon punctuation">::</span>queue<span class="token operator">&lt;</span>T<span class="token operator">&gt;</span> m_queue<span class="token punctuation">;</span>
+   std<span class="token double-colon punctuation">::</span>mutex m_mutex<span class="token punctuation">;</span>
+   std<span class="token double-colon punctuation">::</span>condition_variable m_condvariable<span class="token punctuation">;</span>
+<span class="token punctuation">}</span><span class="token punctuation">;</span>
+</code></pre> 
+<h3><a id="3_542"></a>3、日志类</h3> 
+<p>首先日志类属于是单例模式，确保了整个应用程序中只有一个logger实例。<br> <strong>多线程写日志</strong>：在logger的构造函数中，启动了一个带lambda表达式的线程writelogtask，在该线程的主体循环中执行以下操作：<br> 1、获取当前时间，尝试打开当日的日志文件<br> 2、从lockqueue中获取缓存的日志信息<br> 3、根据日志级别，添加前缀（“info"或"error”），并将该条日志写入日志文件中<br> 该线程会一直运行，为整个应用程序提供日志服务<br> 同时除了在构造函数中设置日志级别和启动写日志线程之外，logger还提供了以下两个操作接口：<br> setloglevel(loglevel level): 设置日志级别<br> log(std::string msg): 将msg作为一条日志信息写入lockqueue缓冲区。</p> 
+<pre><code class="prism language-cpp"><span class="token comment">// 获取日志的单例</span>
+Logger<span class="token operator">&amp;</span> <span class="token class-name">Logger</span><span class="token double-colon punctuation">::</span><span class="token function">GetInstance</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+   <span class="token keyword">static</span> Logger logger<span class="token punctuation">;</span>
+   <span class="token keyword">return</span> logger<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+<span class="token class-name">Logger</span><span class="token double-colon punctuation">::</span><span class="token function">Logger</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+   <span class="token comment">// 启动专门的写日志线程</span>
+   std<span class="token double-colon punctuation">::</span>thread <span class="token function">writeLogTask</span><span class="token punctuation">(</span><span class="token punctuation">[</span><span class="token operator">&amp;</span><span class="token punctuation">]</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+      <span class="token keyword">for</span> <span class="token punctuation">(</span><span class="token punctuation">;</span><span class="token punctuation">;</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+         <span class="token comment">// 获取当前的日期，然后取日志信息，写入相应的日志文件当中 a+</span>
+         time_t now <span class="token operator">=</span> <span class="token function">time</span><span class="token punctuation">(</span><span class="token keyword">nullptr</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+         tm<span class="token operator">*</span> nowtm <span class="token operator">=</span> <span class="token function">localtime</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>now<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+         <span class="token keyword">char</span> file_name<span class="token punctuation">[</span><span class="token number">128</span><span class="token punctuation">]</span><span class="token punctuation">;</span>
+         <span class="token function">sprintf</span><span class="token punctuation">(</span>file_name<span class="token punctuation">,</span> <span class="token string">"%d-%d-%d-log.txt"</span><span class="token punctuation">,</span> nowtm<span class="token operator">-&gt;</span>tm_year <span class="token operator">+</span> <span class="token number">1900</span><span class="token punctuation">,</span>
+                 nowtm<span class="token operator">-&gt;</span>tm_mon <span class="token operator">+</span> <span class="token number">1</span><span class="token punctuation">,</span> nowtm<span class="token operator">-&gt;</span>tm_mday<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+         FILE<span class="token operator">*</span> pf <span class="token operator">=</span> <span class="token function">fopen</span><span class="token punctuation">(</span>file_name<span class="token punctuation">,</span> <span class="token string">"a+"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+         <span class="token keyword">if</span> <span class="token punctuation">(</span>pf <span class="token operator">==</span> <span class="token keyword">nullptr</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            std<span class="token double-colon punctuation">::</span>cout <span class="token operator">&lt;&lt;</span> <span class="token string">"logger file : "</span> <span class="token operator">&lt;&lt;</span> file_name <span class="token operator">&lt;&lt;</span> <span class="token string">" open error!"</span>
+                      <span class="token operator">&lt;&lt;</span> std<span class="token double-colon punctuation">::</span>endl<span class="token punctuation">;</span>
+            <span class="token function">exit</span><span class="token punctuation">(</span>EXIT_FAILURE<span class="token punctuation">)</span><span class="token punctuation">;</span>
+         <span class="token punctuation">}</span>
+
+         std<span class="token double-colon punctuation">::</span>string msg <span class="token operator">=</span> m_lckQue<span class="token punctuation">.</span><span class="token function">Pop</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+         <span class="token keyword">char</span> time_buf<span class="token punctuation">[</span><span class="token number">128</span><span class="token punctuation">]</span> <span class="token operator">=</span> <span class="token punctuation">{<!-- --></span><span class="token number">0</span><span class="token punctuation">}</span><span class="token punctuation">;</span>
+        <span class="token comment">//  std::cout &lt;&lt; (m_loglevel == INFO) &lt;&lt; std::endl;</span>
+         <span class="token function">sprintf</span><span class="token punctuation">(</span>time_buf<span class="token punctuation">,</span> <span class="token string">"%d:%d:%d =&gt;[%s] "</span><span class="token punctuation">,</span> nowtm<span class="token operator">-&gt;</span>tm_hour<span class="token punctuation">,</span> nowtm<span class="token operator">-&gt;</span>tm_min<span class="token punctuation">,</span>
+                 nowtm<span class="token operator">-&gt;</span>tm_sec<span class="token punctuation">,</span> <span class="token punctuation">(</span>m_loglevel <span class="token operator">==</span> INFO <span class="token operator">?</span> <span class="token string">"info"</span> <span class="token operator">:</span> <span class="token string">"error"</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+         msg<span class="token punctuation">.</span><span class="token function">insert</span><span class="token punctuation">(</span><span class="token number">0</span><span class="token punctuation">,</span> time_buf<span class="token punctuation">)</span><span class="token punctuation">;</span>
+         msg<span class="token punctuation">.</span><span class="token function">append</span><span class="token punctuation">(</span><span class="token string">"\n"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+         <span class="token function">fputs</span><span class="token punctuation">(</span>msg<span class="token punctuation">.</span><span class="token function">c_str</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span> pf<span class="token punctuation">)</span><span class="token punctuation">;</span>
+         <span class="token function">fclose</span><span class="token punctuation">(</span>pf<span class="token punctuation">)</span><span class="token punctuation">;</span>
+      <span class="token punctuation">}</span>
+   <span class="token punctuation">}</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+   <span class="token comment">// 设置分离线程，守护线程</span>
+   writeLogTask<span class="token punctuation">.</span><span class="token function">detach</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+<span class="token comment">// 设置日志级别</span>
+<span class="token keyword">void</span> <span class="token class-name">Logger</span><span class="token double-colon punctuation">::</span><span class="token function">SetLogLevel</span><span class="token punctuation">(</span>LogLevel level<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+   m_loglevel <span class="token operator">=</span> level<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+<span class="token comment">// 写日志， 把日志信息写入lockqueue缓冲区当中</span>
+<span class="token keyword">void</span> <span class="token class-name">Logger</span><span class="token double-colon punctuation">::</span><span class="token function">Log</span><span class="token punctuation">(</span>std<span class="token double-colon punctuation">::</span>string msg<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+   m_lckQue<span class="token punctuation">.</span><span class="token function">Push</span><span class="token punctuation">(</span>msg<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<h3><a id="4_607"></a>4、定义宏记录日志</h3> 
+<p><strong>宏log_info</strong>，它接受一个格式化的日志消息和可变数量的参数。在宏内部，获取logger的实例，然后设置日志级别为info。接下来，它创建一个长度为1024的char数组c，使用snprintf函数将格式化字符串(logmsgformat) 和可变参数(va_args)写入这个数组中。最后，它调用logger的log函数将日志消息写入日志文件中。<br> do-while(0)语法是为了防止宏展开时出现错误。在实际使用过程中，log_info(“xxx %d %s”, 20, “xxxx”) 可以被展开为如下代码：</p> 
+<pre><code class="prism language-cpp">logger<span class="token operator">&amp;</span> logger <span class="token operator">=</span> logger<span class="token double-colon punctuation">::</span><span class="token function">getinstance</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+logger<span class="token punctuation">.</span><span class="token function">setloglevel</span><span class="token punctuation">(</span>info<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token keyword">char</span> c<span class="token punctuation">[</span><span class="token number">1024</span><span class="token punctuation">]</span> <span class="token operator">=</span> <span class="token punctuation">{<!-- --></span><span class="token number">0</span><span class="token punctuation">}</span><span class="token punctuation">;</span>
+<span class="token function">snprintf</span><span class="token punctuation">(</span>c<span class="token punctuation">,</span> <span class="token number">1024</span><span class="token punctuation">,</span> <span class="token string">"xxx %d %s"</span><span class="token punctuation">,</span> <span class="token number">20</span><span class="token punctuation">,</span> <span class="token string">"xxxx"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+logger<span class="token punctuation">.</span><span class="token function">log</span><span class="token punctuation">(</span>c<span class="token punctuation">)</span><span class="token punctuation">;</span>
+</code></pre> 
+<p>因此正常信息宏以及错误信息宏的定义如下：</p> 
+<pre><code class="prism language-cpp">
+<span class="token comment">// 定义宏 LOG_INFO("xxx %d %s", 20, "xxxx")</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name function">LOG_INFO</span><span class="token expression"><span class="token punctuation">(</span>logmsgformat<span class="token punctuation">,</span> <span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">)</span>                   </span><span class="token punctuation">\</span>
+   <span class="token expression"><span class="token keyword">do</span> <span class="token punctuation">{<!-- --></span>                                               </span><span class="token punctuation">\</span>
+      <span class="token expression">Logger<span class="token operator">&amp;</span> logger <span class="token operator">=</span> <span class="token class-name">Logger</span><span class="token double-colon punctuation">::</span><span class="token function">GetInstance</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>         </span><span class="token punctuation">\</span>
+      <span class="token expression">logger<span class="token punctuation">.</span><span class="token function">SetLogLevel</span><span class="token punctuation">(</span>INFO<span class="token punctuation">)</span><span class="token punctuation">;</span>                       </span><span class="token punctuation">\</span>
+      <span class="token expression"><span class="token keyword">char</span> c<span class="token punctuation">[</span><span class="token number">1024</span><span class="token punctuation">]</span> <span class="token operator">=</span> <span class="token punctuation">{<!-- --></span><span class="token number">0</span><span class="token punctuation">}</span><span class="token punctuation">;</span>                             </span><span class="token punctuation">\</span>
+      <span class="token expression"><span class="token function">snprintf</span><span class="token punctuation">(</span>c<span class="token punctuation">,</span> <span class="token number">1024</span><span class="token punctuation">,</span> logmsgformat<span class="token punctuation">,</span> </span><span class="token punctuation">##</span><span class="token expression">__VA_ARGS__<span class="token punctuation">)</span><span class="token punctuation">;</span> </span><span class="token punctuation">\</span>
+      <span class="token expression">logger<span class="token punctuation">.</span><span class="token function">Log</span><span class="token punctuation">(</span>c<span class="token punctuation">)</span><span class="token punctuation">;</span>                                  </span><span class="token punctuation">\</span>
+   <span class="token expression"><span class="token punctuation">}</span> <span class="token keyword">while</span> <span class="token punctuation">(</span><span class="token number">0</span><span class="token punctuation">)</span></span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name function">LOG_ERR</span><span class="token expression"><span class="token punctuation">(</span>logmsgformat<span class="token punctuation">,</span> <span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">)</span>                    </span><span class="token punctuation">\</span>
+   <span class="token expression"><span class="token keyword">do</span> <span class="token punctuation">{<!-- --></span>                                               </span><span class="token punctuation">\</span>
+      <span class="token expression">Logger<span class="token operator">&amp;</span> logger <span class="token operator">=</span> <span class="token class-name">Logger</span><span class="token double-colon punctuation">::</span><span class="token function">GetInstance</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>         </span><span class="token punctuation">\</span>
+      <span class="token expression">logger<span class="token punctuation">.</span><span class="token function">SetLogLevel</span><span class="token punctuation">(</span>ERROR<span class="token punctuation">)</span><span class="token punctuation">;</span>                      </span><span class="token punctuation">\</span>
+      <span class="token expression"><span class="token keyword">char</span> c<span class="token punctuation">[</span><span class="token number">1024</span><span class="token punctuation">]</span> <span class="token operator">=</span> <span class="token punctuation">{<!-- --></span><span class="token number">0</span><span class="token punctuation">}</span><span class="token punctuation">;</span>                             </span><span class="token punctuation">\</span>
+      <span class="token expression"><span class="token function">snprintf</span><span class="token punctuation">(</span>c<span class="token punctuation">,</span> <span class="token number">1024</span><span class="token punctuation">,</span> logmsgformat<span class="token punctuation">,</span> </span><span class="token punctuation">##</span><span class="token expression">__VA_ARGS__<span class="token punctuation">)</span><span class="token punctuation">;</span> </span><span class="token punctuation">\</span>
+      <span class="token expression">logger<span class="token punctuation">.</span><span class="token function">Log</span><span class="token punctuation">(</span>c<span class="token punctuation">)</span><span class="token punctuation">;</span>                                  </span><span class="token punctuation">\</span>
+   <span class="token expression"><span class="token punctuation">}</span> <span class="token keyword">while</span> <span class="token punctuation">(</span><span class="token number">0</span><span class="token punctuation">)</span></span></span>
+
+</code></pre> 
+<h2><a id="_644"></a>七、服务提供者</h2> 
+<h3><a id="1_645"></a>1、服务提供者整体框架</h3> 
+<p>作为服务提供者，必须进行服务注册，并且将注册好的服务名以及方法名字存储起来，用一个字典存储所有的服务，一个服务包含多个方法。所以用一个结构体存储服务，里面包含有服务以及映射方法的字典。其中由于我们使用了protobuf作为rpc通信协议，所以服务以及方法都必须是**google::protobuf:😗*这个作用域里面的</p> 
+<pre><code class="prism language-cpp">   <span class="token comment">// 保存服务信息的结构体</span>
+   <span class="token keyword">struct</span> <span class="token class-name">ServiceInfo</span> <span class="token punctuation">{<!-- --></span>
+      google<span class="token double-colon punctuation">::</span>protobuf<span class="token double-colon punctuation">::</span>Service<span class="token operator">*</span> m_service<span class="token punctuation">;</span>
+      <span class="token comment">// 字典保存映射方法</span>
+      std<span class="token double-colon punctuation">::</span>unordered_map<span class="token operator">&lt;</span>std<span class="token double-colon punctuation">::</span>string<span class="token punctuation">,</span> <span class="token keyword">const</span> google<span class="token double-colon punctuation">::</span>protobuf<span class="token double-colon punctuation">::</span>MethodDescriptor<span class="token operator">*</span><span class="token operator">&gt;</span>
+          m_methodMap<span class="token punctuation">;</span>
+   <span class="token punctuation">}</span><span class="token punctuation">;</span>
+   <span class="token comment">//  service map  存储注册成功的服务对象体积犯法的所有信息</span>
+
+   std<span class="token double-colon punctuation">::</span>unordered_map<span class="token operator">&lt;</span>std<span class="token double-colon punctuation">::</span>string<span class="token punctuation">,</span> ServiceInfo<span class="token operator">&gt;</span> m_serviceMap<span class="token punctuation">;</span>
+</code></pre> 
+<p>然后使用muduo库进行网络通信，所以要定义链接回调函数以及消息读写回调函数，最后定义一个rpc方法执行完之后的回调函数，这里一般是放送响应回去。</p> 
+<pre><code class="prism language-cpp">   <span class="token comment">//    专门处理用户的连接与断开的回调函数</span>
+   <span class="token keyword">void</span> <span class="token function">onConnection</span><span class="token punctuation">(</span><span class="token keyword">const</span> muduo<span class="token double-colon punctuation">::</span>net<span class="token double-colon punctuation">::</span>TcpConnectionPtr<span class="token operator">&amp;</span> conn<span class="token punctuation">)</span><span class="token punctuation">;</span>
+   <span class="token comment">//    专门处理用户读写事件回调函数   函数必须是有三个参数</span>
+   <span class="token comment">//    一个是tcp链接一个是buf缓冲区 一个是时间</span>
+   <span class="token keyword">void</span> <span class="token function">onMessage</span><span class="token punctuation">(</span><span class="token keyword">const</span> muduo<span class="token double-colon punctuation">::</span>net<span class="token double-colon punctuation">::</span>TcpConnectionPtr<span class="token operator">&amp;</span> conn<span class="token punctuation">,</span>
+                  muduo<span class="token double-colon punctuation">::</span>net<span class="token double-colon punctuation">::</span>Buffer<span class="token operator">*</span> buffer<span class="token punctuation">,</span>
+                  muduo<span class="token double-colon punctuation">::</span>Timestamp time<span class="token punctuation">)</span><span class="token punctuation">;</span>
+   <span class="token comment">// closure的回调操作 用于序列化rpc的响应和网络发送  需要传进去网络以及</span>
+   <span class="token comment">// 发送的消息</span>
+   <span class="token keyword">void</span> <span class="token function">SendRpcResponse</span><span class="token punctuation">(</span><span class="token keyword">const</span> muduo<span class="token double-colon punctuation">::</span>net<span class="token double-colon punctuation">::</span>TcpConnectionPtr<span class="token operator">&amp;</span> conn<span class="token punctuation">,</span>
+                        google<span class="token double-colon punctuation">::</span>protobuf<span class="token double-colon punctuation">::</span>Message<span class="token operator">*</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+</code></pre> 
+<p>最后暴露连个函数提供给业务调用，一个是服务注册函数，一个是rpc服务启动函数。</p> 
+<pre><code class="prism language-cpp">
+  <span class="token keyword">public</span><span class="token operator">:</span>
+   <span class="token comment">// 接受任意的   继承了基类goole service的类</span>
+   <span class="token keyword">void</span> <span class="token function">NotifyServie</span><span class="token punctuation">(</span>google<span class="token double-colon punctuation">::</span>protobuf<span class="token double-colon punctuation">::</span>Service<span class="token operator">*</span> service<span class="token punctuation">)</span><span class="token punctuation">;</span>
+   <span class="token comment">// 启动rpc服务</span>
+   <span class="token keyword">void</span> <span class="token function">Run</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+</code></pre> 
+<p>大致的流程图如下：<br> <img src="https://images2.imgbox.com/27/55/UY93khgz_o.png" alt="在这里插入图片描述"></p> 
+<h3><a id="2_689"></a>2、服务注册</h3> 
+<p>服务注册传进来的参数 必须是google::protobuf::Service*类型的。这个类型的对象是该类继承了proto文件生成的类产生的。<br> 首先获取服务的描述，这个描述可以得到服务的名字以及该服务的方法名。<br> 遍历所有的方法，并且放入该服务的方法字典中。<br> 最后把这个服务放入到服务字典中。</p> 
+<pre><code class="prism language-cpp">   std<span class="token double-colon punctuation">::</span>cout <span class="token operator">&lt;&lt;</span> <span class="token string">"///service regist!!/"</span> <span class="token operator">&lt;&lt;</span> std<span class="token double-colon punctuation">::</span>endl<span class="token punctuation">;</span>
+   <span class="token function">LOG_INFO</span><span class="token punctuation">(</span><span class="token string">"=====================service regist!!======================"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+   ServiceInfo service_info<span class="token punctuation">;</span>
+   <span class="token comment">// 获取服务的 描述           service   继承了基类  所以有这些犯法</span>
+   <span class="token keyword">const</span> google<span class="token double-colon punctuation">::</span>protobuf<span class="token double-colon punctuation">::</span>ServiceDescriptor<span class="token operator">*</span> pserviceDesc <span class="token operator">=</span>
+       service<span class="token operator">-&gt;</span><span class="token function">GetDescriptor</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+   <span class="token comment">//  获取服务名字 以及服务方法数量</span>
+   std<span class="token double-colon punctuation">::</span>string service_name <span class="token operator">=</span> pserviceDesc<span class="token operator">-&gt;</span><span class="token function">name</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+   <span class="token keyword">int</span> methodncnt <span class="token operator">=</span> pserviceDesc<span class="token operator">-&gt;</span><span class="token function">method_count</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+   <span class="token comment">// 获取每个方法的描述  并且加入服务方法字典</span>
+   <span class="token comment">// std::cout &lt;&lt; "service name:" &lt;&lt; service_name &lt;&lt; std::endl;</span>
+   <span class="token function">LOG_INFO</span><span class="token punctuation">(</span><span class="token string">"service name:%s"</span><span class="token punctuation">,</span> service_name<span class="token punctuation">.</span><span class="token function">c_str</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+   <span class="token keyword">for</span> <span class="token punctuation">(</span><span class="token keyword">int</span> i <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span> i <span class="token operator">&lt;</span> methodncnt<span class="token punctuation">;</span> i<span class="token operator">++</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+      <span class="token keyword">const</span> google<span class="token double-colon punctuation">::</span>protobuf<span class="token double-colon punctuation">::</span>MethodDescriptor<span class="token operator">*</span> pmethodDesc <span class="token operator">=</span>
+          pserviceDesc<span class="token operator">-&gt;</span><span class="token function">method</span><span class="token punctuation">(</span>i<span class="token punctuation">)</span><span class="token punctuation">;</span>
+      std<span class="token double-colon punctuation">::</span>string method_name <span class="token operator">=</span> pmethodDesc<span class="token operator">-&gt;</span><span class="token function">name</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+      service_info<span class="token punctuation">.</span>m_methodMap<span class="token punctuation">.</span><span class="token function">insert</span><span class="token punctuation">(</span><span class="token punctuation">{<!-- --></span>method_name<span class="token punctuation">,</span> pmethodDesc<span class="token punctuation">}</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+      <span class="token comment">// std::cout &lt;&lt; "method" &lt;&lt; i &lt;&lt; " " &lt;&lt; method_name &lt;&lt; std::endl;</span>
+      <span class="token function">LOG_INFO</span><span class="token punctuation">(</span><span class="token string">"method%d name:%s"</span><span class="token punctuation">,</span> i<span class="token punctuation">,</span> method_name<span class="token punctuation">.</span><span class="token function">c_str</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+   <span class="token punctuation">}</span>
+   <span class="token comment">// 加入服务字典</span>
+   service_info<span class="token punctuation">.</span>m_service <span class="token operator">=</span> service<span class="token punctuation">;</span>
+   m_serviceMap<span class="token punctuation">.</span><span class="token function">insert</span><span class="token punctuation">(</span><span class="token punctuation">{<!-- --></span>service_name<span class="token punctuation">,</span> service_info<span class="token punctuation">}</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+</code></pre> 
+<h3><a id="3muduo_723"></a>3、使用muduo库提供网络通讯支持</h3> 
+<h4><a id="a_724"></a>a、连接以及读写事件回调函数</h4> 
+<p>客户端连接断开的回调函数</p> 
+<pre><code class="prism language-cpp"><span class="token comment">//    专门处理用户的连接与断开的回调函数</span>
+<span class="token keyword">void</span> <span class="token class-name">RpcProvider</span><span class="token double-colon punctuation">::</span><span class="token function">onConnection</span><span class="token punctuation">(</span><span class="token keyword">const</span> muduo<span class="token double-colon punctuation">::</span>net<span class="token double-colon punctuation">::</span>TcpConnectionPtr<span class="token operator">&amp;</span> conn<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+   <span class="token comment">// 客户端 断开连接</span>
+   <span class="token comment">// 断开连接了</span>
+   <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span>conn<span class="token operator">-&gt;</span><span class="token function">connected</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+      conn<span class="token operator">-&gt;</span><span class="token function">shutdown</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+   <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+
+</code></pre> 
+<p>专门处理用户读写事件回调函数，该函数传入一个TCP连接，以及一个读写缓冲区。<br> <strong>处理过程如下：</strong><br> <strong>1、从缓冲区中读出数据</strong>。<br> 由于调用者发来的字节流中前四个字节是包含着头部信息的长度，所以先取出长度然后根据这个长度再把头部信息取出来。并且把剩下的所有字节流取出来作为rpc方法的参数。</p> 
+<pre><code class="prism language-cpp">   std<span class="token double-colon punctuation">::</span>string recv_buf <span class="token operator">=</span> buffer<span class="token operator">-&gt;</span><span class="token function">retrieveAllAsString</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+   <span class="token comment">// 从字符流中读取前4个字节的内容  这前4个字节的内容包含了头部信息的长度</span>
+   <span class="token keyword">uint32_t</span> header_size <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+   recv_buf<span class="token punctuation">.</span><span class="token function">copy</span><span class="token punctuation">(</span><span class="token punctuation">(</span><span class="token keyword">char</span><span class="token operator">*</span><span class="token punctuation">)</span><span class="token operator">&amp;</span>header_size<span class="token punctuation">,</span> <span class="token number">4</span><span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+   <span class="token comment">// 根据头文件的大小，获取原始字符流，反序列化数据，得到rpc请求的详细信息</span>
+   std<span class="token double-colon punctuation">::</span>string rpc_header_str <span class="token operator">=</span> recv_buf<span class="token punctuation">.</span><span class="token function">substr</span><span class="token punctuation">(</span><span class="token number">4</span><span class="token punctuation">,</span> header_size<span class="token punctuation">)</span><span class="token punctuation">;</span>
+   <span class="token comment">// proto rpcheader.pb.h 已经给我们生成了</span>
+   mprpc<span class="token double-colon punctuation">::</span>RpcHeader rpcHeader<span class="token punctuation">;</span>
+   std<span class="token double-colon punctuation">::</span>string service_name<span class="token punctuation">;</span>
+   std<span class="token double-colon punctuation">::</span>string method_name<span class="token punctuation">;</span>
+   <span class="token keyword">uint32_t</span> args_size<span class="token punctuation">;</span>
+   <span class="token keyword">if</span> <span class="token punctuation">(</span>rpcHeader<span class="token punctuation">.</span><span class="token function">ParseFromString</span><span class="token punctuation">(</span>rpc_header_str<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+      <span class="token comment">// 数据头反序列化成功</span>
+      service_name <span class="token operator">=</span> rpcHeader<span class="token punctuation">.</span><span class="token function">service_name</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+      method_name <span class="token operator">=</span> rpcHeader<span class="token punctuation">.</span><span class="token function">method_name</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+      args_size <span class="token operator">=</span> rpcHeader<span class="token punctuation">.</span><span class="token function">args_size</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+   <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+      <span class="token comment">// 数据头反序列化失败</span>
+      <span class="token function">LOG_ERR</span><span class="token punctuation">(</span><span class="token string">"rpc_header_str:%s  parse error!"</span><span class="token punctuation">,</span> rpc_header_str<span class="token punctuation">.</span><span class="token function">c_str</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+      <span class="token function">LOG_ERR</span><span class="token punctuation">(</span><span class="token string">"%s:%s:%d"</span><span class="token punctuation">,</span> <span class="token constant">__FILE__</span><span class="token punctuation">,</span> __FUNCTION__<span class="token punctuation">,</span> <span class="token constant">__LINE__</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+      std<span class="token double-colon punctuation">::</span>cout <span class="token operator">&lt;&lt;</span> <span class="token string">"rpc_header_str:"</span> <span class="token operator">&lt;&lt;</span> rpc_header_str <span class="token operator">&lt;&lt;</span> <span class="token string">" parse error!"</span>
+                <span class="token operator">&lt;&lt;</span> std<span class="token double-colon punctuation">::</span>endl<span class="token punctuation">;</span>
+      <span class="token keyword">return</span><span class="token punctuation">;</span>
+   <span class="token punctuation">}</span>
+      <span class="token comment">// 获取rpc方法参数的字符流数据</span>
+   std<span class="token double-colon punctuation">::</span>string args_str <span class="token operator">=</span> recv_buf<span class="token punctuation">.</span><span class="token function">substr</span><span class="token punctuation">(</span><span class="token number">4</span> <span class="token operator">+</span> header_size<span class="token punctuation">,</span> args_size<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+</code></pre> 
+<p><strong>2、找到对应的服务以及对应的方法</strong><br> 通过解析出来的服务名字以及方法名字找到对从字典中找到对应的方法。</p> 
+<pre><code class="prism language-cpp">   <span class="token comment">// 得到服务 以及方法名 以及 参数了</span>
+   <span class="token keyword">auto</span> it <span class="token operator">=</span> m_serviceMap<span class="token punctuation">.</span><span class="token function">find</span><span class="token punctuation">(</span>service_name<span class="token punctuation">)</span><span class="token punctuation">;</span>
+   <span class="token keyword">if</span> <span class="token punctuation">(</span>it <span class="token operator">==</span> m_serviceMap<span class="token punctuation">.</span><span class="token function">end</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+      std<span class="token double-colon punctuation">::</span>cout <span class="token operator">&lt;&lt;</span> service_name <span class="token operator">&lt;&lt;</span> <span class="token string">" is not exist!!"</span> <span class="token operator">&lt;&lt;</span> std<span class="token double-colon punctuation">::</span>endl<span class="token punctuation">;</span>
+      <span class="token function">LOG_ERR</span><span class="token punctuation">(</span><span class="token string">"service_name:%s is not exist!!"</span><span class="token punctuation">,</span> service_name<span class="token punctuation">.</span><span class="token function">c_str</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+      <span class="token function">LOG_ERR</span><span class="token punctuation">(</span><span class="token string">"%s:%s:%d"</span><span class="token punctuation">,</span> <span class="token constant">__FILE__</span><span class="token punctuation">,</span> __FUNCTION__<span class="token punctuation">,</span> <span class="token constant">__LINE__</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+   <span class="token punctuation">}</span>
+   <span class="token keyword">auto</span> mit <span class="token operator">=</span> it<span class="token operator">-&gt;</span>second<span class="token punctuation">.</span>m_methodMap<span class="token punctuation">.</span><span class="token function">find</span><span class="token punctuation">(</span>method_name<span class="token punctuation">)</span><span class="token punctuation">;</span>
+   <span class="token keyword">if</span> <span class="token punctuation">(</span>mit <span class="token operator">==</span> it<span class="token operator">-&gt;</span>second<span class="token punctuation">.</span>m_methodMap<span class="token punctuation">.</span><span class="token function">end</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+      std<span class="token double-colon punctuation">::</span>cout <span class="token operator">&lt;&lt;</span> method_name <span class="token operator">&lt;&lt;</span> <span class="token string">" is not exist!!"</span> <span class="token operator">&lt;&lt;</span> std<span class="token double-colon punctuation">::</span>endl<span class="token punctuation">;</span>
+      <span class="token function">LOG_ERR</span><span class="token punctuation">(</span><span class="token string">"method_name:%s is not exist!!"</span><span class="token punctuation">,</span> method_name<span class="token punctuation">.</span><span class="token function">c_str</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+      <span class="token function">LOG_ERR</span><span class="token punctuation">(</span><span class="token string">"%s:%s:%d"</span><span class="token punctuation">,</span> <span class="token constant">__FILE__</span><span class="token punctuation">,</span> __FUNCTION__<span class="token punctuation">,</span> <span class="token constant">__LINE__</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+   <span class="token punctuation">}</span>
+   <span class="token comment">// 获取到 服务 以及犯法</span>
+   google<span class="token double-colon punctuation">::</span>protobuf<span class="token double-colon punctuation">::</span>Service<span class="token operator">*</span> service <span class="token operator">=</span> it<span class="token operator">-&gt;</span>second<span class="token punctuation">.</span>m_service<span class="token punctuation">;</span>
+   <span class="token keyword">const</span> google<span class="token double-colon punctuation">::</span>protobuf<span class="token double-colon punctuation">::</span>MethodDescriptor<span class="token operator">*</span> method <span class="token operator">=</span> mit<span class="token operator">-&gt;</span>second<span class="token punctuation">;</span>
+</code></pre> 
+<p><strong>3、解析请求并且绑定rpc方法回调函数最后执行该rpc方法</strong></p> 
+<pre><code class="prism language-cpp">
+   <span class="token comment">// 生成 请求request 以及响应reply 通过</span>
+   google<span class="token double-colon punctuation">::</span>protobuf<span class="token double-colon punctuation">::</span>Message<span class="token operator">*</span> request <span class="token operator">=</span>
+       service<span class="token operator">-&gt;</span><span class="token function">GetRequestPrototype</span><span class="token punctuation">(</span>method<span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">New</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+   <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span>request<span class="token operator">-&gt;</span><span class="token function">ParseFromString</span><span class="token punctuation">(</span>args_str<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+      <span class="token comment">// 从调用者args_str得到request</span>
+      std<span class="token double-colon punctuation">::</span>cout <span class="token operator">&lt;&lt;</span> <span class="token string">" request error!!"</span> <span class="token operator">&lt;&lt;</span> args_str <span class="token operator">&lt;&lt;</span> std<span class="token double-colon punctuation">::</span>endl<span class="token punctuation">;</span>
+      <span class="token function">LOG_ERR</span><span class="token punctuation">(</span><span class="token string">"request error  :%s"</span><span class="token punctuation">,</span> args_str<span class="token punctuation">.</span><span class="token function">c_str</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+      <span class="token function">LOG_ERR</span><span class="token punctuation">(</span><span class="token string">"%s:%s:%d"</span><span class="token punctuation">,</span> <span class="token constant">__FILE__</span><span class="token punctuation">,</span> __FUNCTION__<span class="token punctuation">,</span> <span class="token constant">__LINE__</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+      <span class="token keyword">return</span><span class="token punctuation">;</span>
+   <span class="token punctuation">}</span>
+   google<span class="token double-colon punctuation">::</span>protobuf<span class="token double-colon punctuation">::</span>Message<span class="token operator">*</span> response <span class="token operator">=</span>
+       service<span class="token operator">-&gt;</span><span class="token function">GetResponsePrototype</span><span class="token punctuation">(</span>method<span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">New</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+   <span class="token comment">// 绑定Closure 的回调函数  这是在login方法 中最后的done 调用的方法</span>
+   google<span class="token double-colon punctuation">::</span>protobuf<span class="token double-colon punctuation">::</span>Closure<span class="token operator">*</span> done <span class="token operator">=</span>
+       google<span class="token double-colon punctuation">::</span>protobuf<span class="token double-colon punctuation">::</span><span class="token generic-function"><span class="token function">NewCallback</span><span class="token generic class-name"><span class="token operator">&lt;</span>RpcProvider<span class="token punctuation">,</span>
+                                     <span class="token keyword">const</span> muduo<span class="token double-colon punctuation">::</span>net<span class="token double-colon punctuation">::</span>TcpConnectionPtr<span class="token operator">&amp;</span><span class="token punctuation">,</span>
+                                     google<span class="token double-colon punctuation">::</span>protobuf<span class="token double-colon punctuation">::</span>Message<span class="token operator">*</span><span class="token operator">&gt;</span></span></span><span class="token punctuation">(</span>
+           <span class="token keyword">this</span><span class="token punctuation">,</span> <span class="token operator">&amp;</span>RpcProvider<span class="token double-colon punctuation">::</span>SendRpcResponse<span class="token punctuation">,</span> conn<span class="token punctuation">,</span> response<span class="token punctuation">)</span><span class="token punctuation">;</span>
+   service<span class="token operator">-&gt;</span><span class="token function">CallMethod</span><span class="token punctuation">(</span>method<span class="token punctuation">,</span> <span class="token keyword">nullptr</span><span class="token punctuation">,</span> request<span class="token punctuation">,</span> response<span class="token punctuation">,</span> done<span class="token punctuation">)</span><span class="token punctuation">;</span>
+</code></pre> 
+<h4><a id="b_822"></a>b、网络服务启动</h4> 
+<p>首先从读取配置文件信息</p> 
+<pre><code class="prism language-cpp">   string ip <span class="token operator">=</span> <span class="token class-name">MprpcApplication</span><span class="token double-colon punctuation">::</span><span class="token function">GetInstance</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">GetConfig</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">Load</span><span class="token punctuation">(</span><span class="token string">"rpcserverip"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+   <span class="token keyword">uint16_t</span> port <span class="token operator">=</span> <span class="token function">atoi</span><span class="token punctuation">(</span><span class="token class-name">MprpcApplication</span><span class="token double-colon punctuation">::</span><span class="token function">GetInstance</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+                            <span class="token punctuation">.</span><span class="token function">GetConfig</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+                            <span class="token punctuation">.</span><span class="token function">Load</span><span class="token punctuation">(</span><span class="token string">"rpcserverport"</span><span class="token punctuation">)</span>
+                            <span class="token punctuation">.</span><span class="token function">c_str</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+</code></pre> 
+<p>然后创建muduo库对象，绑定两个事件回调函数。</p> 
+<pre><code class="prism language-cpp">   muduo<span class="token double-colon punctuation">::</span>net<span class="token double-colon punctuation">::</span>EventLoop m_eventLoop<span class="token punctuation">;</span>
+   muduo<span class="token double-colon punctuation">::</span>net<span class="token double-colon punctuation">::</span>InetAddress <span class="token function">address</span><span class="token punctuation">(</span>ip<span class="token punctuation">,</span> port<span class="token punctuation">)</span><span class="token punctuation">;</span>
+   muduo<span class="token double-colon punctuation">::</span>net<span class="token double-colon punctuation">::</span>TcpServer <span class="token function">server</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>m_eventLoop<span class="token punctuation">,</span> address<span class="token punctuation">,</span> <span class="token string">"RpcProvider"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+   <span class="token comment">// 绑定连接回调和消息读写回调方法  分离了网络代码和业务代码</span>
+   server<span class="token punctuation">.</span><span class="token function">setConnectionCallback</span><span class="token punctuation">(</span>
+       std<span class="token double-colon punctuation">::</span><span class="token function">bind</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>RpcProvider<span class="token double-colon punctuation">::</span>onConnection<span class="token punctuation">,</span> <span class="token keyword">this</span><span class="token punctuation">,</span> std<span class="token double-colon punctuation">::</span>placeholders<span class="token double-colon punctuation">::</span>_1<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+   server<span class="token punctuation">.</span><span class="token function">setMessageCallback</span><span class="token punctuation">(</span>
+       std<span class="token double-colon punctuation">::</span><span class="token function">bind</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>RpcProvider<span class="token double-colon punctuation">::</span>onMessage<span class="token punctuation">,</span> <span class="token keyword">this</span><span class="token punctuation">,</span> std<span class="token double-colon punctuation">::</span>placeholders<span class="token double-colon punctuation">::</span>_1<span class="token punctuation">,</span>
+                 std<span class="token double-colon punctuation">::</span>placeholders<span class="token double-colon punctuation">::</span>_2<span class="token punctuation">,</span> std<span class="token double-colon punctuation">::</span>placeholders<span class="token double-colon punctuation">::</span>_3<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+   <span class="token comment">// 设   // 设置moduo库的数量</span>
+   server<span class="token punctuation">.</span><span class="token function">setThreadNum</span><span class="token punctuation">(</span><span class="token number">4</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+   <span class="token function">LOG_INFO</span><span class="token punctuation">(</span><span class="token string">"RpcProvider start service at ip:%s  port:%d"</span><span class="token punctuation">,</span> ip<span class="token punctuation">.</span><span class="token function">c_str</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span> port<span class="token punctuation">)</span><span class="token punctuation">;</span>
+</code></pre> 
+<p>然后从zookeeper上发布服务 把当前rpc节点上要发布的服务全部注册到zk上面，让rpc client可以从zk上发现服务。最后启动网络服务。</p> 
+<pre><code class="prism language-cpp"> ZkClient zkCli<span class="token punctuation">;</span>
+   zkCli<span class="token punctuation">.</span><span class="token function">Start</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+   <span class="token comment">// service_name为永久性节点    method_name为临时性节点</span>
+   <span class="token keyword">for</span> <span class="token punctuation">(</span><span class="token keyword">auto</span><span class="token operator">&amp;</span> sp <span class="token operator">:</span> m_serviceMap<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+      <span class="token comment">// /service_name   /UserServiceRpc    只能一层一层节点创建</span>
+      std<span class="token double-colon punctuation">::</span>string service_path <span class="token operator">=</span> <span class="token string">"/"</span> <span class="token operator">+</span> sp<span class="token punctuation">.</span>first<span class="token punctuation">;</span>
+      zkCli<span class="token punctuation">.</span><span class="token function">Create</span><span class="token punctuation">(</span>service_path<span class="token punctuation">.</span><span class="token function">c_str</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token keyword">nullptr</span><span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+      <span class="token keyword">for</span> <span class="token punctuation">(</span><span class="token keyword">auto</span><span class="token operator">&amp;</span> mp <span class="token operator">:</span> sp<span class="token punctuation">.</span>second<span class="token punctuation">.</span>m_methodMap<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+         <span class="token comment">// /service_name/method_name   /UserServiceRpc/Login</span>
+         <span class="token comment">// 存储当前这个rpc服务节点主机的ip和port</span>
+         std<span class="token double-colon punctuation">::</span>string method_path <span class="token operator">=</span> service_path <span class="token operator">+</span> <span class="token string">"/"</span> <span class="token operator">+</span> mp<span class="token punctuation">.</span>first<span class="token punctuation">;</span>
+         <span class="token keyword">char</span> method_path_data<span class="token punctuation">[</span><span class="token number">128</span><span class="token punctuation">]</span> <span class="token operator">=</span> <span class="token punctuation">{<!-- --></span><span class="token number">0</span><span class="token punctuation">}</span><span class="token punctuation">;</span>
+         <span class="token function">sprintf</span><span class="token punctuation">(</span>method_path_data<span class="token punctuation">,</span> <span class="token string">"%s:%d"</span><span class="token punctuation">,</span> ip<span class="token punctuation">.</span><span class="token function">c_str</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span> port<span class="token punctuation">)</span><span class="token punctuation">;</span>
+         <span class="token comment">// ZOO_EPHEMERAL表示znode是一个临时性节点</span>
+         zkCli<span class="token punctuation">.</span><span class="token function">Create</span><span class="token punctuation">(</span>method_path<span class="token punctuation">.</span><span class="token function">c_str</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span> method_path_data<span class="token punctuation">,</span>
+                      <span class="token function">strlen</span><span class="token punctuation">(</span>method_path_data<span class="token punctuation">)</span><span class="token punctuation">,</span> ZOO_EPHEMERAL<span class="token punctuation">)</span><span class="token punctuation">;</span>
+      <span class="token punctuation">}</span>
+   <span class="token punctuation">}</span>
+   <span class="token comment">//    启动网络服务</span>
+   server<span class="token punctuation">.</span><span class="token function">start</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+   m_eventLoop<span class="token punctuation">.</span><span class="token function">loop</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+</code></pre> 
+<h3><a id="4_875"></a>4、编写服务方法和启动服务</h3> 
+<p><strong>编写服务方法</strong><br> 首先一个服务类要使用protobuf的服务必须继承proto文件生成的服务类。上面我们定义的是UserServiceRpc。</p> 
+<pre><code class="prism language-cpp"><span class="token keyword">class</span> <span class="token class-name">UserService</span> <span class="token operator">:</span> <span class="token base-clause"><span class="token keyword">public</span> fixbug<span class="token double-colon punctuation">::</span><span class="token class-name">UserServiceRpc</span></span> <span class="token punctuation">{<!-- --></span>
+</code></pre> 
+<p>类内除了业务方法，还重写基类的虚函数也就是UserServiceRpc服务的犯法函数，首先获取到输入参数，然后传给业务函数获取业务结果，之后把业务结果包装成respone，最后执行回调函done（之前在处理消息的时候已经绑定过了）。</p> 
+<pre><code class="prism language-cpp">   <span class="token keyword">void</span> <span class="token function">Login</span><span class="token punctuation">(</span><span class="token double-colon punctuation">::</span>google<span class="token double-colon punctuation">::</span>protobuf<span class="token double-colon punctuation">::</span>RpcController<span class="token operator">*</span> controller<span class="token punctuation">,</span>
+              <span class="token keyword">const</span> <span class="token double-colon punctuation">::</span>fixbug<span class="token double-colon punctuation">::</span>LoginRequest<span class="token operator">*</span> request<span class="token punctuation">,</span>
+              <span class="token double-colon punctuation">::</span>fixbug<span class="token double-colon punctuation">::</span>LoginResponse<span class="token operator">*</span> response<span class="token punctuation">,</span>
+              <span class="token double-colon punctuation">::</span>google<span class="token double-colon punctuation">::</span>protobuf<span class="token double-colon punctuation">::</span>Closure<span class="token operator">*</span> done<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+      string name <span class="token operator">=</span> request<span class="token operator">-&gt;</span><span class="token function">name</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+      string pwd <span class="token operator">=</span> request<span class="token operator">-&gt;</span><span class="token function">pwd</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+      <span class="token comment">//   本地业务</span>
+      <span class="token keyword">bool</span> login_result <span class="token operator">=</span> <span class="token function">Login</span><span class="token punctuation">(</span>name<span class="token punctuation">,</span> pwd<span class="token punctuation">)</span><span class="token punctuation">;</span>
+      <span class="token comment">//   把相应写入 reply</span>
+      fixbug<span class="token double-colon punctuation">::</span>ResultCode<span class="token operator">*</span> rc <span class="token operator">=</span> response<span class="token operator">-&gt;</span><span class="token function">mutable_result</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+      <span class="token keyword">if</span> <span class="token punctuation">(</span>login_result<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+         rc<span class="token operator">-&gt;</span><span class="token function">set_errcode</span><span class="token punctuation">(</span><span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+      <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+         rc<span class="token operator">-&gt;</span><span class="token function">set_errcode</span><span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+         rc<span class="token operator">-&gt;</span><span class="token function">set_errmsg</span><span class="token punctuation">(</span><span class="token string">"login  err! "</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+      <span class="token punctuation">}</span>
+      response<span class="token operator">-&gt;</span><span class="token function">set_success</span><span class="token punctuation">(</span>login_result<span class="token punctuation">)</span><span class="token punctuation">;</span>
+      <span class="token comment">// 执行回调操作  由框架执行序列化 与发送</span>
+      done<span class="token operator">-&gt;</span><span class="token function">Run</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+   <span class="token punctuation">}</span>
+</code></pre> 
+<p><strong>启动服务</strong></p> 
+<pre><code class="prism language-cpp"><span class="token keyword">int</span> <span class="token function">main</span><span class="token punctuation">(</span><span class="token keyword">int</span> argc<span class="token punctuation">,</span> <span class="token keyword">char</span><span class="token operator">*</span><span class="token operator">*</span> argv<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+   <span class="token function">LOG_INFO</span><span class="token punctuation">(</span>
+       <span class="token string">"###########################server start!!###########################"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+   <span class="token comment">// LOG_ERR("%s:%s:%d", __FILE__,__FUNCTION__,__LINE__);</span>
+   <span class="token comment">// 初始化</span>
+   <span class="token class-name">MprpcApplication</span><span class="token double-colon punctuation">::</span><span class="token function">init</span><span class="token punctuation">(</span>argc<span class="token punctuation">,</span> argv<span class="token punctuation">)</span><span class="token punctuation">;</span>
+   <span class="token comment">// 发不到rpc节点上</span>
+   RpcProvider provider<span class="token punctuation">;</span>
+   <span class="token comment">// 服务发现</span>
+   provider<span class="token punctuation">.</span><span class="token function">NotifyServie</span><span class="token punctuation">(</span><span class="token keyword">new</span> <span class="token function">UserService</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+   <span class="token comment">// 启动一个rpc节点</span>
+   provider<span class="token punctuation">.</span><span class="token function">Run</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+   <span class="token keyword">return</span> <span class="token number">0</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+</code></pre> 
+<h2><a id="_927"></a>八、服务调用者</h2> 
+<h3><a id="1caller_928"></a>1、caller整体流程</h3> 
+<p>首先通过初始化得到配置文件信息，根据想要调用的服务，创建了一个名为 stub 的 rpc 存根（rpc stub），用于向服务端发起远程调用。接着new mprpcchannel() 则创建了一个 mprpcchannel 对象作为通信渠道，该对象封装了网络通信细节。这里使用 mprpcchannel 作为通信渠道。<br> 然后构造请求提，最后通过存根调用想要调用的服务方法以及处理响应结果。<br> 整体流程如下：<br> <img src="https://images2.imgbox.com/a9/fa/4i5LV7gY_o.png" alt="在这里插入图片描述"></p> 
+<p><strong>整体代码如下：</strong></p> 
+<pre><code class="prism language-cpp"> <span class="token comment">// 先要初始化框架</span>
+   <span class="token class-name">MprpcApplication</span><span class="token double-colon punctuation">::</span><span class="token function">init</span><span class="token punctuation">(</span>argc<span class="token punctuation">,</span> argv<span class="token punctuation">)</span><span class="token punctuation">;</span>
+   <span class="token comment">// 调用rpc 利用userserver_stub进行</span>
+   <span class="token comment">//   需要利用到 继承了基类的google::protobuf::RpcChannel 的类</span>
+   <span class="token comment">//   mprpcchannel继承了  进行操作</span>
+   <span class="token comment">// 演示调用远程发布的rpc方法Login</span>
+   fixbug<span class="token double-colon punctuation">::</span>UserServiceRpc_Stub <span class="token function">stub</span><span class="token punctuation">(</span><span class="token keyword">new</span> <span class="token function">MprpcChannel</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+   <span class="token comment">// 构造请求与响应</span>
+   fixbug<span class="token double-colon punctuation">::</span>LoginRequest request<span class="token punctuation">;</span>
+   request<span class="token punctuation">.</span><span class="token function">set_name</span><span class="token punctuation">(</span><span class="token string">"hzl"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+   request<span class="token punctuation">.</span><span class="token function">set_pwd</span><span class="token punctuation">(</span><span class="token string">"123"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+   fixbug<span class="token double-colon punctuation">::</span>LoginResponse response<span class="token punctuation">;</span>
+
+   <span class="token comment">// controller 能知道 调用过程中的状态信息</span>
+   MprpcController controller<span class="token punctuation">;</span>
+   stub<span class="token punctuation">.</span><span class="token function">Login</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>controller<span class="token punctuation">,</span> <span class="token operator">&amp;</span>request<span class="token punctuation">,</span> <span class="token operator">&amp;</span>response<span class="token punctuation">,</span> <span class="token keyword">nullptr</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+   <span class="token keyword">if</span> <span class="token punctuation">(</span>controller<span class="token punctuation">.</span><span class="token function">Failed</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+      <span class="token comment">// 如果rpc失败</span>
+      std<span class="token double-colon punctuation">::</span>cout <span class="token operator">&lt;&lt;</span> controller<span class="token punctuation">.</span><span class="token function">ErrorText</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">&lt;&lt;</span> std<span class="token double-colon punctuation">::</span>endl<span class="token punctuation">;</span>
+
+   <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+      <span class="token comment">// 读取结果</span>
+      <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span>response<span class="token punctuation">.</span><span class="token function">result</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">errcode</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+         std<span class="token double-colon punctuation">::</span>cout <span class="token operator">&lt;&lt;</span> <span class="token string">"rpc login response success: "</span> <span class="token operator">&lt;&lt;</span> response<span class="token punctuation">.</span><span class="token function">success</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+                   <span class="token operator">&lt;&lt;</span> std<span class="token double-colon punctuation">::</span>endl<span class="token punctuation">;</span>
+      <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+         std<span class="token double-colon punctuation">::</span>cout <span class="token operator">&lt;&lt;</span> <span class="token string">"rpc login response error: "</span> <span class="token operator">&lt;&lt;</span> response<span class="token punctuation">.</span><span class="token function">result</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">errmsg</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+                   <span class="token operator">&lt;&lt;</span> std<span class="token double-colon punctuation">::</span>endl<span class="token punctuation">;</span>
+      <span class="token punctuation">}</span>
+   <span class="token punctuation">}</span>
+   <span class="token keyword">return</span> <span class="token number">0</span><span class="token punctuation">;</span>
+</code></pre> 
+<h3><a id="2_971"></a>2、通信渠道类的定义</h3> 
+<p>这个类必须继承google::protobuf::RpcChannel基类并且需要重写对应的虚构函数。，</p> 
+<pre><code class="prism language-cpp"><span class="token comment">// 继承基类 rpcchannel  重写虚函数</span>
+<span class="token keyword">class</span> <span class="token class-name">MprpcChannel</span> <span class="token operator">:</span> <span class="token base-clause"><span class="token keyword">public</span> google<span class="token double-colon punctuation">::</span>protobuf<span class="token double-colon punctuation">::</span><span class="token class-name">RpcChannel</span></span> <span class="token punctuation">{<!-- --></span>
+  <span class="token keyword">private</span><span class="token operator">:</span>
+   <span class="token comment">// 在这重写虚函数中 进行序列化以及网络的发送</span>
+   <span class="token keyword">void</span> <span class="token function">CallMethod</span><span class="token punctuation">(</span><span class="token keyword">const</span> google<span class="token double-colon punctuation">::</span>protobuf<span class="token double-colon punctuation">::</span>MethodDescriptor<span class="token operator">*</span> mothod<span class="token punctuation">,</span>
+                   google<span class="token double-colon punctuation">::</span>protobuf<span class="token double-colon punctuation">::</span>RpcController<span class="token operator">*</span> controller<span class="token punctuation">,</span>
+                   <span class="token keyword">const</span> google<span class="token double-colon punctuation">::</span>protobuf<span class="token double-colon punctuation">::</span>Message<span class="token operator">*</span> request<span class="token punctuation">,</span>
+                   google<span class="token double-colon punctuation">::</span>protobuf<span class="token double-colon punctuation">::</span>Message<span class="token operator">*</span> response<span class="token punctuation">,</span>
+                   google<span class="token double-colon punctuation">::</span>protobuf<span class="token double-colon punctuation">::</span>Closure<span class="token operator">*</span> done<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+  <span class="token keyword">public</span><span class="token operator">:</span>
+<span class="token punctuation">}</span><span class="token punctuation">;</span>
+</code></pre> 
+<h3><a id="3CallMethod_988"></a>3、CallMethod方法的重写</h3> 
+<p>这个函数是用来进行序列化以及网络的发送的，每次调用stub服务存根的方法时就会调用该函数，该函数传入的是方法名字，控制器（用来记录日志可以为空），请求以及响应，还有回调（可以省略），序列化格式定义如下：</p> 
+<pre><code class="prism language-cpp">header_size<span class="token operator">+</span>service_name  method_name args_size<span class="token operator">+</span>args
+</code></pre> 
+<p>按照以下步骤实现：<br> <strong>1、构造请求字符串</strong><br> 首先从方法中获取服务名以及方法名，以及从请求中获取参数长度，将他们包装成头部信息，其中字节六前4个之间存储的是头部信息的大小。然后一次把头部信息字符串以及参数字符串加上去。</p> 
+<pre><code class="prism language-cpp">   <span class="token keyword">const</span> google<span class="token double-colon punctuation">::</span>protobuf<span class="token double-colon punctuation">::</span>ServiceDescriptor<span class="token operator">*</span> sd <span class="token operator">=</span> mathod<span class="token operator">-&gt;</span><span class="token function">service</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+   std<span class="token double-colon punctuation">::</span>string service_name <span class="token operator">=</span> sd<span class="token operator">-&gt;</span><span class="token function">name</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+   std<span class="token double-colon punctuation">::</span>string method_name <span class="token operator">=</span> mathod<span class="token operator">-&gt;</span><span class="token function">name</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+   <span class="token comment">//    获取参数序列化之后的字符串长度</span>
+   <span class="token keyword">uint32_t</span> args_size <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+   std<span class="token double-colon punctuation">::</span>string args_str<span class="token punctuation">;</span>
+   <span class="token keyword">if</span> <span class="token punctuation">(</span>request<span class="token operator">-&gt;</span><span class="token function">SerializeToString</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>args_str<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+      args_size <span class="token operator">=</span> args_str<span class="token punctuation">.</span><span class="token function">size</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+   <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+      <span class="token comment">// std::cout &lt;&lt; "request SerializeToString error!!" &lt;&lt; std::endl;</span>
+      controller<span class="token operator">-&gt;</span><span class="token function">SetFailed</span><span class="token punctuation">(</span><span class="token string">"request SerializeToString error!!"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+      <span class="token keyword">return</span><span class="token punctuation">;</span>
+   <span class="token punctuation">}</span>
+   <span class="token comment">// 定义rpc的请求header</span>
+   mprpc<span class="token double-colon punctuation">::</span>RpcHeader rpcheader<span class="token punctuation">;</span>
+   rpcheader<span class="token punctuation">.</span><span class="token function">set_service_name</span><span class="token punctuation">(</span>service_name<span class="token punctuation">)</span><span class="token punctuation">;</span>
+   rpcheader<span class="token punctuation">.</span><span class="token function">set_method_name</span><span class="token punctuation">(</span>method_name<span class="token punctuation">)</span><span class="token punctuation">;</span>
+   rpcheader<span class="token punctuation">.</span><span class="token function">set_args_size</span><span class="token punctuation">(</span>args_size<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+   <span class="token keyword">uint32_t</span> header_size <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+   std<span class="token double-colon punctuation">::</span>string rpc_header_str<span class="token punctuation">;</span>
+   <span class="token keyword">if</span> <span class="token punctuation">(</span>rpcheader<span class="token punctuation">.</span><span class="token function">SerializeToString</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>rpc_header_str<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+      header_size <span class="token operator">=</span> rpc_header_str<span class="token punctuation">.</span><span class="token function">size</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+   <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+      controller<span class="token operator">-&gt;</span><span class="token function">SetFailed</span><span class="token punctuation">(</span><span class="token string">"rpcheader SerializeToString error!!"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+      <span class="token comment">// std::cout &lt;&lt; "rpcheader SerializeToString error!!" &lt;&lt; std::endl;</span>
+      <span class="token keyword">return</span><span class="token punctuation">;</span>
+   <span class="token punctuation">}</span>
+
+   <span class="token comment">// 组织待发送的rpc请求的字符串</span>
+   std<span class="token double-colon punctuation">::</span>string send_rpc_str<span class="token punctuation">;</span>
+   send_rpc_str<span class="token punctuation">.</span><span class="token function">insert</span><span class="token punctuation">(</span><span class="token number">0</span><span class="token punctuation">,</span> std<span class="token double-colon punctuation">::</span><span class="token function">string</span><span class="token punctuation">(</span><span class="token punctuation">(</span><span class="token keyword">char</span><span class="token operator">*</span><span class="token punctuation">)</span><span class="token operator">&amp;</span>header_size<span class="token punctuation">,</span> <span class="token number">4</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>  <span class="token comment">// header_size</span>
+   send_rpc_str <span class="token operator">+=</span> rpc_header_str<span class="token punctuation">;</span>                               <span class="token comment">// rpcheader</span>
+   send_rpc_str <span class="token operator">+=</span> args_str<span class="token punctuation">;</span>                                     <span class="token comment">// args</span>
+
+</code></pre> 
+<p><strong>2、创建网络套接字</strong></p> 
+<pre><code class="prism language-cpp">   <span class="token comment">//    使用tcp变成 完成roc方法的远程调用</span>
+   <span class="token keyword">int</span> clientfd <span class="token operator">=</span> <span class="token function">socket</span><span class="token punctuation">(</span>AF_INET<span class="token punctuation">,</span> SOCK_STREAM<span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+   <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">-</span><span class="token number">1</span> <span class="token operator">==</span> clientfd<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+      controller<span class="token operator">-&gt;</span><span class="token function">SetFailed</span><span class="token punctuation">(</span><span class="token string">"socket create error!!"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+      <span class="token function">exit</span><span class="token punctuation">(</span><span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+   <span class="token punctuation">}</span>
+</code></pre> 
+<p><strong>3、从zookeeper中获取服务的ip以及端口号进行连接</strong></p> 
+<pre><code class="prism language-cpp">   <span class="token comment">// 从zookeeper 获取ip</span>
+   ZkClient zkCli<span class="token punctuation">;</span>
+   zkCli<span class="token punctuation">.</span><span class="token function">Start</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+   <span class="token comment">//  /UserServiceRpc/Login</span>
+   std<span class="token double-colon punctuation">::</span>string method_path <span class="token operator">=</span> <span class="token string">"/"</span> <span class="token operator">+</span> service_name <span class="token operator">+</span> <span class="token string">"/"</span> <span class="token operator">+</span> method_name<span class="token punctuation">;</span>
+   <span class="token comment">// 127.0.0.1:8000</span>
+   std<span class="token double-colon punctuation">::</span>string host_data <span class="token operator">=</span> zkCli<span class="token punctuation">.</span><span class="token function">GetData</span><span class="token punctuation">(</span>method_path<span class="token punctuation">.</span><span class="token function">c_str</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+   <span class="token keyword">if</span> <span class="token punctuation">(</span>host_data <span class="token operator">==</span> <span class="token string">""</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+      controller<span class="token operator">-&gt;</span><span class="token function">SetFailed</span><span class="token punctuation">(</span>method_path <span class="token operator">+</span> <span class="token string">" is not exist!"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+      <span class="token keyword">return</span><span class="token punctuation">;</span>
+   <span class="token punctuation">}</span>
+   <span class="token keyword">int</span> idx <span class="token operator">=</span> host_data<span class="token punctuation">.</span><span class="token function">find</span><span class="token punctuation">(</span><span class="token string">":"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+   <span class="token keyword">if</span> <span class="token punctuation">(</span>idx <span class="token operator">==</span> <span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+      controller<span class="token operator">-&gt;</span><span class="token function">SetFailed</span><span class="token punctuation">(</span>method_path <span class="token operator">+</span> <span class="token string">" address is invalid!"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+      <span class="token keyword">return</span><span class="token punctuation">;</span>
+   <span class="token punctuation">}</span>
+   std<span class="token double-colon punctuation">::</span>string ip <span class="token operator">=</span> host_data<span class="token punctuation">.</span><span class="token function">substr</span><span class="token punctuation">(</span><span class="token number">0</span><span class="token punctuation">,</span> idx<span class="token punctuation">)</span><span class="token punctuation">;</span>
+   <span class="token keyword">uint16_t</span> port <span class="token operator">=</span>
+       <span class="token function">atoi</span><span class="token punctuation">(</span>host_data<span class="token punctuation">.</span><span class="token function">substr</span><span class="token punctuation">(</span>idx <span class="token operator">+</span> <span class="token number">1</span><span class="token punctuation">,</span> host_data<span class="token punctuation">.</span><span class="token function">size</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">-</span> idx<span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">c_str</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+</code></pre> 
+<p><strong>3、连接以及发送</strong></p> 
+<pre><code class="prism language-cpp">
+   <span class="token comment">// 填写client需要连接的server信息ip+port</span>
+   sockaddr_in server<span class="token punctuation">;</span>
+   <span class="token function">memset</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>server<span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">,</span> <span class="token keyword">sizeof</span><span class="token punctuation">(</span>sockaddr_in<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+   server<span class="token punctuation">.</span>sin_family <span class="token operator">=</span> AF_INET<span class="token punctuation">;</span>
+   server<span class="token punctuation">.</span>sin_port <span class="token operator">=</span> <span class="token function">htons</span><span class="token punctuation">(</span>port<span class="token punctuation">)</span><span class="token punctuation">;</span>
+   server<span class="token punctuation">.</span>sin_addr<span class="token punctuation">.</span>s_addr <span class="token operator">=</span> <span class="token function">inet_addr</span><span class="token punctuation">(</span>ip<span class="token punctuation">.</span><span class="token function">c_str</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+   <span class="token comment">// client和server进行连接</span>
+   <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">-</span><span class="token number">1</span> <span class="token operator">==</span> <span class="token function">connect</span><span class="token punctuation">(</span>clientfd<span class="token punctuation">,</span> <span class="token punctuation">(</span>sockaddr<span class="token operator">*</span><span class="token punctuation">)</span><span class="token operator">&amp;</span>server<span class="token punctuation">,</span> <span class="token keyword">sizeof</span><span class="token punctuation">(</span>sockaddr_in<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+      <span class="token function">close</span><span class="token punctuation">(</span>clientfd<span class="token punctuation">)</span><span class="token punctuation">;</span>
+      controller<span class="token operator">-&gt;</span><span class="token function">SetFailed</span><span class="token punctuation">(</span><span class="token string">"connect server errorr!"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+      <span class="token keyword">return</span><span class="token punctuation">;</span>
+   <span class="token punctuation">}</span>
+
+   <span class="token comment">// 发送rpc</span>
+   <span class="token comment">// 发送rpc请求</span>
+   <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">-</span><span class="token number">1</span> <span class="token operator">==</span> <span class="token function">send</span><span class="token punctuation">(</span>clientfd<span class="token punctuation">,</span> send_rpc_str<span class="token punctuation">.</span><span class="token function">c_str</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span> send_rpc_str<span class="token punctuation">.</span><span class="token function">size</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+      <span class="token function">close</span><span class="token punctuation">(</span>clientfd<span class="token punctuation">)</span><span class="token punctuation">;</span>
+      controller<span class="token operator">-&gt;</span><span class="token function">SetFailed</span><span class="token punctuation">(</span><span class="token string">"send errorr"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+      <span class="token keyword">return</span><span class="token punctuation">;</span>
+   <span class="token punctuation">}</span>
+</code></pre> 
+<p><strong>5、处理返回并且关闭套接字</strong></p> 
+<pre><code class="prism language-cpp"><span class="token comment">// 接收rpc请求的响应值</span>
+   <span class="token keyword">char</span> recv_buf<span class="token punctuation">[</span><span class="token number">1024</span><span class="token punctuation">]</span> <span class="token operator">=</span> <span class="token punctuation">{<!-- --></span><span class="token number">0</span><span class="token punctuation">}</span><span class="token punctuation">;</span>
+   <span class="token keyword">int</span> recv_size <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+   <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">-</span><span class="token number">1</span> <span class="token operator">==</span> <span class="token punctuation">(</span>recv_size <span class="token operator">=</span> <span class="token function">recv</span><span class="token punctuation">(</span>clientfd<span class="token punctuation">,</span> recv_buf<span class="token punctuation">,</span> <span class="token number">1024</span><span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+      <span class="token function">close</span><span class="token punctuation">(</span>clientfd<span class="token punctuation">)</span><span class="token punctuation">;</span>
+      controller<span class="token operator">-&gt;</span><span class="token function">SetFailed</span><span class="token punctuation">(</span><span class="token string">"crecv error! !"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+      <span class="token keyword">return</span><span class="token punctuation">;</span>
+   <span class="token punctuation">}</span>
+   <span class="token comment">// 反序列化rpc调用的响应数据</span>
+   <span class="token comment">//    std::string response_str(recv_buf, 0, recv_size);  //</span>
+   <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span>response<span class="token operator">-&gt;</span><span class="token function">ParseFromArray</span><span class="token punctuation">(</span>recv_buf<span class="token punctuation">,</span> recv_size<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+      <span class="token function">close</span><span class="token punctuation">(</span>clientfd<span class="token punctuation">)</span><span class="token punctuation">;</span>
+      controller<span class="token operator">-&gt;</span><span class="token function">SetFailed</span><span class="token punctuation">(</span><span class="token string">"parse error!!"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+      <span class="token keyword">return</span><span class="token punctuation">;</span>
+   <span class="token punctuation">}</span>
+   <span class="token function">close</span><span class="token punctuation">(</span>clientfd<span class="token punctuation">)</span><span class="token punctuation">;</span>
+</code></pre>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/812df417fd1927d52a066c602da6541c/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">如何高效实现 MySQL 与 elasticsearch 的数据同步</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/2f17eb295de65c8316e0251782c21599/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">JavaScript常用的5种排序算法，你都掌握了吗？</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

@@ -1,0 +1,472 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>FPGA使用VGA协议显示图像 - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="FPGA使用VGA协议显示图像" />
+<meta property="og:description" content="目录 一、实验环境硬件环境软件环境 二、VGA简介1、什么是VGA2、VGA显示原理3、扫描方式 三、VGA显示字符四、VGA显示彩色条纹五、VGA显示彩色图片1、图片格式hex2、ROM IP 核配置3、PLL IP 核配置 六、总结七、参考链接 一、实验环境 硬件环境 FPGA开发板：EP4CE115F29C7
+液晶显示器，VGA传输线
+软件环境 Quartus Prime 18.1
+VS Code
+中文点阵生成网站：https://www.zhetao.com/fontarray.html
+图片格式bmp转hex软件：BMP2Mif
+二、VGA简介 1、什么是VGA VGA(Video Graphics Array)是IBM在1987年随PS/2机一起推出的一种视频传输标准，具有分辨率高、显示速率快、颜色丰富等优点，在彩色显示器领域得到了广泛的应用。不支持热插拔，不支持音频传输。对于一些嵌入式VGA显示系统，可以在不使用VGA显示卡和计算机的情况下，实现VGA图像的显示和控制。VGA显示器具有成本低、结构简单、应用灵活的优点。对于一名FPGA工程师，尤其是视频图像的方向的学习者，VGA协议是必须要掌握的。
+由电路图可以看到，VGA并没有特殊的外部芯片，我们需要关注的其实只有5个信号：HS行同步信号，VS场同步信号，R红基色，G绿基色，B蓝基色。下面慢慢解释这些信号。
+2、VGA显示原理 VGA通过引脚的模拟电压(0V-0.714V)显示红绿蓝三种颜色，不同的电压值对应不同的颜色。
+VGA驱动显示器用的是扫描的方式，一般是逐行扫描。
+逐行扫描是扫描从屏幕左上角一点开始，从左像右逐点扫描，每扫描完一行,电子束回到屏幕的左边下一行的起始位置，在这期间，CRT对电子束进行消隐，每行结束时，用行同步信号进行同步；
+当扫描完所有的行，形成一帧后，用场同步信号进行场同步，并使扫描回到屏幕左上方，同时进行场消隐,开始下一帧。
+FPGA芯片驱动VGA显示，需要先产生模拟信号，这就要借助数模转换器D/A，利用D/A产生模拟信号，输出至VGA的RED、GREEN、BLUE基色数据线。另一种方法是利用电阻网络分流模拟D/A实现的。
+设计RGB信号时，既可以R信号、G信号和B信号独立的赋值，最后连到端口上，也可以直接用RGB当做一个整体信号，RGB信号在使用时的位宽有三种常见格式，以你的VGA解码芯片的配置有关。
+1. RGB_8，R：G：B = 3：3：2，即RGB332
+2. RGB_16，R：G：B = 5：6：5，即RGB565
+3. RGB_24，R：G：B = 8：8：8，即RGB888
+3、扫描方式 VGA显示器扫描方式分为逐行扫描和隔行扫描：逐行扫描是扫描从屏幕左上角一点开始，从左像右逐点扫描，每扫描完一行,电子束回到屏幕的左边下一行的起始位置，在这期间，CRT对电子束进行消隐，每行结束时，用行同步信号进行同步；当扫描完所有的行，形成一帧，用场同步信号进行场同步，并使扫描回到屏幕左上方，同时进行场消隐,开始下一帧。隔行扫描是指电子束扫描时每隔一行扫一线，完成一屏后在返回来扫描剩下的线，隔行扫描的显示器闪烁的厉害，会让使用者的眼睛疲劳。因此我们一般都采用逐行扫描的方式。
+三、VGA显示字符 这里使用到了汉字点阵，需要取汉字点阵：
+https://www.zhetao.com/fontarray.html
+输入需要的字符，取得相应的汉字点阵：
+用于代码中的点阵程序如图：删去其中的0x 以及 逗号 保持此格式，粘贴到代码中。
+代码如下：
+module VGA_View_name( OSC_50, //原CLK2_50时钟信号 VGA_CLK, //VGA自时钟 VGA_HS, //行同步信号 VGA_VS, //场同步信号 VGA_BLANK, //复合空白信号控制信号 当BLANK为低电平时模拟视频输出消隐电平，此时从R9~R0,G9~G0,B9~B0输入的所有数据被忽略 VGA_SYNC, //符合同步控制信号 行时序和场时序都要产生同步脉冲 VGA_R, //VGA绿色 VGA_B, //VGA蓝色 VGA_G); //VGA绿色 input OSC_50; //外部时钟信号CLK2_50 output VGA_CLK,VGA_HS,VGA_VS,VGA_BLANK,VGA_SYNC; output [7:0] VGA_R,VGA_B,VGA_G; parameter H_FRONT = 16; //行同步前沿信号周期长 parameter H_SYNC = 96; //行同步信号周期长 parameter H_BACK = 48; //行同步后沿信号周期长 parameter H_ACT = 640; //行显示周期长 parameter H_BLANK = H_FRONT&#43;H_SYNC&#43;H_BACK; //行空白信号总周期长 parameter H_TOTAL = H_FRONT&#43;H_SYNC&#43;H_BACK&#43;H_ACT; //行总周期长耗时 parameter V_FRONT = 11; //场同步前沿信号周期长 parameter V_SYNC = 2; //场同步信号周期长 parameter V_BACK = 31; //场同步后沿信号周期长 parameter V_ACT = 480; //场显示周期长 parameter V_BLANK = V_FRONT&#43;V_SYNC&#43;V_BACK; //场空白信号总周期长 parameter V_TOTAL = V_FRONT&#43;V_SYNC&#43;V_BACK&#43;V_ACT; //场总周期长耗时 reg [10:0] H_Cont; //行周期计数器 reg [10:0] V_Cont; //场周期计数器 wire [7:0] VGA_R; //VGA红色控制线 wire [7:0] VGA_G; //VGA绿色控制线 wire [7:0] VGA_B; //VGA蓝色控制线 reg VGA_HS; reg VGA_VS; reg [10:0] X; //当前行第几个像素点 reg [10:0] Y; //当前场第几行 reg CLK_25; always@(posedge OSC_50) begin CLK_25=~CLK_25; //时钟 end assign VGA_SYNC = 1&#39;b0; //同步信号低电平 assign VGA_BLANK = ~((H_Cont&lt;H_BLANK)||(V_Cont&lt;V_BLANK)); //当行计数器小于行空白总长或场计数器小于场空白总长时，空白信号低电平 assign CLK_to_DAC = CLK_25; assign VGA_CLK = ~CLK_to_DAC; //VGA时钟等于CLK_25取反 always@(posedge CLK_to_DAC) begin if(H_Cont&lt;H_TOTAL) //如果行计数器小于行总时长 H_Cont&lt;=H_Cont&#43;1&#39;b1; //行计数器&#43;1 else H_Cont&lt;=0; //否则行计数器清零 if(H_Cont==H_FRONT-1) //如果行计数器等于行前沿空白时间-1 VGA_HS&lt;=1&#39;b0; //行同步信号置0 if(H_Cont==H_FRONT&#43;H_SYNC-1) //如果行计数器等于行前沿&#43;行同步-1 VGA_HS&lt;=1&#39;b1; //行同步信号置1 if(H_Cont&gt;=H_BLANK) //如果行计数器大于等于行空白总时长 X&lt;=H_Cont-H_BLANK; //X等于行计数器-行空白总时长 （X为当前行第几个像素点） else X&lt;=0; //否则X为0 end always@(posedge VGA_HS) begin if(V_Cont&lt;V_TOTAL) //如果场计数器小于行总时长 V_Cont&lt;=V_Cont&#43;1&#39;b1; //场计数器&#43;1 else V_Cont&lt;=0; //否则场计数器清零 if(V_Cont==V_FRONT-1) //如果场计数器等于场前沿空白时间-1 VGA_VS&lt;=1&#39;b0; //场同步信号置0 if(V_Cont==V_FRONT&#43;V_SYNC-1) //如果场计数器等于行前沿&#43;场同步-1 VGA_VS&lt;=1&#39;b1; //场同步信号置1 if(V_Cont&gt;=V_BLANK) //如果场计数器大于等于场空白总时长 Y&lt;=V_Cont-V_BLANK; //Y等于场计数器-场空白总时长 （Y为当前场第几行） else Y&lt;=0; //否则Y为0 end reg valid_yr; always@(posedge CLK_to_DAC) if(V_Cont == 10&#39;d32) //场计数器=32时 valid_yr&lt;=1&#39;b1; //行输入激活 else if(V_Cont==10&#39;d512) //场计数器=512时 valid_yr&lt;=1&#39;b0; //行输入冻结 wire valid_y=valid_yr; //连线 reg valid_r; always@(posedge CLK_to_DAC) if((H_Cont == 10&#39;d32)&amp;&amp;valid_y) //行计数器=32时 valid_r&lt;=1&#39;b1; //像素输入激活 else if((H_Cont==10&#39;d512)&amp;&amp;valid_y) //行计数器=512时 valid_r&lt;=1&#39;b0; //像素输入冻结 wire valid = valid_r; //连线 wire[10:0] x_dis; //像素显示控制信号 wire[10:0] y_dis; //行显示控制信号 assign x_dis=X; //连线X assign y_dis=Y; //连线Y parameter char_line00=240&#39;h004000400000000000000000000000000000000000000000000000000000, char_line01=240&#39;h784020a00000000000000000000000000000000000000000000000000000, char_line02=240&#39;h484011100000000000000000000000000000000000000000000000000000, char_line03=240&#39;h57fe1208000018003c003c00180018007e001800180018007e003c000400, char_line04=240&#39;h508085f60000240042004200240024004200240024002400400042000c00, char_line05=240&#39;h612048000000400042004200420042000400420040004200400042000c00, char_line06=240&#39;h512047c40000400002004200420042000400420040004200400002001400, char_line07=240&#39;h4a20145400005c000400020042004200080042005c004200780004002400, char_line08=240&#39;h4bfc14547e00620018000400420042000800420062004200440018002400, char_line09=240&#39;h482027d40000420004000800420042001000420042004200020004004400, char_line0a=240&#39;h6928e4540000420002001000420042001000420042004200020002007f00, char_line0b=240&#39;h512424540000420042002000420042001000420042004200420042000400, char_line0c=240&#39;h422227d40000220042004200240024001000240022002400440042000400, char_line0d=240&#39;h4422244400001c003c007e0018001800100018001c00180038003c001f00, char_line0e=240&#39;h40a025540000000000000000000000000000000000000000000000000000, char_line0f=240&#39;h404004880000000000000000000000000000000000000000000000000000; reg[7:0] char_bit; always@(posedge CLK_to_DAC) if(X==10&#39;d180)char_bit&lt;=9&#39;d240; //当显示到144像素时准备开始输出图像数据 else if(X&gt;10&#39;d180&amp;&amp;X&lt;10&#39;d420) //左边距屏幕144像素到416像素时 416=144&#43;272（图像宽度） char_bit&lt;=char_bit-1&#39;b1; //倒着输出图像信息 reg[29:0] vga_rgb; //定义颜色缓存 always@(posedge CLK_to_DAC) if(X&gt;10&#39;d180&amp;&amp;X&lt;10&#39;d420) //X控制图像的横向显示边界：左边距屏幕左边144像素 右边界距屏幕左边界416像素 begin case(Y) //Y控制图像的纵向显示边界：从距离屏幕顶部160像素开始显示第一行数据 10&#39;d200: if(char_line00[char_bit])vga_rgb&lt;=30&#39;b1111111111_0000000000_0000000000; //如果该行有数据 则颜色为红色 else vga_rgb&lt;=30&#39;b0000000000_0000000000_0000000000; //否则为黑色 10&#39;d201: if(char_line01[char_bit])vga_rgb&lt;=30&#39;b1111111111_0000000000_0000000000; else vga_rgb&lt;=30&#39;b0000000000_0000000000_0000000000; 10&#39;d202: if(char_line02[char_bit])vga_rgb&lt;=30&#39;b1111111111_0000000000_0000000000; else vga_rgb&lt;=30&#39;b0000000000_0000000000_0000000000; 10&#39;d203: if(char_line03[char_bit])vga_rgb&lt;=30&#39;b1111111111_0000000000_0000000000; else vga_rgb&lt;=30&#39;b0000000000_0000000000_0000000000; 10&#39;d204: if(char_line04[char_bit])vga_rgb&lt;=30&#39;b1111111111_0000000000_0000000000; else vga_rgb&lt;=30&#39;b0000000000_0000000000_0000000000; 10&#39;d205: if(char_line05[char_bit])vga_rgb&lt;=30&#39;b1111111111_0000000000_0000000000; else vga_rgb&lt;=30&#39;b0000000000_0000000000_0000000000; 10&#39;d206: if(char_line06[char_bit])vga_rgb&lt;=30&#39;b1111111111_0000000000_0000000000; else vga_rgb&lt;=30&#39;b0000000000_0000000000_0000000000; 10&#39;d207: if(char_line07[char_bit])vga_rgb&lt;=30&#39;b1111111111_0000000000_0000000000; else vga_rgb&lt;=30&#39;b0000000000_0000000000_0000000000; 10&#39;d208: if(char_line08[char_bit])vga_rgb&lt;=30&#39;b1111111111_0000000000_0000000000; else vga_rgb&lt;=30&#39;b0000000000_0000000000_0000000000; 10&#39;d209: if(char_line09[char_bit])vga_rgb&lt;=30&#39;b1111111111_0000000000_0000000000; else vga_rgb&lt;=30&#39;b0000000000_0000000000_0000000000; 10&#39;d210: if(char_line0a[char_bit])vga_rgb&lt;=30&#39;b1111111111_0000000000_0000000000; else vga_rgb&lt;=30&#39;b0000000000_0000000000_0000000000; 10&#39;d211: if(char_line0b[char_bit])vga_rgb&lt;=30&#39;b1111111111_0000000000_0000000000; else vga_rgb&lt;=30&#39;b0000000000_0000000000_0000000000; 10&#39;d212: if(char_line0c[char_bit])vga_rgb&lt;=30&#39;b1111111111_0000000000_0000000000; else vga_rgb&lt;=30&#39;b0000000000_0000000000_0000000000; 10&#39;d213: if(char_line0d[char_bit])vga_rgb&lt;=30&#39;b1111111111_0000000000_0000000000; else vga_rgb&lt;=30&#39;b0000000000_0000000000_0000000000; 10&#39;d214: if(char_line0e[char_bit])vga_rgb&lt;=30&#39;b1111111111_0000000000_0000000000; else vga_rgb&lt;=30&#39;b0000000000_0000000000_0000000000; 10&#39;d215: if(char_line0f[char_bit])vga_rgb&lt;=30&#39;b1111111111_0000000000_0000000000; else vga_rgb&lt;=30&#39;b0000000000_0000000000_0000000000; default:vga_rgb&lt;=30&#39;h0000000000; //默认颜色黑色 endcase end else vga_rgb&lt;=30&#39;h000000000; //否则黑色 assign VGA_R=vga_rgb[23:16]; assign VGA_G=vga_rgb[15:8]; assign VGA_B=vga_rgb[7:0]; endmodule 除了代码外还需要PLL IP核，详情见下文。" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/43729a40033c4d0a7f7eae11710980eb/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-04-28T16:40:35+08:00" />
+<meta property="article:modified_time" content="2023-04-28T16:40:35+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">FPGA使用VGA协议显示图像</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p></p> 
+<div class="toc"> 
+ <h4>目录</h4> 
+ <ul><li><a href="#_1" rel="nofollow">一、实验环境</a></li><li><ul><li><ul><li><a href="#_2" rel="nofollow">硬件环境</a></li><li><a href="#_5" rel="nofollow">软件环境</a></li></ul> 
+  </li></ul> 
+  </li><li><a href="#VGA_11" rel="nofollow">二、VGA简介</a></li><li><ul><li><ul><li><a href="#1VGA_12" rel="nofollow">1、什么是VGA</a></li><li><a href="#2VGA_18" rel="nofollow">2、VGA显示原理</a></li><li><a href="#3_33" rel="nofollow">3、扫描方式</a></li></ul> 
+  </li></ul> 
+  </li><li><a href="#VGA_37" rel="nofollow">三、VGA显示字符</a></li><li><a href="#VGA_230" rel="nofollow">四、VGA显示彩色条纹</a></li><li><a href="#VGA_362" rel="nofollow">五、VGA显示彩色图片</a></li><li><ul><li><ul><li><a href="#1hex_363" rel="nofollow">1、图片格式hex</a></li><li><a href="#2ROM_IP__369" rel="nofollow">2、ROM IP 核配置</a></li><li><a href="#3PLL_IP__377" rel="nofollow">3、PLL IP 核配置</a></li></ul> 
+  </li></ul> 
+  </li><li><a href="#_394" rel="nofollow">六、总结</a></li><li><a href="#_397" rel="nofollow">七、参考链接</a></li></ul> 
+</div> 
+<p></p> 
+<h2><a id="_1"></a>一、实验环境</h2> 
+<h4><a id="_2"></a>硬件环境</h4> 
+<p>FPGA开发板：EP4CE115F29C7<br> 液晶显示器，VGA传输线</p> 
+<h4><a id="_5"></a>软件环境</h4> 
+<p>Quartus Prime 18.1<br> VS Code<br> 中文点阵生成网站：https://www.zhetao.com/fontarray.html<br> 图片格式bmp转hex软件：BMP2Mif</p> 
+<h2><a id="VGA_11"></a>二、VGA简介</h2> 
+<h4><a id="1VGA_12"></a>1、什么是VGA</h4> 
+<p>VGA(Video Graphics Array)是IBM在1987年随PS/2机一起推出的一种视频传输标准，具有分辨率高、显示速率快、颜色丰富等优点，在彩色显示器领域得到了广泛的应用。不支持热插拔，不支持音频传输。对于一些嵌入式VGA显示系统，可以在不使用VGA显示卡和计算机的情况下，实现VGA图像的显示和控制。VGA显示器具有成本低、结构简单、应用灵活的优点。对于一名FPGA工程师，尤其是视频图像的方向的学习者，VGA协议是必须要掌握的。</p> 
+<p><img src="https://images2.imgbox.com/96/e0/6lUpTdDH_o.jpg" alt="Alt"><br> <img src="https://images2.imgbox.com/8c/e1/IbQ1YBVV_o.png" alt="Alt"><br> 由电路图可以看到，VGA并没有特殊的外部芯片，我们需要关注的其实只有5个信号：HS行同步信号，VS场同步信号，R红基色，G绿基色，B蓝基色。下面慢慢解释这些信号。</p> 
+<h4><a id="2VGA_18"></a>2、VGA显示原理</h4> 
+<p>VGA通过引脚的模拟电压(0V-0.714V)显示红绿蓝三种颜色，不同的电压值对应不同的颜色。<br> VGA驱动显示器用的是扫描的方式，一般是逐行扫描。<br> 逐行扫描是扫描从屏幕左上角一点开始，从左像右逐点扫描，每扫描完一行,电子束回到屏幕的左边下一行的起始位置，在这期间，CRT对电子束进行消隐，每行结束时，用行同步信号进行同步；<br> 当扫描完所有的行，形成一帧后，用场同步信号进行场同步，并使扫描回到屏幕左上方，同时进行场消隐,开始下一帧。<br> <img src="https://images2.imgbox.com/40/2e/7nZto5DF_o.png" alt="Alt"><br> FPGA芯片驱动VGA显示，需要先产生模拟信号，这就要借助数模转换器D/A，利用D/A产生模拟信号，输出至VGA的RED、GREEN、BLUE基色数据线。另一种方法是利用电阻网络分流模拟D/A实现的。<br> <img src="https://images2.imgbox.com/65/f2/LkbKvnCw_o.png" alt="Alt"><br> 设计RGB信号时，既可以R信号、G信号和B信号独立的赋值，最后连到端口上，也可以直接用RGB当做一个整体信号，RGB信号在使用时的位宽有三种常见格式，以你的VGA解码芯片的配置有关。</p> 
+<p>1. RGB_8，R：G：B = 3：3：2，即RGB332</p> 
+<p>2. RGB_16，R：G：B = 5：6：5，即RGB565</p> 
+<p>3. RGB_24，R：G：B = 8：8：8，即RGB888</p> 
+<h4><a id="3_33"></a>3、扫描方式</h4> 
+<p>VGA显示器扫描方式分为逐行扫描和隔行扫描：逐行扫描是扫描从屏幕左上角一点开始，从左像右逐点扫描，每扫描完一行,电子束回到屏幕的左边下一行的起始位置，在这期间，CRT对电子束进行消隐，每行结束时，用行同步信号进行同步；当扫描完所有的行，形成一帧，用场同步信号进行场同步，并使扫描回到屏幕左上方，同时进行场消隐,开始下一帧。隔行扫描是指电子束扫描时每隔一行扫一线，完成一屏后在返回来扫描剩下的线，隔行扫描的显示器闪烁的厉害，会让使用者的眼睛疲劳。因此我们一般都采用逐行扫描的方式。<br> <img src="https://images2.imgbox.com/5a/80/1fW5adsa_o.png" alt="Alt"></p> 
+<h2><a id="VGA_37"></a>三、VGA显示字符</h2> 
+<p>这里使用到了汉字点阵，需要取汉字点阵：</p> 
+<p><a href="https://www.zhetao.com/fontarray.html" rel="nofollow">https://www.zhetao.com/fontarray.html</a><br> 输入需要的字符，取得相应的汉字点阵：</p> 
+<p>用于代码中的点阵程序如图：删去其中的0x 以及 逗号 保持此格式，粘贴到代码中。<br> 代码如下：</p> 
+<pre><code class="prism language-cpp"><span class="token keyword">module</span> <span class="token module">VGA_View_name</span><span class="token punctuation">(</span>
+OSC_50<span class="token punctuation">,</span>     <span class="token comment">//原CLK2_50时钟信号</span>
+VGA_CLK<span class="token punctuation">,</span>    <span class="token comment">//VGA自时钟</span>
+VGA_HS<span class="token punctuation">,</span>     <span class="token comment">//行同步信号</span>
+VGA_VS<span class="token punctuation">,</span>     <span class="token comment">//场同步信号</span>
+VGA_BLANK<span class="token punctuation">,</span>  <span class="token comment">//复合空白信号控制信号  当BLANK为低电平时模拟视频输出消隐电平，此时从R9~R0,G9~G0,B9~B0输入的所有数据被忽略</span>
+VGA_SYNC<span class="token punctuation">,</span>   <span class="token comment">//符合同步控制信号      行时序和场时序都要产生同步脉冲</span>
+VGA_R<span class="token punctuation">,</span>      <span class="token comment">//VGA绿色</span>
+VGA_B<span class="token punctuation">,</span>      <span class="token comment">//VGA蓝色</span>
+VGA_G<span class="token punctuation">)</span><span class="token punctuation">;</span>     <span class="token comment">//VGA绿色</span>
+ input OSC_50<span class="token punctuation">;</span>     <span class="token comment">//外部时钟信号CLK2_50</span>
+output VGA_CLK<span class="token punctuation">,</span>VGA_HS<span class="token punctuation">,</span>VGA_VS<span class="token punctuation">,</span>VGA_BLANK<span class="token punctuation">,</span>VGA_SYNC<span class="token punctuation">;</span>
+output <span class="token punctuation">[</span><span class="token number">7</span><span class="token operator">:</span><span class="token number">0</span><span class="token punctuation">]</span> VGA_R<span class="token punctuation">,</span>VGA_B<span class="token punctuation">,</span>VGA_G<span class="token punctuation">;</span>
+ parameter H_FRONT <span class="token operator">=</span> <span class="token number">16</span><span class="token punctuation">;</span>     <span class="token comment">//行同步前沿信号周期长</span>
+ parameter H_SYNC <span class="token operator">=</span> <span class="token number">96</span><span class="token punctuation">;</span>      <span class="token comment">//行同步信号周期长</span>
+ parameter H_BACK <span class="token operator">=</span> <span class="token number">48</span><span class="token punctuation">;</span>      <span class="token comment">//行同步后沿信号周期长</span>
+ parameter H_ACT <span class="token operator">=</span> <span class="token number">640</span><span class="token punctuation">;</span>      <span class="token comment">//行显示周期长</span>
+ parameter H_BLANK <span class="token operator">=</span> H_FRONT<span class="token operator">+</span>H_SYNC<span class="token operator">+</span>H_BACK<span class="token punctuation">;</span>        <span class="token comment">//行空白信号总周期长</span>
+ parameter H_TOTAL <span class="token operator">=</span> H_FRONT<span class="token operator">+</span>H_SYNC<span class="token operator">+</span>H_BACK<span class="token operator">+</span>H_ACT<span class="token punctuation">;</span>  <span class="token comment">//行总周期长耗时</span>
+ parameter V_FRONT <span class="token operator">=</span> <span class="token number">11</span><span class="token punctuation">;</span>     <span class="token comment">//场同步前沿信号周期长</span>
+ parameter V_SYNC <span class="token operator">=</span> <span class="token number">2</span><span class="token punctuation">;</span>       <span class="token comment">//场同步信号周期长</span>
+ parameter V_BACK <span class="token operator">=</span> <span class="token number">31</span><span class="token punctuation">;</span>      <span class="token comment">//场同步后沿信号周期长</span>
+ parameter V_ACT <span class="token operator">=</span> <span class="token number">480</span><span class="token punctuation">;</span>      <span class="token comment">//场显示周期长</span>
+ parameter V_BLANK <span class="token operator">=</span> V_FRONT<span class="token operator">+</span>V_SYNC<span class="token operator">+</span>V_BACK<span class="token punctuation">;</span>        <span class="token comment">//场空白信号总周期长</span>
+ parameter V_TOTAL <span class="token operator">=</span> V_FRONT<span class="token operator">+</span>V_SYNC<span class="token operator">+</span>V_BACK<span class="token operator">+</span>V_ACT<span class="token punctuation">;</span>  <span class="token comment">//场总周期长耗时</span>
+ reg <span class="token punctuation">[</span><span class="token number">10</span><span class="token operator">:</span><span class="token number">0</span><span class="token punctuation">]</span> H_Cont<span class="token punctuation">;</span>        <span class="token comment">//行周期计数器</span>
+ reg <span class="token punctuation">[</span><span class="token number">10</span><span class="token operator">:</span><span class="token number">0</span><span class="token punctuation">]</span> V_Cont<span class="token punctuation">;</span>        <span class="token comment">//场周期计数器</span>
+ wire <span class="token punctuation">[</span><span class="token number">7</span><span class="token operator">:</span><span class="token number">0</span><span class="token punctuation">]</span> VGA_R<span class="token punctuation">;</span>         <span class="token comment">//VGA红色控制线</span>
+ wire <span class="token punctuation">[</span><span class="token number">7</span><span class="token operator">:</span><span class="token number">0</span><span class="token punctuation">]</span> VGA_G<span class="token punctuation">;</span>         <span class="token comment">//VGA绿色控制线</span>
+ wire <span class="token punctuation">[</span><span class="token number">7</span><span class="token operator">:</span><span class="token number">0</span><span class="token punctuation">]</span> VGA_B<span class="token punctuation">;</span>         <span class="token comment">//VGA蓝色控制线</span>
+reg VGA_HS<span class="token punctuation">;</span>
+reg VGA_VS<span class="token punctuation">;</span>
+ reg <span class="token punctuation">[</span><span class="token number">10</span><span class="token operator">:</span><span class="token number">0</span><span class="token punctuation">]</span> X<span class="token punctuation">;</span>             <span class="token comment">//当前行第几个像素点</span>
+ reg <span class="token punctuation">[</span><span class="token number">10</span><span class="token operator">:</span><span class="token number">0</span><span class="token punctuation">]</span> Y<span class="token punctuation">;</span>             <span class="token comment">//当前场第几行</span>
+reg CLK_25<span class="token punctuation">;</span>
+always@<span class="token punctuation">(</span>posedge OSC_50<span class="token punctuation">)</span>
+    begin 
+      CLK_25<span class="token operator">=</span><span class="token operator">~</span>CLK_25<span class="token punctuation">;</span>         <span class="token comment">//时钟</span>
+    end 
+    assign VGA_SYNC <span class="token operator">=</span> <span class="token number">1'</span>b0<span class="token punctuation">;</span>   <span class="token comment">//同步信号低电平</span>
+    assign VGA_BLANK <span class="token operator">=</span> <span class="token operator">~</span><span class="token punctuation">(</span><span class="token punctuation">(</span>H_Cont<span class="token operator">&lt;</span>H_BLANK<span class="token punctuation">)</span><span class="token operator">||</span><span class="token punctuation">(</span>V_Cont<span class="token operator">&lt;</span>V_BLANK<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>  <span class="token comment">//当行计数器小于行空白总长或场计数器小于场空白总长时，空白信号低电平</span>
+    assign CLK_to_DAC <span class="token operator">=</span> CLK_25<span class="token punctuation">;</span>
+    assign VGA_CLK <span class="token operator">=</span> <span class="token operator">~</span>CLK_to_DAC<span class="token punctuation">;</span>  <span class="token comment">//VGA时钟等于CLK_25取反</span>
+    
+always@<span class="token punctuation">(</span>posedge CLK_to_DAC<span class="token punctuation">)</span>
+    begin
+        <span class="token keyword">if</span><span class="token punctuation">(</span>H_Cont<span class="token operator">&lt;</span>H_TOTAL<span class="token punctuation">)</span>           <span class="token comment">//如果行计数器小于行总时长</span>
+            H_Cont<span class="token operator">&lt;=</span>H_Cont<span class="token operator">+</span><span class="token number">1'</span>b1<span class="token punctuation">;</span>      <span class="token comment">//行计数器+1</span>
+        <span class="token keyword">else</span> H_Cont<span class="token operator">&lt;=</span><span class="token number">0</span><span class="token punctuation">;</span>              <span class="token comment">//否则行计数器清零</span>
+        <span class="token keyword">if</span><span class="token punctuation">(</span>H_Cont<span class="token operator">==</span>H_FRONT<span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">)</span>        <span class="token comment">//如果行计数器等于行前沿空白时间-1</span>
+            VGA_HS<span class="token operator">&lt;=</span><span class="token number">1'</span>b0<span class="token punctuation">;</span>             <span class="token comment">//行同步信号置0</span>
+        <span class="token keyword">if</span><span class="token punctuation">(</span>H_Cont<span class="token operator">==</span>H_FRONT<span class="token operator">+</span>H_SYNC<span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">)</span> <span class="token comment">//如果行计数器等于行前沿+行同步-1</span>
+            VGA_HS<span class="token operator">&lt;=</span><span class="token number">1'</span>b1<span class="token punctuation">;</span>             <span class="token comment">//行同步信号置1</span>
+        <span class="token keyword">if</span><span class="token punctuation">(</span>H_Cont<span class="token operator">&gt;=</span>H_BLANK<span class="token punctuation">)</span>          <span class="token comment">//如果行计数器大于等于行空白总时长</span>
+            X<span class="token operator">&lt;=</span>H_Cont<span class="token operator">-</span>H_BLANK<span class="token punctuation">;</span>        <span class="token comment">//X等于行计数器-行空白总时长   （X为当前行第几个像素点）</span>
+        <span class="token keyword">else</span> X<span class="token operator">&lt;=</span><span class="token number">0</span><span class="token punctuation">;</span>                   <span class="token comment">//否则X为0</span>
+    end
+    always@<span class="token punctuation">(</span>posedge VGA_HS<span class="token punctuation">)</span>
+    begin
+        <span class="token keyword">if</span><span class="token punctuation">(</span>V_Cont<span class="token operator">&lt;</span>V_TOTAL<span class="token punctuation">)</span>           <span class="token comment">//如果场计数器小于行总时长</span>
+            V_Cont<span class="token operator">&lt;=</span>V_Cont<span class="token operator">+</span><span class="token number">1'</span>b1<span class="token punctuation">;</span>      <span class="token comment">//场计数器+1</span>
+        <span class="token keyword">else</span> V_Cont<span class="token operator">&lt;=</span><span class="token number">0</span><span class="token punctuation">;</span>              <span class="token comment">//否则场计数器清零</span>
+        <span class="token keyword">if</span><span class="token punctuation">(</span>V_Cont<span class="token operator">==</span>V_FRONT<span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">)</span>       <span class="token comment">//如果场计数器等于场前沿空白时间-1</span>
+            VGA_VS<span class="token operator">&lt;=</span><span class="token number">1'</span>b0<span class="token punctuation">;</span>             <span class="token comment">//场同步信号置0</span>
+        <span class="token keyword">if</span><span class="token punctuation">(</span>V_Cont<span class="token operator">==</span>V_FRONT<span class="token operator">+</span>V_SYNC<span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">)</span> <span class="token comment">//如果场计数器等于行前沿+场同步-1</span>
+            VGA_VS<span class="token operator">&lt;=</span><span class="token number">1'</span>b1<span class="token punctuation">;</span>             <span class="token comment">//场同步信号置1</span>
+        <span class="token keyword">if</span><span class="token punctuation">(</span>V_Cont<span class="token operator">&gt;=</span>V_BLANK<span class="token punctuation">)</span>          <span class="token comment">//如果场计数器大于等于场空白总时长</span>
+            Y<span class="token operator">&lt;=</span>V_Cont<span class="token operator">-</span>V_BLANK<span class="token punctuation">;</span>        <span class="token comment">//Y等于场计数器-场空白总时长    （Y为当前场第几行）  </span>
+        <span class="token keyword">else</span> Y<span class="token operator">&lt;=</span><span class="token number">0</span><span class="token punctuation">;</span>                   <span class="token comment">//否则Y为0</span>
+    end
+    reg valid_yr<span class="token punctuation">;</span>
+    always@<span class="token punctuation">(</span>posedge CLK_to_DAC<span class="token punctuation">)</span>
+    <span class="token keyword">if</span><span class="token punctuation">(</span>V_Cont <span class="token operator">==</span> <span class="token number">10'</span>d32<span class="token punctuation">)</span>         <span class="token comment">//场计数器=32时</span>
+        valid_yr<span class="token operator">&lt;=</span><span class="token number">1'</span>b1<span class="token punctuation">;</span>           <span class="token comment">//行输入激活</span>
+    <span class="token keyword">else</span> <span class="token keyword">if</span><span class="token punctuation">(</span>V_Cont<span class="token operator">==</span><span class="token number">10'</span>d512<span class="token punctuation">)</span>     <span class="token comment">//场计数器=512时</span>
+        valid_yr<span class="token operator">&lt;=</span><span class="token number">1'</span>b0<span class="token punctuation">;</span>           <span class="token comment">//行输入冻结</span>
+    wire valid_y<span class="token operator">=</span>valid_yr<span class="token punctuation">;</span>       <span class="token comment">//连线   </span>
+    reg valid_r<span class="token punctuation">;</span>            
+    always@<span class="token punctuation">(</span>posedge CLK_to_DAC<span class="token punctuation">)</span>   
+    <span class="token keyword">if</span><span class="token punctuation">(</span><span class="token punctuation">(</span>H_Cont <span class="token operator">==</span> <span class="token number">10'</span>d32<span class="token punctuation">)</span><span class="token operator">&amp;&amp;</span>valid_y<span class="token punctuation">)</span>     <span class="token comment">//行计数器=32时</span>
+        valid_r<span class="token operator">&lt;=</span><span class="token number">1'</span>b1<span class="token punctuation">;</span>                   <span class="token comment">//像素输入激活</span>
+    <span class="token keyword">else</span> <span class="token keyword">if</span><span class="token punctuation">(</span><span class="token punctuation">(</span>H_Cont<span class="token operator">==</span><span class="token number">10'</span>d512<span class="token punctuation">)</span><span class="token operator">&amp;&amp;</span>valid_y<span class="token punctuation">)</span> <span class="token comment">//行计数器=512时 </span>
+        valid_r<span class="token operator">&lt;=</span><span class="token number">1'</span>b0<span class="token punctuation">;</span>                   <span class="token comment">//像素输入冻结</span>
+    wire valid <span class="token operator">=</span> valid_r<span class="token punctuation">;</span>               <span class="token comment">//连线</span>
+    wire<span class="token punctuation">[</span><span class="token number">10</span><span class="token operator">:</span><span class="token number">0</span><span class="token punctuation">]</span> x_dis<span class="token punctuation">;</span>     <span class="token comment">//像素显示控制信号</span>
+    wire<span class="token punctuation">[</span><span class="token number">10</span><span class="token operator">:</span><span class="token number">0</span><span class="token punctuation">]</span> y_dis<span class="token punctuation">;</span>     <span class="token comment">//行显示控制信号</span>
+    assign x_dis<span class="token operator">=</span>X<span class="token punctuation">;</span>       <span class="token comment">//连线X</span>
+    assign y_dis<span class="token operator">=</span>Y<span class="token punctuation">;</span>       <span class="token comment">//连线Y</span>
+        parameter
+
+    char_line00<span class="token operator">=</span><span class="token number">240'</span>h004000400000000000000000000000000000000000000000000000000000<span class="token punctuation">,</span>
+    char_line01<span class="token operator">=</span><span class="token number">240'</span>h784020a00000000000000000000000000000000000000000000000000000<span class="token punctuation">,</span>
+    char_line02<span class="token operator">=</span><span class="token number">240'</span>h484011100000000000000000000000000000000000000000000000000000<span class="token punctuation">,</span>
+    char_line03<span class="token operator">=</span><span class="token number">240'</span>h57fe1208000018003c003c00180018007e001800180018007e003c000400<span class="token punctuation">,</span>
+    char_line04<span class="token operator">=</span><span class="token number">240'</span>h508085f60000240042004200240024004200240024002400400042000c00<span class="token punctuation">,</span>
+    char_line05<span class="token operator">=</span><span class="token number">240'</span>h612048000000400042004200420042000400420040004200400042000c00<span class="token punctuation">,</span>
+    char_line06<span class="token operator">=</span><span class="token number">240'</span>h512047c40000400002004200420042000400420040004200400002001400<span class="token punctuation">,</span>
+    char_line07<span class="token operator">=</span><span class="token number">240'</span>h4a20145400005c000400020042004200080042005c004200780004002400<span class="token punctuation">,</span>
+    char_line08<span class="token operator">=</span><span class="token number">240'</span>h4bfc14547e00620018000400420042000800420062004200440018002400<span class="token punctuation">,</span>
+    char_line09<span class="token operator">=</span><span class="token number">240'</span>h482027d40000420004000800420042001000420042004200020004004400<span class="token punctuation">,</span>
+    char_line0a<span class="token operator">=</span><span class="token number">240'</span>h6928e4540000420002001000420042001000420042004200020002007f00<span class="token punctuation">,</span>
+    char_line0b<span class="token operator">=</span><span class="token number">240'</span>h512424540000420042002000420042001000420042004200420042000400<span class="token punctuation">,</span>
+    char_line0c<span class="token operator">=</span><span class="token number">240'</span>h422227d40000220042004200240024001000240022002400440042000400<span class="token punctuation">,</span>
+    char_line0d<span class="token operator">=</span><span class="token number">240'</span>h4422244400001c003c007e0018001800100018001c00180038003c001f00<span class="token punctuation">,</span>
+    char_line0e<span class="token operator">=</span><span class="token number">240'</span>h40a025540000000000000000000000000000000000000000000000000000<span class="token punctuation">,</span>
+    char_line0f<span class="token operator">=</span><span class="token number">240'</span>h404004880000000000000000000000000000000000000000000000000000<span class="token punctuation">;</span>
+
+
+    reg<span class="token punctuation">[</span><span class="token number">7</span><span class="token operator">:</span><span class="token number">0</span><span class="token punctuation">]</span> char_bit<span class="token punctuation">;</span>
+    always@<span class="token punctuation">(</span>posedge CLK_to_DAC<span class="token punctuation">)</span>
+        <span class="token keyword">if</span><span class="token punctuation">(</span>X<span class="token operator">==</span><span class="token number">10'</span>d180<span class="token punctuation">)</span>char_bit<span class="token operator">&lt;=</span><span class="token number">9'</span>d240<span class="token punctuation">;</span>   <span class="token comment">//当显示到144像素时准备开始输出图像数据</span>
+        <span class="token keyword">else</span> <span class="token keyword">if</span><span class="token punctuation">(</span>X<span class="token operator">&gt;</span><span class="token number">10'</span>d180<span class="token operator">&amp;&amp;</span>X<span class="token operator">&lt;</span><span class="token number">10'</span>d420<span class="token punctuation">)</span>     <span class="token comment">//左边距屏幕144像素到416像素时    416=144+272（图像宽度）</span>
+            char_bit<span class="token operator">&lt;=</span>char_bit<span class="token operator">-</span><span class="token number">1'</span>b1<span class="token punctuation">;</span>       <span class="token comment">//倒着输出图像信息</span>
+            
+    reg<span class="token punctuation">[</span><span class="token number">29</span><span class="token operator">:</span><span class="token number">0</span><span class="token punctuation">]</span> vga_rgb<span class="token punctuation">;</span>                <span class="token comment">//定义颜色缓存</span>
+    always@<span class="token punctuation">(</span>posedge CLK_to_DAC<span class="token punctuation">)</span> 
+        <span class="token keyword">if</span><span class="token punctuation">(</span>X<span class="token operator">&gt;</span><span class="token number">10'</span>d180<span class="token operator">&amp;&amp;</span>X<span class="token operator">&lt;</span><span class="token number">10'</span>d420<span class="token punctuation">)</span>    <span class="token comment">//X控制图像的横向显示边界：左边距屏幕左边144像素  右边界距屏幕左边界416像素</span>
+            begin <span class="token keyword">case</span><span class="token punctuation">(</span>Y<span class="token punctuation">)</span>            <span class="token comment">//Y控制图像的纵向显示边界：从距离屏幕顶部160像素开始显示第一行数据</span>
+                <span class="token number">10'</span>d200<span class="token operator">:</span>
+                <span class="token keyword">if</span><span class="token punctuation">(</span>char_line00<span class="token punctuation">[</span>char_bit<span class="token punctuation">]</span><span class="token punctuation">)</span>vga_rgb<span class="token operator">&lt;=</span><span class="token number">30'</span>b1111111111_0000000000_0000000000<span class="token punctuation">;</span>  <span class="token comment">//如果该行有数据 则颜色为红色</span>
+                <span class="token keyword">else</span> vga_rgb<span class="token operator">&lt;=</span><span class="token number">30'</span>b0000000000_0000000000_0000000000<span class="token punctuation">;</span>                      <span class="token comment">//否则为黑色</span>
+                <span class="token number">10'</span>d201<span class="token operator">:</span>
+                <span class="token keyword">if</span><span class="token punctuation">(</span>char_line01<span class="token punctuation">[</span>char_bit<span class="token punctuation">]</span><span class="token punctuation">)</span>vga_rgb<span class="token operator">&lt;=</span><span class="token number">30'</span>b1111111111_0000000000_0000000000<span class="token punctuation">;</span>
+                <span class="token keyword">else</span> vga_rgb<span class="token operator">&lt;=</span><span class="token number">30'</span>b0000000000_0000000000_0000000000<span class="token punctuation">;</span>
+                <span class="token number">10'</span>d202<span class="token operator">:</span>
+                <span class="token keyword">if</span><span class="token punctuation">(</span>char_line02<span class="token punctuation">[</span>char_bit<span class="token punctuation">]</span><span class="token punctuation">)</span>vga_rgb<span class="token operator">&lt;=</span><span class="token number">30'</span>b1111111111_0000000000_0000000000<span class="token punctuation">;</span>
+                <span class="token keyword">else</span> vga_rgb<span class="token operator">&lt;=</span><span class="token number">30'</span>b0000000000_0000000000_0000000000<span class="token punctuation">;</span>
+                <span class="token number">10'</span>d203<span class="token operator">:</span>
+                <span class="token keyword">if</span><span class="token punctuation">(</span>char_line03<span class="token punctuation">[</span>char_bit<span class="token punctuation">]</span><span class="token punctuation">)</span>vga_rgb<span class="token operator">&lt;=</span><span class="token number">30'</span>b1111111111_0000000000_0000000000<span class="token punctuation">;</span>
+                <span class="token keyword">else</span> vga_rgb<span class="token operator">&lt;=</span><span class="token number">30'</span>b0000000000_0000000000_0000000000<span class="token punctuation">;</span>
+                <span class="token number">10'</span>d204<span class="token operator">:</span>
+                <span class="token keyword">if</span><span class="token punctuation">(</span>char_line04<span class="token punctuation">[</span>char_bit<span class="token punctuation">]</span><span class="token punctuation">)</span>vga_rgb<span class="token operator">&lt;=</span><span class="token number">30'</span>b1111111111_0000000000_0000000000<span class="token punctuation">;</span>
+                <span class="token keyword">else</span> vga_rgb<span class="token operator">&lt;=</span><span class="token number">30'</span>b0000000000_0000000000_0000000000<span class="token punctuation">;</span> 
+                <span class="token number">10'</span>d205<span class="token operator">:</span>
+                <span class="token keyword">if</span><span class="token punctuation">(</span>char_line05<span class="token punctuation">[</span>char_bit<span class="token punctuation">]</span><span class="token punctuation">)</span>vga_rgb<span class="token operator">&lt;=</span><span class="token number">30'</span>b1111111111_0000000000_0000000000<span class="token punctuation">;</span>
+                <span class="token keyword">else</span> vga_rgb<span class="token operator">&lt;=</span><span class="token number">30'</span>b0000000000_0000000000_0000000000<span class="token punctuation">;</span>
+                <span class="token number">10'</span>d206<span class="token operator">:</span>
+                <span class="token keyword">if</span><span class="token punctuation">(</span>char_line06<span class="token punctuation">[</span>char_bit<span class="token punctuation">]</span><span class="token punctuation">)</span>vga_rgb<span class="token operator">&lt;=</span><span class="token number">30'</span>b1111111111_0000000000_0000000000<span class="token punctuation">;</span>
+                <span class="token keyword">else</span> vga_rgb<span class="token operator">&lt;=</span><span class="token number">30'</span>b0000000000_0000000000_0000000000<span class="token punctuation">;</span> 
+                <span class="token number">10'</span>d207<span class="token operator">:</span>
+                <span class="token keyword">if</span><span class="token punctuation">(</span>char_line07<span class="token punctuation">[</span>char_bit<span class="token punctuation">]</span><span class="token punctuation">)</span>vga_rgb<span class="token operator">&lt;=</span><span class="token number">30'</span>b1111111111_0000000000_0000000000<span class="token punctuation">;</span>
+                <span class="token keyword">else</span> vga_rgb<span class="token operator">&lt;=</span><span class="token number">30'</span>b0000000000_0000000000_0000000000<span class="token punctuation">;</span>
+                <span class="token number">10'</span>d208<span class="token operator">:</span>
+                <span class="token keyword">if</span><span class="token punctuation">(</span>char_line08<span class="token punctuation">[</span>char_bit<span class="token punctuation">]</span><span class="token punctuation">)</span>vga_rgb<span class="token operator">&lt;=</span><span class="token number">30'</span>b1111111111_0000000000_0000000000<span class="token punctuation">;</span>
+                <span class="token keyword">else</span> vga_rgb<span class="token operator">&lt;=</span><span class="token number">30'</span>b0000000000_0000000000_0000000000<span class="token punctuation">;</span> 
+                <span class="token number">10'</span>d209<span class="token operator">:</span>
+                <span class="token keyword">if</span><span class="token punctuation">(</span>char_line09<span class="token punctuation">[</span>char_bit<span class="token punctuation">]</span><span class="token punctuation">)</span>vga_rgb<span class="token operator">&lt;=</span><span class="token number">30'</span>b1111111111_0000000000_0000000000<span class="token punctuation">;</span>
+                <span class="token keyword">else</span> vga_rgb<span class="token operator">&lt;=</span><span class="token number">30'</span>b0000000000_0000000000_0000000000<span class="token punctuation">;</span>
+                <span class="token number">10'</span>d210<span class="token operator">:</span>
+                <span class="token keyword">if</span><span class="token punctuation">(</span>char_line0a<span class="token punctuation">[</span>char_bit<span class="token punctuation">]</span><span class="token punctuation">)</span>vga_rgb<span class="token operator">&lt;=</span><span class="token number">30'</span>b1111111111_0000000000_0000000000<span class="token punctuation">;</span>
+                <span class="token keyword">else</span> vga_rgb<span class="token operator">&lt;=</span><span class="token number">30'</span>b0000000000_0000000000_0000000000<span class="token punctuation">;</span>
+                <span class="token number">10'</span>d211<span class="token operator">:</span>
+                <span class="token keyword">if</span><span class="token punctuation">(</span>char_line0b<span class="token punctuation">[</span>char_bit<span class="token punctuation">]</span><span class="token punctuation">)</span>vga_rgb<span class="token operator">&lt;=</span><span class="token number">30'</span>b1111111111_0000000000_0000000000<span class="token punctuation">;</span>
+                <span class="token keyword">else</span> vga_rgb<span class="token operator">&lt;=</span><span class="token number">30'</span>b0000000000_0000000000_0000000000<span class="token punctuation">;</span>
+                <span class="token number">10'</span>d212<span class="token operator">:</span>
+                <span class="token keyword">if</span><span class="token punctuation">(</span>char_line0c<span class="token punctuation">[</span>char_bit<span class="token punctuation">]</span><span class="token punctuation">)</span>vga_rgb<span class="token operator">&lt;=</span><span class="token number">30'</span>b1111111111_0000000000_0000000000<span class="token punctuation">;</span>
+                <span class="token keyword">else</span> vga_rgb<span class="token operator">&lt;=</span><span class="token number">30'</span>b0000000000_0000000000_0000000000<span class="token punctuation">;</span>
+                <span class="token number">10'</span>d213<span class="token operator">:</span>
+                <span class="token keyword">if</span><span class="token punctuation">(</span>char_line0d<span class="token punctuation">[</span>char_bit<span class="token punctuation">]</span><span class="token punctuation">)</span>vga_rgb<span class="token operator">&lt;=</span><span class="token number">30'</span>b1111111111_0000000000_0000000000<span class="token punctuation">;</span>
+                <span class="token keyword">else</span> vga_rgb<span class="token operator">&lt;=</span><span class="token number">30'</span>b0000000000_0000000000_0000000000<span class="token punctuation">;</span>
+                <span class="token number">10'</span>d214<span class="token operator">:</span>
+                <span class="token keyword">if</span><span class="token punctuation">(</span>char_line0e<span class="token punctuation">[</span>char_bit<span class="token punctuation">]</span><span class="token punctuation">)</span>vga_rgb<span class="token operator">&lt;=</span><span class="token number">30'</span>b1111111111_0000000000_0000000000<span class="token punctuation">;</span>
+                <span class="token keyword">else</span> vga_rgb<span class="token operator">&lt;=</span><span class="token number">30'</span>b0000000000_0000000000_0000000000<span class="token punctuation">;</span>
+                <span class="token number">10'</span>d215<span class="token operator">:</span>
+                <span class="token keyword">if</span><span class="token punctuation">(</span>char_line0f<span class="token punctuation">[</span>char_bit<span class="token punctuation">]</span><span class="token punctuation">)</span>vga_rgb<span class="token operator">&lt;=</span><span class="token number">30'</span>b1111111111_0000000000_0000000000<span class="token punctuation">;</span>
+                <span class="token keyword">else</span> vga_rgb<span class="token operator">&lt;=</span><span class="token number">30'</span>b0000000000_0000000000_0000000000<span class="token punctuation">;</span>
+                <span class="token keyword">default</span><span class="token operator">:</span>vga_rgb<span class="token operator">&lt;=</span><span class="token number">30'</span>h0000000000<span class="token punctuation">;</span>   <span class="token comment">//默认颜色黑色</span>
+            endcase 
+        end
+    <span class="token keyword">else</span> vga_rgb<span class="token operator">&lt;=</span><span class="token number">30'</span>h000000000<span class="token punctuation">;</span>             <span class="token comment">//否则黑色</span>
+    assign VGA_R<span class="token operator">=</span>vga_rgb<span class="token punctuation">[</span><span class="token number">23</span><span class="token operator">:</span><span class="token number">16</span><span class="token punctuation">]</span><span class="token punctuation">;</span>
+    assign VGA_G<span class="token operator">=</span>vga_rgb<span class="token punctuation">[</span><span class="token number">15</span><span class="token operator">:</span><span class="token number">8</span><span class="token punctuation">]</span><span class="token punctuation">;</span>
+    assign VGA_B<span class="token operator">=</span>vga_rgb<span class="token punctuation">[</span><span class="token number">7</span><span class="token operator">:</span><span class="token number">0</span><span class="token punctuation">]</span><span class="token punctuation">;</span>
+endmodule
+
+</code></pre> 
+<p>除了代码外还需要PLL IP核，详情见下文。</p> 
+<p>运行结果如图：<br> <img src="https://images2.imgbox.com/ed/26/SjvaH3Nx_o.jpg" alt="https://img-home.csdnimg.cn/images/20220524100510.png"></p> 
+<h2><a id="VGA_230"></a>四、VGA显示彩色条纹</h2> 
+<p>在上述代码的基础上，通过限制x的取值范围让颜色缓存显示不同的值就能实现显示彩色条纹。<br> 代码如下：</p> 
+<pre><code class="prism language-cpp"><span class="token keyword">module</span> <span class="token module">VGA_View_color</span><span class="token punctuation">(</span>
+OSC_50<span class="token punctuation">,</span>     <span class="token comment">//原CLK2_50时钟信号</span>
+VGA_CLK<span class="token punctuation">,</span>    <span class="token comment">//VGA自时钟</span>
+VGA_HS<span class="token punctuation">,</span>     <span class="token comment">//行同步信号</span>
+VGA_VS<span class="token punctuation">,</span>     <span class="token comment">//场同步信号</span>
+VGA_BLANK<span class="token punctuation">,</span>  <span class="token comment">//复合空白信号控制信号  当BLANK为低电平时模拟视频输出消隐电平，此时从R9~R0,G9~G0,B9~B0输入的所有数据被忽略</span>
+VGA_SYNC<span class="token punctuation">,</span>   <span class="token comment">//符合同步控制信号      行时序和场时序都要产生同步脉冲</span>
+VGA_R<span class="token punctuation">,</span>      <span class="token comment">//VGA绿色</span>
+VGA_B<span class="token punctuation">,</span>      <span class="token comment">//VGA蓝色</span>
+VGA_G<span class="token punctuation">)</span><span class="token punctuation">;</span>     <span class="token comment">//VGA绿色</span>
+ input OSC_50<span class="token punctuation">;</span>     <span class="token comment">//外部时钟信号CLK2_50</span>
+output VGA_CLK<span class="token punctuation">,</span>VGA_HS<span class="token punctuation">,</span>VGA_VS<span class="token punctuation">,</span>VGA_BLANK<span class="token punctuation">,</span>VGA_SYNC<span class="token punctuation">;</span>
+output <span class="token punctuation">[</span><span class="token number">7</span><span class="token operator">:</span><span class="token number">0</span><span class="token punctuation">]</span> VGA_R<span class="token punctuation">,</span>VGA_B<span class="token punctuation">,</span>VGA_G<span class="token punctuation">;</span>
+ parameter H_FRONT <span class="token operator">=</span> <span class="token number">16</span><span class="token punctuation">;</span>     <span class="token comment">//行同步前沿信号周期长</span>
+ parameter H_SYNC <span class="token operator">=</span> <span class="token number">96</span><span class="token punctuation">;</span>      <span class="token comment">//行同步信号周期长</span>
+ parameter H_BACK <span class="token operator">=</span> <span class="token number">48</span><span class="token punctuation">;</span>      <span class="token comment">//行同步后沿信号周期长</span>
+ parameter H_ACT <span class="token operator">=</span> <span class="token number">640</span><span class="token punctuation">;</span>      <span class="token comment">//行显示周期长</span>
+ parameter H_BLANK <span class="token operator">=</span> H_FRONT<span class="token operator">+</span>H_SYNC<span class="token operator">+</span>H_BACK<span class="token punctuation">;</span>        <span class="token comment">//行空白信号总周期长</span>
+ parameter H_TOTAL <span class="token operator">=</span> H_FRONT<span class="token operator">+</span>H_SYNC<span class="token operator">+</span>H_BACK<span class="token operator">+</span>H_ACT<span class="token punctuation">;</span>  <span class="token comment">//行总周期长耗时</span>
+ parameter V_FRONT <span class="token operator">=</span> <span class="token number">11</span><span class="token punctuation">;</span>     <span class="token comment">//场同步前沿信号周期长</span>
+ parameter V_SYNC <span class="token operator">=</span> <span class="token number">2</span><span class="token punctuation">;</span>       <span class="token comment">//场同步信号周期长</span>
+ parameter V_BACK <span class="token operator">=</span> <span class="token number">31</span><span class="token punctuation">;</span>      <span class="token comment">//场同步后沿信号周期长</span>
+ parameter V_ACT <span class="token operator">=</span> <span class="token number">480</span><span class="token punctuation">;</span>      <span class="token comment">//场显示周期长</span>
+ parameter V_BLANK <span class="token operator">=</span> V_FRONT<span class="token operator">+</span>V_SYNC<span class="token operator">+</span>V_BACK<span class="token punctuation">;</span>        <span class="token comment">//场空白信号总周期长</span>
+ parameter V_TOTAL <span class="token operator">=</span> V_FRONT<span class="token operator">+</span>V_SYNC<span class="token operator">+</span>V_BACK<span class="token operator">+</span>V_ACT<span class="token punctuation">;</span>  <span class="token comment">//场总周期长耗时</span>
+ reg <span class="token punctuation">[</span><span class="token number">10</span><span class="token operator">:</span><span class="token number">0</span><span class="token punctuation">]</span> H_Cont<span class="token punctuation">;</span>        <span class="token comment">//行周期计数器</span>
+ reg <span class="token punctuation">[</span><span class="token number">10</span><span class="token operator">:</span><span class="token number">0</span><span class="token punctuation">]</span> V_Cont<span class="token punctuation">;</span>        <span class="token comment">//场周期计数器</span>
+ wire <span class="token punctuation">[</span><span class="token number">7</span><span class="token operator">:</span><span class="token number">0</span><span class="token punctuation">]</span> VGA_R<span class="token punctuation">;</span>         <span class="token comment">//VGA红色控制线</span>
+ wire <span class="token punctuation">[</span><span class="token number">7</span><span class="token operator">:</span><span class="token number">0</span><span class="token punctuation">]</span> VGA_G<span class="token punctuation">;</span>         <span class="token comment">//VGA绿色控制线</span>
+ wire <span class="token punctuation">[</span><span class="token number">7</span><span class="token operator">:</span><span class="token number">0</span><span class="token punctuation">]</span> VGA_B<span class="token punctuation">;</span>         <span class="token comment">//VGA蓝色控制线</span>
+reg VGA_HS<span class="token punctuation">;</span>
+reg VGA_VS<span class="token punctuation">;</span>
+ reg <span class="token punctuation">[</span><span class="token number">10</span><span class="token operator">:</span><span class="token number">0</span><span class="token punctuation">]</span> X<span class="token punctuation">;</span>             <span class="token comment">//当前行第几个像素点</span>
+ reg <span class="token punctuation">[</span><span class="token number">10</span><span class="token operator">:</span><span class="token number">0</span><span class="token punctuation">]</span> Y<span class="token punctuation">;</span>             <span class="token comment">//当前场第几行</span>
+reg CLK_25<span class="token punctuation">;</span>
+    always@<span class="token punctuation">(</span>posedge OSC_50<span class="token punctuation">)</span>begin 
+      CLK_25<span class="token operator">=</span><span class="token operator">~</span>CLK_25<span class="token punctuation">;</span>         <span class="token comment">//时钟</span>
+    end 
+
+    assign VGA_SYNC <span class="token operator">=</span> <span class="token number">1'</span>b0<span class="token punctuation">;</span>   <span class="token comment">//同步信号低电平</span>
+    assign VGA_BLANK <span class="token operator">=</span> <span class="token operator">~</span><span class="token punctuation">(</span><span class="token punctuation">(</span>H_Cont<span class="token operator">&lt;</span>H_BLANK<span class="token punctuation">)</span><span class="token operator">||</span><span class="token punctuation">(</span>V_Cont<span class="token operator">&lt;</span>V_BLANK<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>  <span class="token comment">//当行计数器小于行空白总长或场计数器小于场空白总长时，空白信号低电平</span>
+    assign CLK_to_DAC <span class="token operator">=</span> CLK_25<span class="token punctuation">;</span>
+    assign VGA_CLK <span class="token operator">=</span> <span class="token operator">~</span>CLK_to_DAC<span class="token punctuation">;</span>  <span class="token comment">//VGA时钟等于CLK_25取反</span>
+
+
+    always@<span class="token punctuation">(</span>posedge CLK_to_DAC<span class="token punctuation">)</span>begin
+        <span class="token keyword">if</span><span class="token punctuation">(</span>H_Cont<span class="token operator">&lt;</span>H_TOTAL<span class="token punctuation">)</span>           <span class="token comment">//如果行计数器小于行总时长</span>
+            H_Cont<span class="token operator">&lt;=</span>H_Cont<span class="token operator">+</span><span class="token number">1'</span>b1<span class="token punctuation">;</span>      <span class="token comment">//行计数器+1</span>
+        <span class="token keyword">else</span> H_Cont<span class="token operator">&lt;=</span><span class="token number">0</span><span class="token punctuation">;</span>              <span class="token comment">//否则行计数器清零</span>
+        <span class="token keyword">if</span><span class="token punctuation">(</span>H_Cont<span class="token operator">==</span>H_FRONT<span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">)</span>        <span class="token comment">//如果行计数器等于行前沿空白时间-1</span>
+            VGA_HS<span class="token operator">&lt;=</span><span class="token number">1'</span>b0<span class="token punctuation">;</span>             <span class="token comment">//行同步信号置0</span>
+        <span class="token keyword">if</span><span class="token punctuation">(</span>H_Cont<span class="token operator">==</span>H_FRONT<span class="token operator">+</span>H_SYNC<span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">)</span> <span class="token comment">//如果行计数器等于行前沿+行同步-1</span>
+            VGA_HS<span class="token operator">&lt;=</span><span class="token number">1'</span>b1<span class="token punctuation">;</span>             <span class="token comment">//行同步信号置1</span>
+        <span class="token keyword">if</span><span class="token punctuation">(</span>H_Cont<span class="token operator">&gt;=</span>H_BLANK<span class="token punctuation">)</span>          <span class="token comment">//如果行计数器大于等于行空白总时长</span>
+            X<span class="token operator">&lt;=</span>H_Cont<span class="token operator">-</span>H_BLANK<span class="token punctuation">;</span>        <span class="token comment">//X等于行计数器-行空白总时长   （X为当前行第几个像素点）</span>
+        <span class="token keyword">else</span> X<span class="token operator">&lt;=</span><span class="token number">0</span><span class="token punctuation">;</span>                   <span class="token comment">//否则X为0</span>
+    end
+
+    always@<span class="token punctuation">(</span>posedge VGA_HS<span class="token punctuation">)</span>begin
+        <span class="token keyword">if</span><span class="token punctuation">(</span>V_Cont<span class="token operator">&lt;</span>V_TOTAL<span class="token punctuation">)</span>           <span class="token comment">//如果场计数器小于行总时长</span>
+            V_Cont<span class="token operator">&lt;=</span>V_Cont<span class="token operator">+</span><span class="token number">1'</span>b1<span class="token punctuation">;</span>      <span class="token comment">//场计数器+1</span>
+        <span class="token keyword">else</span> V_Cont<span class="token operator">&lt;=</span><span class="token number">0</span><span class="token punctuation">;</span>              <span class="token comment">//否则场计数器清零</span>
+        <span class="token keyword">if</span><span class="token punctuation">(</span>V_Cont<span class="token operator">==</span>V_FRONT<span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">)</span>       <span class="token comment">//如果场计数器等于场前沿空白时间-1</span>
+            VGA_VS<span class="token operator">&lt;=</span><span class="token number">1'</span>b0<span class="token punctuation">;</span>             <span class="token comment">//场同步信号置0</span>
+        <span class="token keyword">if</span><span class="token punctuation">(</span>V_Cont<span class="token operator">==</span>V_FRONT<span class="token operator">+</span>V_SYNC<span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">)</span> <span class="token comment">//如果场计数器等于行前沿+场同步-1</span>
+            VGA_VS<span class="token operator">&lt;=</span><span class="token number">1'</span>b1<span class="token punctuation">;</span>             <span class="token comment">//场同步信号置1</span>
+        <span class="token keyword">if</span><span class="token punctuation">(</span>V_Cont<span class="token operator">&gt;=</span>V_BLANK<span class="token punctuation">)</span>          <span class="token comment">//如果场计数器大于等于场空白总时长</span>
+            Y<span class="token operator">&lt;=</span>V_Cont<span class="token operator">-</span>V_BLANK<span class="token punctuation">;</span>        <span class="token comment">//Y等于场计数器-场空白总时长    （Y为当前场第几行）  </span>
+        <span class="token keyword">else</span> Y<span class="token operator">&lt;=</span><span class="token number">0</span><span class="token punctuation">;</span>                   <span class="token comment">//否则Y为0</span>
+    end
+
+    reg valid_yr<span class="token punctuation">;</span>
+
+    always@<span class="token punctuation">(</span>posedge CLK_to_DAC<span class="token punctuation">)</span>begin
+        <span class="token keyword">if</span><span class="token punctuation">(</span>V_Cont <span class="token operator">==</span> <span class="token number">10'</span>d32<span class="token punctuation">)</span>         <span class="token comment">//场计数器=32时</span>
+        valid_yr<span class="token operator">&lt;=</span><span class="token number">1'</span>b1<span class="token punctuation">;</span>           <span class="token comment">//行输入激活</span>
+        <span class="token keyword">else</span> <span class="token keyword">if</span><span class="token punctuation">(</span>V_Cont<span class="token operator">==</span><span class="token number">10'</span>d512<span class="token punctuation">)</span>     <span class="token comment">//场计数器=512时</span>
+        valid_yr<span class="token operator">&lt;=</span><span class="token number">1'</span>b0<span class="token punctuation">;</span>           <span class="token comment">//行输入冻结</span>
+    end
+
+    wire valid_y<span class="token operator">=</span>valid_yr<span class="token punctuation">;</span>       <span class="token comment">//连线   </span>
+    reg valid_r<span class="token punctuation">;</span>     
+
+    always@<span class="token punctuation">(</span>posedge CLK_to_DAC<span class="token punctuation">)</span>begin
+        <span class="token keyword">if</span><span class="token punctuation">(</span><span class="token punctuation">(</span>H_Cont <span class="token operator">==</span> <span class="token number">10'</span>d32<span class="token punctuation">)</span><span class="token operator">&amp;&amp;</span>valid_y<span class="token punctuation">)</span>     <span class="token comment">//行计数器=32时</span>
+            valid_r<span class="token operator">&lt;=</span><span class="token number">1'</span>b1<span class="token punctuation">;</span>                   <span class="token comment">//像素输入激活</span>
+        <span class="token keyword">else</span> <span class="token keyword">if</span><span class="token punctuation">(</span><span class="token punctuation">(</span>H_Cont<span class="token operator">==</span><span class="token number">10'</span>d512<span class="token punctuation">)</span><span class="token operator">&amp;&amp;</span>valid_y<span class="token punctuation">)</span> <span class="token comment">//行计数器=512时 </span>
+            valid_r<span class="token operator">&lt;=</span><span class="token number">1'</span>b0<span class="token punctuation">;</span>                   <span class="token comment">//像素输入冻结</span>
+    end
+
+    wire valid <span class="token operator">=</span> valid_r<span class="token punctuation">;</span>               <span class="token comment">//连线</span>
+    assign x_dis<span class="token operator">=</span>X<span class="token punctuation">;</span>       <span class="token comment">//连线X</span>
+    assign y_dis<span class="token operator">=</span>Y<span class="token punctuation">;</span>       <span class="token comment">//连线Y</span>
+ <span class="token comment">// reg[7:0] char_bit;</span>
+ <span class="token comment">// always@(posedge CLK_to_DAC)</span>
+ <span class="token comment">//     if(X==10'd144)char_bit&lt;=9'd240;   //当显示到144像素时准备开始输出图像数据</span>
+ <span class="token comment">//     else if(X&gt;10'd144&amp;&amp;X&lt;10'd384)     //左边距屏幕144像素到416像素时    416=144+272（图像宽度）</span>
+ <span class="token comment">//         char_bit&lt;=char_bit-1'b1;       //倒着输出图像信息</span>
+
+    reg<span class="token punctuation">[</span><span class="token number">29</span><span class="token operator">:</span><span class="token number">0</span><span class="token punctuation">]</span> vga_rgb<span class="token punctuation">;</span>                <span class="token comment">//定义颜色缓存</span>
+    always@<span class="token punctuation">(</span>posedge CLK_to_DAC<span class="token punctuation">)</span> begin
+     <span class="token keyword">if</span><span class="token punctuation">(</span>X<span class="token operator">&gt;=</span><span class="token number">0</span><span class="token operator">&amp;&amp;</span>X<span class="token operator">&lt;</span><span class="token number">200</span><span class="token punctuation">)</span>begin    <span class="token comment">//X控制图像的横向显示边界：左边距屏幕左边144像素  右边界距屏幕左边界416像素</span>
+         vga_rgb<span class="token operator">&lt;=</span><span class="token number">30'</span>hffffffffff<span class="token punctuation">;</span>   <span class="token comment">//白色</span>
+    end
+    <span class="token keyword">else</span> <span class="token keyword">if</span><span class="token punctuation">(</span>X<span class="token operator">&gt;=</span><span class="token number">200</span><span class="token operator">&amp;&amp;</span>X<span class="token operator">&lt;</span><span class="token number">400</span><span class="token punctuation">)</span>begin
+        vga_rgb<span class="token operator">&lt;=</span><span class="token number">30'</span>hf00ff65f1f<span class="token punctuation">;</span>   
+    end
+    <span class="token keyword">else</span> <span class="token keyword">if</span><span class="token punctuation">(</span>X<span class="token operator">&gt;=</span><span class="token number">400</span><span class="token operator">&amp;&amp;</span>X<span class="token operator">&lt;</span><span class="token number">600</span><span class="token punctuation">)</span>begin
+        vga_rgb<span class="token operator">&lt;=</span><span class="token number">30'</span>h9563486251<span class="token punctuation">;</span> 
+    end
+    <span class="token keyword">else</span> begin
+        vga_rgb<span class="token operator">&lt;=</span><span class="token number">30'</span>h5864928654<span class="token punctuation">;</span> 
+    end
+    end
+assign VGA_R<span class="token operator">=</span>vga_rgb<span class="token punctuation">[</span><span class="token number">23</span><span class="token operator">:</span><span class="token number">16</span><span class="token punctuation">]</span><span class="token punctuation">;</span>
+assign VGA_G<span class="token operator">=</span>vga_rgb<span class="token punctuation">[</span><span class="token number">15</span><span class="token operator">:</span><span class="token number">8</span><span class="token punctuation">]</span><span class="token punctuation">;</span>
+assign VGA_B<span class="token operator">=</span>vga_rgb<span class="token punctuation">[</span><span class="token number">7</span><span class="token operator">:</span><span class="token number">0</span><span class="token punctuation">]</span><span class="token punctuation">;</span>
+endmodule
+</code></pre> 
+<p>除了代码外还需要配置PLL IP核设置时钟，详情见下文。</p> 
+<p>运行结果如图：</p> 
+<p><img src="https://images2.imgbox.com/0b/f7/TIzoEcwm_o.jpg" alt="在这里插入图片描述"></p> 
+<h2><a id="VGA_362"></a>五、VGA显示彩色图片</h2> 
+<h4><a id="1hex_363"></a>1、图片格式hex</h4> 
+<p>在前面的学习中了解到图像的格式有多种，例如JPEG，BMP，PNG，JPG等，图像的位数也有单色、16色、256色、4096色、16位真彩色、24位真彩色、32位真彩色在这里插入图片描述<br> 这几种。<br> VGA的驱动程序显示的格式为RGB565，我们先找到一张需要显示的彩色图片，经过处理，将该图片转化为ROM可以存储的格式，然后VGA驱动程序从ROM中读取数据，输出到VGA显示屏显示。尽量选一张小的图片，因为ROM存储空间有限。<br> 使用BMP2Mif软件将bmp格式图片转换为hex文件<br> <img src="https://images2.imgbox.com/7d/b0/fYmlFIWa_o.png" alt="Alt"></p> 
+<h4><a id="2ROM_IP__369"></a>2、ROM IP 核配置</h4> 
+<p>新建Quartus工程，产生ROM IP核，将生成的mif文件保存在ROM中<br> 双击选择ROM：1-PORT<br> <img src="https://images2.imgbox.com/c1/53/jmzFTmS2_o.png" alt="Alt"><br> <img src="https://images2.imgbox.com/39/92/z1Tu1PHs_o.png" alt="Alt"><br> 取消勾选q<img src="https://images2.imgbox.com/bf/cc/zPZPyS1C_o.png" alt="Alt"><br> 加载HEX文件<img src="https://images2.imgbox.com/b9/be/e05wAgfG_o.png" alt="Alt"><br> <img src="https://images2.imgbox.com/67/49/Bsmmt1S2_o.png" alt="Alt"></p> 
+<h4><a id="3PLL_IP__377"></a>3、PLL IP 核配置</h4> 
+<p>分别使用640×480 60HZ和800×600 72HZ,对应时钟分别为25M和50M,需要使用PLL进行分频 时钟频率 = 行帧长 × 列帧长 * 刷新率,640 ×480 60HZ对应时钟频率= 800 ×525 × 60 = 25.2M<br> ip核里面找到ALTPLL<br> <img src="https://images2.imgbox.com/a1/ac/M7EZs4dN_o.png" alt="Alt"><br> 基础时钟选择50M<br> <img src="https://images2.imgbox.com/e1/91/Z93d34nE_o.png" alt="Alt"><br> 取消勾选输出使能<br> <img src="https://images2.imgbox.com/ec/e9/ud2yLkTQ_o.png" alt="Alt"><br> c0默认输出50M即可,c1分频到25M,如需其他时钟频率可以自己进行设置<br> <img src="https://images2.imgbox.com/e5/04/5cxoqkIb_o.png" alt="Alt"><br> 勾选如下选项后finish<br> <img src="https://images2.imgbox.com/a8/d4/e0Vg887f_o.png" alt="Alt"></p> 
+<p>结果演示图片：（有问题，未解决）<br> <img src="https://images2.imgbox.com/61/0a/VvXglaYW_o.jpg" alt="在这里插入图片描述"></p> 
+<h2><a id="_394"></a>六、总结</h2> 
+<p>VGA(Video Graphics Array)是IBM在1987年随PS/2机一起推出的一种视频传输标准，具有分辨率高、显示速率快、颜色丰富等优点，在彩色显示器领域得到了广泛的应用。不支持热插拔，不支持音频传输。对于一名FPGA工程师，尤其是视频图像的方向的学习者，VGA协议是必须要掌握的。<br> 通过此次VGA协议的学习，了解到了VGA的显示原理和计算机上图像显示原理。使用FPGA实现显示图片在我的理解中，就像是设计了一个图像显示芯片。使用FPGA的目的便是设计后期可修改的专用芯片，希望在后期的学习中能继续加油，FPGA领域博大精深。</p> 
+<h2><a id="_397"></a>七、参考链接</h2> 
+<p>https://www.cnblogs.com/xianyuIC/p/11128817.html<br> https://blog.csdn.net/qq_45659777/article/details/124834294<br> https://blog.csdn.net/qq_47281915/article/details/125134764</p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/2ddf6e891edbc44db216d4b926a41c38/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">Docker Compose Demo，一个能帮助你彻底解决使用docker搭建各种服务难题的代码库</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/3487459c5cda5b02fe8e9521be407a90/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">word交叉引用参考文献使用逗号隔开</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

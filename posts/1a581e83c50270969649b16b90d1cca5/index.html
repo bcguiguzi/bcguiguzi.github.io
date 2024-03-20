@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>AOSP并发编程案例之ConditionVariable - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="AOSP并发编程案例之ConditionVariable" />
+<meta property="og:description" content="packages/modules/Connectivity/service-t/src/com/android/server/ethernet/EthernetNetworkFactory.java static class NetworkInterfaceState { ... private @Nullable EthernetIpClientCallback mIpClientCallback; ... private class EthernetIpClientCallback extends IpClientCallbacks { private final ConditionVariable mIpClientStartCv = new ConditionVariable(false); private final ConditionVariable mIpClientShutdownCv = new ConditionVariable(false); @Override public void onIpClientCreated(IIpClient ipClient) { mIpClient = mDeps.makeIpClientManager(ipClient); mIpClientStartCv.open(); } private void awaitIpClientStart() { mIpClientStartCv.block(); } private void awaitIpClientShutdown() { mIpClientShutdownCv.block(); } private boolean isCurrentCallback() { return this == mIpClientCallback; } private void handleIpEvent(final @NonNull Runnable r) { mHandler." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/1a581e83c50270969649b16b90d1cca5/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2024-02-26T21:51:01+08:00" />
+<meta property="article:modified_time" content="2024-02-26T21:51:01+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">AOSP并发编程案例之ConditionVariable</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <pre><code class="language-java">packages/modules/Connectivity/service-t/src/com/android/server/ethernet/EthernetNetworkFactory.java
+
+static class NetworkInterfaceState {
+    ...
+    private @Nullable EthernetIpClientCallback mIpClientCallback;
+    ...
+    private class EthernetIpClientCallback extends IpClientCallbacks {
+        private final ConditionVariable mIpClientStartCv = new ConditionVariable(false);
+        private final ConditionVariable mIpClientShutdownCv = new ConditionVariable(false);
+
+        @Override
+        public void onIpClientCreated(IIpClient ipClient) {
+            mIpClient = mDeps.makeIpClientManager(ipClient);
+            mIpClientStartCv.open();
+        }
+
+        private void awaitIpClientStart() {
+            mIpClientStartCv.block();
+        }
+
+        private void awaitIpClientShutdown() {
+            mIpClientShutdownCv.block();
+        }
+
+        private boolean isCurrentCallback() {
+            return this == mIpClientCallback;
+        }
+
+        private void handleIpEvent(final @NonNull Runnable r) {
+                mHandler.post(() -&gt; {
+                    if (!isCurrentCallback()) {
+                        Log.i(TAG, "Ignoring stale IpClientCallbacks " + this);
+                        return;
+                    }
+                    r.run();
+                });
+            }
+
+        @Override
+        public void onProvisioningSuccess(LinkProperties newLp) {
+            handleIpEvent(() -&gt; onIpLayerStarted(newLp));
+        }
+
+        @Override
+        public void onProvisioningFailure(LinkProperties newLp) {
+            handleIpEvent(() -&gt; onIpLayerStopped());
+        }
+
+        @Override
+        public void onLinkPropertiesChange(LinkProperties newLp) {
+            handleIpEvent(() -&gt; updateLinkProperties(newLp));
+        }
+
+        @Override
+        public void onReachabilityLost(String logMsg) {
+            handleIpEvent(() -&gt; updateNeighborLostEvent(logMsg));
+        }
+
+        @Override
+        public void onQuit() {
+            mIpClient = null;
+            mIpClientShutdownCv.open();
+        }
+    }
+    ...
+    private void start() {
+        if (mIpClient != null) {
+            if (DBG) Log.d(TAG, "IpClient already started");
+            return;
+        }
+        ...
+        mIpClientCallback = new EthernetIpClientCallback();
+        mDeps.makeIpClient(mContext, name, mIpClientCallback);
+        mIpClientCallback.awaitIpClientStart();
+        ...
+        mIpClient.startProvisioning(createProvisioningConfiguration(mIpConfig));
+    }
+    ...
+    private void stop() {
+        if (mNetworkAgent != null) {
+            mNetworkAgent.unregister();
+            mNetworkAgent = null;
+        }
+
+        // Invalidate all previous start requests
+        if (mIpClient != null) {
+            mIpClient.shutdown();
+            mIpClientCallback.awaitIpClientShutdown();
+            mIpClient = null;
+        }
+
+        mIpClientCallback = null;
+
+        mLinkProperties.clear();
+    }
+    ....
+}</code></pre> 
+<p></p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/4a6e9877df153745c2ff2f09ccf9910b/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">elasticsearch中设置查询的请求超时时间</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/199b501271f99b84b9e8faab60875fbb/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">Linux第66步_linux字符设备驱动_挂载和卸载</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

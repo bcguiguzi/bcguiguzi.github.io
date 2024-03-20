@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Mysql隔离级别之MVCC的ReadView的理解 - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="Mysql隔离级别之MVCC的ReadView的理解" />
+<meta property="og:description" content="Mysql的隔离级别分为: 读未提交、读已提交、可重复读、串行读
+比较常用的两种分别是读已提交、可重复读，那么Mysql是如何保证多个事务读取一条数据的隔离性的？
+undo Log 当我们读取一条被其他事务变更的数据时,会在undo Log中产生一条变更前的日志.这个日志可以专门用于回滚。
+我们大概来看一下这个日志的大概结构:
+前面三个字段属于变更前的，另外：
+trx_id : 代表是哪个事务编号修改的。
+需要注意的是该编号是严格按照递增顺序产生的。比如1、2、3、4、5
+roll_pointer : 相当于一个链表，往下查找就是上一次更改前的。当一条数据被更改了多次之后，由该字段构建成一个链表俗称版本链。
+有了undo Log的话可以很快追溯到更改之前的数据，有了这个之后，假设多个事务都在读同一条记录，并且还发生了修改，这个时候
+哪些能读？哪些版本才是符合当前事务该看到的数据呢？ MVCC 多版本并发控制，指的就是在使用读提交和可重复读隔离级别的事务，在执行普通select操作时，访问记录版本链的过程；使不同事务的读写、写读操作并发执行，提高系统性能；
+Read View 读视图 基于当前活跃事务列表构成的ReadView，当某个事务创建ReadView时，会将当前活跃的事务也加入其中。
+我们来看一下大概结构：
+readview中四个比较重要的概念：
+m_ids：表示在生成readview时，当前系统中活跃的读写事务id列表；
+比如创建事务10创建RV时,系统正在活跃的事务有5,6,7那么5,6,7都会加入到10的m_ids中.
+min_trx_id：表示在生成readview时，当前系统中活跃的读写事务中最小的事务id，也就是m_ids中最小的值；
+max_trx_id：表示生成readview时，系统中应该分配给下一个事务的id值；
+creator_trx_id：表示生成该readview的事务的事务id；
+有了readview，在访问某条记录时，按照以下步骤判断记录的某个版本是否可见:
+基于可重复读 下面是对于同一条数据的多个事务读取流程:
+ReadView(简称RV)一旦创建是不可变的，即便其中某个线程事务提交了，也不会影响当前线程创建的ReadView，你可以理解为一个副本快照。
+总的来说判断就三个条件:
+undo log的数据中包含的trx_id是否符合min_trx_id和max_trx_id之间
+1.1 如果小于min_trx_id说明创建RV 之前 的时候这个trx_id就已经事务提交了,不活跃了，说明可以读。
+1.2 如果大于max_trx_id说明这个版本是在创建RV 之后 产生的，不可读。因为创建RV时你这个版本还不存在。
+1.3 如果是在这之间的再看步骤2查看trx_id是否包含m_id之中：
+2.1 包含说明创建RV的时候，还是活跃（没提交）事务。那么是不可见的，脏读；继续看步骤3
+2.2 不包含说明创建RV之前这个事务已经被提交了，那么是可见的。到了这里说明这条数据的变更版本在RV之内，则要查看creator_trx_id与trx_id是否一致:
+3.1 一致说明就是当前事务创建的；允许使用；
+3.2 否则说明是当前RV的其他事务操作的不能使用; 基于上述规则，很好的解决了一致性读的问题；当前线程创建完RV之后，读到的数据都是相同的；不会读到其他事务未提交和后提交的数据。
+可重复读的RV是以一个事务的开始和结束作为它的生命周期的
+基于读提交级别的流程 读提交级别是能够读到其他事务提交的数据的，那么这个时候上面的流程是不是满足不了呀？因为假设ABC都在一个RV之中，C提交了数据，但是B看不到呀，因为条件2就满足不了呀；
+这个时候Mysql就把这个级别的RV做了调整，每次读取数据的时候会创建一个新的ReadView
+当RV中的事务B提交了事务的时候，A每次会创建一个新的RV来查看数据版本，新的RV的m_ids肯定是不包含已经提交的事务B的，这个时候就能够读到事务B的数据了。
+之前一直以为可重复读没有解决幻读的问题，现在基于这个流程另外加上命令行调试之后发现应该是解决了的。
+因为一旦创建RV的话，当前活跃事务快照已经生成，这个时候如果新来的事务或者快照内的事务新增了数据也不会读到：
+快照事务内产生的变更在前面说的2.1会被跳过快照之后会在1.2被过跳过 如有问题，欢迎留言交流。" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/d7a96435b5d6ca145561bc785351408d/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2021-05-27T19:08:18+08:00" />
+<meta property="article:modified_time" content="2021-05-27T19:08:18+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Mysql隔离级别之MVCC的ReadView的理解</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atelier-sulphurpool-light">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <blockquote> 
+ <p>Mysql的隔离级别分为: 读未提交、读已提交、可重复读、串行读</p> 
+</blockquote> 
+<p>比较常用的两种分别是读已提交、可重复读，那么Mysql是如何保证多个事务读取一条数据的隔离性的？</p> 
+<h3><a id="undo_Log_4"></a>undo Log</h3> 
+<p>当我们读取一条被其他事务变更的数据时,会在undo Log中产生一条变更前的日志.这个日志可以专门用于回滚。</p> 
+<p>我们大概来看一下这个日志的大概结构:<br> <img src="https://images2.imgbox.com/c8/c1/9AS1p04k_o.png" alt="在这里插入图片描述"><br> 前面三个字段属于变更前的，另外：<br> <strong>trx_id</strong> : 代表是哪个事务编号修改的。</p> 
+<blockquote> 
+ <p><strong>需要注意的是该编号是严格按照递增顺序产生的。比如1、2、3、4、5</strong></p> 
+</blockquote> 
+<p><strong>roll_pointer</strong> : 相当于一个链表，往下查找就是上一次更改前的。当一条数据被更改了多次之后，由该字段构建成一个链表俗称<strong>版本链</strong>。</p> 
+<p>有了undo Log的话可以很快追溯到更改之前的数据，有了这个之后，假设多个事务都在读同一条记录，并且还发生了修改，这个时候</p> 
+<ul><li>哪些能读？</li><li>哪些版本才是符合当前事务该看到的数据呢？</li></ul> 
+<h4><a id="MVCC_21"></a>MVCC</h4> 
+<p>多版本并发控制，指的就是在使用读提交和可重复读隔离级别的事务，在执行普通select操作时，访问记录版本链的过程；使不同事务的读写、写读操作并发执行，提高系统性能；</p> 
+<h5><a id="Read_View__25"></a>Read View 读视图</h5> 
+<p>基于当前活跃事务列表构成的ReadView，当某个事务创建ReadView时，会将当前活跃的事务也加入其中。</p> 
+<p>我们来看一下大概结构：<br> <img src="https://images2.imgbox.com/bb/56/8ncF5TD9_o.png" alt="在这里插入图片描述"><br> <strong>readview</strong>中四个比较重要的概念：<br> <strong>m_ids</strong>：表示在生成readview时，当前系统中<strong>活跃的读写事务id列表</strong>；</p> 
+<blockquote> 
+ <p>比如创建事务10创建RV时,系统正在活跃的事务有5,6,7那么5,6,7都会加入到10的m_ids中.</p> 
+</blockquote> 
+<p><strong>min_trx_id</strong>：表示在生成readview时，当前系统中活跃的读写事务中最小的事务id，也就是m_ids中最小的值；<br> <strong>max_trx_id</strong>：表示生成readview时，系统中应该分配给下一个事务的id值；<br> <strong>creator_trx_id</strong>：表示生成该readview的事务的事务id；</p> 
+<p>有了readview，在访问某条记录时，按照以下步骤判断记录的某个版本是否可见:</p> 
+<h4><a id="_40"></a>基于可重复读</h4> 
+<p>下面是对于同一条数据的多个事务读取流程:<br> <img src="https://images2.imgbox.com/00/76/IZhJu068_o.png" alt="基于可重复读的版本查询流程图"><br> ReadView(<strong>简称RV</strong>)一旦创建是不可变的，即便其中某个线程事务提交了，也不会影响当前线程创建的ReadView，你可以理解为一个副本快照。</p> 
+<p>总的来说判断就三个条件:</p> 
+<ol><li>undo log的数据中包含的trx_id是否符合<strong>min_trx_id</strong>和<strong>max_trx_id</strong>之间<br> 1.1 如果小于<strong>min_trx_id</strong>说明创建RV <strong>之前</strong> 的时候这个trx_id就已经事务提交了,不活跃了，说明可以读。<br> 1.2 如果大于<strong>max_trx_id</strong>说明这个版本是在创建RV <strong>之后</strong> 产生的，<strong>不可读</strong>。因为创建RV时你这个版本还不存在。<br> 1.3 如果是在这之间的再看步骤2</li><li>查看trx_id是否包含m_id之中：<br> 2.1 <strong>包含</strong>说明创建RV的时候，还是活跃（没提交）事务。那么是不可见的，脏读；继续看步骤3<br> 2.2 <strong>不包含</strong>说明创建RV之前这个事务已经被提交了，那么是可见的。</li><li>到了这里说明这条数据的变更版本在RV之内，则要查看creator_trx_id与trx_id是否一致:<br> 3.1 一致说明就是当前事务创建的；<strong>允许使用</strong>；<br> 3.2 否则说明是当前RV的其他事务操作的<strong>不能使用</strong>;</li></ol> 
+<p>基于上述规则，很好的解决了一致性读的问题；当前线程创建完RV之后，读到的数据都是相同的；不会读到其他事务未提交和后提交的数据。</p> 
+<p><strong>可重复读的RV是以一个事务的开始和结束作为它的生命周期的</strong></p> 
+<h4><a id="_63"></a>基于读提交级别的流程</h4> 
+<p>读提交级别是能够读到其他事务提交的数据的，那么这个时候上面的流程是不是满足不了呀？因为假设ABC都在一个RV之中，C提交了数据，但是B看不到呀，因为条件2就满足不了呀；</p> 
+<p>这个时候Mysql就把这个级别的RV做了调整，<strong>每次读取数据的时候会创建一个新的ReadView</strong></p> 
+<p><img src="https://images2.imgbox.com/a0/de/DVhWaXTQ_o.png" alt="ReadView变化"></p> 
+<p>当RV中的事务B提交了事务的时候，A每次会创建一个新的RV来查看数据版本，新的RV的m_ids肯定是不包含已经提交的事务B的，这个时候就能够读到事务B的数据了。</p> 
+<p>之前一直以为可重复读没有解决幻读的问题，现在基于这个流程另外加上命令行调试之后发现应该是解决了的。</p> 
+<p>因为一旦创建RV的话，当前活跃事务快照已经生成，这个时候如果新来的事务或者快照内的事务新增了数据也不会读到：</p> 
+<ul><li>快照事务内产生的变更在前面说的<strong>2.1</strong>会被跳过</li><li>快照之后会在<strong>1.2</strong>被过跳过</li></ul> 
+<p>如有问题，欢迎留言交流。</p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/1aaba5244409db2c6cb759bf5d896281/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">python UnicodeDecodeError</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/6b350ce9d7805cf14f3256415b39e09a/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">光遇android和ios有什么区别,光遇安卓和苹果可以一起玩吗？</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

@@ -1,0 +1,394 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>嵌入式Linux——oops：根据oops信息，找到错误的产生位置以及函数的调用关系 - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="嵌入式Linux——oops：根据oops信息，找到错误的产生位置以及函数的调用关系" />
+<meta property="og:description" content="简介：
+本文主要介绍通过oops信息找到程序中出错位置的方法。并结合自己代码中的错误来讲解如何找到出错位置。同时还会介绍使用栈信息来推到函数间的调用关系。
+Linux内核：linux-2.6.22.6
+所用开发板：JZ2440 V3（S3C2440A）
+声明：
+本文主要是对韦东山老师视频的总结，同时看了一些网友的博文来对这方面的信息进行补充。希望通过我的文章让你对oops信息有更好的了解。
+oops信息介绍：
+我们先以一个例子来介绍oops中都含有什么信息。我们看下面这几部分：
+1 一段文本描述信息,用于描述程序出错的原因：
+Unable to handle kernel paging request at virtual address 56000050
+2 Oops 信息的序号
+Internal error: Oops: 5 [#1]
+bit 0 如果第0位被清0，则异常是由一个不存在的页所引起的；否则是由无效的访问权限引起的。
+bit 1 如果第1位被清0，则异常由读访问或者执行访问所引起；否则异常由写访问引起。
+bit 2 如果第2位被清0，则异常发生在内核态；否则异常发生在用户态。
+Oops中的 [#1] crash发生次数。
+Oops中的 PREEMPT 是指系统支持抢占模式，有时会还会输出SMP(多核) ARM/THUMB(指令集)等信息。
+3 内核中加载的模块名称,也可能没有,以下面字样开头。
+Modules linked in: first_drv
+4 发生错误的 CPU 的序号,对于单处理器的系统,序号为 0,比如:
+CPU: 0 Not tainted (2.6.22.6 #1)
+其中Tainted的表示可以从内核中 kernel/panic.c 中找到：
+Tainted描述‘G’if all modules loaded have a GPL or compatible license‘P’if any proprietary module has been loaded." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/45ea084f138a4cdcab5391100eeccecf/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2018-06-08T11:29:00+08:00" />
+<meta property="article:modified_time" content="2018-06-08T11:29:00+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">嵌入式Linux——oops：根据oops信息，找到错误的产生位置以及函数的调用关系</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p><span style="color:#009900;"><strong>简介：</strong></span></p> 
+<p>    本文主要介绍通过oops信息找到程序中出错位置的方法。并结合自己代码中的错误来讲解如何找到出错位置。同时还会介绍使用栈信息来推到函数间的调用关系。</p> 
+<p><strong> Linux内核：linux-2.6.22.6</strong></p> 
+<p><span style="color:#000000;"><strong> 所用开发板：JZ2440 V3（S3C2440A）</strong></span></p> 
+<p><span style="color:#ff0000;"><strong>声明：</strong></span></p> 
+<p>    本文主要是对韦东山老师视频的总结，同时看了一些网友的博文来对这方面的信息进行补充。希望通过我的文章让你对oops信息有更好的了解。</p> 
+<p><span style="color:#009900;"><strong>oops信息介绍：</strong></span></p> 
+<p>    我们先以一个例子来介绍oops中都含有什么信息。我们看下面这几部分：</p> 
+<p><span style="color:#000000;"><strong>1  一段文本描述信息,用于描述程序出错的原因：</strong></span><br> Unable to handle kernel paging request at virtual address 56000050<br><br><span style="color:#000000;"><strong>2  Oops 信息的序号</strong></span><br> Internal error: Oops: 5 [#1]<br>  bit 0 如果第0位被清0，则异常是由一个不存在的页所引起的；否则是由无效的访问权限引起的。<br>  bit 1 如果第1位被清0，则异常由读访问或者执行访问所引起；否则异常由写访问引起。<br>  bit 2 如果第2位被清0，则异常发生在内核态；否则异常发生在用户态。<br> Oops中的 [#1] crash发生次数。<br> Oops中的 PREEMPT 是指系统支持抢占模式，有时会还会输出SMP(多核) ARM/THUMB(指令集)等信息。<br><br><span style="color:#000000;"><strong>3 内核中加载的模块名称,也可能没有,以下面字样开头。</strong></span><br> Modules linked in: first_drv<br><br><span style="color:#000000;"><strong>4 发生错误的 CPU 的序号,对于单处理器的系统,序号为 0,比如:</strong></span><br> CPU: 0    Not tainted  (2.6.22.6 #1)</p> 
+<p>其中Tainted的表示可以从内核中 kernel/panic.c 中找到：</p> 
+<p> </p> 
+<table><thead><tr><th style="vertical-align:middle;">Tainted</th><th style="vertical-align:middle;">描述</th></tr></thead><tbody><tr><td style="vertical-align:middle;">‘G’</td><td style="vertical-align:middle;">if all modules loaded have a GPL or compatible license</td></tr><tr><td style="vertical-align:middle;">‘P’</td><td style="vertical-align:middle;">if any proprietary module has been loaded. Modules without a MODULE_LICENSE or with a MODULE_LICENSE that is not recognised by insmod as GPL compatible are assumed to be proprietary.</td></tr><tr><td style="vertical-align:middle;">‘F’</td><td style="vertical-align:middle;">if any module was force loaded by “insmod -f”.</td></tr><tr><td style="vertical-align:middle;">‘S’</td><td style="vertical-align:middle;">if the Oops occurred on an SMP kernel running on hardware that hasn’t been certified as safe to run multiprocessor. Currently this occurs only on various Athlons that are not SMP capable.</td></tr><tr><td style="vertical-align:middle;">‘R’</td><td style="vertical-align:middle;">if a module was force unloaded by “rmmod -f”.</td></tr><tr><td style="vertical-align:middle;">‘M’</td><td style="vertical-align:middle;">if any processor has reported a Machine Check Exception.</td></tr><tr><td style="vertical-align:middle;">‘B’</td><td style="vertical-align:middle;">if a page-release function has found a bad page reference or some unexpected page flags.</td></tr><tr><td style="vertical-align:middle;">‘U’</td><td style="vertical-align:middle;">if a user or user application specifically requested that the Tainted flag be set.</td></tr><tr><td style="vertical-align:middle;">‘D’</td><td style="vertical-align:middle;">if the kernel has died recently, i.e. there was an OOPS or BUG.</td></tr><tr><td style="vertical-align:middle;">‘W’</td><td style="vertical-align:middle;">if a warning has previously been issued by the kernel.</td></tr><tr><td style="vertical-align:middle;">‘C’</td><td style="vertical-align:middle;">if a staging module / driver has been loaded.</td></tr><tr><td style="vertical-align:middle;">‘I’</td><td style="vertical-align:middle;">if the kernel is working around a sever bug in the platform’s firmware (BIOS or similar).</td></tr></tbody></table> 
+<p><span style="color:#000000;"><strong>5 发生错误时 CPU 的各个寄存器值。</strong></span><br> PC is at first_drv_open+0x18/0x3c [first_drv]<br> LR is at chrdev_open+0x14c/0x164<br> pc : [&lt;bf000018&gt;]    lr : [&lt;c008d888&gt;]    psr: a0000013<br> sp : c3ed5e88  ip : c3ed5e98  fp : c3ed5e94<br> r10: 00000000  r9 : c3ed4000  r8 : c049a300<br> r7 : 00000000  r6 : 00000000  r5 : c3e700c0  r4 : c06a4540<br> r3 : bf000000  r2 : 56000050  r1 : bf000964  r0 : 00000000</p> 
+<p> </p> 
+<p>不同的系统中提示的可能有所不同,　不同架构对 PC/IP 寄存器的叫法不同</p> 
+<p> </p> 
+<p><span style="color:#3333ff;"><strong>PC is at first_drv_open+0x18/0x3c [first_drv]</strong></span></p> 
+<p>或者</p> 
+<p><span style="color:#3333ff;"><strong>EIP : first_drv_open+0x18/0x3c [first_drv]</strong></span><br> 告诉我们内核是执行到first_drv_open+0x18/0x3c [first_drv] 这个地址处出错的, 那么我们所需要做的就是找到这个地址对应的代码格式为 函数+偏移/长度<br> first_drv_open指示了在first_drv_open中出现的异常<br> 0x18表示出错的偏移位置<br> 0x3c 表示first_drv_open函数的大小</p> 
+<p><span style="color:#000000;"><strong>6 当前进程的名字及进程 ID,比如:</strong></span><br> Process firstdrvtest (pid: 783, stack limit = 0xc3ed4258)<br> 这并不是说发生错误的是这个进程,而是表示发生错误时,当前进程是它。错误可能发生在内核代码、驱动程序,也可能就是这个进程的错误。<br><br><span style="color:#000000;"><strong>7 栈信息。</strong></span><br> Stack: (0xc3ed5e88 to 0xc3ed6000)<br> 5e80:                   c3ed5ebc c3ed5e98 c008d888 bf000010 00000000 c049a300 <br> 5ea0: c3e700c0 c008d73c c0474f20 c3e79724 c3ed5ee4 c3ed5ec0 c0089e48 c008d74c <br> 5ec0: c049a300 c3ed5f04 00000003 ffffff9c c002c044 c3cf4000 c3ed5efc c3ed5ee8 <br> 5ee0: c0089f64 c0089d58 00000000 00000002 c3ed5f68 c3ed5f00 c0089fb8 c0089f40<br> 5f00: c3ed5f04 c3e79724 c0474f20 00000000 00000000 c3edd000 00000101 00000001<br><br><span style="color:#000000;"><strong>8 栈回溯信息,可以从中看出函数调用关系,形式如下:</strong></span><br> Backtrace: <br> [&lt;bf000000&gt;] (first_drv_open+0x0/0x3c [first_drv]) from [&lt;c008d888&gt;] (chrdev_open+0x14c/0x164)<br> [&lt;c008d73c&gt;] (chrdev_open+0x0/0x164) from [&lt;c0089e48&gt;] (__dentry_open+0x100/0x1e8)<br>  r8:c3e79724 r7:c0474f20 r6:c008d73c r5:c3e700c0 r4:c049a300<br> [&lt;c0089d48&gt;] (__dentry_open+0x0/0x1e8) from [&lt;c0089f64&gt;] (nameidata_to_filp+0x34/0x48)<br> [&lt;c0089f30&gt;] (nameidata_to_filp+0x0/0x48) from [&lt;c0089fb8&gt;] (do_filp_open+0x40/0x48)<br>  r4:00000002<br> [&lt;c0089f78&gt;] (do_filp_open+0x0/0x48) from [&lt;c008a2f4&gt;] (do_sys_open+0x54/0xe4)<br>  r5:bed00edc r4:00000002<br> [&lt;c008a2a0&gt;] (do_sys_open+0x0/0xe4) from [&lt;c008a3a8&gt;] (sys_open+0x24/0x28)<br> [&lt;c008a384&gt;] (sys_open+0x0/0x28) from [&lt;c002bea0&gt;] (ret_fast_syscall+0x0/0x2c)</p> 
+<p> </p> 
+<p>要让内核出错时能够打印栈回溯信息,编译内核时要增加“-fno-omit-frame-pointer”选项,这可以通过配置 CONFIG_FRAME_POINTER 来实现。<span style="color:#3333ff;"><strong>查看内核目录下的配置文件.config,确保 CONFIG_FRAME_POINTER 已经被定义,如果没有,执行“make menuconfig”命令重新配置内核。CONFIG_FRAME_POINTER 有可能被其他配置项自动选上。</strong></span></p> 
+<p><span style="color:#000000;"><strong>9 出错指令附近的指令的机器码,比如(出错指令在小括号里)</strong></span></p> 
+<p> </p> 
+<p> </p> 
+<p>Code: e24cb004 e59f1024 e3a00000 e5912000 (e5923000) </p> 
+<p> </p> 
+<p><span style="color:#009900;"><strong>根据PC/IP值找到出错的位置：</strong></span></p> 
+<p>    我们主要通过PC/IP值来找到出错的位置。这里我们还需要其他的信息辅助。我们先将判断位置的方法写出，然后我们使用这个方法从上面举例的错误中找到导致错误的出处。</p> 
+<p><span style="color:#009900;"><strong>判断步骤：</strong></span></p> 
+<p><span style="color:#000000;"><strong>一   先通过PC/IP值判断这个错误是内核函数中的错误还是使用insmod加载的驱动程序的错误：</strong></span></p> 
+<p><span style="color:#000000;"><strong>二   假设是加载驱动程序引起的错误</strong></span></p> 
+<p><span style="color:#000000;"><strong>    2.1  是加载驱动程序引起的错误，那么就要确定是哪个驱动程序引起的错误。</strong></span></p> 
+<p><span style="color:#000000;"><strong>    2.2  确定是哪个驱动引起的错误之后我们就要反汇编这个驱动模块的ko文件，得到dis文件。</strong></span></p> 
+<p><span style="color:#000000;"><strong>    2.3  分析反汇编得到的dis文件，来确定引起错误的语句。</strong></span></p> 
+<p><span style="color:#000000;"><strong>    2.4  结合上面各个寄存器的值来确定具体是那条C语言语句引起的错误。</strong></span></p> 
+<p><span style="color:#000000;"><strong>三   假设是内核函数引起的错误</strong></span></p> 
+<p><span style="color:#000000;"><strong>    3.1   是内核函数引起的错误，那么反汇编内核文件，得到dis文件</strong></span></p> 
+<p><span style="color:#000000;"><strong>    3.2   在内核的反汇编文件中以PC/IP值进行搜索，得到出错的函数和出错的语句。</strong></span></p> 
+<p><span style="color:#000000;"><strong>    3.3    结合上面各个寄存器的值来确定具体是那条C语言语句引起的错误。</strong></span></p> 
+<p>    好了，有了上面的方法我们现在就以上一个错误的oops信息为例，来找出是哪里出了错误。</p> 
+<pre class="has"><code class="language-cpp"># ./firstdrvtest   
+Unable to handle kernel paging request at virtual address 56000050
+pgd = c3edc000
+[56000050] *pgd=00000000
+Internal error: Oops: 5 [#1]
+Modules linked in: first_drv
+CPU: 0    Not tainted  (2.6.22.6 #1)
+PC is at first_drv_open+0x18/0x3c [first_drv]
+LR is at chrdev_open+0x14c/0x164
+pc : [&lt;bf000018&gt;]    lr : [&lt;c008d888&gt;]    psr: a0000013
+sp : c3ed5e88  ip : c3ed5e98  fp : c3ed5e94
+r10: 00000000  r9 : c3ed4000  r8 : c049a300
+r7 : 00000000  r6 : 00000000  r5 : c3e700c0  r4 : c06a4540
+r3 : bf000000  r2 : 56000050  r1 : bf000964  r0 : 00000000
+Flags: NzCv  IRQs on  FIQs on  Mode SVC_32  Segment user
+Control: c000717f  Table: 33edc000  DAC: 00000015
+Process firstdrvtest (pid: 783, stack limit = 0xc3ed4258)
+Stack: (0xc3ed5e88 to 0xc3ed6000)
+5e80:                   c3ed5ebc c3ed5e98 c008d888 bf000010 00000000 c049a300
+5ea0: c3e700c0 c008d73c c0474f20 c3e79724 c3ed5ee4 c3ed5ec0 c0089e48 c008d74c
+5ec0: c049a300 c3ed5f04 00000003 ffffff9c c002c044 c3cf4000 c3ed5efc c3ed5ee8 
+5ee0: c0089f64 c0089d58 00000000 00000002 c3ed5f68 c3ed5f00 c0089fb8 c0089f40
+5f00: c3ed5f04 c3e79724 c0474f20 00000000 00000000 c3edd000 00000101 00000001
+5f20: 00000000 c3ed4000 c046de08 c046de00 ffffffe8 c3cf4000 c3ed5f68 c3ed5f48 
+5f40: c008a16c c009fc70 00000003 00000000 c049a300 00000002 bed00edc c3ed5f94 
+5f60: c3ed5f6c c008a2f4 c0089f88 00008520 bed00ed4 0000860c 00008670 00000005 
+5f80: c002c044 4013365c c3ed5fa4 c3ed5f98 c008a3a8 c008a2b0 00000000 c3ed5fa8 
+5fa0: c002bea0 c008a394 bed00ed4 0000860c 00008720 00000002 bed00edc 00000001 
+5fc0: bed00ed4 0000860c 00008670 00000001 00008520 00000000 4013365c bed00ea8 
+5fe0: 00000000 bed00e84 0000266c 400c98e0 60000010 00008720 4021a2cc 4021a2dc 
+Backtrace: 
+[&lt;bf000000&gt;] (first_drv_open+0x0/0x3c [first_drv]) from [&lt;c008d888&gt;] (chrdev_open+0x14c/0x164)
+[&lt;c008d73c&gt;] (chrdev_open+0x0/0x164) from [&lt;c0089e48&gt;] (__dentry_open+0x100/0x1e8)
+ r8:c3e79724 r7:c0474f20 r6:c008d73c r5:c3e700c0 r4:c049a300
+[&lt;c0089d48&gt;] (__dentry_open+0x0/0x1e8) from [&lt;c0089f64&gt;] (nameidata_to_filp+0x34/0x48)
+[&lt;c0089f30&gt;] (nameidata_to_filp+0x0/0x48) from [&lt;c0089fb8&gt;] (do_filp_open+0x40/0x48)
+ r4:00000002
+[&lt;c0089f78&gt;] (do_filp_open+0x0/0x48) from [&lt;c008a2f4&gt;] (do_sys_open+0x54/0xe4)
+ r5:bed00edc r4:00000002
+[&lt;c008a2a0&gt;] (do_sys_open+0x0/0xe4) from [&lt;c008a3a8&gt;] (sys_open+0x24/0x28)
+[&lt;c008a384&gt;] (sys_open+0x0/0x28) from [&lt;c002bea0&gt;] (ret_fast_syscall+0x0/0x2c)
+Code: e24cb004 e59f1024 e3a00000 e5912000 (e5923000) </code></pre> 
+<p>    从中我们发现这里的pc 为 bf000018，<span style="color:#ff0000;"><strong>那么我们如何判断他是属于内核还是属于加载模块引发的错误那？</strong></span></p> 
+<p>    <span style="color:#3333ff;"><strong>我们要通过内核目录下的System.map文件来确定内核函数的地址范围。</strong></span>如果上面的PC值在System.map文件中内核函数的范围之内，那么这个错误就是有内核函数引起的，否则就是由加载模块引起的。而我的System.map中内核函数的范围是：</p> 
+<pre class="has"><code class="language-cpp">c0004000 A swapper_pg_dir
+c0008000 T __init_begin
+c0008000 T _sinittext
+c0008000 T stext
+c0008000 T _stext
+·············
+c03cdb44 b ratelimit.1
+c03cdb48 b registered_mechs_lock
+c03cdb48 b rsi_table
+c03cdc48 b rsc_table
+c03cec48 B krb5_seq_lock
+c03cec4c b i.0
+c03cec54 B _end
+</code></pre> 
+<p>    c0004000~c03cec54，而我的PC值为bf000018，所以不是内核函数引起的错误，而是加载模块引起的错误，同时在内核模型中一般有：</p> 
+<table border="1" cellpadding="0" cellspacing="0"><tbody><tr><td style="background-color:transparent;vertical-align:top;width:142pt;"> <p>地址</p> </td><td style="background-color:transparent;border-color:#d4d0c8;vertical-align:top;width:142.05pt;"> <p>作用</p> </td><td style="background-color:transparent;border-color:#d4d0c8;vertical-align:top;width:142.05pt;"> <p>说明</p> </td></tr><tr><td style="background-color:transparent;border-color:#d4d0c8;vertical-align:top;width:142pt;"> <p>&gt;=0xc000 0000</p> </td><td style="background-color:transparent;border-color:#d4d0c8 #d4d0c8;vertical-align:top;width:142.05pt;"> <p>内核虚拟存储器</p> </td><td style="background-color:transparent;border-color:#d4d0c8 #d4d0c8;vertical-align:top;width:142.05pt;"> <p>用户代码不可见区域</p> </td></tr><tr><td style="background-color:transparent;border-color:#d4d0c8;vertical-align:top;width:142pt;"> <p>&lt;0xc000 0000</p> </td><td style="background-color:transparent;border-color:#d4d0c8 #d4d0c8;vertical-align:top;width:142.05pt;"> <p>Stack（用户栈）</p> </td><td style="background-color:transparent;border-color:#d4d0c8 #d4d0c8;vertical-align:top;width:142.05pt;"> <p>ESP指向栈顶</p> </td></tr><tr><td style="background-color:transparent;border-color:#d4d0c8;vertical-align:top;width:142pt;"> <p> </p> </td><td style="background-color:#c0c0c0;border-color:#d4d0c8 #d4d0c8;width:142.05pt;"> <p>↓</p> <p> </p> <p>↑</p> </td><td style="background-color:transparent;border-color:#d4d0c8 #d4d0c8;vertical-align:top;width:142.05pt;"> <p> </p> <p>空闲内存</p> </td></tr><tr><td style="background-color:transparent;border-color:#d4d0c8;vertical-align:top;width:142pt;"> <p>&gt;=0x4000 0000</p> </td><td style="background-color:transparent;border-color:#d4d0c8 #d4d0c8;vertical-align:top;width:142.05pt;"> <p>文件映射区</p> </td><td style="background-color:transparent;border-color:#d4d0c8 #d4d0c8;vertical-align:top;width:142.05pt;"> <p> </p> </td></tr><tr><td style="background-color:transparent;border-color:#d4d0c8;vertical-align:top;width:142pt;"> <p>&lt;0x4000 0000</p> </td><td style="background-color:#b3b3b3;border-color:#d4d0c8 #d4d0c8;width:142.05pt;"> <p> </p> <p> </p> <p>↑</p> </td><td style="background-color:transparent;border-color:#d4d0c8 #d4d0c8;vertical-align:top;width:142.05pt;"> <p> </p> <p>空闲内存</p> <p> </p> </td></tr><tr><td style="background-color:transparent;border-color:#d4d0c8;vertical-align:top;width:142pt;"> <p> </p> </td><td style="background-color:transparent;border-color:#d4d0c8 #d4d0c8;vertical-align:top;width:142.05pt;"> <p>Heap(运行时堆)</p> </td><td style="background-color:transparent;border-color:#d4d0c8 #d4d0c8;vertical-align:top;width:142.05pt;"> <p>通过brk/sbrk系统调用扩大堆，向上增长。</p> </td></tr><tr><td style="background-color:transparent;border-color:#d4d0c8;vertical-align:top;width:142pt;"> <p> </p> </td><td style="background-color:transparent;border-color:#d4d0c8 #d4d0c8;vertical-align:top;width:142.05pt;"> <p>.data、.bss(读写段)</p> </td><td style="background-color:transparent;border-color:#d4d0c8 #d4d0c8;vertical-align:top;width:142.05pt;"> <p>从可执行文件中加载</p> </td></tr><tr><td style="background-color:transparent;border-color:#d4d0c8;vertical-align:top;width:142pt;"> <p>&gt;=0x0804 8000</p> </td><td style="background-color:transparent;border-color:#d4d0c8 #d4d0c8;vertical-align:top;width:142.05pt;"> <p>.init、.text、.rodata(只读段)</p> </td><td style="background-color:transparent;border-color:#d4d0c8 #d4d0c8;vertical-align:top;width:142.05pt;"> <p>从可执行文件中加载</p> </td></tr><tr><td style="background-color:transparent;border-color:#d4d0c8;vertical-align:top;width:142pt;"> <p>&lt;0x0804 8000</p> </td><td style="background-color:transparent;border-color:#d4d0c8 #d4d0c8;vertical-align:top;width:142.05pt;"> <p>保留区域</p> </td><td style="background-color:transparent;border-color:#d4d0c8 #d4d0c8;vertical-align:top;width:142.05pt;"> <p> </p> </td></tr></tbody></table> 
+<p>    上面的表格来自于：<a href="http://www.alixixi.com/ePrint.asp?from=dev&amp;id=36091" rel="nofollow">linux的内存模</a><a href="http://www.alixixi.com/ePrint.asp?from=dev&amp;id=36091" rel="nofollow">型</a></p> 
+<p>    下一步我们就要确定是哪个驱动模块引起的错误，当然我们上面的oops信息中已经告诉我们：</p> 
+<pre class="has"><code class="language-cpp">PC is at first_drv_open+0x18/0x3c [first_drv]</code></pre> 
+<p>    是first_drv驱动引入的错误，<span style="color:#ff0000;">那如果我们没有上面的提示信息该怎么办啊？</span></p> 
+<p>   <span style="color:#3333ff;"><strong>我们要去看内核的/proc/kallsyms 文件，从中找到与PC值相近的值的所在的函数，最好是比PC值要小一些。</strong></span>我们使用命令：<span style="color:#3333ff;"><strong>cat /proc/kallsyms &gt; /kallsyms.txt</strong></span>将/proc/kallsyms文件的内容放到一个TXT文件中。我们看这个文件中的信息：</p> 
+<p><img alt="" class="has" src="https://images2.imgbox.com/6e/c8/8o7nW6A8_o.png"></p> 
+<p>    从上面红色边框中我们看出，这个bf000000与我们的PC值bf000018十分相近。同时我们观察发现PC值包含在first_drv的函数值中，所以在此可以确定我们出错的模块为first_drv模块。同时我们从红色方框中发现bf000000位置对应的是first_drv_open函数。</p> 
+<p>    下面我们就要进行下一步：反汇编该模块的ko文件。在这里我们使用：<span style="color:#3333ff;"><strong>arm-linux-objdump -D first_drv.ko &gt; first_drv.dis</strong></span> 命令来将first_drv的ko文件转化为其反汇编的dis文件。</p> 
+<p>    那么下面我们就要对比PC值与反汇编文件了：</p> 
+<table border="1" cellpadding="1" cellspacing="1" style="width:200px;"><tbody><tr><td>dis文件中的函数和地址</td><td>iinsmod加载文件中的函数和地址</td></tr><tr><td>00000000 &lt;first_drv_open&gt;:</td><td>bf000000 t first_drv_open</td></tr><tr><td>00000018 （出错的行）</td><td>bf000018</td></tr></tbody></table> 
+<p>    通过上面的分析我们就可以找到出错的行在哪里了：</p> 
+<pre class="has"><code class="language-cpp">00000000 &lt;first_drv_open&gt;:
+   0:	e1a0c00d 	mov	ip, sp
+   4:	e92dd800 	stmdb	sp!, {fp, ip, lr, pc}
+   8:	e24cb004 	sub	fp, ip, #4	; 0x4
+   c:	e59f1024 	ldr	r1, [pc, #36]	; 38 &lt;__mod_vermagic5&gt;
+  10:	e3a00000 	mov	r0, #0	; 0x0
+  14:	e5912000 	ldr	r2, [r1]
+  18:	e5923000 	ldr	r3, [r2]  //这里出错了</code></pre> 
+<p>    不过这里是汇编语句，我们要想将这个这里的汇编语句对应到我们的C语句就要借助于其他的信息了。例如我们这时各个寄存器中的值：</p> 
+<pre class="has"><code class="language-cpp">pc : [&lt;bf000018&gt;]    lr : [&lt;c008d888&gt;]    psr: a0000013
+sp : c3ed5e88  ip : c3ed5e98  fp : c3ed5e94
+r10: 00000000  r9 : c3ed4000  r8 : c049a300
+r7 : 00000000  r6 : 00000000  r5 : c3e700c0  r4 : c06a4540
+r3 : bf000000  r2 : 56000050  r1 : bf000964  r0 : 00000000</code></pre> 
+<p>    通过上面的寄存器值，并结合我们的汇编语言知识我们不难将错误找出。而我们这里其实就是在对开发板寄存器操作时，没有使用ioremap函数引起的。</p> 
+<p><span style="color:#009900;"><strong>内核引起错误：</strong></span></p> 
+<p>    我将上面这个有错误的文件放到内核驱动中的char文件夹下，并修改相应的Makefile文件 <span style="color:#3333ff;"><strong>vi /drivers/char/Makefile</strong></span>。在其中加入：<span style="color:#3333ff;"><strong> obj-y += first_drv.o</strong></span> 。然后我们重新编译内核得到新的uImage，我们加载新的uImage。这时候这个错误就是内核引起的了。</p> 
+<p>    这时候我们看oops信息发现这时候的PC值变为了：c014e6c0了。而我们System.map中内核函数的范围是：c0004000 ~ c03cec54。而我们这个时候要使用命令：<span style="color:#3333ff;"><strong>arm-linux-objdump -D vmlinux &gt; vmlinux.dis</strong></span> 来得到内核的反汇编文件。然后我们在文件中找PC值对应的行，从中我们就可以确定是在哪里出处，我们结合寄存器相关的信息就可以找出出错的位置了。</p> 
+<p><span style="color:#009900;"><strong>通过栈信息确定函数调用关系：</strong></span></p> 
+<p>    我们以上面驱动模块中出错的oops信息来分析函数的调用关系。我们知道其实上面已经有了这个函数调用关系，那就是</p> 
+<pre class="has"><code class="language-cpp">Backtrace: 
+[&lt;bf000000&gt;] (first_drv_open+0x0/0x3c [first_drv]) from [&lt;c008d888&gt;] (chrdev_open+0x14c/0x164)
+[&lt;c008d73c&gt;] (chrdev_open+0x0/0x164) from [&lt;c0089e48&gt;] (__dentry_open+0x100/0x1e8)
+ r8:c3e79724 r7:c0474f20 r6:c008d73c r5:c3e700c0 r4:c049a300
+[&lt;c0089d48&gt;] (__dentry_open+0x0/0x1e8) from [&lt;c0089f64&gt;] (nameidata_to_filp+0x34/0x48)
+[&lt;c0089f30&gt;] (nameidata_to_filp+0x0/0x48) from [&lt;c0089fb8&gt;] (do_filp_open+0x40/0x48)
+ r4:00000002
+[&lt;c0089f78&gt;] (do_filp_open+0x0/0x48) from [&lt;c008a2f4&gt;] (do_sys_open+0x54/0xe4)
+ r5:bed00edc r4:00000002
+[&lt;c008a2a0&gt;] (do_sys_open+0x0/0xe4) from [&lt;c008a3a8&gt;] (sys_open+0x24/0x28)
+[&lt;c008a384&gt;] (sys_open+0x0/0x28) from [&lt;c002bea0&gt;] (ret_fast_syscall+0x0/0x2c)
+Code: e24cb004 e59f1024 e3a00000 e5912000 (e5923000) </code></pre> 
+<p>    从上面我们可以看出出错函数的调用关系，<span style="color:#ff0000;"><strong>但是如果我们的oops中没有Backtrace怎么办啊？</strong></span><span style="color:#3333ff;"><strong>这时候我们就要通过栈信息自己来推出函数调用关系了</strong></span>。这里我们需要内核的反汇编文件，因为我们是内核中的函数调用驱动模块中的函数。</p> 
+<p>    而在讲解如何推出调用关系之前，我想先介绍一下我们要用到的寄存器：</p> 
+<p><span style="color:#000000;"><strong>1. 寄存器R14被称为链接寄存器(LR)，存放每种模式下，当前子程序的返回地址或者发生异常中断的时候，将R14设置成异常模式将要返回的地址。</strong></span></p> 
+<p><span style="color:#000000;"><strong>2. 寄存器R13(SP)，通常用作堆栈指针，每一种模式都有自己的物理R13，程序初始化R13。当进入该模式时，可以将要使用的寄存器保存在R13所指的栈中，当退出时，将弹出，从而实现了现场保护。</strong></span></p> 
+<p>    我们现在假设有三个函数A函数，B函数，C函数。他们的调用关系为C函数调用B函数，而B函数调用A函数。我们可以以伪代码的形式表达为：</p> 
+<pre class="has"><code class="language-cpp">C(void){
+	B();
+	其他代码;
+}
+
+B(void){
+	A();
+	其他代码;
+}
+
+A(void){
+	其他代码;
+}</code></pre> 
+<p>    而他对应的调用关系图为：</p> 
+<p><img alt="" class="has" src="https://images2.imgbox.com/e2/e5/LJLMMBFK_o.png"></p> 
+<p>    从上面的图中我们知道，我们的C函数调用B函数，在进入B函数后，B函数会将C函数的LR压入栈中，当B函数运行完成后，他会调用LR的值返回到C函数中。同样在B函数中调用A函数，进入A函数后先将B函数的LR压入栈中，当A函数完成后，他会调用LR的值返回B函数。</p> 
+<p>    而现在我们知道了A函数，并且知道了A函数栈中B函数的LR值。那么我们就可以找到B函数。而找到B函数后我们知道B函数栈中LR的值我们就可以找到C函数。我们以此类推就可以找到函数的调用关系了。我们就是利用这个原理来从这些栈信息中找到调用关系。</p> 
+<p>    好了，有了上面的知识我们现在再看我们oops中的栈信息：</p> 
+<pre class="has"><code class="language-cpp">Stack: (0xc3ed5e88 to 0xc3ed6000)
+5e80:                   c3ed5ebc c3ed5e98 c008d888 bf000010 00000000 c049a300 
+5ea0: c3e700c0 c008d73c c0474f20 c3e79724 c3ed5ee4 c3ed5ec0 c0089e48 c008d74c 
+5ec0: c049a300 c3ed5f04 00000003 ffffff9c c002c044 c3cf4000 c3ed5efc c3ed5ee8 
+5ee0: c0089f64 c0089d58 00000000 00000002 c3ed5f68 c3ed5f00 c0089fb8 c0089f40 
+5f00: c3ed5f04 c3e79724 c0474f20 00000000 00000000 c3edd000 00000101 00000001 
+5f20: 00000000 c3ed4000 c046de08 c046de00 ffffffe8 c3cf4000 c3ed5f68 c3ed5f48 
+5f40: c008a16c c009fc70 00000003 00000000 c049a300 00000002 bed00edc c3ed5f94 
+5f60: c3ed5f6c c008a2f4 c0089f88 00008520 bed00ed4 0000860c 00008670 00000005 
+5f80: c002c044 4013365c c3ed5fa4 c3ed5f98 c008a3a8 c008a2b0 00000000 c3ed5fa8 
+5fa0: c002bea0 c008a394 bed00ed4 0000860c 00008720 00000002 bed00edc 00000001 
+5fc0: bed00ed4 0000860c 00008670 00000001 00008520 00000000 4013365c bed00ea8 
+5fe0: 00000000 bed00e84 0000266c 400c98e0 60000010 00008720 4021a2cc 4021a2dc </code></pre> 
+<p>    我们通过上面的分析知道我们加载模块的出错函数为first_drv_open，所以我们看他的反汇编代码：</p> 
+<pre class="has"><code class="language-cpp">00000000 &lt;first_drv_open&gt;:
+   0:	e1a0c00d 	mov	ip, sp
+   4:	e92dd800 	stmdb	sp!, {fp, ip, lr, pc}
+   8:	e24cb004 	sub	fp, ip, #4	; 0x4
+   c:	e59f1024 	ldr	r1, [pc, #36]	; 38 &lt;__mod_vermagic5&gt;
+  10:	e3a00000 	mov	r0, #0	; 0x0
+  14:	e5912000 	ldr	r2, [r1]
+  18:	e5923000 	ldr	r3, [r2]</code></pre> 
+<p>    从上面的代码我们看出对栈的操作只有：e92dd800 stmdb sp!, {fp, ip, lr, pc}，<span style="color:#ff0000;"><strong>而在栈里面他是高寄存器在高位</strong></span>，所以PC值在最高位，而LR次之，接下来依次为IP和FP。而他占用四个栈信息值。而在其中LR为倒数第二个。所以在上面的栈信息中有：</p> 
+<pre class="has"><code class="language-cpp">5e80:                   c3ed5ebc c3ed5e98 c008d888 bf000010 00000000 c049a300 
+			&lt;first_drv_open&gt;: lr		    caller'sp</code></pre> 
+<p>    同时我们知道LR中存放的就是上一个调用函数的返回地址，所以我们可以通过first_drv_open的LR值c008d888找到他的调用函数。我们在内核的反汇编文件中搜c008d888这个地址，看他属于那个函数：</p> 
+<pre class="has"><code class="language-cpp">c008d73c &lt;chrdev_open&gt;:
+c008d73c:	e1a0c00d 	mov	ip, sp
+c008d740:	e92dd9f0 	stmdb	sp!, {r4, r5, r6, r7, r8, fp, ip, lr, pc}
+c008d744:	e24cb004 	sub	fp, ip, #4	; 0x4
+c008d748:	e24dd004 	sub	sp, sp, #4	; 0x4
+c008d74c:	e59040e4 	ldr	r4, [r0, #228]
+·······
+c008d874:	0a000006 	beq	c008d894 &lt;chrdev_open+0x158&gt;
+c008d878:	e1a00005 	mov	r0, r5
+c008d87c:	e1a01008 	mov	r1, r8
+c008d880:	e1a0e00f 	mov	lr, pc
+c008d884:	e1a0f003 	mov	pc, r3
+c008d888:	e2507000 	subs	r7, r0, #0	; 0x0
+c008d88c:	11a00004 	movne	r0, r4
+······</code></pre> 
+<p>    从上面我们知道first_drv_open的调用函数为chrdev_open函数，同时我们还从上面的反汇编代码中看出在chrdev_open函数中对栈SP的操作只有：</p> 
+<pre class="has"><code class="language-cpp">c008d740:	e92dd9f0 	stmdb	sp!, {r4, r5, r6, r7, r8, fp, ip, lr, pc}
+c008d748:	e24dd004 	sub	sp, sp, #4	; 0x4</code></pre> 
+<p>    这里面一共移动栈10个位置，其中下面sub sp, sp, #4 ; 0x4 因为这是32位的系统，所以4字节表示一个栈地址。同时LR信息同样在倒数第二位。而对应到上面的栈信息中：</p> 
+<pre class="has"><code class="language-cpp">5e80:                   c3ed5ebc c3ed5e98 c008d888 bf000010 00000000 c049a300 
+			&lt;first_drv_open&gt;: lr		    &lt;chrdev_open&gt;
+
+5ea0: c3e700c0 c008d73c c0474f20 c3e79724 c3ed5ee4 c3ed5ec0 c0089e48 c008d74c 
+                                                             lr
+5ec0: c049a300 c3ed5f04 00000003 ffffff9c c002c044 c3cf4000 c3ed5efc c3ed5ee8 
+      caller'sp</code></pre> 
+<p>    下面我们就要在内核的反汇编文件中找c0089e48对应的函数了：</p> 
+<pre class="has"><code class="language-cpp">c0089d48 &lt;__dentry_open&gt;:
+c0089d48:	e1a0c00d 	mov	ip, sp
+c0089d4c:	e92dddf0 	stmdb	sp!, {r4, r5, r6, r7, r8, sl, fp, ip, lr, pc}
+c0089d50:	e24cb004 	sub	fp, ip, #4	; 0x4
+······
+c0089e40:	e1a0e00f 	mov	lr, pc
+c0089e44:	e1a0f006 	mov	pc, r6
+c0089e48:	e250a000 	subs	sl, r0, #0	; 0x0
+c0089e4c:	1a000019 	bne	c0089eb8 &lt;__dentry_open+0x170&gt;
+c0089e50:	e5943018 	ldr	r3, [r4, #24]
+······</code></pre> 
+<p>    从上面看chrdev_open函数由__dentry_open函数调用，同时我们还知道了栈操作信息：</p> 
+<pre class="has"><code class="language-cpp">c0089d4c:	e92dddf0 	stmdb	sp!, {r4, r5, r6, r7, r8, sl, fp, ip, lr, pc}</code></pre> 
+<p>    那么通过上面的信息我们就可以知道__dentry_open的调用函数了。这样以此类推我们就知道内核中对first_drv_open函数的调用关系了。这里我将他们全部的关系贴出：</p> 
+<pre class="has"><code class="language-cpp">Stack: (0xc3ed5e88 to 0xc3ed6000)
+5e80:                   c3ed5ebc c3ed5e98 c008d888 bf000010 00000000 c049a300 
+		        &lt;first_drv_open&gt;: lr		    &lt;chrdev_open&gt;
+5ea0: c3e700c0 c008d73c c0474f20 c3e79724 c3ed5ee4 c3ed5ec0 c0089e48 c008d74c 
+							     lr
+5ec0: c049a300 c3ed5f04 00000003 ffffff9c c002c044 c3cf4000 c3ed5efc c3ed5ee8 
+      &lt;__dentry_open&gt;
+5ee0: c0089f64 c0089d58 00000000 00000002 c3ed5f68 c3ed5f00 c0089fb8 c0089f40
+       lr		&lt;nameidata_to_filp&gt;		     lr
+5f00: c3ed5f04 c3e79724 c0474f20 00000000 00000000 c3edd000 00000101 00000001
+      &lt;do_filp_open&gt;
+5f20: 00000000 c3ed4000 c046de08 c046de00 ffffffe8 c3cf4000 c3ed5f68 c3ed5f48 
+5f40: c008a16c c009fc70 00000003 00000000 c049a300 00000002 bed00edc c3ed5f94 
+5f60: c3ed5f6c c008a2f4 c0089f88 00008520 bed00ed4 0000860c 00008670 00000005 
+		lr		 &lt;do_sys_open&gt;:
+5f80: c002c044 4013365c c3ed5fa4 c3ed5f98 c008a3a8 c008a2b0 00000000 c3ed5fa8 
+   					   lr	 	    &lt;sys_open&gt; 
+5fa0: c002bea0 c008a394 bed00ed4 0000860c 00008720 00000002 bed00edc 00000001 
+       lr								
+5fc0: bed00ed4 0000860c 00008670 00000001 00008520 00000000 4013365c bed00ea8 
+5fe0: 00000000 bed00e84 0000266c 400c98e0 60000010 00008720 4021a2cc 4021a2dc </code></pre> 
+<p>    而栈回溯信息为：</p> 
+<pre class="has"><code class="language-cpp">Backtrace: 
+[&lt;bf000000&gt;] (first_drv_open+0x0/0x3c [first_drv]) from [&lt;c008d888&gt;] (chrdev_open+0x14c/0x164)
+[&lt;c008d73c&gt;] (chrdev_open+0x0/0x164) from [&lt;c0089e48&gt;] (__dentry_open+0x100/0x1e8)
+ r8:c3e79724 r7:c0474f20 r6:c008d73c r5:c3e700c0 r4:c049a300
+[&lt;c0089d48&gt;] (__dentry_open+0x0/0x1e8) from [&lt;c0089f64&gt;] (nameidata_to_filp+0x34/0x48)
+[&lt;c0089f30&gt;] (nameidata_to_filp+0x0/0x48) from [&lt;c0089fb8&gt;] (do_filp_open+0x40/0x48)
+ r4:00000002
+[&lt;c0089f78&gt;] (do_filp_open+0x0/0x48) from [&lt;c008a2f4&gt;] (do_sys_open+0x54/0xe4)
+ r5:bed00edc r4:00000002
+[&lt;c008a2a0&gt;] (do_sys_open+0x0/0xe4) from [&lt;c008a3a8&gt;] (sys_open+0x24/0x28)
+[&lt;c008a384&gt;] (sys_open+0x0/0x28) from [&lt;c002bea0&gt;] (ret_fast_syscall+0x0/0x2c)</code></pre> 
+<p>    从上面可以看出这两个是对应的。也证明我们的推导是正确的。</p> 
+<p> </p> 
+<p><span style="color:#009900;"><strong>参考文章：</strong></span></p> 
+<p><a href="https://blog.csdn.net/gatieme/article/details/73715860">Linux Kernel PANIC(三)--Soft Panic/Oops调试及实例分析</a><br><a href="https://blog.csdn.net/mozun1/article/details/53306714">Oops中的error code解释</a><br><a href="http://www.alixixi.com/ePrint.asp?from=dev&amp;id=36091" rel="nofollow">linux的内存模型</a><br><a href="https://blog.csdn.net/kangear/article/details/8217329">linux中Oops信息的调试及栈回溯—Linux人都知道，这是好东西！</a><br><a href="http://www.cnblogs.com/lifexy/p/8006748.html" rel="nofollow">36.Linux驱动调试-根据oops定位错误代码行</a><br><a href="http://www.cnblogs.com/lifexy/p/8011966.html" rel="nofollow">37.Linux驱动调试-根据oops的栈信息,确定函数调用过程</a></p> 
+<p> </p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/79fa7076f5bfb6d29214171308a301a2/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">5.3.4 图像颜色映射 (二)</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/b694332d7a95f8b6275cbae6487fce8b/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">MySQL服务器的管理与维护</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

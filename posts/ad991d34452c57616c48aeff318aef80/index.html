@@ -1,0 +1,376 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>OVS - 数据包处理流程 - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="OVS - 数据包处理流程" />
+<meta property="og:description" content="在介绍OVS数据包的处理过程之前，首先得了解下OVS和SDN的相关概念
+SDN 简介 SDN（Software-Defined Networking）是一种网络架构和理念，与传统网络架构最大的区别就在于将网络的控制平面从数据平面中分离出来，将网络决策集中在一个独立的软件控制器中，从而使网络更加灵活、可编程和易于管理。
+在整体架构中，首先需要明确SDN控制器和网络设备两个概念：
+SDN控制器（SDN Controller）：控制器是SDN的中央控制节点，它负责管理整个网络的行为和策略。控制器可以通过北向接口与上层应用程序或网络管理平台进行通信，通过南向接口与网络设备（如交换机和路由器）进行通信。控制器接收上层应用程序的指令，并将指令转化为底层网络设备的配置，从而实现对网络流量的控制。网络设备（Switches/Router）：SDN网络中的网络设备是传统交换机和路由器，但与传统网络不同的是，它们的数据转发平面和控制平面分离。网络设备在SDN架构中被称为数据面设备，负责根据SDN控制器下发的指令，进行数据包的转发和处理 具体的结构可参考下图：
+OVS 简介 OVS（Open vSwitch）是一个开源的虚拟交换机软件， 是SDN架构中数据平面的一部分。通过使用OVS，可以起到以下作用：
+网络虚拟化： OVS 允许创建虚拟网络，这些网络可以在物理网络基础上进行划分，为不同的虚拟机、容器或租户提供独立的逻辑网络，从而增加了网络资源的灵活性和利用率。流量控制和管理： OVS 具有流表和流量匹配功能，可以根据不同的规则、条件和策略来控制和管理网络流量。这有助于实现负载均衡、流量隔离、QoS（服务质量）管理等。网络隔离和安全性： OVS 可以帮助实现虚拟网络之间的隔离，确保不同租户或应用之间的网络流量互不干扰。这有助于提高网络的安全性。网络监控和分析： OVS 支持流量镜像和抓包功能，可以方便地进行网络监控和分析，帮助排查问题、优化网络性能。灵活的网络配置： OVS 允许管理员动态地配置网络，添加、删除和修改网络规则，适应不同的应用需求，而无需依赖硬件更改。支持 SDN 控制器： OVS 可以与 SDN 控制器集成，通过控制器来统一管理和编程网络，实现集中式的网络控制和自动化。支持各种网络拓扑： OVS 支持多种网络拓扑，包括扁平网络、树状拓扑、多层拓扑等，使网络构建更加灵活。 主要组件 OVS中主要包含 ovs-vswtichd、ovsdb-server、openvswitch.ko 三个基本组件
+ovs-vswtichd 是一个守护进程，是 ovs 的管理和控制服务，通过 unix socket 将配置信息保存到ovsdb，并通过 netlink 和内核模块交互ovsdb 则是 ovs 的数据库，保存了 ovs 配置信息openvswitch.ko 是 OVS 的内核模块，实现了 OVS 数据平面（Data Plane）和控制平面（Control Plane）之间的连接，其中还包含一个关键的部分就是datapath，通过 datapath 在内核层面完成数据包的转发、过滤和处理，以实现虚拟网络的各种功能。 各组件之间的关联关系可参考下图
+图一
+转发流程 通过上面的介绍，可以了解到 ovs 中包含一个名为 openvswith.ko 的内核模块，其中的 datapath 负责执行数据处理。那么接下来参考图一介绍当一个数据包到OVS后首次处理的流程：" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/ad991d34452c57616c48aeff318aef80/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2024-03-08T14:20:11+08:00" />
+<meta property="article:modified_time" content="2024-03-08T14:20:11+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">OVS - 数据包处理流程</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p>在介绍OVS数据包的处理过程之前，首先得了解下OVS和SDN的相关概念</p> 
+<h2><a id="SDN_2"></a>SDN</h2> 
+<h3><a id="_4"></a>简介</h3> 
+<p>SDN（Software-Defined Networking）是一种网络架构和理念，与传统网络架构最大的区别就在于将网络的控制平面从数据平面中分离出来，将网络决策集中在一个独立的软件控制器中，从而使网络更加灵活、可编程和易于管理。</p> 
+<p>在整体架构中，首先需要明确SDN控制器和网络设备两个概念：</p> 
+<ol><li><strong>SDN控制器（SDN Controller）</strong>：控制器是SDN的中央控制节点，它负责管理整个网络的行为和策略。控制器可以通过北向接口与上层应用程序或网络管理平台进行通信，通过南向接口与网络设备（如交换机和路由器）进行通信。控制器接收上层应用程序的指令，并将指令转化为底层网络设备的配置，从而实现对网络流量的控制。</li><li><strong>网络设备（Switches/Router）</strong>：SDN网络中的网络设备是传统交换机和路由器，但与传统网络不同的是，它们的数据转发平面和控制平面分离。网络设备在SDN架构中被称为数据面设备，负责根据SDN控制器下发的指令，进行数据包的转发和处理</li></ol> 
+<p>具体的结构可参考下图：</p> 
+<p><img src="https://images2.imgbox.com/e4/a9/QjOXTqpp_o.png" alt="在这里插入图片描述"></p> 
+<h2><a id="OVS_20"></a>OVS</h2> 
+<h3><a id="_22"></a>简介</h3> 
+<p>OVS（Open vSwitch）是一个开源的虚拟交换机软件， 是SDN架构中数据平面的一部分。通过使用OVS，可以起到以下作用：</p> 
+<ul><li><strong>网络虚拟化：</strong> OVS 允许创建虚拟网络，这些网络可以在物理网络基础上进行划分，为不同的虚拟机、容器或租户提供独立的逻辑网络，从而增加了网络资源的灵活性和利用率。</li><li><strong>流量控制和管理：</strong> OVS 具有流表和流量匹配功能，可以根据不同的规则、条件和策略来控制和管理网络流量。这有助于实现负载均衡、流量隔离、QoS（服务质量）管理等。</li><li><strong>网络隔离和安全性：</strong> OVS 可以帮助实现虚拟网络之间的隔离，确保不同租户或应用之间的网络流量互不干扰。这有助于提高网络的安全性。</li><li><strong>网络监控和分析：</strong> OVS 支持流量镜像和抓包功能，可以方便地进行网络监控和分析，帮助排查问题、优化网络性能。</li><li><strong>灵活的网络配置：</strong> OVS 允许管理员动态地配置网络，添加、删除和修改网络规则，适应不同的应用需求，而无需依赖硬件更改。</li><li><strong>支持 SDN 控制器：</strong> OVS 可以与 SDN 控制器集成，通过控制器来统一管理和编程网络，实现集中式的网络控制和自动化。</li><li><strong>支持各种网络拓扑：</strong> OVS 支持多种网络拓扑，包括扁平网络、树状拓扑、多层拓扑等，使网络构建更加灵活。</li></ul> 
+<h3><a id="_36"></a>主要组件</h3> 
+<p>OVS中主要包含 ovs-vswtichd、ovsdb-server、openvswitch.ko 三个基本组件</p> 
+<ul><li><strong>ovs-vswtichd</strong> 是一个守护进程，是 ovs 的管理和控制服务，通过 unix socket 将配置信息保存到ovsdb，并通过 netlink 和内核模块交互</li><li><strong>ovsdb</strong> 则是 ovs 的数据库，保存了 ovs 配置信息</li><li><strong>openvswitch.ko</strong> 是 OVS 的内核模块，实现了 OVS 数据平面（Data Plane）和控制平面（Control Plane）之间的连接，其中还包含一个关键的部分就是datapath，通过 datapath 在内核层面完成数据包的转发、过滤和处理，以实现虚拟网络的各种功能。</li></ul> 
+<p>各组件之间的关联关系可参考下图</p> 
+<p><img src="https://images2.imgbox.com/be/4c/AhmrvwGN_o.png" alt="在这里插入图片描述"></p> 
+<p>图一</p> 
+<h2><a id="_51"></a>转发流程</h2> 
+<p>通过上面的介绍，可以了解到 ovs 中包含一个名为 openvswith.ko 的内核模块，其中的 datapath 负责执行数据处理。那么接下来参考图一介绍当一个数据包到OVS后首次处理的流程：</p> 
+<ol><li>当一个数据包到达系统，datapath 内核模块会拦截这个数据包进行处理</li><li>datapath 内核模块会在流表中逐一匹配数据包，检查数据包的头部信息，例如源 MAC 地址、目标 MAC 地址、VLAN 标记、IP 地址等，以确定适用的流表规则，由于首次匹配不到则通过 upcall调用，将数据包以 netlink 协议上传到 vswitchd</li><li>vswitchd通过 OpenFlow协议与控制器通信获取流表</li><li>用户态查询到的流表缓存至内核态的flow-table中</li><li>vswitchd 通过reinject，使用netlink将包重新送回内核</li><li>datapath 再根据数据包查询对应的动作</li><li>按照动作进行处理</li></ol> 
+<p>由于第四步已经将该数据包的处理方式缓存到了内核中，那么当再有相同特征的数据包需要处理时，内核态就可直接处理。上述通过 ovs-vswitchd 查找 OpenFlow 实现转发的路径称为 slow-path，通过 OVS datapath直接转发的路径称为 fast-path，通过slow-path和fast-path的配合使用，完成网络数据的高效转发<br> <img src="https://images2.imgbox.com/c3/74/qAC9wwPc_o.png" alt="在这里插入图片描述"></p> 
+<p>图二</p> 
+<p>datapatch 中对应的转发规则可以通过 ovs-appctl dpif/dump-flows 进行查看</p> 
+<pre><code class="prism language-shell"><span class="token punctuation">[</span>root@ncspabdf00a0 ~<span class="token punctuation">]</span><span class="token comment"># ovs-appctl dpif/dump-flows &lt;switch_name&gt;</span>
+recirc_id<span class="token punctuation">(</span><span class="token number">0</span><span class="token punctuation">)</span>,in_port<span class="token punctuation">(</span><span class="token number">11</span><span class="token punctuation">)</span>,packet_type<span class="token punctuation">(</span>ns<span class="token operator">=</span><span class="token number">0</span>,id<span class="token operator">=</span><span class="token number">0</span><span class="token punctuation">)</span>,eth<span class="token punctuation">(</span>dst<span class="token operator">=</span>00:99:99:30:69:43<span class="token punctuation">)</span>,eth_type<span class="token punctuation">(</span>0x8100<span class="token punctuation">)</span>,vlan<span class="token punctuation">(</span>vid<span class="token operator">=</span><span class="token number">1</span><span class="token punctuation">)</span>,encap<span class="token punctuation">(</span>eth_type<span class="token punctuation">(</span>0x0806<span class="token punctuation">))</span>, packets:45033, bytes:2071518, used:11.008s, actions:5
+<span class="token punctuation">..</span>.
+
+</code></pre> 
+<h2><a id="_79"></a>代码分析</h2> 
+<h3><a id="_81"></a>内核态</h3> 
+<p>当包到网卡后， vport 注册的回调函数 netdev_frame_hook 会先调用到 ovs_vport_receive 处理接收报文，在 ovs_vport_receive 函数中从数据包中解析出用于匹配流表规则的字段信息，以便进行流表查找和匹配。最后调用 ovs_dp_process_packet 函数进入真正的 ovs 数据包处理。</p> 
+<pre><code class="prism language-c"><span class="token comment">/* Must be called with rcu_read_lock. */</span>
+<span class="token keyword">void</span> <span class="token function">ovs_dp_process_packet</span><span class="token punctuation">(</span><span class="token keyword">struct</span> <span class="token class-name">sk_buff</span> <span class="token operator">*</span>skb<span class="token punctuation">,</span> <span class="token keyword">struct</span> <span class="token class-name">sw_flow_key</span> <span class="token operator">*</span>key<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+<span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+	<span class="token comment">/* Look up flow. */</span>
+	<span class="token comment">// 根据 mask和key进行匹配查找</span>
+	flow <span class="token operator">=</span> <span class="token function">ovs_flow_tbl_lookup_stats</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>dp<span class="token operator">-&gt;</span>table<span class="token punctuation">,</span> key<span class="token punctuation">,</span> <span class="token function">skb_get_hash</span><span class="token punctuation">(</span>skb<span class="token punctuation">)</span><span class="token punctuation">,</span>
+					 <span class="token operator">&amp;</span>n_mask_hit<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token comment">// 没有匹配到 flow, 需要发送到用户态进行慢速匹配</span>
+	<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">unlikely</span><span class="token punctuation">(</span><span class="token operator">!</span>flow<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token keyword">struct</span> <span class="token class-name">dp_upcall_info</span> upcall<span class="token punctuation">;</span>
+
+		<span class="token function">memset</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>upcall<span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">,</span> <span class="token keyword">sizeof</span><span class="token punctuation">(</span>upcall<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+		upcall<span class="token punctuation">.</span>cmd <span class="token operator">=</span> OVS_PACKET_CMD_MISS<span class="token punctuation">;</span>
+		upcall<span class="token punctuation">.</span>portid <span class="token operator">=</span> <span class="token function">ovs_vport_find_upcall_portid</span><span class="token punctuation">(</span>p<span class="token punctuation">,</span> skb<span class="token punctuation">)</span><span class="token punctuation">;</span>
+		upcall<span class="token punctuation">.</span>mru <span class="token operator">=</span> <span class="token function">OVS_CB</span><span class="token punctuation">(</span>skb<span class="token punctuation">)</span><span class="token operator">-&gt;</span>mru<span class="token punctuation">;</span>
+		error <span class="token operator">=</span> <span class="token function">ovs_dp_upcall</span><span class="token punctuation">(</span>dp<span class="token punctuation">,</span> skb<span class="token punctuation">,</span> key<span class="token punctuation">,</span> <span class="token operator">&amp;</span>upcall<span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">;</span>  <span class="token comment">// 通过 upcall 发送到用户态 </span>
+		<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">unlikely</span><span class="token punctuation">(</span>error<span class="token punctuation">)</span><span class="token punctuation">)</span>
+			<span class="token function">kfree_skb</span><span class="token punctuation">(</span>skb<span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token keyword">else</span>
+			<span class="token function">consume_skb</span><span class="token punctuation">(</span>skb<span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token comment">// datapath 未匹配的包数</span>
+		stats_counter <span class="token operator">=</span> <span class="token operator">&amp;</span>stats<span class="token operator">-&gt;</span>n_missed<span class="token punctuation">;</span>
+		<span class="token keyword">goto</span> out<span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+    
+    <span class="token comment">// dp flow 中匹配的到，进行快速匹配</span>
+	<span class="token function">ovs_flow_stats_update</span><span class="token punctuation">(</span>flow<span class="token punctuation">,</span> key<span class="token operator">-&gt;</span>tp<span class="token punctuation">.</span>flags<span class="token punctuation">,</span> skb<span class="token punctuation">)</span><span class="token punctuation">;</span> <span class="token comment">// 更新流表状态信息 </span>
+	sf_acts <span class="token operator">=</span> <span class="token function">rcu_dereference</span><span class="token punctuation">(</span>flow<span class="token operator">-&gt;</span>sf_acts<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	error <span class="token operator">=</span> <span class="token function">ovs_execute_actions</span><span class="token punctuation">(</span>dp<span class="token punctuation">,</span> skb<span class="token punctuation">,</span> sf_acts<span class="token punctuation">,</span> key<span class="token punctuation">)</span><span class="token punctuation">;</span> <span class="token comment">// 执行 action</span>
+	<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">unlikely</span><span class="token punctuation">(</span>error<span class="token punctuation">)</span><span class="token punctuation">)</span>
+		<span class="token function">net_dbg_ratelimited</span><span class="token punctuation">(</span><span class="token string">"ovs: action execution error on datapath %s: %d\n"</span><span class="token punctuation">,</span>
+							<span class="token function">ovs_dp_name</span><span class="token punctuation">(</span>dp<span class="token punctuation">)</span><span class="token punctuation">,</span> error<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+	stats_counter <span class="token operator">=</span> <span class="token operator">&amp;</span>stats<span class="token operator">-&gt;</span>n_hit<span class="token punctuation">;</span>
+
+out<span class="token operator">:</span>
+	<span class="token comment">/* Update datapath statistics. */</span>
+	<span class="token function">u64_stats_update_begin</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>stats<span class="token operator">-&gt;</span>syncp<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token punctuation">(</span><span class="token operator">*</span>stats_counter<span class="token punctuation">)</span><span class="token operator">++</span><span class="token punctuation">;</span> <span class="token comment">//收包总数</span>
+	stats<span class="token operator">-&gt;</span>n_mask_hit <span class="token operator">+=</span> n_mask_hit<span class="token punctuation">;</span> <span class="token comment">//流表查询次数</span>
+	<span class="token function">u64_stats_update_end</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>stats<span class="token operator">-&gt;</span>syncp<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>先关注 upcall 调用，当没有找到匹配的流表时，内核通过 netlink 发送报文到用户态处理，对应代码中的 ovs_dp_upcall，该函数调用 queue_userspace_packet 函数构造发往用户层的 skb，通过 netlink 通信机制发送到用户态</p> 
+<pre><code class="prism language-c"><span class="token keyword">int</span> <span class="token function">ovs_dp_upcall</span><span class="token punctuation">(</span><span class="token keyword">struct</span> <span class="token class-name">datapath</span> <span class="token operator">*</span>dp<span class="token punctuation">,</span> <span class="token keyword">struct</span> <span class="token class-name">sk_buff</span> <span class="token operator">*</span>skb<span class="token punctuation">,</span>
+		  <span class="token keyword">const</span> <span class="token keyword">struct</span> <span class="token class-name">sw_flow_key</span> <span class="token operator">*</span>key<span class="token punctuation">,</span>
+		  <span class="token keyword">const</span> <span class="token keyword">struct</span> <span class="token class-name">dp_upcall_info</span> <span class="token operator">*</span>upcall_info<span class="token punctuation">,</span>
+		  <span class="token class-name">uint32_t</span> cutlen<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+    <span class="token comment">// 判断数据包是否分片</span>
+	<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span><span class="token function">skb_is_gso</span><span class="token punctuation">(</span>skb<span class="token punctuation">)</span><span class="token punctuation">)</span>
+		err <span class="token operator">=</span> <span class="token function">queue_userspace_packet</span><span class="token punctuation">(</span>dp<span class="token punctuation">,</span> skb<span class="token punctuation">,</span> key<span class="token punctuation">,</span> upcall_info<span class="token punctuation">,</span> cutlen<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token keyword">else</span>
+		err <span class="token operator">=</span> <span class="token function">queue_gso_packets</span><span class="token punctuation">(</span>dp<span class="token punctuation">,</span> skb<span class="token punctuation">,</span> key<span class="token punctuation">,</span> upcall_info<span class="token punctuation">,</span> cutlen<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token keyword">if</span> <span class="token punctuation">(</span>err<span class="token punctuation">)</span>
+		<span class="token keyword">goto</span> err<span class="token punctuation">;</span>
+    <span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<h3><a id="_153"></a>用户态</h3> 
+<p>用户态对于 upcall 的处理函数 udpif_upcall_handler 会先在 udpif_start_threads 里面进行初始化</p> 
+<pre><code class="prism language-c"><span class="token keyword">static</span> <span class="token keyword">void</span>
+<span class="token function">udpif_start_threads</span><span class="token punctuation">(</span><span class="token keyword">struct</span> <span class="token class-name">udpif</span> <span class="token operator">*</span>udpif<span class="token punctuation">,</span> <span class="token class-name">uint32_t</span> n_handlers_<span class="token punctuation">,</span>
+                    <span class="token class-name">uint32_t</span> n_revalidators_<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>udpif <span class="token operator">&amp;&amp;</span> n_handlers_ <span class="token operator">&amp;&amp;</span> n_revalidators_<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token comment">/* Creating a thread can take a significant amount of time on some
+         * systems, even hundred of milliseconds, so quiesce around it. */</span>
+        <span class="token function">ovsrcu_quiesce_start</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+        udpif<span class="token operator">-&gt;</span>n_handlers <span class="token operator">=</span> n_handlers_<span class="token punctuation">;</span>
+        udpif<span class="token operator">-&gt;</span>n_revalidators <span class="token operator">=</span> n_revalidators_<span class="token punctuation">;</span>
+
+        udpif<span class="token operator">-&gt;</span>handlers <span class="token operator">=</span> <span class="token function">xzalloc</span><span class="token punctuation">(</span>udpif<span class="token operator">-&gt;</span>n_handlers <span class="token operator">*</span> <span class="token keyword">sizeof</span> <span class="token operator">*</span>udpif<span class="token operator">-&gt;</span>handlers<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">for</span> <span class="token punctuation">(</span><span class="token class-name">size_t</span> i <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span> i <span class="token operator">&lt;</span> udpif<span class="token operator">-&gt;</span>n_handlers<span class="token punctuation">;</span> i<span class="token operator">++</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">struct</span> <span class="token class-name">handler</span> <span class="token operator">*</span>handler <span class="token operator">=</span> <span class="token operator">&amp;</span>udpif<span class="token operator">-&gt;</span>handlers<span class="token punctuation">[</span>i<span class="token punctuation">]</span><span class="token punctuation">;</span>
+
+            handler<span class="token operator">-&gt;</span>udpif <span class="token operator">=</span> udpif<span class="token punctuation">;</span>
+            handler<span class="token operator">-&gt;</span>handler_id <span class="token operator">=</span> i<span class="token punctuation">;</span>
+            <span class="token comment">// 创建 handler 线程</span>
+            handler<span class="token operator">-&gt;</span>thread <span class="token operator">=</span> <span class="token function">ovs_thread_create</span><span class="token punctuation">(</span>
+                <span class="token string">"handler"</span><span class="token punctuation">,</span> udpif_upcall_handler<span class="token punctuation">,</span> handler<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+        <span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>udpif_upcall_handler 中通过 poll 的方式等待触发，如果有upcall请求，则进入 recv_upcalls 的处理函数中</p> 
+<pre><code class="prism language-c"><span class="token comment">/* The upcall handler thread tries to read a batch of UPCALL_MAX_BATCH
+ * upcalls from dpif, processes the batch and installs corresponding flows
+ * in dpif. */</span>
+<span class="token keyword">static</span> <span class="token keyword">void</span> <span class="token operator">*</span>
+<span class="token function">udpif_upcall_handler</span><span class="token punctuation">(</span><span class="token keyword">void</span> <span class="token operator">*</span>arg<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+<span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+    <span class="token keyword">while</span> <span class="token punctuation">(</span><span class="token operator">!</span><span class="token function">latch_is_set</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>handler<span class="token operator">-&gt;</span>udpif<span class="token operator">-&gt;</span>exit_latch<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+
+        <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">recv_upcalls</span><span class="token punctuation">(</span>handler<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token comment">// 收到 upcall 调用，唤醒线程进行处理</span>
+            <span class="token function">poll_immediate_wake</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token comment">// 未收到调用进行等待</span>
+            <span class="token function">dpif_recv_wait</span><span class="token punctuation">(</span>udpif<span class="token operator">-&gt;</span>dpif<span class="token punctuation">,</span> handler<span class="token operator">-&gt;</span>handler_id<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token function">latch_wait</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>udpif<span class="token operator">-&gt;</span>exit_latch<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+        <span class="token function">poll_block</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>至此，才是用户态对于 upcall 的真正处理过程，</p> 
+<pre><code class="prism language-c"><span class="token keyword">static</span> <span class="token class-name">size_t</span>
+<span class="token function">recv_upcalls</span><span class="token punctuation">(</span><span class="token keyword">struct</span> <span class="token class-name">handler</span> <span class="token operator">*</span>handler<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+    <span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+    n_upcalls <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+    <span class="token keyword">while</span> <span class="token punctuation">(</span>n_upcalls <span class="token operator">&lt;</span> UPCALL_MAX_BATCH<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+        <span class="token comment">// 通过 dpif_recv 将接收的数据放到 struct dpif_upcall 和 struct ofpbuf 中</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">dpif_recv</span><span class="token punctuation">(</span>udpif<span class="token operator">-&gt;</span>dpif<span class="token punctuation">,</span> handler<span class="token operator">-&gt;</span>handler_id<span class="token punctuation">,</span> dupcall<span class="token punctuation">,</span> recv_buf<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token function">ofpbuf_uninit</span><span class="token punctuation">(</span>recv_buf<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token keyword">break</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+        <span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+		
+        <span class="token comment">// 构造 struct upcall</span>
+        error <span class="token operator">=</span> <span class="token function">upcall_receive</span><span class="token punctuation">(</span>upcall<span class="token punctuation">,</span> udpif<span class="token operator">-&gt;</span>backer<span class="token punctuation">,</span> <span class="token operator">&amp;</span>dupcall<span class="token operator">-&gt;</span>packet<span class="token punctuation">,</span>
+                               dupcall<span class="token operator">-&gt;</span>type<span class="token punctuation">,</span> dupcall<span class="token operator">-&gt;</span>userdata<span class="token punctuation">,</span> flow<span class="token punctuation">,</span> mru<span class="token punctuation">,</span>
+                               <span class="token operator">&amp;</span>dupcall<span class="token operator">-&gt;</span>ufid<span class="token punctuation">,</span> PMD_ID_NULL<span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+        <span class="token comment">// 开始处理</span>
+        error <span class="token operator">=</span> <span class="token function">process_upcall</span><span class="token punctuation">(</span>udpif<span class="token punctuation">,</span> upcall<span class="token punctuation">,</span>
+                               <span class="token operator">&amp;</span>upcall<span class="token operator">-&gt;</span>odp_actions<span class="token punctuation">,</span> <span class="token operator">&amp;</span>upcall<span class="token operator">-&gt;</span>wc<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+        n_upcalls<span class="token operator">++</span><span class="token punctuation">;</span>
+        <span class="token keyword">continue</span><span class="token punctuation">;</span>
+    <span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>n_upcalls<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token comment">// 下发给 datapath</span>
+        <span class="token function">handle_upcalls</span><span class="token punctuation">(</span>handler<span class="token operator">-&gt;</span>udpif<span class="token punctuation">,</span> upcalls<span class="token punctuation">,</span> n_upcalls<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">for</span> <span class="token punctuation">(</span>i <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span> i <span class="token operator">&lt;</span> n_upcalls<span class="token punctuation">;</span> i<span class="token operator">++</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token function">dp_packet_uninit</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>dupcalls<span class="token punctuation">[</span>i<span class="token punctuation">]</span><span class="token punctuation">.</span>packet<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token function">ofpbuf_uninit</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>recv_bufs<span class="token punctuation">[</span>i<span class="token punctuation">]</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token function">upcall_uninit</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>upcalls<span class="token punctuation">[</span>i<span class="token punctuation">]</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token keyword">return</span> n_upcalls<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+</code></pre> 
+<p>在 process_call 中会根据 upcall 的类型进行对应的处理，这里只关注 MISS_CALL 的处理，调用了 upcall_xlate 函数</p> 
+<pre><code class="prism language-c"><span class="token keyword">static</span> <span class="token keyword">int</span>
+<span class="token function">process_upcall</span><span class="token punctuation">(</span><span class="token keyword">struct</span> <span class="token class-name">udpif</span> <span class="token operator">*</span>udpif<span class="token punctuation">,</span> <span class="token keyword">struct</span> <span class="token class-name">upcall</span> <span class="token operator">*</span>upcall<span class="token punctuation">,</span>
+               <span class="token keyword">struct</span> <span class="token class-name">ofpbuf</span> <span class="token operator">*</span>odp_actions<span class="token punctuation">,</span> <span class="token keyword">struct</span> <span class="token class-name">flow_wildcards</span> <span class="token operator">*</span>wc<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+    <span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+    <span class="token keyword">switch</span> <span class="token punctuation">(</span>upcall<span class="token operator">-&gt;</span>type<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">case</span> MISS_UPCALL<span class="token operator">:</span>
+    <span class="token keyword">case</span> SLOW_PATH_UPCALL<span class="token operator">:</span>
+        <span class="token comment">// 交给 upcall_xlate 处理</span>
+        <span class="token function">upcall_xlate</span><span class="token punctuation">(</span>udpif<span class="token punctuation">,</span> upcall<span class="token punctuation">,</span> odp_actions<span class="token punctuation">,</span> wc<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">return</span> <span class="token number">0</span><span class="token punctuation">;</span>
+    <span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token keyword">return</span> EAGAIN<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>upcall_xlate 最终调用到 classifier_lookup 查找到匹配的流表规则</p> 
+<pre><code class="prism language-c"><span class="token comment">/* Finds and returns the highest-priority rule in 'cls' that matches 'flow' and
+ * that is visible in 'version'.  Returns a null pointer if no rules in 'cls'
+ * match 'flow'.  If multiple rules of equal priority match 'flow', returns one
+ * arbitrarily.
+ *
+ * If a rule is found and 'wc' is non-null, bitwise-OR's 'wc' with the
+ * set of bits that were significant in the lookup.  At some point
+ * earlier, 'wc' should have been initialized (e.g., by
+ * flow_wildcards_init_catchall()).
+ *
+ * 'flow' is non-const to allow for temporary modifications during the lookup.
+ * Any changes are restored before returning. */</span>
+<span class="token keyword">const</span> <span class="token keyword">struct</span> <span class="token class-name">cls_rule</span> <span class="token operator">*</span>
+<span class="token function">classifier_lookup</span><span class="token punctuation">(</span><span class="token keyword">const</span> <span class="token keyword">struct</span> <span class="token class-name">classifier</span> <span class="token operator">*</span>cls<span class="token punctuation">,</span> <span class="token class-name">ovs_version_t</span> version<span class="token punctuation">,</span>
+                  <span class="token keyword">struct</span> <span class="token class-name">flow</span> <span class="token operator">*</span>flow<span class="token punctuation">,</span> <span class="token keyword">struct</span> <span class="token class-name">flow_wildcards</span> <span class="token operator">*</span>wc<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">return</span> <span class="token function">classifier_lookup__</span><span class="token punctuation">(</span>cls<span class="token punctuation">,</span> version<span class="token punctuation">,</span> flow<span class="token punctuation">,</span> wc<span class="token punctuation">,</span> true<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>至此，用户态已经找到了可以处理数据包的流表，回到前面的 recv_upcalls 函数，接下来会调用 handle_upcalls 用于向 datapath 下发flow。</p> 
+<pre><code class="prism language-c"><span class="token keyword">static</span> <span class="token class-name">size_t</span>
+<span class="token function">recv_upcalls</span><span class="token punctuation">(</span><span class="token keyword">struct</span> <span class="token class-name">handler</span> <span class="token operator">*</span>handler<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>n_upcalls<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token function">handle_upcalls</span><span class="token punctuation">(</span>handler<span class="token operator">-&gt;</span>udpif<span class="token punctuation">,</span> upcalls<span class="token punctuation">,</span> n_upcalls<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">for</span> <span class="token punctuation">(</span>i <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span> i <span class="token operator">&lt;</span> n_upcalls<span class="token punctuation">;</span> i<span class="token operator">++</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token function">dp_packet_uninit</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>dupcalls<span class="token punctuation">[</span>i<span class="token punctuation">]</span><span class="token punctuation">.</span>packet<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token function">ofpbuf_uninit</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>recv_bufs<span class="token punctuation">[</span>i<span class="token punctuation">]</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token function">upcall_uninit</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>upcalls<span class="token punctuation">[</span>i<span class="token punctuation">]</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token keyword">return</span> n_upcalls<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>handle_upcalls 最终会调用 dpif_operate 来下发flow，该接口针对不同的 dpif 实现，可以是 dpif_netdev_operate 或者 dpif_netlink_operate</p> 
+<pre><code class="prism language-c"><span class="token keyword">static</span> <span class="token keyword">void</span>
+<span class="token function">handle_upcalls</span><span class="token punctuation">(</span><span class="token keyword">struct</span> <span class="token class-name">udpif</span> <span class="token operator">*</span>udpif<span class="token punctuation">,</span> <span class="token keyword">struct</span> <span class="token class-name">upcall</span> <span class="token operator">*</span>upcalls<span class="token punctuation">,</span>
+               <span class="token class-name">size_t</span> n_upcalls<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+    <span class="token comment">/* Handle the packets individually in order of arrival.
+     *
+     *   - For SLOW_CFM, SLOW_LACP, SLOW_STP, SLOW_BFD, and SLOW_LLDP,
+     *     translation is what processes received packets for these
+     *     protocols.
+     *
+     *   - For SLOW_ACTION, translation executes the actions directly.
+     *
+     * The loop fills 'ops' with an array of operations to execute in the
+     * datapath. */</span>
+	<span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+    <span class="token function">dpif_operate</span><span class="token punctuation">(</span>udpif<span class="token operator">-&gt;</span>dpif<span class="token punctuation">,</span> opsp<span class="token punctuation">,</span> n_opsp<span class="token punctuation">,</span> DPIF_OFFLOAD_AUTO<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>总结如上过程可如图</p> 
+<p><img src="https://images2.imgbox.com/c2/ff/4tmcpOGH_o.png" alt="在这里插入图片描述"></p> 
+<h2><a id="_350"></a>参考</h2> 
+<ul><li> <p>https://blog.csdn.net/majieyue/article/details/52844738</p> </li><li> <p>https://www.sdnlab.com/my_sdnlab/wp-content/uploads/2017/02/cntctfrm_1a5b490b5708a374ad0d207df48ec29e_Openvswitch%E6%BA%90%E7%A0%81%E9%98%85%E8%AF%BB%E7%AC%94%E8%AE%B0.pdf</p> </li></ul>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/f18387ac1cdee5113a6f537f7b37c32b/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">spring项目自定义全局响应处理器，统一处理响应结果</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/7b14665a6c9e0bdbcfba636e0c168313/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">算法学习05：离散化、区间合并</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

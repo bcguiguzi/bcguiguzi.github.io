@@ -1,0 +1,362 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>RabbitMQ常见问题解决方案 - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="RabbitMQ常见问题解决方案" />
+<meta property="og:description" content="上一篇博客记录了一下RabbitMQ的服务搭建和简单入门，但是光这些还远远不够。
+要想将RabbitMQ用于生产中，需要考虑和解决很多问题。
+目录 消息转换器 生产者如何确保消息发送不丢失？ 消费者如何防止消息丢失？ 消息预取 死信交换机 消息转换器 原生的RabbitMQ只能发送字节数组，与SpringBoot整合后，Spring允许开发者发送一个对象，原因在于Spring对消息的发送和接收进行了一些处理。
+默认的消息转换器为：SimpleMessageConverter，转换大致逻辑如下：
+如果请求的contentType是以text打头，则将消息转为String。转之前判断是否给定字符集，如果没有给定则以默认字符集UTF-8转换。如果contentType等于application/x-java-serialized-object则将消息进行Java序列化传输。如果都不满足以上条件，则不进行转换，原样传输。 自定义消息转换器 如果有必要，也可以选择自己实现消息转换器。
+创建类实现MessageConverter接口，生产者实现toMessage方法，消费者实现fromMessage方法。
+public class MyMessageConverter implements MessageConverter { //生产者发送转换 @Override public Message toMessage(Object o, MessageProperties messageProperties) throws MessageConversionException { //使用FastJson Message message = new Message(JSONObject.toJSONBytes(o), messageProperties); return message; } //消费者接收转换 @Override public Object fromMessage(Message message) throws MessageConversionException { return JSONObject.parse(message.getBody()); } } template设置自定义转换器
+//设置自定义消息转换器 template.setMessageConverter(new MyMessageConverter()); 生产者如何确保消息发送不丢失？ 消息发送成功分两种：
+消息到达Broker消息被成功路由到Queue 一般从业务角度来说，只有消息被路由到Queue中，才算真正的发送成功。
+针对这两种情况，RabbitMQ提供了两种回调：ConfirmCallback和ReturnCallback。
+ConfirmCallback ConfirmCallback针对的是“消息是否到达Broker”，至于消息是否被路由到Queue它是不管的。
+当消息发送到Broker中，RabbitMQ会发出一个响应，告诉生产者自己已经接受到了消息。
+代码实现 开启发送者确认" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/9b3d796911a15014871fa3994cd03504/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2020-01-11T20:55:49+08:00" />
+<meta property="article:modified_time" content="2020-01-11T20:55:49+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">RabbitMQ常见问题解决方案</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p>上一篇博客记录了一下RabbitMQ的服务搭建和简单入门，但是光这些还远远不够。<br> 要想将RabbitMQ用于生产中，需要考虑和解决很多问题。</p> 
+<h3><a id="_3"></a>目录</h3> 
+<ul><li> <h5><a id="a_hrefh1a_4"></a><a href="#h1" rel="nofollow">消息转换器</a></h5> </li><li> <h5><a id="a_hrefh2a_5"></a><a href="#h2" rel="nofollow">生产者如何确保消息发送不丢失？</a></h5> </li><li> <h5><a id="a_hrefh3a_6"></a><a href="#h3" rel="nofollow">消费者如何防止消息丢失？</a></h5> </li><li> <h5><a id="a_hrefh4a_7"></a><a href="#h4" rel="nofollow">消息预取</a></h5> </li><li> <h5><a id="a_hrefh5a_8"></a><a href="#h5" rel="nofollow">死信交换机</a></h5> </li></ul> 
+<hr> 
+<h3><a id="a_idh1a_12"></a><a id="h1">消息转换器</a></h3> 
+<p>原生的RabbitMQ只能发送字节数组，与SpringBoot整合后，Spring允许开发者发送一个对象，原因在于Spring对消息的发送和接收进行了一些处理。</p> 
+<p>默认的消息转换器为：<code>SimpleMessageConverter</code>，转换大致逻辑如下：</p> 
+<ul><li>如果请求的contentType是以<code>text</code>打头，则将消息转为String。转之前判断是否给定字符集，如果没有给定则以默认字符集<code>UTF-8</code>转换。</li><li>如果contentType等于<code>application/x-java-serialized-object</code>则将消息进行Java序列化传输。</li><li>如果都不满足以上条件，则不进行转换，原样传输。</li></ul> 
+<h5><a id="_21"></a>自定义消息转换器</h5> 
+<p>如果有必要，也可以选择自己实现消息转换器。<br> 创建类实现<code>MessageConverter</code>接口，生产者实现<code>toMessage</code>方法，消费者实现<code>fromMessage</code>方法。</p> 
+<pre><code class="prism language-java"><span class="token keyword">public</span> <span class="token keyword">class</span> <span class="token class-name">MyMessageConverter</span> <span class="token keyword">implements</span> <span class="token class-name">MessageConverter</span> <span class="token punctuation">{<!-- --></span>
+
+	<span class="token comment">//生产者发送转换</span>
+	<span class="token annotation punctuation">@Override</span>
+	<span class="token keyword">public</span> Message <span class="token function">toMessage</span><span class="token punctuation">(</span>Object o<span class="token punctuation">,</span> MessageProperties messageProperties<span class="token punctuation">)</span> <span class="token keyword">throws</span> MessageConversionException <span class="token punctuation">{<!-- --></span>
+		<span class="token comment">//使用FastJson</span>
+		Message message <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">Message</span><span class="token punctuation">(</span>JSONObject<span class="token punctuation">.</span><span class="token function">toJSONBytes</span><span class="token punctuation">(</span>o<span class="token punctuation">)</span><span class="token punctuation">,</span> messageProperties<span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token keyword">return</span> message<span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+
+	<span class="token comment">//消费者接收转换</span>
+	<span class="token annotation punctuation">@Override</span>
+	<span class="token keyword">public</span> Object <span class="token function">fromMessage</span><span class="token punctuation">(</span>Message message<span class="token punctuation">)</span> <span class="token keyword">throws</span> MessageConversionException <span class="token punctuation">{<!-- --></span>
+		<span class="token keyword">return</span> JSONObject<span class="token punctuation">.</span><span class="token function">parse</span><span class="token punctuation">(</span>message<span class="token punctuation">.</span><span class="token function">getBody</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p><strong>template设置自定义转换器</strong></p> 
+<pre><code class="prism language-java"><span class="token comment">//设置自定义消息转换器</span>
+template<span class="token punctuation">.</span><span class="token function">setMessageConverter</span><span class="token punctuation">(</span><span class="token keyword">new</span> <span class="token class-name">MyMessageConverter</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+</code></pre> 
+<h3><a id="a_idh2a_50"></a><a id="h2">生产者如何确保消息发送不丢失？</a></h3> 
+<p>消息发送成功分两种：</p> 
+<ul><li>消息到达Broker</li><li>消息被成功路由到Queue</li></ul> 
+<p>一般从业务角度来说，只有消息被路由到Queue中，才算真正的发送成功。</p> 
+<p>针对这两种情况，RabbitMQ提供了两种回调：ConfirmCallback和ReturnCallback。</p> 
+<h4><a id="ConfirmCallback_60"></a>ConfirmCallback</h4> 
+<p>ConfirmCallback针对的是“消息是否到达Broker”，至于消息是否被路由到Queue它是不管的。</p> 
+<p>当消息发送到Broker中，RabbitMQ会发出一个响应，告诉生产者自己已经接受到了消息。</p> 
+<h5><a id="_66"></a>代码实现</h5> 
+<p><strong>开启发送者确认</strong></p> 
+<pre><code class="prism language-java"><span class="token comment">//开启 发送者确认</span>
+connectionFactory<span class="token punctuation">.</span><span class="token function">setPublisherConfirms</span><span class="token punctuation">(</span><span class="token boolean">true</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+</code></pre> 
+<p><strong>编写消息发送确认回调类</strong></p> 
+<pre><code class="prism language-java"><span class="token comment">/**
+ * @Author: pch
+ * @Date: 2020/1/11 11:06
+ * @Description: email消息发送方确认回调
+ */</span>
+<span class="token keyword">public</span> <span class="token keyword">class</span> <span class="token class-name">EmailConfirmCallback</span> <span class="token keyword">implements</span> <span class="token class-name">RabbitTemplate<span class="token punctuation">.</span>ConfirmCallback</span> <span class="token punctuation">{<!-- --></span>
+
+	<span class="token annotation punctuation">@Override</span>
+	<span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token function">confirm</span><span class="token punctuation">(</span>CorrelationData correlationData<span class="token punctuation">,</span> <span class="token keyword">boolean</span> ack<span class="token punctuation">,</span> String cause<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token comment">//发送消息时没传递correlationData，这里就为null</span>
+		System<span class="token punctuation">.</span>err<span class="token punctuation">.</span><span class="token function">println</span><span class="token punctuation">(</span><span class="token string">"消息附带标识："</span> <span class="token operator">+</span> correlationData<span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token comment">//消息是否到达broker</span>
+		System<span class="token punctuation">.</span>err<span class="token punctuation">.</span><span class="token function">println</span><span class="token punctuation">(</span><span class="token string">"消息是否到达broker："</span> <span class="token operator">+</span> ack<span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token comment">//消息发送失败的原因(RabbitMQ服务宕机等)</span>
+		System<span class="token punctuation">.</span>err<span class="token punctuation">.</span><span class="token function">println</span><span class="token punctuation">(</span><span class="token string">"失败原因："</span><span class="token operator">+</span>cause<span class="token punctuation">)</span><span class="token punctuation">;</span>
+		
+		<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span>ack<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+			<span class="token comment">//消息发送失败,写入到数据库，等待后续处理</span>
+		<span class="token punctuation">}</span>
+	<span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p><strong>template设置发送确认回调</strong></p> 
+<pre><code class="prism language-java"><span class="token comment">//开启 发送者确认</span>
+template<span class="token punctuation">.</span><span class="token function">setConfirmCallback</span><span class="token punctuation">(</span><span class="token keyword">new</span> <span class="token class-name">EmailConfirmCallback</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+</code></pre> 
+<p><strong>用户注册接口，注册成功后发送邮件业务代码</strong></p> 
+<pre><code class="prism language-java"><span class="token annotation punctuation">@PostMapping</span><span class="token punctuation">(</span><span class="token string">"register"</span><span class="token punctuation">)</span>
+<span class="token keyword">public</span> Object <span class="token function">register</span><span class="token punctuation">(</span>String name<span class="token punctuation">,</span> String email<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+	<span class="token comment">//保存注册信息逻辑...</span>
+	System<span class="token punctuation">.</span>out<span class="token punctuation">.</span><span class="token function">println</span><span class="token punctuation">(</span>name <span class="token operator">+</span> <span class="token string">"-注册成功,开始发送email消息..."</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+	<span class="token comment">//发送消息到队列</span>
+	Map<span class="token generics function"><span class="token punctuation">&lt;</span>String<span class="token punctuation">,</span> Object<span class="token punctuation">&gt;</span></span> map <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">HashMap</span><span class="token operator">&lt;</span><span class="token operator">&gt;</span><span class="token punctuation">(</span><span class="token number">2</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	map<span class="token punctuation">.</span><span class="token function">put</span><span class="token punctuation">(</span><span class="token string">"name"</span><span class="token punctuation">,</span> name<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	map<span class="token punctuation">.</span><span class="token function">put</span><span class="token punctuation">(</span><span class="token string">"email"</span><span class="token punctuation">,</span> email<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+	<span class="token comment">//发送消息时，可以携带一个CorrelationData保存业务主键</span>
+	CorrelationData correlationData <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">CorrelationData</span><span class="token punctuation">(</span>UUID<span class="token punctuation">.</span><span class="token function">randomUUID</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">toString</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">toUpperCase</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	rabbitTemplate<span class="token punctuation">.</span><span class="token function">convertAndSend</span><span class="token punctuation">(</span><span class="token string">"emailExchange"</span><span class="token punctuation">,</span> <span class="token string">"email_error"</span><span class="token punctuation">,</span> JSONObject<span class="token punctuation">.</span><span class="token function">toJSONString</span><span class="token punctuation">(</span>map<span class="token punctuation">)</span><span class="token punctuation">,</span>correlationData<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+	<span class="token keyword">return</span> name <span class="token operator">+</span> <span class="token string">"-注册成功"</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p><strong>发出请求，控制台如下图所示：</strong><br> <img src="https://images2.imgbox.com/82/b5/2CuY1WsG_o.png" alt="在这里插入图片描述"></p> 
+<p>显示消息已经到达Broker，但是消息是否被路由到Queue，这里就无法判断了，需要使用ReturnCallback。</p> 
+<h4><a id="ReturnCallback_131"></a>ReturnCallback</h4> 
+<p>ReturnCallback回调针对的是消息是否成功被路由到队列，一般与ConfirmCallback配合使用。</p> 
+<p>如果消息到达Broker但是没有被路由到Queue，则会触发ReturnCallback。例如：Exchange没有绑定Queue。<br> 反之，则不会触发ReturnCallback。</p> 
+<h5><a id="mandatory_137"></a>mandatory</h5> 
+<p>RabbitMQ接收到消息进行路由时，会根据mandatory来进行不同的操作，mandatory默认为false。</p> 
+<p>如果mandatory为false，当消息无法被路由时，RabbitMQ会直接丢弃该消息。<br> mandatory为true，消息无法被路由时，RabbitMQ会调用Basic.Return命令将消息返回给生产者。</p> 
+<h5><a id="_143"></a>代码实现</h5> 
+<p><strong>开启发送者确认</strong></p> 
+<pre><code class="prism language-java"><span class="token comment">//开启 发送者确认</span>
+connectionFactory<span class="token punctuation">.</span><span class="token function">setPublisherConfirms</span><span class="token punctuation">(</span><span class="token boolean">true</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+</code></pre> 
+<p><strong>编写消息失败回调类</strong></p> 
+<pre><code class="prism language-java"><span class="token comment">/**
+ * @Author: pch
+ * @Date: 2020/1/11 12:46
+ * @Description: email消息失败回调
+ */</span>
+<span class="token keyword">public</span> <span class="token keyword">class</span> <span class="token class-name">EmailReturnCallback</span> <span class="token keyword">implements</span> <span class="token class-name">RabbitTemplate<span class="token punctuation">.</span>ReturnCallback</span> <span class="token punctuation">{<!-- --></span>
+	<span class="token annotation punctuation">@Override</span>
+	<span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token function">returnedMessage</span><span class="token punctuation">(</span>Message message<span class="token punctuation">,</span> <span class="token keyword">int</span> replyCode<span class="token punctuation">,</span> String replyText<span class="token punctuation">,</span> String exchange<span class="token punctuation">,</span> String routingKey<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+		System<span class="token punctuation">.</span>err<span class="token punctuation">.</span><span class="token function">println</span><span class="token punctuation">(</span><span class="token string">"消息内容:"</span> <span class="token operator">+</span> <span class="token keyword">new</span> <span class="token class-name">String</span><span class="token punctuation">(</span>message<span class="token punctuation">.</span><span class="token function">getBody</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+		System<span class="token punctuation">.</span>err<span class="token punctuation">.</span><span class="token function">println</span><span class="token punctuation">(</span><span class="token string">"响应状态码:"</span> <span class="token operator">+</span> replyCode<span class="token punctuation">)</span><span class="token punctuation">;</span>
+		System<span class="token punctuation">.</span>err<span class="token punctuation">.</span><span class="token function">println</span><span class="token punctuation">(</span><span class="token string">"响应内容:"</span> <span class="token operator">+</span> replyText<span class="token punctuation">)</span><span class="token punctuation">;</span>
+		System<span class="token punctuation">.</span>err<span class="token punctuation">.</span><span class="token function">println</span><span class="token punctuation">(</span><span class="token string">"exchange:"</span> <span class="token operator">+</span> exchange<span class="token punctuation">)</span><span class="token punctuation">;</span>
+		System<span class="token punctuation">.</span>err<span class="token punctuation">.</span><span class="token function">println</span><span class="token punctuation">(</span><span class="token string">"rou![在这里插入图片描述](https://img-blog.csdnimg.cn/20200111130632936.png?x-oss-process=image/watermark,type_ZmFuZ3poZW5naGVpdGk,shadow_10,text_aHR0cHM6Ly9ibG9nLmNzZG4ubmV0L3FxXzMyMDk5ODMz,size_16,color_FFFFFF,t_70)tingKey:"</span> <span class="token operator">+</span> routingKey<span class="token punctuation">)</span><span class="token punctuation">;</span>
+		
+		<span class="token comment">//消息没有被路由到Queue，写入数据库，待后续处理...</span>
+	<span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p><strong>开启mandatory模式，并设置回调实例</strong></p> 
+<pre><code class="prism language-java"><span class="token comment">//开启mandatory模式（开启失败回调）</span>
+template<span class="token punctuation">.</span><span class="token function">setMandatory</span><span class="token punctuation">(</span><span class="token boolean">true</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+template<span class="token punctuation">.</span><span class="token function">setReturnCallback</span><span class="token punctuation">(</span><span class="token keyword">new</span> <span class="token class-name">EmailReturnCallback</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+</code></pre> 
+<p><strong>发送消息时，设置错误的routingKey，控制台显示如下：</strong><br> <img src="https://images2.imgbox.com/17/13/yM8Qpbx9_o.png" alt="在这里插入图片描述"></p> 
+<p><strong>设置正确的routingKey，则不会触发回调。</strong></p> 
+<h4><a id="_184"></a>备用交换机</h4> 
+<p>声明交换机时，可以设置一个属性：<code>alternate-exchange</code>来为其设置一个备用交换机。<br> 当消息无法被路由到Queue时，RabbitMQ则会将消息交给备用交换机路由，备用交换机一般声明为<code>FANOUT</code>类型确保消息一定会被路由到Queue。</p> 
+<p>需要注意的是：即使消息在主交换机中没有路由成功，只要在备用交换机中路由成功，也不会触发ReturnCallback回调。<br> 声明备用交换机后，只有当主交换机和备用交换机都无法成功路由时才会触发ReturnCallback回调。</p> 
+<h4><a id="_192"></a>总结</h4> 
+<p>ConfirmCallback针对消息没有到达Broker的回调处理，ReturnCallback针对消息到达Broker但是没路由到Queue的回调处理。<br> 一般将两者配合使用，可以保证消息发送100%不丢失。</p> 
+<blockquote> 
+ <p>RabbitMQ也支持事务，也可以做到消息发送不丢失，但是开启事务后性能严重下降，不建议使用。</p> 
+</blockquote> 
+<h3><a id="a_idh3a_198"></a><a id="h3">消费者如何防止消息丢失？</a></h3> 
+<p>除了生产者要保证消息100%发送外，消费者也必须确保消息不丢失，这样才能最终确保消息不丢失。</p> 
+<p>RabbitMQ的消息确认模式：</p> 
+<ul><li>AcknowledgeMode.NONE</li><li>AcknowledgeMode.MANUAL</li><li>AcknowledgeMode.AUTO</li></ul> 
+<p>默认为自动确认，即消息被消费者取走后Queue就会将其删除，不管其是否消费成功。</p> 
+<p>如果对数据的要求不高，如：日志记录，哪怕丢失一部分日志也无所谓，则可以使用自动确认，这样可以保证最好的性能。</p> 
+<p>但是如果对数据要求很高，则必须改为：手动确认。</p> 
+<h4><a id="_212"></a>消息手动确认</h4> 
+<p>在手动确认模式下，消息被消费者取走之后，Queue不会将其删除，而是将消息的状态改为<code>Unacked</code>待确认，消费者获取到消息进行消费时，可能成功也可能失败。</p> 
+<p>消费成功时，则通知RabbitMQ，将消息从Queue中删除。</p> 
+<p>消费失败时，有两种选择，一是通知RabbitMQ将消息放回队列，交给其他消费者消费、二是认为消息是废数据，让RabbitMQ直接丢弃即可。</p> 
+<p><strong>不管是否消费成功，都必须进行消息确认，否则消息会一直处于<code>Unacked</code>状态，堆积在Queue中。</strong></p> 
+<h5><a id="_221"></a>消费者获取消息后宕机，消息会丢失吗？</h5> 
+<p>不会，手动确认模式下，即使消费者获取到消息，Queue也不会将其删除，只是将消息的状态改为<code>Unacked</code>待确认。<br> 消费者宕机后，连接就会断开，RabbitMQ检测到连接断开后，会将消息状态改为<code>Ready</code>分发给其他消费者。</p> 
+<p>虽然不会丢失消息，但是会带来另外一个问题：<strong>消息重复消费</strong>。</p> 
+<p>例如：消费者获取消息成功消费后，在消息确认之前服务突然宕机，RabbitMQ会认为消息没有被成功消费，会分发给其他消费者，导致消息被重复消费，可以通过“消息幂等性”解决，后面会介绍。</p> 
+<p><strong>开启消息手动确认，也可通过yml方式</strong></p> 
+<pre><code class="prism language-java"><span class="token annotation punctuation">@Bean</span><span class="token punctuation">(</span><span class="token string">"simpleContainerFactory"</span><span class="token punctuation">)</span>
+<span class="token keyword">public</span> SimpleRabbitListenerContainerFactory <span class="token function">simpleRabbitListenerContainerFactory</span><span class="token punctuation">(</span>ConnectionFactory connectionFactory<span class="token punctuation">)</span><span class="token punctuation">{<!-- --></span>
+	SimpleRabbitListenerContainerFactory factory <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">SimpleRabbitListenerContainerFactory</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	factory<span class="token punctuation">.</span><span class="token function">setConnectionFactory</span><span class="token punctuation">(</span>connectionFactory<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token comment">//消息手动确认</span>
+	factory<span class="token punctuation">.</span><span class="token function">setAcknowledgeMode</span><span class="token punctuation">(</span>AcknowledgeMode<span class="token punctuation">.</span>MANUAL<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token keyword">return</span> factory<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p><strong>消费者：消息的确认和退回</strong></p> 
+<pre><code class="prism language-java"><span class="token annotation punctuation">@Component</span>
+<span class="token keyword">public</span> <span class="token keyword">class</span> <span class="token class-name">EmailConsumer</span> <span class="token punctuation">{<!-- --></span>
+
+	<span class="token comment">//监听的队列名称</span>
+	<span class="token annotation punctuation">@RabbitListener</span><span class="token punctuation">(</span>queues <span class="token operator">=</span> <span class="token string">"emailQueue"</span><span class="token punctuation">,</span> containerFactory <span class="token operator">=</span> <span class="token string">"simpleContainerFactory"</span><span class="token punctuation">)</span>
+	<span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token function">consumer</span><span class="token punctuation">(</span>Map<span class="token generics function"><span class="token punctuation">&lt;</span>String<span class="token punctuation">,</span> String<span class="token punctuation">&gt;</span></span> map<span class="token punctuation">,</span> Message message<span class="token punctuation">,</span> Channel channel<span class="token punctuation">)</span> <span class="token keyword">throws</span> Exception <span class="token punctuation">{<!-- --></span>
+		<span class="token keyword">long</span> deliveryTag <span class="token operator">=</span> message<span class="token punctuation">.</span><span class="token function">getMessageProperties</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">getDeliveryTag</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+		System<span class="token punctuation">.</span>out<span class="token punctuation">.</span><span class="token function">println</span><span class="token punctuation">(</span><span class="token string">"消费者,消息ID:"</span> <span class="token operator">+</span> deliveryTag<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+		<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">sendEmail</span><span class="token punctuation">(</span>map<span class="token punctuation">.</span><span class="token function">get</span><span class="token punctuation">(</span><span class="token string">"name"</span><span class="token punctuation">)</span><span class="token punctuation">,</span> map<span class="token punctuation">.</span><span class="token function">get</span><span class="token punctuation">(</span><span class="token string">"email"</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+			<span class="token comment">//邮件发送成功，确认消息	消息ID	是否批量确认</span>
+			channel<span class="token punctuation">.</span><span class="token function">basicAck</span><span class="token punctuation">(</span>deliveryTag<span class="token punctuation">,</span> <span class="token boolean">false</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+		<span class="token punctuation">}</span><span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+			<span class="token comment">//消息退回 		消息ID      是否批量确认    是否重回队列</span>
+			channel<span class="token punctuation">.</span><span class="token function">basicNack</span><span class="token punctuation">(</span>deliveryTag<span class="token punctuation">,</span> <span class="token boolean">false</span><span class="token punctuation">,</span> <span class="token boolean">true</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+			<span class="token comment">//消息退回，只能单条 建议用basicNack</span>
+			<span class="token comment">//channel.basicReject(deliveryTag, true);</span>
+		<span class="token punctuation">}</span>
+	<span class="token punctuation">}</span>
+
+	<span class="token comment">//发送邮件</span>
+	<span class="token keyword">private</span> <span class="token keyword">boolean</span> <span class="token function">sendEmail</span><span class="token punctuation">(</span>String name<span class="token punctuation">,</span> String email<span class="token punctuation">)</span><span class="token punctuation">{<!-- --></span>
+		System<span class="token punctuation">.</span>out<span class="token punctuation">.</span><span class="token function">println</span><span class="token punctuation">(</span><span class="token string">"发送邮件:"</span> <span class="token operator">+</span> email<span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token comment">//编写业务逻辑....</span>
+
+		<span class="token keyword">return</span> <span class="token boolean">true</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<h3><a id="a_idh4a_275"></a><a id="h4">消息预取</a></h3> 
+<p>聊消息预取之前，先说一说RabbitMQ的消息分发机制。</p> 
+<p>默认情况下，RabbitMQ会以最快的速度，将消息以轮询的方式全部分发给消费者，尽管消费者还来不及处理。<br> 这样可以保证RabbitMQ本身不会因为消息堆积而影响性能，但是对消费者而言却不太友好。</p> 
+<p>举个例子：Queue中有100个消息，同时启动两个消费者，RabbitMQ会立即给每个消费者分发50个消息，假设消费者A性能很强，1S就能消费完50个消息，而消费者B性能弱，需要10S才能消费完。这时消费者A就会很空闲，消费者B就会很忙碌，没有充分利用A的性能。</p> 
+<p>而消息预取则可以根据消费者的实际情况来进行设置，开启消息预取后，RabbitMQ不会直接分发所有的消息，而是根据给定的预取数量来分发，当消费者全部处理完毕后，RabbitMQ才会进行下一轮的消息分发。</p> 
+<p>例如：Queue中有100个消息，消费者消费1个消息耗时1S，消息预取设为1，则RabbitMQ每秒分发一个消息，如下图所示：<br> <img src="https://images2.imgbox.com/c4/31/SgSsZjnn_o.png" alt="在这里插入图片描述"></p> 
+<p>开启消息预取后，还可以对消息进行批量确认，从而进一步提升性能。</p> 
+<p><strong>设置消息预取的数量</strong></p> 
+<pre><code class="prism language-java"><span class="token annotation punctuation">@Bean</span><span class="token punctuation">(</span><span class="token string">"simpleContainerFactory"</span><span class="token punctuation">)</span>
+<span class="token keyword">public</span> SimpleRabbitListenerContainerFactory <span class="token function">simpleRabbitListenerContainerFactory</span><span class="token punctuation">(</span>ConnectionFactory connectionFactory<span class="token punctuation">)</span><span class="token punctuation">{<!-- --></span>
+	SimpleRabbitListenerContainerFactory factory <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">SimpleRabbitListenerContainerFactory</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	factory<span class="token punctuation">.</span><span class="token function">setConnectionFactory</span><span class="token punctuation">(</span>connectionFactory<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token comment">//消息手动确认</span>
+	factory<span class="token punctuation">.</span><span class="token function">setAcknowledgeMode</span><span class="token punctuation">(</span>AcknowledgeMode<span class="token punctuation">.</span>MANUAL<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token comment">//消息预取数量</span>
+	factory<span class="token punctuation">.</span><span class="token function">setPrefetchCount</span><span class="token punctuation">(</span><span class="token number">100</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token keyword">return</span> factory<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p><strong>消息批量确认</strong></p> 
+<pre><code class="prism language-java"><span class="token comment">//deliveryTag当前消息的标识，RabbitMQ会自动将一组消息确认</span>
+channel<span class="token punctuation">.</span><span class="token function">basicAck</span><span class="token punctuation">(</span>deliveryTag<span class="token punctuation">,</span> <span class="token boolean">true</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+</code></pre> 
+<p>消息预取的数量需要设置一个合适的值，太小性能差但是数据可靠性高，太大性能高但是数据可靠性差。</p> 
+<p><strong>消息重复消费</strong></p> 
+<p>开启消息预取后，可能存在“消息重复消费”的问题。<br> 批量获取100条消息，成功消费了99条，在消费最后一条时系统宕机，RabbitMQ会将100条消息重新分发给其他消费者。</p> 
+<p>RabbitMQ没有提供解决方案，需要在业务中自己解决，常见的解决方案：</p> 
+<ul><li>数据库表加字段区分消费标记。</li><li>使用Redis来保存消费成功的标识。</li></ul> 
+<h3><a id="a_idh5a_321"></a><a id="h5">死信交换机</a></h3> 
+<p>在声明Queue时，可以给其设置一个“死信交换机”(<code>dead-letter-exchange</code>)，当消息出现如下情况时，RabbitMQ会将消息重新发送到死信交换机上进行重新路由。</p> 
+<ul><li>消息被退回(channel.basicNack)</li><li>消息过期（TTL）</li><li>消息数量(x-max-length)超过队列最大限制而被删除</li><li>消息总大小(x-max-length-bytes)超过队列最大限制而被删除</li></ul> 
+<p>当消息出现以上状况时，如果不希望消息被RabbitMQ丢弃，就可以通过设置一个死信交换机来保存这些数据。</p> 
+<p>死信交换机的作用是：当消息不能被消费者正确消费时，将其路由到另外一个队列，等待重试或者人工干预。</p> 
+<p><strong>声明队列，设置死信交换机，消息过期后会发送到deadExchange重新路由到队列。</strong></p> 
+<pre><code class="prism language-java"><span class="token annotation punctuation">@Bean</span>
+<span class="token keyword">public</span> Queue <span class="token function">queue</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">{<!-- --></span>
+	Map<span class="token generics function"><span class="token punctuation">&lt;</span>String<span class="token punctuation">,</span> Object<span class="token punctuation">&gt;</span></span> map <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">HashMap</span><span class="token operator">&lt;</span><span class="token operator">&gt;</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token comment">//设置过期时间</span>
+	map<span class="token punctuation">.</span><span class="token function">put</span><span class="token punctuation">(</span><span class="token string">"x-message-ttl"</span><span class="token punctuation">,</span> <span class="token number">1000</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token comment">//设置死信交换机</span>
+	map<span class="token punctuation">.</span><span class="token function">put</span><span class="token punctuation">(</span><span class="token string">"x-dead-letter-exchange"</span><span class="token punctuation">,</span> <span class="token string">"deadExchange"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token comment">//死信交换机路由时新的routingKey</span>
+	map<span class="token punctuation">.</span><span class="token function">put</span><span class="token punctuation">(</span><span class="token string">"x-dead-letter-routing-key"</span><span class="token punctuation">,</span> <span class="token string">"dead.key"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token keyword">return</span> <span class="token keyword">new</span> <span class="token class-name">Queue</span><span class="token punctuation">(</span><span class="token string">"emailQueue"</span><span class="token punctuation">,</span> <span class="token boolean">true</span><span class="token punctuation">,</span> <span class="token boolean">false</span><span class="token punctuation">,</span> <span class="token boolean">false</span><span class="token punctuation">,</span> map<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p><strong>消息退回，也是如此。</strong></p> 
+<pre><code class="prism language-java"><span class="token comment">//消息退回 如果设置了死信交换机，则会被发送到死信交换机重新路由</span>
+channel<span class="token punctuation">.</span><span class="token function">basicNack</span><span class="token punctuation">(</span>deliveryTag<span class="token punctuation">,</span><span class="token boolean">false</span><span class="token punctuation">,</span><span class="token boolean">false</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+</code></pre> 
+<h4><a id="_355"></a>避免死循环</h4> 
+<p>使用RabbitMQ时需要特别注意避免死循环，消息始终无法被正确消费，但是RabbitMQ不断发送消息给消费者，造成死循环，例如：</p> 
+<ul><li>消费者只有一个时，进行消息回退且让消息重回Queue</li><li>Queue的死信交换机设为原交换机</li></ul>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/bf0b0860e79d22a539ee29e5cdbabace/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">解决onclick点击事件传参带有特殊字符串的问题</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/2381986e3903a603863872182b6169cb/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">MediaPlayer: Couldn&#39;t open   java.io.FileNotFoundException: No content provider  warn警告无法捕获</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

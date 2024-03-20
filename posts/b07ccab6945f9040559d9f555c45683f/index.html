@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>WebSocket的故事（三）—— Springboot中，如何利用WebSocket和STOMP快速构建点对点的消息模式(1) - 编程鬼谷子的博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="WebSocket的故事（三）—— Springboot中，如何利用WebSocket和STOMP快速构建点对点的消息模式(1)" />
+<meta property="og:description" content="前言 最近，偶然在掘金上发现了一个大牛写的这篇文章，感觉作者写的非常好，防止以后找不到了，这里转载记录一下，方便以后使用。
+概述 本文是WebSocket的故事系列第三篇第一节，将逐步深入Spring源码进行介绍，本系列的干货也将陆续在后面的几篇文章中放出。WebSocket的故事系列计划分五大篇，旨在由浅入深的介绍WebSocket以及在Springboot中如何快速构建和使用WebSocket提供的能力。本系列计划包含如下几篇文章：
+第一篇，什么是WebSocket以及它的用途
+第二篇，Spring中如何利用STOMP快速构建WebSocket广播式消息模式
+第三篇，Springboot中，如何利用WebSocket和STOMP快速构建点对点的消息模式(1)
+第四篇，Springboot中，如何利用WebSocket和STOMP快速构建点对点的消息模式(2)
+第五篇，Springboot中，实现网页聊天室之自定义WebSocket消息代理
+第六篇，Springboot中，实现更灵活的WebSocket
+本篇的主线 上一篇介绍Spring实现的最简单的STOMP的一种模式，通过@SendTo注解，将消息发送到指定消息代理，只要是订阅过该消息代理的客户端，都会收到这个消息。作为系列的第三篇，我会分三次来详细介绍实现细节，本篇将由@SendTo和@SendToUser开始，深入Spring的WebSocket消息发送关键代码进行讲解。为下一篇点对点消息的讲解铺路。
+本篇适合的读者 想要了解STOMP协议，Spring内部代码细节，以及如何使用Springboot搭建WebSocket服务的同学。
+前方高能预警 本篇的代码相对较多，我会尽量细致讲解。
+神奇的@SendTo和@SendToUser 本篇我们将详细介绍这两个注解背后的故事。
+@SendTo 上一篇中，我们利用@SendTo注解，使方法的返回值推送到消息代理器中，由消息代理器广播到订阅路径中去。但并没有详细的介绍消息是怎样被Spring框架处理，最后发送广播出去的。先放上上节中的关键代码：
+@MessageMapping(&#34;/hello&#34;) //使用MessageMapping注解来标识所有发送到“/hello”这个destination的消息，都会被路由到这个方法进行处理. @SendTo(&#34;/topic/greetings&#34;) //使用SendTo注解来标识这个方法返回的结果，都会被发送到它指定的destination，“/topic/greetings”. //传入的参数Message为客户端发送过来的消息，是自动绑定的。 public Greeting greeting(HelloMessage message) throws Exception { Thread.sleep(1000); // 模拟处理延时 return new Greeting(&#34;Hello, &#34; &#43; HtmlUtils.htmlEscape(message.getName()) &#43; &#34;!&#34;); //根据传入的信息，返回一个欢迎消息. } } 上面方法中的返回值，会被广播到/topic/greetings这个订阅路径中，只要客户端订阅了这个路径，都会接收到消息。Spring处理消息的主要类是SimpleBrokerMessageHandler, 当需要发送广播消息时，最终会调用其中的sendMessageToSubscribers()方法：
+方法内部会循环调用当前所有订阅此Broker的客户端Session，然后逐个发送消息。这里，入参destination就是Broker的地址，而message，就是我们返回信息的封装，其他细节这里就不展开讲了。
+那么如果我只是想用WebSocket向服务器发出查询请求，然后服务器你就把查询结果给我就行了，其他用户就不用你广播推送了，简单点，就是我请求，你就推送给我。这又该怎么办呢？是的，@SendToUser就能解决这个问题。
+@SendToUser 先上代码片段：
+@MessageMapping(&#34;/hello&#34;) //使用MessageMapping注解来标识所有发送到“/hello”这个destination的消息，都会被路由到这个方法进行处理. @SendToUser(&#34;/topic/greetings&#34;) //使用SendToUser注解来标识这个方法返回的结果，都会被发送到请求它的用户的destination. //传入的参数Message为客户端发送过来的消息，是自动绑定的。 public Greeting greeting(HelloMessage message) throws Exception { Thread.sleep(1000); // 模拟处理延时 return new Greeting(&#34;" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bcguiguzi.github.io/posts/b07ccab6945f9040559d9f555c45683f/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2020-06-01T22:32:08+08:00" />
+<meta property="article:modified_time" content="2020-06-01T22:32:08+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程鬼谷子的博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程鬼谷子的博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">WebSocket的故事（三）—— Springboot中，如何利用WebSocket和STOMP快速构建点对点的消息模式(1)</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <h2>前言</h2> 
+<p>最近，偶然在掘金上发现了一个大牛写的这篇文章，感觉作者写的非常好，防止以后找不到了，这里转载记录一下，方便以后使用。</p> 
+<h2>概述</h2> 
+<p>本文是WebSocket的故事系列第三篇第一节，将逐步深入Spring源码进行介绍，本系列的干货也将陆续在后面的几篇文章中放出。WebSocket的故事系列计划分五大篇，旨在由浅入深的介绍WebSocket以及在Springboot中如何快速构建和使用WebSocket提供的能力。本系列计划包含如下几篇文章：</p> 
+<p><a href="https://blog.csdn.net/smilehappiness/article/details/106470136">第一篇，什么是WebSocket以及它的用途</a><br><a href="https://blog.csdn.net/smilehappiness/article/details/106470154">第二篇，Spring中如何利用STOMP快速构建WebSocket广播式消息模式</a><br><strong>第三篇，Springboot中，如何利用WebSocket和STOMP快速构建点对点的消息模式(1)</strong><br><a href="https://blog.csdn.net/smilehappiness/article/details/106470202">第四篇，Springboot中，如何利用WebSocket和STOMP快速构建点对点的消息模式(2)</a><br><a href="https://blog.csdn.net/smilehappiness/article/details/106470221">第五篇，Springboot中，实现网页聊天室之自定义WebSocket消息代理</a><br><a href="https://blog.csdn.net/smilehappiness/article/details/106470235">第六篇，Springboot中，实现更灵活的WebSocket</a></p> 
+<h2>本篇的主线</h2> 
+<p>上一篇介绍Spring实现的最简单的STOMP的一种模式，通过@SendTo注解，将消息发送到指定消息代理，只要是订阅过该消息代理的客户端，都会收到这个消息。作为系列的第三篇，我会分三次来详细介绍实现细节，本篇将由@SendTo和@SendToUser开始，深入Spring的WebSocket消息发送关键代码进行讲解。为下一篇点对点消息的讲解铺路。</p> 
+<h2>本篇适合的读者</h2> 
+<p>想要了解STOMP协议，Spring内部代码细节，以及如何使用Springboot搭建WebSocket服务的同学。</p> 
+<h2>前方高能预警</h2> 
+<p>本篇的代码相对较多，我会尽量细致讲解。</p> 
+<h2>神奇的@SendTo和@SendToUser</h2> 
+<p>本篇我们将详细介绍这两个注解背后的故事。</p> 
+<h3>@SendTo</h3> 
+<p>上一篇中，我们利用<span style="color:#f33b45;"><code>@SendTo</code></span>注解，使方法的返回值推送到消息代理器中，由消息代理器广播到订阅路径中去。但并没有详细的介绍消息是怎样被Spring框架处理，最后发送广播出去的。先放上上节中的关键代码：</p> 
+<pre><code>    @MessageMapping("/hello")   //使用MessageMapping注解来标识所有发送到“/hello”这个destination的消息，都会被路由到这个方法进行处理.
+    @SendTo("/topic/greetings") //使用SendTo注解来标识这个方法返回的结果，都会被发送到它指定的destination，“/topic/greetings”.
+    //传入的参数Message为客户端发送过来的消息，是自动绑定的。
+    public Greeting greeting(HelloMessage message) throws Exception {
+        Thread.sleep(1000); // 模拟处理延时
+        return new Greeting("Hello, " + HtmlUtils.htmlEscape(message.getName()) + "!"); //根据传入的信息，返回一个欢迎消息.
+    }
+}
+</code></pre> 
+<p>上面方法中的返回值，会被广播到<span style="color:#f33b45;"><code>/topic/greetings</code></span>这个订阅路径中，只要客户端订阅了这个路径，都会接收到消息。Spring处理消息的主要类是<span style="color:#f33b45;"><code>SimpleBrokerMessageHandler</code></span>, 当需要发送广播消息时，最终会调用其中的<code>s<span style="color:#f33b45;">endMessageToSubscribers()</span></code>方法：</p> 
+<p> </p> 
+<p><img alt="" src="https://images2.imgbox.com/9a/11/3ACpIFEH_o.png"></p> 
+<p> </p> 
+<p>方法内部会循环调用当前所有订阅此<span style="color:#f33b45;"><code>Broker</code></span>的客户端<span style="color:#f33b45;"><code>Session</code></span>，然后逐个发送消息。这里，入参<span style="color:#f33b45;"><code>destination</code></span>就是<span style="color:#f33b45;"><code>Broker</code></span>的地址，而<span style="color:#f33b45;"><code>message</code></span>，就是我们返回信息的封装，其他细节这里就不展开讲了。</p> 
+<p> </p> 
+<p>那么如果我只是想用WebSocket向服务器发出查询请求，然后服务器你就把查询结果给我就行了，其他用户就不用你广播推送了，简单点，就是我请求，你就推送给我。这又该怎么办呢？是的，<code>@SendToUser</code>就能解决这个问题。</p> 
+<h3>@SendToUser</h3> 
+<p>先上代码片段：</p> 
+<pre><code>    @MessageMapping("/hello") //使用MessageMapping注解来标识所有发送到“/hello”这个destination的消息，都会被路由到这个方法进行处理.
+    @SendToUser("/topic/greetings") //使用SendToUser注解来标识这个方法返回的结果，都会被发送到请求它的用户的destination.
+    //传入的参数Message为客户端发送过来的消息，是自动绑定的。
+    public Greeting greeting(HelloMessage message) throws Exception {
+        Thread.sleep(1000); // 模拟处理延时
+        return new Greeting("Hello, " + HtmlUtils.htmlEscape(message.getName()) + "!"); //根据传入的信息，返回一个欢迎消息.
+    }
+}
+</code></pre> 
+<p>可以看到，这里我只是修改了注解，基于上节中我们的示例代码，我们启动程序，试验一下效果，结果发现并没有收到返回信息，这是为什么呢？让我们深入代码实现的关键节点来看看。</p> 
+<h3>@SendToUser背后的实现细节</h3> 
+<p>首先，在我们查看代码细节之前，应该先静态分析一下。根据之前我们介绍过的内容，很容易想到：</p> 
+<blockquote> 
+ <p><strong>1</strong>.Spring WebSocket通道的建立最开始是源于Http协议的第一次握手，握手成功之后，就打开了客户端和服务器的WebSocket通道，即客户端与服务端通过一个<span style="color:#f33b45;"><code>Session</code></span>来维持通信。就像建立一条管道一样，你有内容就传给我，我有内容就传给你。<br><strong>2</strong>.上面的<span style="color:#f33b45;"><code>greeting</code></span>方法，实际上是框架提供给开发者一个处理客户端请求的一个时机，开发者可以根据业务需要，对信息处理加工后，返回给客户端需要的响应结果。那么当这个方法<span style="color:#f33b45;"><code>return</code></span>的时候，也就是响应信息由服务端向客户端返送的开始。</p> 
+</blockquote> 
+<p>基于上述两个基本结论，我们开始分析代码，首先就是从<span style="color:#f33b45;"><code>return</code></span>之后开始，看看代码跑到了哪里： <span style="color:#f33b45;"><code>AbstractMethodMessageHandler.java</code></span>中的<span style="color:#f33b45;"><code>handleMatch</code></span>方法</p> 
+<p> </p> 
+<p><img alt="" src="https://images2.imgbox.com/2e/ee/GtTS6YMq_o.png"></p> 
+<p> </p> 
+<p>当客户端发送的消息到达服务端后，会首先根据消息的<span style="color:#f33b45;"><code>destination</code></span>来进行匹配，找到对应的处理类。在本例中，即根据<span style="color:#f33b45;"><code>/hello</code></span>找到<span style="color:#f33b45;"><code>GreetingController</code></span>（MessageMapping注解所在位置）。然后即通过<span style="color:#f33b45;"><code>handleMatch</code></span>中的<span style="color:#f33b45;"><code>invoke</code></span>方法，调用<span style="color:#f33b45;"><code>GreetingController</code></span>中的<span style="color:#f33b45;"><code>greeting</code></span>方法，<span style="color:#f33b45;"><code>greeting</code></span>方法返回后，通过<span style="color:#f33b45;"><code>handleRetureValue</code></span>处理其返回值，那么它对应的方法又是什么呢？我们往下看：</p> 
+<p> </p> 
+<p>顺着这个方法，我们到了一个重要的类，<span style="color:#f33b45;"><code>SendToMethodReturnValueHandler.java</code></span></p> 
+<p> </p> 
+<p><img alt="" src="https://images2.imgbox.com/31/f0/OlPU3wHS_o.png"></p> 
+<p> </p> 
+<p> </p> 
+<p>从类的名字就可以看出来，它是用来专门处理<code>SendTo</code>相关注解的类。当用<span style="color:#f33b45;"><code>SendTo</code></span>注解的方法返回后，即调用此类中的<span style="color:#f33b45;"><code>handleReturnValue</code></span>方法来进行处理。代码流程很清晰，大家参考图片内的注释即可。</p> 
+<h3>继续追踪发送逻辑</h3> 
+<p>两个值得我们继续追踪的点：</p> 
+<blockquote> 
+ <p><strong>1</strong>.在<span style="color:#f33b45;"><code>SendToUser</code></span>分支中，无论是广播还是非广播消息，都用到了<span style="color:#f33b45;"><code>messagingTemplate</code></span>。这个<span style="color:#f33b45;"><code>messagingTemplate</code></span>是什么？<br><strong>2</strong>.广播与非广播的消息发送，都调用了同样的方法，即<span style="color:#f33b45;"><code>convertAndSendToUser</code></span>。区别在于非广播时，多了一个<span style="color:#f33b45;"><code>sessionId</code></span>参数。这个方法以及这个参数该如何去理解呢？</p> 
+</blockquote> 
+<p>带着这样的疑问继续追踪,还是在<span style="color:#f33b45;"><code>SendToMethodReturnValueHandler.java</code></span>这个类中:</p> 
+<p> </p> 
+<p><img alt="" src="https://images2.imgbox.com/a6/46/bjq2iPy9_o.png"></p> 
+<p> </p> 
+<p> </p> 
+<p>这里，我们又接触到一个新类，<span style="color:#f33b45;"><code>SimpMessagingTemplate</code></span>。它实现了<span style="color:#f33b45;"><code>convertAndSendToUser</code></span>方法，我们有必要详细介绍一下这个方法，它的代码量不大，但却至关重要：</p> 
+<pre><code>public void convertAndSendToUser(String user, String destination, Object payload, @Nullable Map&lt;String, Object&gt; headers, @Nullable MessagePostProcessor postProcessor) throws MessagingException {
+    Assert.notNull(user, "User must not be null");
+    user = StringUtils.replace(user, "/", "%2F");
+    destination = destination.startsWith("/") ? destination : "/" + destination;
+    super.convertAndSend(this.destinationPrefix + user + destination, payload, headers, postProcessor);
+}
+
+</code></pre> 
+<p>介绍一下输入参数：</p> 
+<blockquote> 
+ <p><span style="color:#f33b45;"><strong><code>user</code></strong>:</span>用户标识，这里就是客户端与服务端链接的<span style="color:#f33b45;">sessionId</span><br><span style="color:#f33b45;"><strong><code>destination</code></strong>:</span>这是<span style="color:#f33b45;">SendToUser</span>注解后括号内的参数值<br><span style="color:#f33b45;"><strong><code>payload</code></strong>:<code>Object</code></span>类型，它标识<code>Controller</code>中定义的方法的返回值，这里就是<span style="color:#f33b45;"><code>GreetingController</code></span>类中<span style="color:#f33b45;"><code>greeting</code></span>方法的返回值<br><span style="color:#f33b45;"><strong><code>headers</code></strong></span>:返回信息的消息头<br><span style="color:#f33b45;"><strong><code>postProcessor</code></strong></span>:此处为<span style="color:#f33b45;"><code>Null</code></span>\</p> 
+</blockquote> 
+<p><strong>首先对入参进行校验和归一化，重点在最后一行，入参处做了字符串拼接，将原来的<span style="color:#f33b45;"><code>destination</code></span>拼接为<span style="color:#f33b45;"><code>/user/userID/topic/greetings</code></span>，<span style="color:#f33b45;"><code>userID</code></span>是客户端的<span style="color:#f33b45;"><code>SessionID</code></span></strong>。拼接结果<span style="color:#f33b45;"><code>destination=“/user/au3ev44r/topic/greetings“</code></span>。好，接下来，我们来看一下这个方法：</p> 
+<p><span style="color:#f33b45;"><code>AbstractMessageSendingTemplate&lt;D&gt;.java</code></span>中：</p> 
+<pre><code>public void convertAndSend(D destination, Object payload, @Nullable Map&lt;String, Object&gt; headers, @Nullable MessagePostProcessor postProcessor) throws MessagingException {
+    Message&lt;?&gt; message = this.doConvert(payload, headers, postProcessor);
+    this.send(destination, message);
+}
+</code></pre> 
+<p>它将要发送的<span style="color:#f33b45;"><code>Body</code></span>信息与<span style="color:#f33b45;"><code>Header</code></span>信息进行整合，得到<span style="color:#f33b45;"><code>Message</code></span>信息。之后，调用<span style="color:#f33b45;">send</span>方法发送。之后经过一系列加工方法的流转，最后到达了<span style="color:#f33b45;"><code>UserDestinationMessageHandler</code></span>类中的<span style="color:#f33b45;"><code>handleMessage</code></span>方法中。</p> 
+<p> </p> 
+<p><img alt="" src="https://images2.imgbox.com/3e/a9/UyHNL6xj_o.png"></p> 
+<p> </p> 
+<p>其中的<span style="color:#f33b45;"><code>resolveDestination</code></span>方法能识别带<span style="color:#f33b45;"><code>/user</code></span>的订阅路径并做出处理，<strong>此处将<span style="color:#f33b45;"><code>sourceDestination</code></span>转化成<span style="color:#f33b45;"><code>/topic/greetings-userau3ev44r</code>,<code>userau3ev44r</code></span>中，<span style="color:#f33b45;"><code>user</code></span>是关键字，<span style="color:#f33b45;"><code>au3ev44r</code></span>是<span style="color:#f33b45;"><code>SessionID</code></span>，这样子就把用户和订阅路径唯一的匹配起来了</strong>。</p> 
+<p> </p> 
+<p> </p> 
+<p><img alt="" src="https://images2.imgbox.com/21/43/OML8n44Z_o.png"></p> 
+<p> </p> 
+<p>接着，我们拿着<span style="color:#f33b45;"><code>targetDestinations</code></span>地址，调用了<span style="color:#f33b45;"><code>SimpMessageTemplate</code></span>类中的<span style="color:#f33b45;">send</span>方法，最终又来到了<span style="color:#f33b45;"><code>SimpleBrokerMessageHandler</code></span>类中，眼熟吧，没错，就是我们在介绍<span style="color:#f33b45;"><code>SendTo</code></span>注解时提到的，只不过，这时候它的目的地址，是<span style="color:#f33b45;"><code>/topic/greetings-userau3ev44r</code></span>。至此，处理目的地址和封装消息的工作就完成了。之后，会走实际发送过程，客户端会收到返回的<span style="color:#f33b45;"><code>greeting</code></span>消息。</p> 
+<p> </p> 
+<h2>总结</h2> 
+<p>上例中，我们通过代码，详细讲解了一条客户端消息到达服务端后，是如何通过代码流转，找到下面两个关键参数的整个流程的。</p> 
+<ul><li><strong>消息的目的地址</strong></li><li><strong>封装返回消息</strong> 希望大家能静下心来仔细研读，读懂这部分代码，会对后续的文章理解有很大帮助，同时也能提高大家对Spring设计理念的感悟。了解更多Spring的实现细节。</li></ul> 
+<h2>本篇涉及到的代码</h2> 
+<p><a href="https://github.com/chiuser/SpringWebSocket">SpringWebSocket Github</a></p> 
+<p><br> 作者：xNPE<br> 链接：<a href="https://juejin.im/post/5b7706d451882542fe288e26" rel="nofollow">https://juejin.im/post/5b7706d451882542fe288e26</a><br> 来源：掘金<br> 著作权归作者所有。商业转载请联系作者获得授权，非商业转载请注明出处。</p> 
+<p> </p> 
+<p>写博客是为了记住自己容易忘记的东西，另外也是对自己工作的总结，希望尽自己的努力，做到更好，大家一起努力进步！<br><br> 如果有什么问题，欢迎大家评论，一起探讨，代码如有问题，欢迎各位大神指正！<br><br> 给自己的梦想添加一双翅膀，让它可以在天空中自由自在的飞翔！</p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/09d438f58336a2abc28e6ce14a6ddd5e/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">C&#43;&#43; delete 和 deallocate 的区别</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/940e61469f5c8fdfe1f396bc518383e4/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">C语言int/double数据类型的范围</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程鬼谷子的博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>
